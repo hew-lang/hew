@@ -113,7 +113,7 @@ pub fn bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), string>
 /// `IoError.Variant(...)` constructor/pattern style.
 pub fn from_file(path: string) -> Result<Stream<string>, fs.IoError> {
     unsafe {
-        let s = hew_stream_from_file_read(path);
+        let s = await hew_stream_from_file_read(path);
         if hew_stream_is_valid(s) {
             Ok(s)
         } else {

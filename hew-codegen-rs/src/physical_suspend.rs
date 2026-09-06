@@ -189,7 +189,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    fn state_value(&self, name: &str, state: PointerValue<'ctx>) -> CodegenResult<IntValue<'ctx>> {
+    pub(super) fn state_value(
+        &self,
+        name: &str,
+        state: PointerValue<'ctx>,
+    ) -> CodegenResult<IntValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = coro::external(
             self.llvm,
@@ -199,7 +203,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(call_value(&self.builder, function, &[state.into()], "state.status")?.into_int_value())
     }
 
-    fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
+    pub(super) fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let free = coro::external(
             self.llvm,
@@ -296,12 +300,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(completed);
         self.free_handle("hew_coro_sleep_free", operation)?;
         self.emit_edge(normal)?;
-        for (block, edge) in [(cancelled, cancel), (failed, unwind)] {
-            self.builder.position_at_end(block);
-            self.free_handle("hew_coro_sleep_free", operation)?;
-            self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
-            self.emit_edge(edge)?;
-        }
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_coro_sleep_free", operation)?;
+        self.initialize_cancellation_fault()?;
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(failed);
+        self.free_handle("hew_coro_sleep_free", operation)?;
+        self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)?;
         Ok(())
     }
 

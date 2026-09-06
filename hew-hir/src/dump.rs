@@ -709,26 +709,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 }
             }
         }
-        HirExprKind::ForkBatch { children, task_ty } => {
-            writeln!(out, "{pad}  fork-batch -> {}", task_ty.user_facing())
-                .expect("write to string");
-            for child in children {
-                dump_expr(out, child, indent + 2);
-            }
-        }
-        HirExprKind::SpawnedCall {
-            callee,
-            args,
-            task_ty,
-            ..
-        } => {
-            writeln!(out, "{pad}  spawned-call task_ty={}", task_ty.user_facing())
-                .expect("write to string");
-            dump_expr(out, callee, indent + 4);
-            for arg in args {
-                dump_expr(out, arg, indent + 4);
-            }
-        }
         HirExprKind::ForkBlock { body, task_ty, .. } => {
             writeln!(out, "{pad}  fork-block task_ty={}", task_ty.user_facing())
                 .expect("write to string");

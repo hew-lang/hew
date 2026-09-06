@@ -57,6 +57,8 @@ use crate::node::{
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
+mod fork;
+
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
 /// can reject unsupported constructs before codegen. Kept minimal to avoid
@@ -1005,9 +1007,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
-                    | crate::HirDiagnosticKind::SpawnedClosureSignatureUnsupported { .. }
-                    | crate::HirDiagnosticKind::SpawnedClosureNonSendCapture { .. }
-                    | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
@@ -2892,8 +2891,9 @@ pub fn lower_program_with_mono_cap(
         }
     }
     ctx.seed_stdlib_fn_registry();
+    let builtin_declarations = builtin_callable_impl_program();
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
-        match builtin_callable_impl_program() {
+        match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
@@ -4080,11 +4080,6 @@ pub fn lower_program_with_mono_cap(
         check_wasm_blocking_recv_gate(&mut ctx, program);
     }
 
-    // FC-P1-A1: Task/fork/deadline HIR pre-pass gates. Dispatched HERE (after
-    // ctx.diagnostics.clear()) so these fail-closed diagnostics survive into
-    // LowerOutput per the FC-P0 diagnostic survival ordering lesson.
-    check_task_gates(&mut ctx, program);
-
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
     // final LowerOutput. Unconditional across all targets — these gates
@@ -4745,124 +4740,108 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
-    let scope_failure = if ctx
-        .recovery_kinds
-        .values()
-        .any(|kind| matches!(kind, hew_types::check::RecoveryKind::Scope { .. }))
-    {
-        builtin_callable_impl_program.as_ref().and_then(|builtins| {
-            let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+    // Prelude declarations must precede lazy body checking, independently of
+    // whether their executable methods are needed or have checked successfully.
+    let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
+        let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
+            Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+            _ => None,
+        })?;
+        let canonical_name = "std.builtins.ScopeFailure";
+        let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned() else {
+            ctx.unsupported(
+                span.clone(),
+                "scope failure declaration identity",
+                "checker-boundary",
+            );
+            return None;
+        };
+        let mut source = source.clone();
+        source.name = canonical_name.to_string();
+        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+        ctx.type_classes
+            .insert(canonical_name.to_string(), (decl.marker, None));
+        ctx.type_member_tys.insert(
+            canonical_name.to_string(),
+            decl.variants
+                .iter()
+                .flat_map(hew_hir_variant_field_tys)
+                .collect(),
+        );
+        ctx.enum_variants_by_name
+            .insert(canonical_name.to_string(), decl.variants.clone());
+        ctx.enum_type_params
+            .insert(canonical_name.to_string(), decl.type_params.clone());
+        ctx.enum_item_ids
+            .insert(canonical_name.to_string(), decl.id);
+        for (index, variant) in decl.variants.iter().enumerate() {
+            ctx.machine_ctor_registry.insert(
+                format!("{canonical_name}::{}", variant.name),
+                (canonical_name.to_string(), index),
+            );
+        }
+        Some(decl)
+    });
+    let mut delivery_declarations = Vec::new();
+    if let Some(builtins) = builtin_declarations.as_ref() {
+        for name in hew_types::actor_delivery::DECLARATIONS {
+            let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
+                Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
                 _ => None,
-            })?;
-            let canonical_name = "std.builtins.ScopeFailure";
-            let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned()
+            }) else {
+                continue;
+            };
+            let canonical_name = format!("std.builtins.{name}");
+            let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
             else {
                 ctx.unsupported(
                     span.clone(),
-                    "scope failure declaration identity",
+                    "actor delivery declaration identity",
                     "checker-boundary",
                 );
-                return None;
+                continue;
             };
             let mut source = source.clone();
-            source.name = canonical_name.to_string();
+            source.name.clone_from(&canonical_name);
             let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
             ctx.type_classes
-                .insert(canonical_name.to_string(), (decl.marker, None));
+                .insert(canonical_name.clone(), (decl.marker, None));
             ctx.type_member_tys.insert(
-                canonical_name.to_string(),
-                decl.variants
+                canonical_name.clone(),
+                decl.fields
                     .iter()
-                    .flat_map(hew_hir_variant_field_tys)
+                    .map(|field| field.ty.clone())
+                    .chain(decl.variants.iter().flat_map(hew_hir_variant_field_tys))
                     .collect(),
             );
-            ctx.enum_variants_by_name
-                .insert(canonical_name.to_string(), decl.variants.clone());
-            ctx.enum_type_params
-                .insert(canonical_name.to_string(), decl.type_params.clone());
-            ctx.enum_item_ids
-                .insert(canonical_name.to_string(), decl.id);
-            for (index, variant) in decl.variants.iter().enumerate() {
-                ctx.machine_ctor_registry.insert(
-                    format!("{canonical_name}::{}", variant.name),
-                    (canonical_name.to_string(), index),
-                );
-            }
-            Some(decl)
-        })
-    } else {
-        None
-    };
-    let mut delivery_declarations = Vec::new();
-    if !ctx.actor_delivery_calls.is_empty()
-        || ctx
-            .actor_method_dispatch
-            .values()
-            .any(|kind| matches!(kind, ActorMethodKind::Message { .. }))
-    {
-        if let Some(builtins) = builtin_callable_impl_program.as_ref() {
-            for name in hew_types::actor_delivery::DECLARATIONS {
-                let Some((source, span)) =
-                    builtins.items.iter().find_map(|(item, span)| match item {
-                        Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
-                        _ => None,
-                    })
-                else {
-                    continue;
-                };
-                let canonical_name = format!("std.builtins.{name}");
-                let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
-                else {
-                    ctx.unsupported(
-                        span.clone(),
-                        "actor delivery declaration identity",
-                        "checker-boundary",
-                    );
-                    continue;
-                };
-                let mut source = source.clone();
-                source.name.clone_from(&canonical_name);
-                let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
-                ctx.type_classes
-                    .insert(canonical_name.clone(), (decl.marker, None));
-                ctx.type_member_tys.insert(
+            if decl.kind == HirTypeDeclKind::Struct {
+                ctx.record_registry.insert(
                     canonical_name.clone(),
-                    decl.fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .chain(decl.variants.iter().flat_map(hew_hir_variant_field_tys))
-                        .collect(),
+                    RecordEntry {
+                        id: decl.id,
+                        type_params: decl.type_params.clone(),
+                        fields: decl
+                            .fields
+                            .iter()
+                            .map(|field| (field.name.clone(), field.ty.clone()))
+                            .collect(),
+                    },
                 );
-                if decl.kind == HirTypeDeclKind::Struct {
-                    ctx.record_registry.insert(
-                        canonical_name.clone(),
-                        RecordEntry {
-                            id: decl.id,
-                            type_params: decl.type_params.clone(),
-                            fields: decl
-                                .fields
-                                .iter()
-                                .map(|field| (field.name.clone(), field.ty.clone()))
-                                .collect(),
-                        },
+            }
+            if decl.kind == HirTypeDeclKind::Enum {
+                ctx.enum_variants_by_name
+                    .insert(canonical_name.clone(), decl.variants.clone());
+                ctx.enum_type_params
+                    .insert(canonical_name.clone(), decl.type_params.clone());
+                ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
+                for (index, variant) in decl.variants.iter().enumerate() {
+                    ctx.machine_ctor_registry.insert(
+                        format!("{canonical_name}::{}", variant.name),
+                        (canonical_name.clone(), index),
                     );
                 }
-                if decl.kind == HirTypeDeclKind::Enum {
-                    ctx.enum_variants_by_name
-                        .insert(canonical_name.clone(), decl.variants.clone());
-                    ctx.enum_type_params
-                        .insert(canonical_name.clone(), decl.type_params.clone());
-                    ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
-                    for (index, variant) in decl.variants.iter().enumerate() {
-                        ctx.machine_ctor_registry.insert(
-                            format!("{canonical_name}::{}", variant.name),
-                            (canonical_name.clone(), index),
-                        );
-                    }
-                }
-                delivery_declarations.push(decl);
             }
+            delivery_declarations.push(decl);
         }
     }
     let mut items: Vec<HirItem> = Vec::new();
@@ -7130,7 +7109,7 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(operand, out, trait_out);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
                 out.push((name.clone(), expr.site));
@@ -7232,10 +7211,7 @@ fn collect_call_sites_in_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
             }
@@ -7588,26 +7564,6 @@ fn contains_abstract_symbol(
     }
 }
 
-/// The syntactic position of an expression being lowered, as it bears on
-/// `await` legality (TI-4). The position is set on `LowerCtx` immediately
-/// before lowering an expression and consumed atomically at `lower_expr`
-/// entry, so recursive sub-expression lowering always sees [`Self::Other`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AwaitPosition {
-    /// Any position where `await` is NOT specially admitted: function
-    /// arguments, binary operands, return values, block tails, etc. A task
-    /// `await` here trips `AwaitOutOfPosition`.
-    Other,
-    /// The direct expression of a `Stmt::Expression` — the statement-expression
-    /// position inside a `scope{}` body where a unit/value `await t` is legal.
-    Statement,
-    /// The value of a `let` binding that the `Stmt::Let` path validated as a
-    /// bindable value-returning task await (`let x = await t`, `T != ()`). The
-    /// child's `T` is read on the resume edge; admitting the await here does
-    /// NOT admit it in arg / return / operand positions.
-    BindableValueLet,
-}
-
 type TraitMethodBindingKey = (Option<String>, u32, String, String);
 
 #[derive(Debug)]
@@ -7757,6 +7713,10 @@ struct LowerCtx {
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
+    checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
+    select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
+    checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,
+    fork_call_inputs: Option<fork::ForkCallInputs>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -7852,11 +7812,6 @@ struct LowerCtx {
     /// Used by `Expr::PostfixTry` to synthesize `return Err(e)` / `return None`
     /// with the enclosing body's return type rather than the scrutinee type.
     current_return_type: Option<ResolvedTy>,
-    /// The syntactic position of the expression about to be lowered, as it
-    /// bears on `await` legality (TI-4). Set immediately before lowering an
-    /// expression and consumed by `lower_expr` via `mem::replace(…, Other)` at
-    /// entry, so every recursive (sub-expression) call sees `Other`.
-    await_position: AwaitPosition,
     /// `Some((let_id, let_name))` while lowering the body of an actor-lambda
     /// that is the value of `let <let_name> = actor |..| { .. }`. The
     /// capture-strength classifier inside the body walk compares each
@@ -8564,6 +8519,10 @@ impl LowerCtx {
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
             result_return_coercions: tc_output.result_return_coercions.clone(),
             recovery_kinds: tc_output.recovery_kinds.clone(),
+            checked_call_effects: tc_output.suspension_effects.calls.clone(),
+            select_sources: tc_output.select_sources.clone(),
+            checked_fork_transfers: tc_output.suspension_effects.fork_transfers.clone(),
+            fork_call_inputs: None,
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -8581,7 +8540,6 @@ impl LowerCtx {
             scope_depth: 0,
             current_scope_id: ScopeId(0),
             current_return_type: None,
-            await_position: AwaitPosition::Other,
             current_actor_self: None,
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
             call_type_args: tc_output.call_type_args.clone(),
@@ -8738,6 +8696,16 @@ impl LowerCtx {
                 tc_output.resolved_expr_types.clone(),
             ),
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
+            std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
+            std::mem::replace(
+                &mut self.checked_fork_transfers,
+                tc_output.suspension_effects.fork_transfers.clone(),
+            ),
+            std::mem::take(&mut self.fork_call_inputs),
+            std::mem::replace(
+                &mut self.checked_call_effects,
+                tc_output.suspension_effects.calls.clone(),
+            ),
             std::mem::replace(
                 &mut self.record_init_type_args,
                 tc_output.record_init_type_args.clone(),
@@ -8761,6 +8729,10 @@ impl LowerCtx {
             self.expr_types,
             self.resolved_expr_types,
             self.recovery_kinds,
+            self.select_sources,
+            self.checked_fork_transfers,
+            self.fork_call_inputs,
+            self.checked_call_effects,
             self.record_init_type_args,
         ) = saved;
 
@@ -11112,8 +11084,7 @@ impl LowerCtx {
                     );
                 }
             }
-            HirExprKind::Call { callee, args, .. }
-            | HirExprKind::SpawnedCall { callee, args, .. } => {
+            HirExprKind::Call { callee, args, .. } => {
                 self.wrap_var_self_explicit_expr_returns(callee, receiver, abi_return_ty);
                 for arg in args {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
@@ -11188,10 +11159,7 @@ impl LowerCtx {
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirExprKind::TupleLiteral { elements }
-            | HirExprKind::ForkBatch {
-                children: elements, ..
-            } => {
+            HirExprKind::TupleLiteral { elements } => {
                 for elem in elements {
                     self.wrap_var_self_explicit_expr_returns(elem, receiver, abi_return_ty);
                 }
@@ -16347,7 +16315,6 @@ impl LowerCtx {
     }
 
     fn lower_expression_stmt_kind(&mut self, expr: &Spanned<Expr>) -> HirStmtKind {
-        self.await_position = AwaitPosition::Statement;
         HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
     }
 
@@ -16384,19 +16351,6 @@ impl LowerCtx {
         )
     }
 
-    /// True when the method call at `key` is a channel `recv` (the
-    /// checker-resolved descriptor family is `ChannelRecvLayout`). The
-    /// element type is carried
-    /// by the checker-resolved `Receiver<T>` receiver type, not by the
-    /// symbol name.
-    fn is_channel_recv_rewrite(&self, key: &SpanKey) -> bool {
-        matches!(
-            self.method_call_rewrites.get(key),
-            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
-                if d.family() == hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout
-        )
-    }
-
     /// True when the `await`'s inner expression is a suspending typed-stream
     /// `send()` over any describable `Sink<T>` — i.e. the checker-resolved
     /// descriptor's family classifies as [`AsyncSuspendKind::SinkSend`]
@@ -16413,24 +16367,6 @@ impl LowerCtx {
             Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
                 if d.is_async_suspending()
                     == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSend)
-        )
-    }
-
-    /// True when the `await`'s inner expression is a VALUE-returning task
-    /// handle — `await t` over a `Task<T>` with `T != ()`. Such an await is
-    /// bindable (`let x = await t`): it produces the child's `T`, read back on
-    /// the resume edge through `hew_task_get_result`. A `Task<()>` await is the
-    /// unit "wait until Done" form, which binds nothing and is statement-only;
-    /// this predicate excludes it so the unit reroute keeps its position rules.
-    ///
-    /// The element type rides the checker-resolved type of the inner operand
-    /// (the `Task<T>` binding), the same table `check_await_task_result`
-    /// consults — not a method-call rewrite descriptor, since `await t` over a
-    /// bare binding has no method call.
-    fn is_value_task_await(&self, inner_key: &SpanKey) -> bool {
-        matches!(
-            self.resolved_expr_types.get(inner_key),
-            Some(ResolvedTy::Task(inner)) if !matches!(**inner, ResolvedTy::Unit)
         )
     }
 
@@ -16475,85 +16411,6 @@ impl LowerCtx {
                         ),
                         span,
                     };
-                }
-                // `await` on task handles is only legal as a statement-expression
-                // inside a `scope{}` body. Actor asks are value-producing expressions
-                // (the reply lands in MIR's `reply_dest`) and are handled by the
-                // `Expr::Await` arm after typecheck's actor-dispatch classification.
-                if let Some(val_expr) = value {
-                    // A bindable `await` produces a value: an actor ask
-                    // (`Result<R, AskError>`) or a non-blocking connection read
-                    // (`bytes`/`string`, NEW-1). Both lower to a suspend carrier
-                    // whose resume edge binds the value.
-                    let is_bindable_await = match &val_expr.0 {
-                        Expr::Await(inner) => {
-                            // For the actor-ask dispatch check: unwrap a bare block
-                            // wrapping a single trailing method call
-                            // (`await { method() }`) to recover the method call's
-                            // span — the checker recorded `ActorMethodKind::Ask`
-                            // under the method call's span, not the surrounding
-                            // block's span.
-                            //
-                            // All other side-table checks (conn_await_reads,
-                            // listener_await_accepts, stream/channel recv) use the
-                            // ORIGINAL `inner.1` span, matching the key the checker
-                            // recorded and the key the corresponding Expr::Await
-                            // lowering arms use. Widening the unwrap to those tables
-                            // would create a guard/lowering span mismatch: the guard
-                            // would pass on the trailing-call key while the lowering
-                            // arm's lookup would find nothing (it uses the block's
-                            // span), leaving the await unbindable.
-                            let ask_key = {
-                                let ask_span = match &inner.0 {
-                                    Expr::Block(block)
-                                        if block.stmts.is_empty()
-                                            && block.trailing_expr.as_deref().is_some_and(
-                                                |(e, _)| matches!(e, Expr::MethodCall { .. }),
-                                            ) =>
-                                    {
-                                        &block.trailing_expr.as_deref().unwrap().1
-                                    }
-                                    _ => &inner.1,
-                                };
-                                self.mk_key(ask_span)
-                            };
-                            let original_key = self.mk_key(&inner.1);
-                            matches!(
-                                self.actor_method_dispatch.get(&ask_key),
-                                Some(ActorMethodKind::Ask(_, _))
-                            ) || self.conn_await_reads.contains_key(&original_key)
-                                || self.listener_await_accepts.contains(&original_key)
-                                || self.is_stream_recv_await(&original_key)
-                                || self.is_channel_recv_await(&original_key)
-                                // `let x = await t` over a value-returning task:
-                                // the child's `T` is read back on the resume edge.
-                                || self.is_value_task_await(&original_key)
-                        }
-                        _ => false,
-                    };
-                    if matches!(&val_expr.0, Expr::Await(_)) && !is_bindable_await {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            val_expr.1.clone(),
-                            "`await` cannot be used as a let-value; \
-                             only actor ask awaits and `await conn.read()` \
-                             produce a bindable value",
-                        ));
-                        let name = self
-                            .pattern_name(pattern)
-                            .unwrap_or_else(|| "_".to_string());
-                        let binding_ty = ty
-                            .as_ref()
-                            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-                        let binding = self.bind(name, binding_ty, false, pattern.1.clone());
-                        let unsupported =
-                            self.unsupported_expr(val_expr.1.clone(), "`await` in let-value");
-                        return HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Let(binding, Some(unsupported)),
-                            span,
-                        };
-                    }
                 }
                 if let (Pattern::Wildcard, Some(value_expr)) = (&pattern.0, value.as_ref()) {
                     return HirStmt {
@@ -16614,15 +16471,6 @@ impl LowerCtx {
                         span,
                     };
                 }
-                // A `let x = await t` over a value-returning task is a bindable
-                // let-value. Flag the position so the `Expr::Await` arm admits
-                // it (the position is consumed atomically at `lower_expr` entry,
-                // so only this direct await sees it — not nested sub-expressions).
-                if let Some((Expr::Await(inner), _)) = value.as_ref() {
-                    if self.is_value_task_await(&self.mk_key(&inner.1)) {
-                        self.await_position = AwaitPosition::BindableValueLet;
-                    }
-                }
                 let value = value
                     .as_ref()
                     .map(|expr| self.lower_expr(expr, IntentKind::Consume));
@@ -16669,6 +16517,7 @@ impl LowerCtx {
             }
             Stmt::Expression(expr) => self.lower_expression_stmt_kind(expr),
             Stmt::Return(value) => {
+                let return_ty = self.current_return_type.clone().unwrap_or(return_ty);
                 if let Some(value) = value {
                     let expr = self.lower_expr(value, IntentKind::Consume);
                     let expr = self.apply_result_return_coercion(expr, &span);
@@ -18217,15 +18066,10 @@ impl LowerCtx {
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
     fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        // Consume the await-position atomically. Every recursive call to
-        // `lower_expr` (for arguments, operands, return values, block tails,
-        // etc.) therefore sees `AwaitPosition::Other`. Only the
-        // `Stmt::Expression` arm (Statement) and the `Stmt::Let` bindable path
-        // (BindableValueLet) set a non-Other position immediately before
-        // calling us.
-        let await_position = std::mem::replace(&mut self.await_position, AwaitPosition::Other);
-        let in_stmt_position = await_position == AwaitPosition::Statement;
         let span = expr.1.clone();
+        if let Some(input) = self.fork_input(&span, intent) {
+            return input;
+        }
         // `self.count` inside an actor body names the state binding `count`.
         // The checker resolved the projection to that binding and published the
         // span, so rewrite the receiver spelling to the bare name and lower it
@@ -19130,26 +18974,14 @@ impl LowerCtx {
                     let Ok(output_ty) = ResolvedTy::from_ty(output) else {
                         return self.unsupported_expr(span, "fork batch result type is unresolved");
                     };
-                    let task_ty = ResolvedTy::Task(Box::new(output_ty));
-                    let children = branches
-                        .iter()
-                        .map(|child| self.lower_spawned_call(child))
-                        .collect();
-                    (
-                        HirExprKind::ForkBatch {
-                            children,
-                            task_ty: task_ty.clone(),
-                        },
-                        task_ty,
-                    )
+                    let batch = self.lower_fork_batch(branches, output_ty, span.clone());
+                    (batch.kind, batch.ty)
                 } else {
-                    let spawned = self.lower_spawned_call(expr);
-                    if let Some(type_args) = self.call_site_type_args.remove(&spawned.site) {
-                        self.call_site_type_args.insert(site, type_args);
-                    }
-                    (spawned.kind, spawned.ty)
+                    let child = self.lower_fork_invocation(expr);
+                    (child.kind, child.ty)
                 }
             }
+
             Expr::ForkBlock { body } => {
                 let checker_key = self.mk_key(&span);
                 let Some(Ty::Task(output)) = self.expr_types.get(&checker_key) else {
@@ -19323,167 +19155,20 @@ impl LowerCtx {
                 // `SuspendingStreamSend` suspends on a full ring. Statement
                 // position only (unit value), like `await actor.close()`.
                 if self.is_stream_send_await(&self.mk_key(&inner.1)) {
-                    if !in_stmt_position {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            span.clone(),
-                            "`await sink.send(x)` is only legal as a statement-expression in v0.5",
-                        ));
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site: self.ids.site(),
-                            value_class: ValueClass::BitCopy,
-                            ty: ResolvedTy::Unit,
-                            intent,
-                            kind: HirExprKind::Unsupported(
-                                "`await sink.send(x)` out of position".to_string(),
-                            ),
-                            span,
-                        };
-                    }
                     let source = self.lower_expr(inner, intent);
                     return self.subsumed_value(site, &span, intent, source);
-                }
-                // Unwrap a bare block wrapping a single trailing method call
-                // (`await { method() }`) to recover the effective inner expression
-                // and its span for the dispatch-map lookup.  The checker recorded
-                // the `ActorMethodKind::Ask` entry under the method call's span,
-                // not the surrounding block's span.
-                let (effective_inner_expr, effective_inner_span): (&Spanned<Expr>, &Span) =
-                    match &inner.0 {
-                        Expr::Block(block)
-                            if block.stmts.is_empty()
-                                && block
-                                    .trailing_expr
-                                    .as_deref()
-                                    .is_some_and(|(e, _)| matches!(e, Expr::MethodCall { .. })) =>
-                        {
-                            let trailing = block.trailing_expr.as_deref().unwrap();
-                            (trailing, &trailing.1)
-                        }
-                        _ => (inner, &inner.1),
-                    };
-
-                if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
-                    .actor_method_dispatch
-                    .get(&self.mk_key(effective_inner_span))
-                    .cloned()
-                {
-                    // Lower the inner ask expression (type = raw reply_ty) then
-                    // upgrade its HIR type to `Result<reply_ty, AskError>` so
-                    // that downstream HIR consumers (PostfixTry, MIR lowering)
-                    // see the unified result type.  The MIR `lower_actor_ask`
-                    // reads `expr.ty` to allocate the `result_dest` slot.
-                    let ask_error_ty =
-                        hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
-                            .expect("generated builtin enum catalog must contain AskError");
-                    let result_ty = match ResolvedTy::from_ty(&reply_ty) {
-                        Ok(r) => ResolvedTy::Named {
-                            name: "Result".to_string(),
-                            // Owner-qualify the reply record identity to the
-                            // asked actor's declaring module when it collides,
-                            // so the `Result<reply, AskError>` layout field and
-                            // the qualified handler-return value the ask
-                            // produces agree (#2208).
-                            args: vec![
-                                Self::actor_module_short_of_method_id(&method_id).map_or_else(
-                                    || r.clone(),
-                                    |module_short| {
-                                        self.qualify_colliding_module_record_ty(&r, module_short)
-                                    },
-                                ),
-                                ask_error_ty,
-                            ],
-                            builtin: Some(BuiltinType::Result),
-                            is_opaque: false,
-                        },
-                        Err(_) => {
-                            // Fallback: return raw expr if reply_ty doesn't resolve;
-                            // the checker already emitted an error in this case.
-                            let source = self.lower_expr(inner, intent);
-                            return self.subsumed_value(site, &span, intent, source);
-                        }
-                    };
-                    // Register the `Result<reply_ty, AskError>` instantiation at
-                    // the ask site itself, independent of surrounding context.
-                    // Local asks usually get the layout registered by their
-                    // consumer (match scrutinee, `let ?` binding, return-type
-                    // walk), but an IMPORTED actor's ask has no such guarantee:
-                    // without this seed the importing crate's
-                    // `enum_layout_registry` lacks `Result$$<reply>$AskError`
-                    // and codegen-front fails closed (registration-mismatch).
-                    // The registry dedups by `EnumMonoKey`, so the double
-                    // registration on the local path is a no-op. Mirrors the
-                    // `ResolvedImplCall` / `RewriteToFunction` /
-                    // `RemoteActorAsk` sibling arms.
-                    self.try_register_enum_instantiation_ty(&result_ty, &span);
-                    let ask_expr = self.lower_expr(effective_inner_expr, intent);
-                    let HirExpr { kind: ask_kind, .. } = ask_expr;
-                    if let HirExprKind::ActorAsk {
-                        receiver,
-                        method_id,
-                        args,
-                        reply_ty,
-                        deadline_ns,
-                    } = ask_kind
-                    {
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ActorAsk {
-                                receiver,
-                                method_id,
-                                args,
-                                reply_ty,
-                                deadline_ns,
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "await actor ask".to_string(),
-                            reason: "checker actor dispatch did not lower to one direct ActorAsk"
-                                .to_string(),
-                        },
-                        span.clone(),
-                        "await actor ask must retain its consumed method-call occurrence",
-                    ));
-                    return self.unsupported_expr(span, "malformed awaited actor ask");
                 }
                 // `await actor.close()` — lambda-actor (Duplex) close is awaitable
                 // in statement position at any scope depth.  The checker-resolved
                 // descriptor's family classifies as `AsyncSuspendKind::DuplexClose`
                 // (`hew_duplex_close`); the `await` is stripped and the inner close
-                // call is lowered directly, matching the existing
-                // `ActorMethodKind::Ask` path above.
+                // call is lowered directly.
                 if matches!(
                     self.method_call_rewrites.get(&self.mk_key(&inner.1)),
                     Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
                         if d.is_async_suspending()
                             == Some(hew_types::runtime_call::AsyncSuspendKind::DuplexClose)
                 ) {
-                    if !in_stmt_position {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            span.clone(),
-                            "`await actor.close()` is only legal as a statement-expression in v0.5",
-                        ));
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site: self.ids.site(),
-                            value_class: ValueClass::BitCopy,
-                            ty: ResolvedTy::Unit,
-                            intent,
-                            kind: HirExprKind::Unsupported(
-                                "`await actor.close()` out of position".to_string(),
-                            ),
-                            span,
-                        };
-                    }
                     let source = self.lower_expr(inner, intent);
                     return self.subsumed_value(site, &span, intent, source);
                 }
@@ -19498,6 +19183,12 @@ impl LowerCtx {
                             },
                             output_ty,
                         )
+                    }
+                    _ if self
+                        .checked_call_effects
+                        .contains_key(&self.mk_key(&inner.1)) =>
+                    {
+                        return self.subsumed_value(site, &span, intent, inner_hir);
                     }
                     found_ty => {
                         // The operand is not a Task<T> — reject with AwaitNonTask.
@@ -20465,17 +20156,61 @@ impl LowerCtx {
         inner
     }
 
+    /// Preserve the checked call result separately from the raw actor reply ABI.
+    fn checked_actor_ask_result_ty(&mut self, span: &Span, method_id: &str) -> Option<ResolvedTy> {
+        let result = self
+            .expr_types
+            .get(&self.mk_key(span))
+            .ok_or_else(|| "missing checker expression type".to_string())
+            .and_then(|ty| ResolvedTy::from_ty(ty).map_err(|err| err.to_string()));
+        let result_ty = match result {
+            Ok(
+                ty @ ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Result),
+                    ..
+                },
+            ) => ty,
+            Ok(ty) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor ask result".to_string(),
+                        reason: format!("expected checked Result, found {ty}"),
+                    },
+                    span.clone(),
+                    "actor ask calls must preserve their checked error result",
+                ));
+                return None;
+            }
+            Err(reason) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor ask result".to_string(),
+                        reason,
+                    },
+                    span.clone(),
+                    "actor ask result must cross the checker/HIR boundary exactly",
+                ));
+                return None;
+            }
+        };
+        let result_ty = Self::actor_module_short_of_method_id(method_id).map_or_else(
+            || result_ty.clone(),
+            |module| self.qualify_colliding_module_record_ty(&result_ty, module),
+        );
+        self.try_register_enum_instantiation_ty(&result_ty, span);
+        Some(result_ty)
+    }
+
     /// Derive the HIR binding type for a select arm's named pattern.
     ///
-    /// For `ActorAsk` arms the reply type comes from the checker-authoritative
-    /// `actor_method_dispatch` table keyed on the arm source expression's span.
+    /// For `ActorAsk` arms the full result comes from the checked call type,
+    /// keyed on the arm source expression's span.
     /// The source expression's checker-resolved builtin discriminator is the
     /// sole authority for channel and stream carriers. A malformed carrier
     /// returns `None` after recording a boundary diagnostic; it must never be
     /// represented as `Unit`, because MIR would otherwise treat that placeholder
     /// as a real runtime layout witness.
     #[expect(
-        clippy::too_many_lines,
         clippy::single_match_else,
         reason = "each sealed select carrier has a distinct exact-type diagnostic"
     )]
@@ -20491,37 +20226,9 @@ impl LowerCtx {
                     .get(&self.mk_key(source_span))
                     .cloned()
                 {
-                    Some(ActorMethodKind::Ask(_, reply_ty)) => {
-                        // W4.047 P1.2: the actor-ask reply type comes from the
-                        // checker-authoritative `actor_method_dispatch` table
-                        // (materialized at the checker boundary), not from
-                        // `expr_types`. The fail-open `.unwrap_or(Unit)` below
-                        // would silently install the *wrong* reply-channel ABI
-                        // if `from_ty` ever failed. Prove it cannot for a
-                        // concrete reply type: a conversion failure is only
-                        // admissible for a covered generic var (resolved at
-                        // monomorphization). No behaviour change.
-                        debug_assert!(
-                            ResolvedTy::from_ty(&reply_ty).is_ok() || reply_ty.has_inference_var(),
-                            "W4.047 totality: actor-ask reply type {reply_ty:?} fails \
-                             ResolvedTy::from_ty without being a covered generic var — \
-                             the fail-open .unwrap_or(Unit) would install the wrong \
-                             reply-channel ABI"
-                        );
-                        match ResolvedTy::from_ty(&reply_ty) {
-                            Ok(ty) => Some(ty),
-                            Err(err) => {
-                                self.diagnostics.push(HirDiagnostic::new(
-                                    HirDiagnosticKind::CheckerBoundaryViolation {
-                                        name: "select actor-ask reply".to_string(),
-                                        reason: err.to_string(),
-                                    },
-                                    source_span.clone(),
-                                    "select reply type must cross the checker/HIR boundary exactly",
-                                ));
-                                None
-                            }
-                        }
+                    Some(ActorMethodKind::Ask(method_id, _)) => {
+                        let method_id = self.qualify_imported_actor_method_id(method_id);
+                        self.checked_actor_ask_result_ty(source_span, &method_id)
                     }
                     // A `receive gen fn` dispatch never reaches a `select`
                     // ActorAsk arm — `for await` is its only consumer surface.
@@ -20617,19 +20324,8 @@ impl LowerCtx {
         }
     }
 
-    /// Lower a parsed `select { ... }` expression to HIR.
-    ///
-    /// Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive:
-    ///   1. `pat from next(<stream-expr>) => body`
-    ///   2. `pat from <actor-expr>.<method>(<args>) => body`   (actor ask)
-    ///   3. `pat from await <task-expr> => body`
-    ///   4. `after <duration-expr> => body`                    (timer)
-    ///
-    /// Any other arm source shape is rejected with
-    /// `SelectArmNotSealedForm`. Body-type disagreement is rejected
-    /// with `SelectArmTypeMismatch`. Empty selects and multiple-after
-    /// arms are rejected with `SelectNoArms` and
-    /// `SelectMultipleAfterArms` respectively.
+    /// Lower selection using the checker's source-arm classifications.
+    /// Preparation preserves task handles; the selected edge consumes its task.
     #[allow(
         clippy::too_many_lines,
         reason = "sealed select lowering keeps arm scope publication, binding, and result-type checks in one auditable pass"
@@ -20663,9 +20359,17 @@ impl LowerCtx {
         let mut expected_ty: Option<ResolvedTy> = None;
         let mut first_after_span: Option<std::ops::Range<usize>> = None;
 
-        for arm in arms {
+        let checked_sources = self.select_sources.get(&self.mk_key(&span)).cloned();
+        for (arm_index, arm) in arms.iter().enumerate() {
             let binding_name = self.pattern_name(&arm.binding);
-            let kind = self.recognize_sealed_arm_source(&arm.source);
+            let checked_source = checked_sources
+                .as_ref()
+                .and_then(|sources| sources.get(arm_index));
+            let kind = self.lower_checked_select_source(&arm.source, checked_source);
+            let binding_span = match &arm.source.0 {
+                Expr::Await(inner) => &inner.1,
+                _ => &arm.source.1,
+            };
             if matches!(kind, HirSelectArmKind::AfterTimer { .. }) {
                 if first_after_span.is_some() {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -20692,7 +20396,7 @@ impl LowerCtx {
             let previous_scope_id =
                 arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
             let binding_id = if let Some(ref name) = binding_name {
-                self.select_arm_binding_ty(&kind, &arm.source.1)
+                self.select_arm_binding_ty(&kind, binding_span)
                     .map(|binding_ty| {
                         self.bind(name.clone(), binding_ty, false, arm.binding.1.clone())
                             .id
@@ -21511,138 +21215,75 @@ impl LowerCtx {
         captures
     }
 
-    /// Recognise the sealed-form discriminator for a `select` arm
-    /// source expression. Emits a `SelectArmNotSealedForm` /
-    /// `SelectStreamNextSurface` / `SelectStreamNextArity` diagnostic
-    /// on miss and returns a placeholder `AfterTimer` arm kind (the
-    /// callers tolerate the placeholder because the diagnostic has
-    /// already been emitted; MIR lowering treats any select with HIR
-    /// diagnostics as fail-closed downstream).
-    fn recognize_sealed_arm_source(&mut self, source: &Spanned<Expr>) -> HirSelectArmKind {
-        let span = source.1.clone();
-        match &source.0 {
-            // Form 1: `next(<stream-expr>)` — a call where the callee
-            // is the bare identifier `next`. `next` is not a lexer
-            // keyword; the sealed-form discriminator is the callee
-            // name.
-            Expr::Call { function, args, .. } => {
-                if let Expr::Identifier(name) = &function.0 {
-                    if name == "next" {
-                        if args.len() != 1 {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::SelectStreamNextArity {
-                                    arg_count: args.len(),
-                                },
-                                span.clone(),
-                                "next(<stream>) takes exactly one argument",
-                            ));
-                            return HirSelectArmKind::StreamNext {
-                                stream: Box::new(
-                                    self.unsupported_expr(span, "stream-next arity mismatch"),
-                                ),
-                            };
-                        }
-                        let stream = self.lower_expr(args[0].expr(), IntentKind::Read);
-                        return HirSelectArmKind::StreamNext {
-                            stream: Box::new(stream),
-                        };
-                    }
-                }
-                // Some other function call — not a sealed form.
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SelectArmNotSealedForm {
-                        source_shape: "function call".into(),
-                    },
-                    span.clone(),
-                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
-                ));
-                HirSelectArmKind::StreamNext {
-                    stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
-                }
+    fn lower_checked_select_source(
+        &mut self,
+        source: &Spanned<Expr>,
+        checked: Option<&hew_types::check::CheckedSelectSource>,
+    ) -> HirSelectArmKind {
+        use hew_types::check::CheckedSelectSource;
+        // Retain the diagnostic for malformed synthetic trees containing an
+        // arm-position timer; parsed timers use the dedicated timeout clause.
+        if let Expr::Timeout { duration, .. } = &source.0 {
+            return HirSelectArmKind::AfterTimer {
+                duration: Box::new(self.lower_expr(duration, IntentKind::Read)),
+            };
+        }
+        let operand = match &source.0 {
+            Expr::Await(inner) => inner.as_ref(),
+            _ => source,
+        };
+        let key = self.mk_key(&operand.1);
+        match checked {
+            Some(CheckedSelectSource::TaskAwait {
+                operand: checked_key,
+            }) if checked_key == &key && matches!(source.0, Expr::Await(_)) => {
+                return HirSelectArmKind::TaskAwait {
+                    task: Box::new(self.lower_expr(operand, IntentKind::Read)),
+                };
             }
-            // Form 2: `<actor>.<method>(<args>)` — method call on an
-            // actor expression. Per HEW-SPEC-2026 §4.11.1 this is the
-            // actor-ask arm. `ask` is reserved as a future syntactic
-            // marker (see HEW-FUTURE) but is not lexer-recognised in
-            // edition 2026; the sealed-form discriminator is the
-            // method-call surface.
-            Expr::MethodCall {
-                receiver,
-                method,
-                args,
-            } => {
-                // NEW-4: `pat from rx.recv()` — a std/channel receive arm. The
-                // checker recorded the runtime rewrite (hew_channel_recv_layout)
-                // on this method-call span; recognise it as a ChannelRecv arm
-                // before the generic actor-ask interpretation. The element
-                // type rides the checker-resolved `Receiver<T>` receiver type.
-                if method == "recv" && self.is_channel_recv_rewrite(&self.mk_key(&span)) {
-                    let recv = self.lower_expr(receiver, IntentKind::Read);
-                    return HirSelectArmKind::ChannelRecv {
-                        receiver: Box::new(recv),
+            Some(CheckedSelectSource::ActorAsk { call }) if call == &key => {
+                if let Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                } = &operand.0
+                {
+                    let actor = self.lower_expr(receiver, IntentKind::Read);
+                    let args = args
+                        .iter()
+                        .map(|arg| {
+                            let arg = arg.expr();
+                            self.lower_expr(arg, self.actor_message_arg_intent(&arg.1))
+                        })
+                        .collect();
+                    return HirSelectArmKind::ActorAsk {
+                        actor: Box::new(actor),
+                        method: method.clone(),
+                        args,
                     };
                 }
-                let actor = self.lower_expr(receiver, IntentKind::Read);
-                // A select arm source is SEQUENTIAL setup: every arm's ask is
-                // issued before dispatch picks a winner, so an owned argument
-                // handed to two arms is a real double transfer. MIR lowers each
-                // arm's args through `lower_value_for_move`; stamp the matching
-                // intent so the dataflow checker sees the consume.
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| {
-                        let spanned = arg.expr();
-                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
-                    })
-                    .collect();
-                HirSelectArmKind::ActorAsk {
-                    actor: Box::new(actor),
-                    method: method.clone(),
-                    args: lowered_args,
+            }
+            Some(CheckedSelectSource::ChannelReceive { call }) if call == &key => {
+                if let Expr::MethodCall { receiver, .. } = &operand.0 {
+                    return HirSelectArmKind::ChannelRecv {
+                        receiver: Box::new(self.lower_expr(receiver, IntentKind::Read)),
+                    };
                 }
             }
-            // Form 3: `await <task-expr>` — explicit await keyword.
-            Expr::Await(task_expr) => {
-                let task = self.lower_expr(task_expr, IntentKind::Read);
-                HirSelectArmKind::TaskAwait {
-                    task: Box::new(task),
-                }
-            }
-            // Form 4 (arm-position): `after <duration>` written as an
-            // arm source rather than the dedicated `timeout` field.
-            // Recognised here so the `lower_select` multiple-after check
-            // can fire; the duplicate check in `lower_select` emits the
-            // diagnostic when this arm coexists with another after arm.
-            Expr::Timeout { duration, .. } => {
-                let dur = self.lower_expr(duration, IntentKind::Read);
-                HirSelectArmKind::AfterTimer {
-                    duration: Box::new(dur),
-                }
-            }
-            // Method-call dressed up as `stream.next()` — sealed
-            // surface is `next(stream)`. Diagnose specifically so the
-            // user can fix the form.
-            // (Already handled by the MethodCall arm above as a
-            // generic actor-ask. The dedicated diagnostic for the
-            // `.next()` shape would shadow the actor-ask recognition;
-            // we keep the more general actor-ask interpretation and
-            // rely on the SelectStreamNextSurface diagnostic only if
-            // we later choose to special-case it. For now, `s.next()`
-            // is recognised as an actor-ask of the `next` method on
-            // `s`, which is the lower-noise default.)
-            other => {
-                let shape = describe_select_source_shape(other);
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SelectArmNotSealedForm {
-                        source_shape: shape,
-                    },
-                    span.clone(),
-                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
-                ));
-                HirSelectArmKind::StreamNext {
-                    stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
-                }
-            }
+            _ => {}
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "select source".to_string(),
+                reason: "missing or inconsistent checked source-arm classification".to_string(),
+            },
+            source.1.clone(),
+            "select source requires checker-owned classification",
+        ));
+        HirSelectArmKind::TaskAwait {
+            task: Box::new(
+                self.unsupported_expr(source.1.clone(), "invalid checked select source"),
+            ),
         }
     }
 
@@ -23002,16 +22643,20 @@ impl LowerCtx {
                 );
             }
         };
-        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-        let field_access = self.make_expr(
-            HirExprKind::FieldAccess {
-                object: Box::new(lowered_receiver),
-                field: method.to_string(),
-            },
-            field_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
+        let field_access = if let Some(callee) = self.fork_field_callee(&span) {
+            callee
+        } else {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            self.make_expr(
+                HirExprKind::FieldAccess {
+                    object: Box::new(lowered_receiver),
+                    field: method.to_string(),
+                },
+                field_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            )
+        };
         let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
         (
             HirExprKind::Call {
@@ -27093,6 +26738,13 @@ impl LowerCtx {
                 }
                 ActorMethodKind::Ask(method_id, reply_ty) => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
+                    let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id)
+                    else {
+                        return (
+                            HirExprKind::Unsupported("actor ask has no checked result".to_string()),
+                            ResolvedTy::Unit,
+                        );
+                    };
                     match ResolvedTy::from_ty(&reply_ty) {
                         Ok(reply_ty) => {
                             // Owner-qualify the ask-reply record identity to the
@@ -27122,7 +26774,7 @@ impl LowerCtx {
                                     reply_ty: reply_ty.clone(),
                                     deadline_ns: None,
                                 },
-                                reply_ty,
+                                result_ty,
                             )
                         }
                         Err(err) => {
@@ -29917,11 +29569,20 @@ impl LowerCtx {
         );
         if is_local_ask {
             let mut ask_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ActorAsk {
-                deadline_ns: slot, ..
-            } = &mut ask_expr.kind
-            {
-                *slot = Some(deadline_ns);
+            let mut ask_source = &mut ask_expr;
+            let updated = loop {
+                match &mut ask_source.kind {
+                    HirExprKind::SubsumedValue { source } => ask_source = source,
+                    HirExprKind::ActorAsk {
+                        deadline_ns: slot, ..
+                    } => {
+                        *slot = Some(deadline_ns);
+                        break true;
+                    }
+                    _ => break false,
+                }
+            };
+            if updated {
                 return ask_expr;
             }
             // The await lowered to something other than a local `ActorAsk` (e.g. a
@@ -30843,156 +30504,6 @@ impl LowerCtx {
             nested,
         })
     }
-
-    /// Lower a checked call as a task-producing expression.
-    fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
-        let span = expr.1.clone();
-        if let Expr::Call { function, args, .. } = &expr.0 {
-            self.validate_task_spawn_call(function, args, &span);
-        }
-
-        let call_hir = self.lower_expr(expr, IntentKind::Consume);
-        let call_site = call_hir.site;
-
-        let explicit_type_args = match &expr.0 {
-            Expr::Call {
-                type_args: Some(type_args),
-                ..
-            } => Some(type_args.clone()),
-            _ => None,
-        };
-        let call_ret_ty = call_hir.ty.clone();
-
-        let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
-
-        let HirExprKind::Call { callee, args, .. } = call_hir.kind else {
-            // Should not happen: caller verified the expression is a Call.
-            return self.unsupported_expr(span, "lower_spawned_call on non-call");
-        };
-
-        let spawned_site = self.ids.site();
-        let type_args = self
-            .call_site_type_args
-            .get(&call_site)
-            .cloned()
-            .or_else(|| {
-                explicit_type_args.map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
-            });
-        if let Some(type_args) = type_args {
-            self.call_site_type_args.insert(spawned_site, type_args);
-        }
-
-        HirExpr {
-            node: self.ids.node(),
-            site: spawned_site,
-            value_class: ValueClass::Linear, // Task handles are linear (consume-once).
-            ty: task_ty.clone(),
-            intent: IntentKind::Consume,
-            kind: HirExprKind::SpawnedCall {
-                callee,
-                args,
-                task_ty,
-            },
-            span,
-        }
-    }
-
-    /// Validate executable task callees against checked call and capture facts.
-    fn validate_task_spawn_call(
-        &mut self,
-        function: &Spanned<Expr>,
-        args: &[CallArg],
-        span: &Span,
-    ) {
-        match &function.0 {
-            Expr::Identifier(name) => {
-                // The checker already selected the exact source declaration
-                // for this call. `fn_registry` is a linker-symbol index and
-                // therefore cannot answer whether a lexical `mod::worker`
-                // denotes a direct spawnable function without leaf recovery.
-                if !matches!(self.ordinary_call_target(span), Some(CallTarget::User(_))) {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        format!("spawned callee '{name}' is not a direct module function"),
-                    ));
-                }
-            }
-            Expr::Lambda {
-                params, body: _, ..
-            } => {
-                // Spawned closure literals stay nullary: the arg-bearing lift
-                // covers direct-fn callees only (captures already carry the
-                // closure's environment; call-site args have no slot).
-                if !args.is_empty() {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        "spawned closure call must have zero arguments".to_string(),
-                    ));
-                }
-                // FC-P1-A1 Blocker 3: Validate closure signature
-                // (1) Zero params
-                if !params.is_empty() {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        "spawned closure must have zero parameters".to_string(),
-                    ));
-                }
-
-                // (2) Validate return type is unit
-                // The closure body type will be checked after lowering via checker expr_types
-                // For now, we rely on the inline checks at lowering time
-
-                // (3) Check captures are Send.
-                let closure_span_key = self.mk_key(&function.1);
-                if let Some(captures) = self.closure_capture_facts.get(&closure_span_key) {
-                    for capture in captures {
-                        if !capture.is_send {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::SpawnedClosureNonSendCapture {
-                                    site: self.ids.site(),
-                                    capture_name: capture.name.clone(),
-                                },
-                                span.clone(),
-                                format!(
-                                    "spawned closure captures non-Send value '{}'",
-                                    capture.name
-                                ),
-                            ));
-                        }
-                    }
-                } else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "closure literal".to_string(),
-                            reason: "closure_capture_facts has no record for closure literal span"
-                                .to_string(),
-                        },
-                        span.clone(),
-                        "closure literal reached HIR without checker capture metadata",
-                    ));
-                }
-            }
-            _ => {
-                // Indirect call (variable, field access, etc.)
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                        site: self.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned callee must be a direct function or closure literal".to_string(),
-                ));
-            }
-        }
-    }
 }
 
 // ── Lambda-actor capture walker ─────────────────────────────────────────────
@@ -31100,10 +30611,7 @@ fn collect_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
             }
@@ -31112,7 +30620,7 @@ fn collect_captures_walk(
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(arg, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_captures_walk(callee, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -31424,10 +30932,7 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
             }
@@ -31436,7 +30941,7 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -32247,15 +31752,12 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_hir_emitted_events_walk(elem, event_names, out);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
@@ -32976,67 +32478,6 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
     }
 }
 
-// ── FC-P1-A1: Task/fork/deadline gates ───────────────────────────────────────
-
-/// FC-P1-A1 HIR pre-pass gate — task/fork/deadline construct validation.
-/// Walks the entire program AST looking for `SpawnedCall`, `ForkChild`, `ForkBlock`,
-/// `ScopeDeadline`, and `AwaitTask` expressions. Emits fail-closed diagnostics for
-/// unsupported shapes before MIR lowering (moving the gates up from the 10 P1
-/// sites at hew-mir/src/lower.rs:7623-7871).
-fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
-    for (item, _span) in &program.items {
-        match item {
-            Item::Function(fn_decl) => {
-                scan_block_for_task_gates(&fn_decl.body, ctx, program);
-            }
-            Item::Actor(actor_decl) => {
-                if let Some(init) = &actor_decl.init {
-                    scan_block_for_task_gates(&init.body, ctx, program);
-                }
-                for recv_fn in &actor_decl.receive_fns {
-                    scan_block_for_task_gates(&recv_fn.body, ctx, program);
-                }
-                for method in &actor_decl.methods {
-                    scan_block_for_task_gates(&method.body, ctx, program);
-                }
-            }
-            Item::Impl(impl_decl) => {
-                for method in &impl_decl.methods {
-                    scan_block_for_task_gates(&method.body, ctx, program);
-                }
-            }
-            // A242 invariant: HIR pre-pass walkers that visit user expression
-            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
-            // FOUR Item::Machine positions:
-            //   1. each state's `entry` block
-            //   2. each state's `exit` block
-            //   3. each transition's `guard` expression (if any)
-            //   4. each transition's `body` expression (action)
-            // Partial coverage (e.g. transitions but not states) is a BLOCK in
-            // the independent review.
-            Item::Machine(machine) => {
-                for state in &machine.states {
-                    if let Some(entry) = &state.entry {
-                        scan_block_for_task_gates(entry, ctx, program);
-                    }
-                    if let Some(exit) = &state.exit {
-                        scan_block_for_task_gates(exit, ctx, program);
-                    }
-                }
-                for transition in &machine.transitions {
-                    if let Some(guard) = &transition.guard {
-                        scan_expr_for_task_gates(&guard.0, &guard.1, ctx, program);
-                    }
-                    scan_expr_for_task_gates(&transition.body.0, &transition.body.1, ctx, program);
-                }
-            }
-            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
-            // do not carry user expression bodies with task spawns.
-            _ => {}
-        }
-    }
-}
-
 // ── FC-P1-A3: Supervisor spawn args gate ─────────────────────────────────────
 
 /// Pre-pass that rejects `spawn AppSupervisor(...)` with non-empty init args.
@@ -33222,405 +32663,6 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
                     &mut ctx.diagnostics,
                 );
             }
-        }
-    }
-}
-
-fn scan_block_for_task_gates(
-    block: &hew_parser::ast::Block,
-    ctx: &mut LowerCtx,
-    program: &Program,
-) {
-    for (stmt, _) in &block.stmts {
-        scan_stmt_for_task_gates(stmt, ctx, program);
-    }
-    if let Some(trailing) = &block.trailing_expr {
-        scan_expr_for_task_gates(&trailing.0, &trailing.1, ctx, program);
-    }
-}
-
-#[allow(
-    clippy::match_same_arms,
-    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
-)]
-fn scan_stmt_for_task_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut LowerCtx, program: &Program) {
-    match stmt {
-        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
-            scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-        }
-        Stmt::Assign { target, value, .. } => {
-            scan_expr_for_task_gates(&target.0, &target.1, ctx, program);
-            scan_expr_for_task_gates(&value.0, &value.1, ctx, program);
-        }
-        Stmt::Expression(e) => {
-            scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-        }
-        Stmt::Return(Some(e)) => {
-            scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-        }
-        Stmt::Defer(e) => {
-            scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-        }
-        Stmt::Break { value: Some(v), .. } => {
-            scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-        }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            scan_expr_for_task_gates(&condition.0, &condition.1, ctx, program);
-            scan_block_for_task_gates(then_block, ctx, program);
-            if let Some(eb) = else_block {
-                scan_else_block_for_task_gates(eb, ctx, program);
-            }
-        }
-        Stmt::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-            if let Some(eb) = else_body {
-                scan_block_for_task_gates(eb, ctx, program);
-            }
-        }
-        Stmt::Match { scrutinee, arms } => {
-            scan_expr_for_task_gates(&scrutinee.0, &scrutinee.1, ctx, program);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_expr_for_task_gates(&g.0, &g.1, ctx, program);
-                }
-                scan_expr_for_task_gates(&arm.body.0, &arm.body.1, ctx, program);
-            }
-        }
-        Stmt::Loop { body, .. } => scan_block_for_task_gates(body, ctx, program),
-        Stmt::For { iterable, body, .. } => {
-            scan_expr_for_task_gates(&iterable.0, &iterable.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            scan_expr_for_task_gates(&condition.0, &condition.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and any other leaf
-        // statements carry no sub-expression to scan.
-        _ => {}
-    }
-}
-
-fn scan_else_block_for_task_gates(
-    eb: &hew_parser::ast::ElseBlock,
-    ctx: &mut LowerCtx,
-    program: &Program,
-) {
-    if let Some(stmt) = &eb.if_stmt {
-        scan_stmt_for_task_gates(&stmt.0, ctx, program);
-    }
-    if let Some(b) = &eb.block {
-        scan_block_for_task_gates(b, ctx, program);
-    }
-}
-
-/// Recursively walk an expression tree looking for task/fork/deadline constructs.
-/// Mirrors the shape of `scan_expr_for_blocking_recv`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
-)]
-fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, program: &Program) {
-    match expr {
-        // FC-P1-A1 sites: spawn/fork child and fork block
-        Expr::ForkChild { expr: child, .. } => {
-            check_fork_child_shape(child, span, ctx);
-            scan_expr_for_task_gates(&child.0, &child.1, ctx, program);
-        }
-        Expr::ForkBlock { body } => {
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        Expr::ScopeDeadline { duration, body } => {
-            scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        // Recursive scanning for all other expression variants
-        Expr::MethodCall { receiver, args, .. } => {
-            scan_expr_for_task_gates(&receiver.0, &receiver.1, ctx, program);
-            for arg in args {
-                scan_expr_for_task_gates(&arg.expr().0, &arg.expr().1, ctx, program);
-            }
-        }
-        Expr::Call { function, args, .. } => {
-            scan_expr_for_task_gates(&function.0, &function.1, ctx, program);
-            for arg in args {
-                scan_expr_for_task_gates(&arg.expr().0, &arg.expr().1, ctx, program);
-            }
-        }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
-        | Expr::Handle {
-            operand: left,
-            body: right,
-            ..
-        } => {
-            scan_expr_for_task_gates(&left.0, &left.1, ctx, program);
-            scan_expr_for_task_gates(&right.0, &right.1, ctx, program);
-        }
-        Expr::Unary { operand, .. } => {
-            scan_expr_for_task_gates(&operand.0, &operand.1, ctx, program);
-        }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
-            for e in es {
-                scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-            }
-        }
-        Expr::ArrayRepeat { value, count } => {
-            scan_expr_for_task_gates(&value.0, &value.1, ctx, program);
-            scan_expr_for_task_gates(&count.0, &count.1, ctx, program);
-        }
-        Expr::Block(b) | Expr::Scope { body: b } | Expr::GenBlock { body: b } => {
-            scan_block_for_task_gates(b, ctx, program);
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-            ..
-        } => {
-            scan_expr_for_task_gates(&condition.0, &condition.1, ctx, program);
-            scan_expr_for_task_gates(&then_block.0, &then_block.1, ctx, program);
-            if let Some(e) = else_block {
-                scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-            }
-        }
-        Expr::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-            if let Some(b) = else_body {
-                scan_block_for_task_gates(b, ctx, program);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            scan_expr_for_task_gates(&scrutinee.0, &scrutinee.1, ctx, program);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_expr_for_task_gates(&g.0, &g.1, ctx, program);
-                }
-                scan_expr_for_task_gates(&arm.body.0, &arm.body.1, ctx, program);
-            }
-        }
-        Expr::Lambda { body, .. } => {
-            // Check if this lambda is being spawned (will be checked at call site)
-            // Recursively scan the body
-            scan_expr_for_task_gates(&body.0, &body.1, ctx, program);
-        }
-        Expr::SpawnLambdaActor { body, .. } => {
-            scan_expr_for_task_gates(&body.0, &body.1, ctx, program);
-        }
-        Expr::Spawn { target, args, .. } => {
-            scan_expr_for_task_gates(&target.0, &target.1, ctx, program);
-            for (_, v) in args {
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-        }
-        Expr::Cast { expr, .. } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-        }
-        Expr::StructInit { fields, base, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-            if let Some(b) = base {
-                scan_expr_for_task_gates(&b.0, &b.1, ctx, program);
-            }
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                scan_expr_for_task_gates(&k.0, &k.1, ctx, program);
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e)
-                | hew_parser::ast::StringPart::StructuralExpr(e) = part
-                {
-                    scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-                }
-            }
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms {
-                scan_expr_for_task_gates(&arm.source.0, &arm.source.1, ctx, program);
-                scan_expr_for_task_gates(&arm.body.0, &arm.body.1, ctx, program);
-            }
-            if let Some(t) = timeout {
-                scan_expr_for_task_gates(&t.duration.0, &t.duration.1, ctx, program);
-                scan_expr_for_task_gates(&t.body.0, &t.body.1, ctx, program);
-            }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
-        }
-        Expr::UnsafeBlock(b) => scan_block_for_task_gates(b, ctx, program),
-        // `await object`, `object.field`, and `object?` all just recurse into
-        // their single operand — the value-task await gate moved into HIR
-        // lowering, so the await scan no longer carries a dedicated check.
-        Expr::Await(object) | Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) => {
-            scan_expr_for_task_gates(&object.0, &object.1, ctx, program);
-        }
-        Expr::Index { object, index } => {
-            scan_expr_for_task_gates(&object.0, &object.1, ctx, program);
-            scan_expr_for_task_gates(&index.0, &index.1, ctx, program);
-        }
-        Expr::Is { lhs, rhs } => {
-            scan_expr_for_task_gates(&lhs.0, &lhs.1, ctx, program);
-            scan_expr_for_task_gates(&rhs.0, &rhs.1, ctx, program);
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                scan_expr_for_task_gates(&s.0, &s.1, ctx, program);
-            }
-            if let Some(e) = end {
-                scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-            }
-        }
-        Expr::Yield(Some(e)) => scan_expr_for_task_gates(&e.0, &e.1, ctx, program),
-        Expr::MachineEmit { fields, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-        }
-        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
-        // without sub-expressions: nothing to scan.
-        _ => {}
-    }
-}
-
-/// Check fork child (spawned call / fork child) expression shape.
-/// Sites: hew-mir/src/lower.rs:7623, 7641 (`TaskSpawn` signature/callee)
-/// FC-P1-A1 Blocker 2: Also validates return type is unit.
-fn check_fork_child_shape(child: &Spanned<Expr>, span: &Span, ctx: &mut LowerCtx) {
-    if let Expr::Array(children) | Expr::Tuple(children) = &child.0 {
-        for child in children {
-            check_fork_child_shape(child, &child.1, ctx);
-        }
-        return;
-    }
-    let Expr::Call { function, args, .. } = &child.0 else {
-        // Fork child must be a call expression
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                site: ctx.ids.site(),
-            },
-            span.clone(),
-            "fork child must be a direct function call".to_string(),
-        ));
-        return;
-    };
-
-    // Check if it's a direct function or a lambda
-    match &function.0 {
-        Expr::Identifier(name) => {
-            // The call's checker-selected target carries the exact owner;
-            // never strip `mod::` to probe a leaf-keyed linker registry.
-            if !matches!(
-                ctx.ordinary_call_target(&child.1),
-                Some(CallTarget::User(_))
-            ) {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    format!("fork child callee '{name}' is not a direct module function"),
-                ));
-                return;
-            }
-            // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
-            // VALID at spawn time — see `lower_spawned_call` comment. The
-            // await-site gate (MIR :7871) handles non-unit results.
-            // Args are valid on direct-fn fork children: MIR transfers them
-            // through the fork-entry shim env; the per-arg type restriction
-            // is enforced fail-closed at the MIR spawn site.
-            let _ = args;
-        }
-        Expr::Lambda {
-            params, body: _, ..
-        } => {
-            // FC-P1-A1 Blocker 3: Check call args are empty
-            if !args.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned closure call must have zero arguments".to_string(),
-                ));
-            }
-            // Check lambda has zero params
-            if !params.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned closure must have zero parameters".to_string(),
-                ));
-            }
-            // FC-P1-A1 Blocker 3: Check closure return type is unit
-            // Note: Closure return type validation is deferred to inline lowering checks
-            // since expr_types may not be populated in all contexts (e.g., default TypeCheckOutput).
-            // The validate_task_spawn_call helper and inline lowering gates will catch this.
-
-            // FC-P1-A1 Blocker 3: Check closure captures are Send
-            let span_key = SpanKey::in_module(&function.1, ctx.current_module_idx);
-            if let Some(captures) = ctx.closure_capture_facts.get(&span_key) {
-                for capture in captures {
-                    if !capture.is_send {
-                        ctx.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::SpawnedClosureNonSendCapture {
-                                site: ctx.ids.site(),
-                                capture_name: capture.name.clone(),
-                            },
-                            span.clone(),
-                            format!("spawned closure captures non-Send value '{}'", capture.name),
-                        ));
-                    }
-                }
-            } else {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "closure literal".to_string(),
-                        reason: "closure_capture_facts has no record for closure literal span"
-                            .to_string(),
-                    },
-                    span.clone(),
-                    "closure literal reached HIR without checker capture metadata",
-                ));
-            }
-        }
-        _ => {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                    site: ctx.ids.site(),
-                },
-                span.clone(),
-                "fork child callee must be a direct function or closure".to_string(),
-            ));
         }
     }
 }
@@ -34668,10 +33710,7 @@ fn scan_expr_for_call_shape(
         | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 scan_expr_for_call_shape(elem, callable, diagnostics);
             }
@@ -34727,12 +33766,6 @@ fn scan_expr_for_call_shape(
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::GenBlock { body, .. } => {
             scan_block_for_call_shape(body, callable, diagnostics);
-        }
-        HirExprKind::SpawnedCall { callee, args, .. } => {
-            scan_expr_for_call_shape(callee, callable, diagnostics);
-            for a in args {
-                scan_expr_for_call_shape(a, callable, diagnostics);
-            }
         }
         HirExprKind::ScopeRecovery { scope, handler, .. } => {
             scan_expr_for_call_shape(scope, callable, diagnostics);
@@ -38626,8 +37659,8 @@ impl Widget {
             let p = spawn Pinger;
             let c = spawn Counter;
             let result = select {
-                reply from p.ping() => reply,
-                verdict from c.count() => verdict,
+                reply = await p.ping() => reply,
+                verdict = await c.count() => verdict,
             };
         }
     ";
@@ -38691,13 +37724,19 @@ impl Widget {
             lowered.diagnostics
         );
 
+        let diagnostics = crate::verify::verify_hir(&lowered.module);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let select_expr = main_select_expr(&lowered);
         let resolved = find_binding_ref_in_arm(select_expr, 0, "reply")
             .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
 
-        assert!(
-            matches!(resolved, ResolvedRef::Binding(_)),
-            "arm 0 body 'reply' must resolve to Binding, got {resolved:?}"
+        let HirExprKind::Select(select) = &select_expr.kind else {
+            panic!("expected select");
+        };
+        assert_eq!(
+            resolved,
+            &ResolvedRef::Binding(select.arms[0].binding_id.expect("reply binding")),
+            "the arm body must reference its own reply binding"
         );
     }
 
@@ -38716,8 +37755,8 @@ impl Widget {
                 let p = spawn Pinger;
                 let c = spawn Checker;
                 let result = select {
-                    reply from p.ping() => reply,
-                    _verdict from c.check() => reply,
+                    reply = await p.ping() => reply,
+                    _verdict = await c.check() => reply,
                 };
             }
         ";
@@ -38732,6 +37771,14 @@ impl Widget {
         // Type errors are expected (reply is unresolved in arm 1 context);
         // we proceed to HIR lowering regardless.
         let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "the out-of-scope reply must be rejected by the checker: {:?}",
+            tco.errors
+        );
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
@@ -38755,7 +37802,7 @@ impl Widget {
             fn main() {
                 let p = spawn Pinger;
                 let result = select {
-                    reply from p.ping() => reply,
+                    reply = await p.ping() => reply,
                 };
                 let late = reply;
             }
@@ -38769,6 +37816,14 @@ impl Widget {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "the out-of-scope reply must be rejected by the checker: {:?}",
+            tco.errors
+        );
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
@@ -38792,6 +37847,8 @@ impl Widget {
             lowered.diagnostics
         );
 
+        let diagnostics = crate::verify::verify_hir(&lowered.module);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let select_expr = main_select_expr(&lowered);
         let reply_ref = find_binding_ref_in_arm(select_expr, 0, "reply")
             .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
@@ -38805,10 +37862,44 @@ impl Widget {
             panic!("arm 1 'verdict' must be Binding, got {verdict_ref:?}");
         };
 
+        let HirExprKind::Select(select) = &select_expr.kind else {
+            panic!("expected select");
+        };
+        assert_eq!(Some(*reply_id), select.arms[0].binding_id);
+        assert_eq!(Some(*verdict_id), select.arms[1].binding_id);
         assert_ne!(
             reply_id, verdict_id,
             "distinct arm bindings must have distinct BindingIds"
         );
+    }
+
+    #[test]
+    fn select_sources_missing_or_stale_are_rejected() {
+        let (program, checked, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        for stale in [false, true] {
+            let mut damaged = checked.clone();
+            if stale {
+                // Both entries are valid actor asks, but belong to the other arm.
+                damaged
+                    .select_sources
+                    .values_mut()
+                    .next()
+                    .expect("checked select")
+                    .swap(0, 1);
+            } else {
+                damaged.select_sources.clear();
+            }
+            let output = lower_program(&program, &damaged, &ResolutionCtx, TargetArch::host());
+            assert!(output.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "select source"
+            )), "invalid select source facts must be rejected: {:?}", output.diagnostics);
+            assert!(
+                output.into_result().is_err(),
+                "invalid select source facts must make lowering fatal"
+            );
+        }
     }
 
     fn function_named<'a>(output: &'a LowerOutput, name: &str) -> &'a HirFn {
@@ -39728,57 +38819,14 @@ impl Widget {
         );
     }
 
-    /// Regression test: `await actor.close()` at the top level of a function
-    /// (`scope_depth` == 0) must NOT produce `AwaitOutOfPosition`.
-    ///
-    /// Before the fix, the HIR `Expr::Await` handler required `scope_depth > 0`
-    /// for all `await` expressions except `ActorMethodKind::Ask` dispatches.
-    /// Lambda-actor `close()` goes through `method_call_rewrites` (not
-    /// `actor_method_dispatch`), so it hit the `scope_depth` guard and emitted
-    /// `AwaitOutOfPosition` even when the `await` was a valid statement.
     #[test]
-    fn await_actor_close_outside_scope_block_is_accepted() {
-        let (_, _, lowered) = parse_typecheck_and_lower(
-            r"
-            fn main() {
-                let a = actor |x: i64| { };
-                await a.close();
-            }
-            ",
-        );
-        let await_out_of_position: Vec<_> = lowered
-            .diagnostics
-            .iter()
-            .filter(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition))
-            .collect();
-        assert!(
-            await_out_of_position.is_empty(),
-            "`await actor.close()` at function level must not produce AwaitOutOfPosition; \
-             got: {await_out_of_position:#?}"
-        );
-    }
-
-    /// `await actor.close()` must still be rejected in non-statement position
-    /// (e.g., as a let-value).
-    #[test]
-    fn await_actor_close_as_let_value_is_rejected() {
-        let (_, _, lowered) = parse_typecheck_and_lower(
-            r"
-            fn main() {
-                let a = actor |x: i64| { };
-                let _result = await a.close();
-            }
-            ",
-        );
-        assert!(
-            lowered
-                .diagnostics
-                .iter()
-                .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-            "`await actor.close()` as a let-value must produce AwaitOutOfPosition; \
-             diagnostics: {:#?}",
-            lowered.diagnostics
-        );
+    fn awaited_actor_close_produces_unit_in_value_and_statement_positions() {
+        for operation in ["await a.close();", "let value: () = await a.close();"] {
+            let source = format!("fn main() {{ let a = actor |x: i64| {{}}; {operation} }}");
+            let (_, checked, lowered) = parse_typecheck_and_lower(&source);
+            assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+            assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        }
     }
 
     // ─── Imported impl-method signature safety (cross-module lowering) ───

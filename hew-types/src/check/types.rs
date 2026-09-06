@@ -277,11 +277,27 @@ pub enum ResultReturnKind {
     Error,
 }
 
+/// Checked source for one select arm, stored in source-arm order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedSelectSource {
+    /// Preparation borrows this handle; only its winning edge consumes it.
+    TaskAwait {
+        operand: SpanKey,
+    },
+    ActorAsk {
+        call: SpanKey,
+    },
+    ChannelReceive {
+        call: SpanKey,
+    },
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
+    pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Checked local recovery semantics; HIR must consume this fact.
     pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub expr_types: HashMap<SpanKey, Ty>,
@@ -1382,6 +1398,7 @@ impl Default for TypeCheckOutput {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
@@ -3115,6 +3132,7 @@ pub struct Checker {
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    pub(super) select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
@@ -3903,6 +3921,7 @@ impl Checker {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,

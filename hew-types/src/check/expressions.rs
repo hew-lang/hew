@@ -565,14 +565,13 @@ impl Checker {
                 None,
                 span,
                 false,
+                false,
             ),
 
             // Await
             Expr::Await(inner) => {
-                // When the user writes `await { method_call }` the inner expression
-                // is an `Expr::Block` wrapping a single trailing method call, not a
-                // bare `Expr::MethodCall`.  Unwrap one level of block so the ask-
-                // dispatch guard and span-key lookup below can find the right node.
+                // Locate a directly awaited method through a transparent block
+                // so suspension permission belongs to the call's exact span.
                 let (effective_expr, effective_span) = match &inner.0 {
                     Expr::Block(block)
                         if block.stmts.is_empty()
@@ -591,7 +590,7 @@ impl Checker {
                     .insert(SpanKey::in_module(effective_span, self.current_module_idx));
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
 
-                // await Task<T> → T (simplified)
+                // Join one Task layer; calls already own their result contract.
                 match inner_ty {
                     Ty::Task(inner) => *inner,
                     // `await close(actor)` or bare actor handle → Unit (actor termination).
@@ -601,22 +600,6 @@ impl Checker {
                         && !matches!(effective_expr, Expr::MethodCall { .. }) =>
                     {
                         Ty::Unit
-                    }
-                    // Named-actor ask: `await ref.method(args)` (bare or block-wrapped)
-                    // where the method is an ask-shaped receive fn (non-unit return).
-                    // The checker recorded an `ActorMethodKind::Ask` entry for the
-                    // inner method-call span; unify with the lambda/remote paths by
-                    // returning `Result<R, AskError>`.
-                    _ if matches!(effective_expr, Expr::MethodCall { .. }) => {
-                        let dispatch_key =
-                            SpanKey::in_module(effective_span, self.current_module_idx);
-                        if let Some(ActorMethodKind::Ask(_, reply_ty)) =
-                            self.actor_method_dispatch.get(&dispatch_key).cloned()
-                        {
-                            Ty::result(reply_ty, Ty::ask_error())
-                        } else {
-                            inner_ty
-                        }
                     }
                     _ => inner_ty,
                 }
@@ -2826,18 +2809,68 @@ impl Checker {
                 let ret_ty = self.synthesize(&child.0, &child.1);
                 for branch in children {
                     match &branch.0 {
-                        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
-                            for arg in args {
-                                let (arg_expr, arg_span) = arg.expr();
-                                if let Expr::Identifier(name) = arg_expr {
-                                    if let Some(ty) =
-                                        self.env.lookup_ref(name).map(|b| b.ty.clone())
-                                    {
-                                        let resolved = self.subst.resolve(&ty);
-                                        self.mark_expr_moved_if_non_copy(
-                                            arg_expr, arg_span, &resolved,
-                                        );
+                        Expr::Call { function, args, .. } => {
+                            if let Some(ty) = self
+                                .expr_types
+                                .get(&SpanKey::in_module(&function.1, self.current_module_idx))
+                                .cloned()
+                                .or_else(|| match &function.0 {
+                                    Expr::Identifier(name) => {
+                                        self.env.lookup_ref(name).map(|binding| binding.ty.clone())
                                     }
+                                    _ => None,
+                                })
+                            {
+                                self.check_fork_transfer(&function.0, &function.1, &ty);
+                            }
+                            for arg in args {
+                                let (expr, span) = arg.expr();
+                                if let Some(ty) = self
+                                    .expr_types
+                                    .get(&SpanKey::in_module(span, self.current_module_idx))
+                                    .cloned()
+                                {
+                                    self.check_fork_transfer(expr, span, &ty);
+                                }
+                            }
+                        }
+                        Expr::MethodCall {
+                            receiver,
+                            method,
+                            args,
+                        } => {
+                            let key = SpanKey::in_module(&branch.1, self.current_module_idx);
+                            if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
+                                self.method_call_rewrites.get(&key).cloned()
+                            {
+                                let field = Expr::FieldAccess {
+                                    object: receiver.clone(),
+                                    field: method.clone(),
+                                };
+                                self.check_fork_transfer(&field, &branch.1, &field_ty.to_ty());
+                            } else if !matches!(
+                                self.method_call_receiver_kinds.get(&key),
+                                Some(
+                                    super::MethodCallReceiverKind::ModuleBinding { .. }
+                                        | super::MethodCallReceiverKind::EnumConstructorPath { .. }
+                                )
+                            ) {
+                                if let Some(ty) = self
+                                    .expr_types
+                                    .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
+                                    .cloned()
+                                {
+                                    self.check_fork_transfer(&receiver.0, &receiver.1, &ty);
+                                }
+                            }
+                            for arg in args {
+                                let (expr, span) = arg.expr();
+                                if let Some(ty) = self
+                                    .expr_types
+                                    .get(&SpanKey::in_module(span, self.current_module_idx))
+                                    .cloned()
+                                {
+                                    self.check_fork_transfer(expr, span, &ty);
                                 }
                             }
                         }
@@ -2859,17 +2892,20 @@ impl Checker {
                     None,
                     span,
                     false,
+                    true,
                 );
 
+                self.check_fork_transfer(expr, span, &lambda_ty);
+
                 // Ordinary parameters are borrowed at Hew call boundaries.
-                // Moving one into a child would let the child outlive the
-                // caller-owned value, so reject it before HIR can manufacture
-                // an owning environment field.
+                // Value snapshots acquire an independent child owner; an affine
+                // borrowed parameter or explicit view cannot escape that way.
                 let capture_key = SpanKey::in_module(span, self.current_module_idx);
                 if let Some(captures) = self.closure_capture_facts.get(&capture_key).cloned() {
                     for capture in captures {
                         let capture_is_copy = self.ty_is_non_owning(&capture.ty);
                         let borrowed_parameter = !capture_is_copy
+                            && capture.acquisition == crate::ClosureCaptureAcquisition::Move
                             && self.env.lookup_ref(&capture.name).is_some_and(|binding| {
                                 binding.id == capture.binding_id && binding.is_param()
                             });
@@ -2914,8 +2950,18 @@ impl Checker {
                 // recursive self-sends (a Duplex capture called from within its own
                 // actor body). Nested fn-closures inside the body pass is_actor_body=false,
                 // so they correctly see in_lambda_actor_body=false.
-                let lambda_ty =
-                    self.check_lambda(*is_move, &[], None, params, None, body, None, span, true);
+                let lambda_ty = self.check_lambda(
+                    *is_move,
+                    &[],
+                    None,
+                    params,
+                    None,
+                    body,
+                    None,
+                    span,
+                    true,
+                    false,
+                );
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -3083,14 +3129,17 @@ impl Checker {
                 // sequentially; the same goes for the timeout duration, which
                 // arms the deadline before any arm fires.
                 let mut source_tys = Vec::with_capacity(arms.len());
+                let mut sources = Vec::with_capacity(arms.len());
                 for arm in arms {
                     self.env.push_scope();
-                    source_tys.push(self.synthesize_actor_concurrency_source(
-                        &arm.source.0,
-                        &arm.source.1,
-                        "select arm source",
-                    ));
+                    let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
+                    source_tys.push(ty);
+                    sources.push(source);
                     self.env.pop_scope();
+                }
+                if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
+                    self.select_sources
+                        .insert(SpanKey::in_module(span, self.current_module_idx), checked);
                 }
                 if let Some(tc) = timeout {
                     self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
@@ -3099,9 +3148,16 @@ impl Checker {
                 // Dispatch happens here: from this state exactly one body runs.
                 let entry = self.env.ownership_snapshot();
                 let mut arm_exits = Vec::with_capacity(arms.len() + 1);
-                for (arm, source_ty) in arms.iter().zip(&source_tys) {
+                for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
                     self.env.push_scope();
                     self.env.restore_ownership(&entry);
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
+                        if let Expr::Await(task) = &arm.source.0 {
+                            if !self.reject_borrowed_consumption(&task.0, &task.1) {
+                                self.mark_expr_moved(&task.0, &task.1);
+                            }
+                        }
+                    }
                     self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {
                         self.check_against(&arm.body.0, &arm.body.1, expected)
@@ -3453,6 +3509,7 @@ impl Checker {
                     body,
                     Some((expected_params, ret)),
                     span,
+                    false,
                     false,
                 );
                 self.expect_type(expected, &result, span);
@@ -7591,9 +7648,14 @@ impl Checker {
         expected: Option<(&[Ty], &Ty)>,
         span: &Span,
         is_actor_body: bool,
+        is_fork_body: bool,
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let owner = super::effects::EffectBody::Closure(key.clone());
+        self.effect_graph.parameter_names.insert(
+            owner.clone(),
+            params.iter().map(|param| param.name.clone()).collect(),
+        );
         self.effect_graph.bodies.entry(owner.clone()).or_default();
         let previous = self.effect_graph.current_body.replace(owner);
         let result = self.check_lambda_body(
@@ -7606,6 +7668,7 @@ impl Checker {
             expected,
             span,
             is_actor_body,
+            is_fork_body,
         );
         self.effect_graph.current_body = previous;
         result
@@ -7627,6 +7690,7 @@ impl Checker {
         expected: Option<(&[Ty], &Ty)>,
         span: &Span,
         is_actor_body: bool,
+        is_fork_body: bool,
     ) -> Ty {
         let private_bindings = self.resolve_private_captures(private_captures);
         let body_environment = self
@@ -7823,6 +7887,7 @@ impl Checker {
             &body_environment,
             is_move,
             span,
+            is_fork_body,
         );
         let capabilities = self.closure_capabilities(&capture_facts);
         self.closure_capture_facts.insert(
@@ -9017,12 +9082,12 @@ impl Checker {
     /// Publish a checked expression type without overwriting a more precise
     /// source type recorded during contextual checking.
     fn publish_checked_expression(&mut self, expr: &Expr, span: &Span, result: Ty) -> Ty {
-        self.record_expression_effect(expr, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .entry(key.clone())
             .or_insert_with(|| self.current_module.clone());
         self.expr_types.entry(key).or_insert_with(|| result.clone());
+        self.record_expression_effect(expr, span);
         result
     }
 

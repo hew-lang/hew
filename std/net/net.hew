@@ -40,8 +40,8 @@
 //!
 //! fn main() {
 //!     let listener = match net.listen(":9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-//!     let conn = listener.accept();
-//!     let data = conn.read();
+//!     let conn = await listener.accept();
+//!     let data = await conn.read();
 //!     // write() returns Result<(), WriteError>; an Err signals downstream
 //!     // backpressure. An echo server that does not flow-control can ignore it.
 //!     let _ = conn.write(data);
@@ -474,7 +474,7 @@ pub type Connection {
 // ── Listener methods ──────────────────────────────────────────────────
 /// Methods available on a TCP `Listener`.
 trait ListenerMethods {
-    /// Block until a client connects and return the new `Connection`.
+    /// Wait until a client connects and return the new `Connection`.
     fn accept(self) -> Connection;
 
     /// Return the port selected for this listener, including an ephemeral port
@@ -484,10 +484,10 @@ trait ListenerMethods {
 }
 
 impl ListenerMethods for Listener {
-    /// Block until a client connects and return the new `Connection`.
+    /// Wait until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
         unsafe {
-            hew_tcp_accept(ln)
+            await hew_tcp_accept(ln)
         }
     }
     fn local_port(ln: Listener) -> i64 {
@@ -631,7 +631,7 @@ impl ConnectionMethods for Connection {
     /// Read raw bytes from the connection.
     fn read(conn: Connection) -> bytes {
         unsafe {
-            hew_tcp_read(conn)
+            await hew_tcp_read(conn)
         }
     }
     /// Read raw bytes, reporting a read failure separately from EOF.
@@ -640,7 +640,7 @@ impl ConnectionMethods for Connection {
             // Drop any status left by an earlier operation so the status read
             // after the call describes this read and nothing else.
             let _ = hew_stream_last_errno();
-            let data = hew_tcp_read(conn);
+            let data = await hew_tcp_read(conn);
             let errno = hew_stream_last_errno();
             if errno == 0 {
                 Ok(data)
@@ -652,12 +652,12 @@ impl ConnectionMethods for Connection {
     }
     /// Read and validate one UTF-8 byte buffer from the connection.
     fn read_string(conn: Connection) -> Result<string, utf8.Utf8Error> {
-        let data = conn.read();
+        let data = await conn.read();
         utf8.decode(data)
     }
     /// Read UTF-8, preserving both transport and validation failures.
     fn try_read_string(conn: Connection) -> Result<string, ReadStringError> {
-        match conn.try_read() {
+        match await conn.try_read() {
             .Ok(data) => match utf8.decode(data) {
                 .Ok(text) => Ok(text),
                 .Err(error) => Err(ReadStringError.InvalidUtf8(error)),

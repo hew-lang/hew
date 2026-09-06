@@ -21,6 +21,8 @@ mod partial;
 mod coro;
 #[path = "physical_suspend.rs"]
 mod suspend;
+#[path = "physical_tasks.rs"]
+mod tasks;
 
 #[path = "physical_host.rs"]
 mod host;
@@ -687,6 +689,7 @@ struct FunctionEmitter<'a, 'ctx> {
     value_callbacks: &'a key::CallbackTable<'ctx>,
     ramps: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     frame: Option<coro::Frame<'ctx>>,
+    task_scopes: BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
 }
 
 /// Execute verified type recipes in either a language body or a container
@@ -1351,6 +1354,7 @@ fn build_module_with_host<'ctx>(
     };
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
+    emitter.emit_task_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
@@ -1771,6 +1775,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
             }
         }
+        let mut task_scopes = BTreeMap::new();
+        for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
+                let slot = builder
+                    .build_alloca(
+                        ctx.ptr_type(AddressSpace::default()),
+                        &format!("task.scope.{}", scope.0),
+                    )
+                    .llvm_ctx("allocate task scope slot")?;
+                task_scopes.insert(*scope, slot);
+            }
+        }
         let mut param_index = 0u32;
         for ((parameter, storage_id), physical_param) in value
             .get_params()
@@ -1843,6 +1859,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value_callbacks: &module.value_callbacks,
             ramps: &module.ramps,
             frame,
+            task_scopes,
         })
     }
 
@@ -1907,6 +1924,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         match operation {
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
+            PhysicalOp::TaskScopeEnter {
+                scope,
+                parent,
+                duration,
+            } => self.emit_task_scope_enter(*scope, *parent, *duration),
+            PhysicalOp::TaskScopeClose { scope } => self.emit_task_scope_close(*scope),
+            PhysicalOp::TaskSpawn {
+                scope,
+                callable,
+                dest,
+                ..
+            } => self.emit_task_spawn(*scope, *callable, *dest),
             PhysicalOp::ClosureMake {
                 dest,
                 closure,
@@ -2473,6 +2502,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::TaskAwait {
+                task,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_task_await(task, *result, normal, cancel, unwind),
+            PhysicalTerminator::TaskScopeJoin {
+                scope,
+                cancel,
+                normal,
+                unwind,
+            } => self.emit_task_scope_join(*scope, *cancel, normal, unwind),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,
@@ -4577,30 +4619,43 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn initialize_active_fault(&self, code: i32) -> CodegenResult<()> {
+        self.initialize_active_fault_value(self.ctx.i32_type().const_int(code as u64, true))
+    }
+
+    fn initialize_cancellation_fault(&self) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("cancellation requires a resumable invocation".into())
+        })?;
+        let code = self.state_value("hew_coro_state_cancel_code", frame.state)?;
+        self.initialize_active_fault_value(code)
+    }
+
+    fn initialize_active_fault_value(&self, code: IntValue<'ctx>) -> CodegenResult<()> {
         let function = external_fault_new(self.ctx, self.llvm)?;
         let fault = self
             .builder
-            .build_call(
-                function,
-                &[self.ctx.i32_type().const_int(code as u64, true).into()],
-                "trap.fault",
-            )
+            .build_call(function, &[code.into()], "trap.fault")
             .llvm_ctx("create physical trap fault")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("fault constructor returned void".into()))?;
-        self.store_active_fault(fault, code)
+        self.store_active_fault_value(fault, code)
     }
 
     fn store_active_fault(&self, fault: BasicValueEnum<'ctx>, code: i32) -> CodegenResult<()> {
+        self.store_active_fault_value(fault, self.ctx.i32_type().const_int(code as u64, true))
+    }
+
+    fn store_active_fault_value(
+        &self,
+        fault: BasicValueEnum<'ctx>,
+        code: IntValue<'ctx>,
+    ) -> CodegenResult<()> {
         self.builder
             .build_store(self.active_fault, fault)
             .llvm_ctx("store physical trap fault")?;
         self.builder
-            .build_store(
-                self.active_status,
-                self.ctx.i32_type().const_int(code as u64, true),
-            )
+            .build_store(self.active_status, code)
             .llvm_ctx("retain physical trap status")?;
         Ok(())
     }

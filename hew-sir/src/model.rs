@@ -955,6 +955,21 @@ pub struct CheckedFailure {
 /// ordinary SSA operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemOpKind {
+    /// Begin a lexical task lifetime with explicit cancellation ancestry.
+    TaskScopeEnter {
+        scope: crate::TaskScopeId,
+        parent: Option<crate::TaskScopeId>,
+        duration: Option<Operand>,
+    },
+    /// Release a scope after its checked drain has completed.
+    TaskScopeClose {
+        scope: crate::TaskScopeId,
+    },
+    /// Transfer a nullary once callable into a scope-owned child.
+    TaskSpawn {
+        scope: crate::TaskScopeId,
+        callable: Operand,
+    },
     /// Reserve the exact free places for an action, without borrowing them.
     RegisterDefer {
         defer: DeferId,
@@ -1145,7 +1160,13 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::RegisterDefer { .. }
+            Self::TaskScopeEnter { duration, .. } => {
+                if let Some(duration) = duration {
+                    visit(OperandSlot(0), duration);
+                }
+            }
+            Self::TaskScopeClose { .. }
+            | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::ConstI64(_)
             | Self::ConstBool(_)
@@ -1194,7 +1215,10 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::CallableCoerce { source: value }
+            Self::TaskSpawn {
+                callable: value, ..
+            }
+            | Self::CallableCoerce { source: value }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
@@ -1217,7 +1241,13 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::RegisterDefer { .. }
+            Self::TaskScopeEnter { duration, .. } => {
+                if let Some(duration) = duration {
+                    visit(OperandSlot(0), duration);
+                }
+            }
+            Self::TaskScopeClose { .. }
+            | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::ConstI64(_)
             | Self::ConstBool(_)
@@ -1266,7 +1296,10 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::CallableCoerce { source: value }
+            Self::TaskSpawn {
+                callable: value, ..
+            }
+            | Self::CallableCoerce { source: value }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
@@ -1294,7 +1327,10 @@ impl SemOpKind {
             | Self::StoreInit { place, .. }
             | Self::StoreAssign { place, .. }
             | Self::EndLifetime { place } => visit(*place),
-            Self::FunctionMake { .. }
+            Self::TaskScopeEnter { .. }
+            | Self::TaskScopeClose { .. }
+            | Self::TaskSpawn { .. }
+            | Self::FunctionMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::ConstI64(..)
@@ -1353,7 +1389,10 @@ impl SemOpKind {
             // values: two `copy_value`s of one value are two retains and must
             // never be common-subexpression-eliminated into one, and a
             // `destroy_value` or a place write is observable.
-            Self::RegisterDefer { .. }
+            Self::TaskScopeEnter { .. }
+            | Self::TaskScopeClose { .. }
+            | Self::RegisterDefer { .. }
+            | Self::TaskSpawn { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::CopyValue { .. }
@@ -1401,7 +1440,10 @@ impl SemOpKind {
     pub const fn transfers_obligation(&self) -> bool {
         matches!(
             self,
-            Self::RegisterDefer { .. }
+            Self::TaskScopeEnter { .. }
+                | Self::TaskScopeClose { .. }
+                | Self::RegisterDefer { .. }
+                | Self::TaskSpawn { .. }
                 | Self::ClosureMake { .. }
                 | Self::CallableCoerce { .. }
                 | Self::DestroyValue { .. }

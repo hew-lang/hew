@@ -69,18 +69,19 @@ use self::types::{
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
-    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget, EntryExitAction,
-    EntryExitPlan, EntryIntegerType, ExecutionContextReader, ExternMethodCallIdentity, FnSig,
-    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
-    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
-    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind,
-    SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef,
-    TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
+    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
+    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
+    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
+    RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind, SpanKey, StackHint,
+    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
+    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
     WireLayoutTable, WireTextFormat,
 };
@@ -2000,6 +2001,9 @@ impl Checker {
                     (k, resolved)
                 })
                 .collect();
+        // Effect and transfer checks consume capture and actor-dispatch facts
+        // before those facts are moved into the checked-program handoff.
+        let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
             .map(|(k, facts)| {
@@ -2276,9 +2280,9 @@ impl Checker {
         } else {
             (TypeFactContext::default(), BTreeMap::new())
         };
-        let suspension_effects = self.finish_suspension_effects();
         let mut output = TypeCheckOutput {
             normalized_machines: normalized_machines.clone(),
+            select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             expr_types: resolved_expr_types,

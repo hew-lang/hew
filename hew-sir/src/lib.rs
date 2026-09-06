@@ -20,6 +20,7 @@ mod optimize;
 mod ownership;
 mod projection;
 mod resource;
+mod task_scope;
 mod verify;
 
 pub use actor::{
@@ -58,7 +59,7 @@ pub use ownership::{
     checked_binary_types_match, runtime_failure_trap_kind, variant_field_recipes,
     variant_field_types, AggregateFieldRecipe, Binding, BindingId, BindingTarget, BoundaryDecision,
     BytesLiteralId, OwnKind, OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin,
-    SnapshotDecision, StringLiteralId, SuspendKind, TrapKind,
+    SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TrapKind,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use resource::{verify_resource_release, ResourceExtern, ResourceRelease};

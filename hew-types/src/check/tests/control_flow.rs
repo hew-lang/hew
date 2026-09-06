@@ -16,7 +16,7 @@ fn user_receiver_recv_is_not_a_channel_select_source() {
         fn main() {
             let rx = Receiver { value: 1 };
             let _ = select {
-                value from rx.recv() => value,
+                value = rx.recv() => value,
                 after 1ms => 0,
             };
         }
@@ -28,7 +28,7 @@ fn user_receiver_recv_is_not_a_channel_select_source() {
             error.kind == TypeErrorKind::InvalidOperation
                 && error
                     .message
-                    .contains("select arm source must be actor.method(args)")
+                    .contains("select arm source must await a Task")
         }),
         "a same-spelling user Receiver must not acquire channel select semantics: {:#?}",
         output.errors

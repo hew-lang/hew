@@ -45,6 +45,7 @@ impl Builder<'_, '_> {
             })
             .into_iter()
             .collect();
+        self.finish_task_scopes(0, false)?;
         self.end_call_loans(&self.argument_receiver_loans.clone())?;
         self.destroy_live_since(&preserved)?;
         self.drain_scopes(0, true)?;
@@ -92,6 +93,7 @@ impl Builder<'_, '_> {
     /// Generate a fault successor without changing its sibling's lexical state.
     pub(super) fn finish_fault_exit(&mut self) -> Result<(), String> {
         let saved = self.control_state();
+        self.finish_task_scopes(0, true)?;
         self.end_call_loans(&self.argument_receiver_loans.clone())?;
         let boundary = self.defer_bodies.last().cloned();
         let preserved = boundary

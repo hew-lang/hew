@@ -2221,3 +2221,16 @@ capability and collection rows, function identities and literal pools. The
 existing diagnostics-only verifier uses this same path. Regression controls
 reject malformed module contexts and missing local cleanup while successful
 checks retain the exact local partition and cleanup disposition for each body.
+
+## Lexical source storage
+
+Owned source declarations now acquire Local places. Scalar bindings retain SSA
+values, while calls and expression results retain actual transfer obligations.
+One declaration-scope stack emits lexical lifetime ends without changing the
+context used to generate sibling control-flow paths. Loops carry scalar values
+and retain stable outer places through skipped, consuming and nested exits.
+
+The callback loop, later-argument fault and callback-body fault sources pass
+semantic verification and checked place-lifetime analysis. The producer builds;
+existing IR-oriented source tests and match-scope cleanup still need follow-up.
+This checkpoint does not establish native Local execution.

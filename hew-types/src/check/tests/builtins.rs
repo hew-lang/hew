@@ -42,6 +42,7 @@ fn test_yield_outside_generator() {
         trailing_expr: None,
     };
     let fd = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -344,6 +345,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
 
     // Stream<i32> (the canonical name) must resolve to Ty::stream(Ty::I32).
     let fn_decl = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -397,6 +399,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
     // ActorStream<i32> must NOT resolve to Ty::stream(Ty::I32) — the alias is removed.
     // It should resolve to Ty::Named { name: "ActorStream", .. } (an unknown named type).
     let fn_decl = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -460,6 +463,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
     // removing the ActorStream alias must not break resolution of the canonical
     // Stream<Y> name.
     let fn_decl = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,

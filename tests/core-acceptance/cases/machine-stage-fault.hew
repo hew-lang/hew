@@ -1,0 +1,26 @@
+machine Gate {
+    events { Open { divisor: i64 } }
+    emits { Pending { label: string } }
+    state Closed { label: string },
+    state Opened { label: string, value: i64 },
+    on Open: Closed => Opened {
+        emit Pending { label: self.label + ":pending" };
+        .Opened { label: self.label + ":candidate", value: 8 / event.divisor }
+    }
+    default { state }
+}
+
+fn run(divisor: i64) {
+    var gate: Gate = .Closed { label: "original".to_upper() };
+    defer {
+        match gate {
+            .Closed { label } => println("rollback:" + label),
+            .Opened { label, value } => println(f"committed:{label}:{value}"),
+        }
+    }
+    let _report = gate.step(.Open { divisor: divisor });
+}
+
+fn main() {
+    run(0);
+}

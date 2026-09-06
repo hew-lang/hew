@@ -154,6 +154,10 @@ impl Session {
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<SessionOutput, SessionError> {
+        let program = tco
+            .normalized_machines
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         let lowered =
             hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
         if !lowered.diagnostics.is_empty() {
@@ -178,8 +182,15 @@ impl Session {
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<Vec<hew_types::DefId>, SessionError> {
-        program
-            .items
+        // File imports are appended for body lowering after checking. Their
+        // public declarations remain imports, with their own source identities,
+        // rather than becoming authored root exports through flattening.
+        let root_items = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map_or(program.items.as_slice(), |root| root.items.as_slice());
+        root_items
             .iter()
             .enumerate()
             .filter_map(|(ordinal, (item, span))| {
@@ -2571,7 +2582,7 @@ fn run_file_frontend_to_typecheck_with_mode(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    let typecheck_result = match typecheck_program_with_diagnostics(
+    let mut typecheck_result = match typecheck_program_with_diagnostics(
         &program,
         &project.source,
         input,
@@ -2586,7 +2597,15 @@ fn run_file_frontend_to_typecheck_with_mode(
         Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
     };
 
-    flatten_file_import_items(&mut program);
+    if let Some(normalized) = typecheck_result
+        .tco
+        .as_mut()
+        .and_then(|tco| tco.normalized_machines.as_mut())
+    {
+        flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
+    } else {
+        flatten_file_import_items(&mut program);
+    }
     let stdlib_roots = configured_stdlib_roots(options);
     retain_user_facing_diagnostics(input, &stdlib_roots, &mut diagnostics);
 
@@ -2629,7 +2648,7 @@ pub fn run_program_frontend_to_typecheck(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    let typecheck_result = match typecheck_program_with_diagnostics(
+    let mut typecheck_result = match typecheck_program_with_diagnostics(
         &program,
         source,
         source_label,
@@ -2644,7 +2663,15 @@ pub fn run_program_frontend_to_typecheck(
         Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
     };
 
-    flatten_file_import_items(&mut program);
+    if let Some(normalized) = typecheck_result
+        .tco
+        .as_mut()
+        .and_then(|tco| tco.normalized_machines.as_mut())
+    {
+        flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
+    } else {
+        flatten_file_import_items(&mut program);
+    }
     let stdlib_roots = configured_stdlib_roots(options);
     retain_user_facing_diagnostics(source_label, &stdlib_roots, &mut diagnostics);
 
@@ -3548,6 +3575,38 @@ mod tests {
             load_package_name(dir.path()).expect("valid manifest should load"),
             None
         );
+    }
+
+    #[test]
+    fn source_roots_keep_authored_exports_after_file_import_flattening() {
+        let dir = tempfile::tempdir().expect("create source-root fixture");
+        write_source(dir.path(), "helper.hew", "fn hidden() -> string { \"owned\".to_upper() } pub fn imported() -> string { hidden() }");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\"; pub fn exported() -> string { imported() } fn main() {}",
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+        let tco = state.typecheck_result.tco.as_ref().unwrap();
+        let roots = Session::source_roots(&state.program, tco).unwrap();
+        assert_eq!(roots.len(), 1, "file imports are not implicit root exports");
+        assert!(roots[0].full_path().ends_with(".exported"));
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("an uncalled root export must retain its imported helper closure");
+        let module = &output.semantics().module;
+        for leaf in ["exported", "imported", "hidden"] {
+            let declaration = tco
+                .identity
+                .declarations()
+                .map(|(_, declaration)| declaration)
+                .find(|declaration| declaration.full_path().ends_with(&format!(".{leaf}")))
+                .unwrap();
+            let callable = module
+                .callable_for_declaration(declaration)
+                .expect("export helper must be retained");
+            assert!(module.function_index().function(callable.id).is_some());
+        }
     }
 
     /// A file-imported item reaches HIR lowering on two surfaces: its file's

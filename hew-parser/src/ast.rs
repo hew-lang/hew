@@ -988,8 +988,22 @@ impl Visibility {
 
 // ── Item-level types ─────────────────────────────────────────────────
 
+/// Compiler-owned provenance of an ordinary normalized declaration.
+/// Source syntax and serialized ASTs cannot request generated semantics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DeclarationOrigin {
+    #[default]
+    Authored,
+    MachineState,
+    MachineStep,
+    MachineReport,
+    MachineCompanion,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
+    #[serde(skip)]
+    pub origin: DeclarationOrigin,
     pub attributes: Vec<Attribute>,
     pub is_async: bool,
     pub is_generator: bool,
@@ -1105,6 +1119,8 @@ pub enum ResourceMarker {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeDecl {
+    #[serde(skip)]
+    pub origin: DeclarationOrigin,
     #[serde(default)]
     pub visibility: Visibility,
     pub kind: TypeDeclKind,
@@ -1664,14 +1680,10 @@ pub struct MachineDecl {
     pub where_clause: Option<WhereClause>,
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
-    /// Optional `emits { … }` Mealy-output manifest. Each entry is the name of
-    /// an event the machine may produce via `emit Name { … }` in a transition
-    /// body. Names reference declared `events`; the manifest is an auditable
-    /// allowlist, not a second declaration site. When non-empty, the HIR
-    /// cross-checks that every `emit` in a body names an event in this list.
-    /// Empty when the machine declares no `emits {}` header (no cross-check).
+    /// Independent typed output vocabulary constructed by `emit` and returned
+    /// in the step report. Outputs never feed the input transition relation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub emits: Vec<String>,
+    pub emits: Vec<MachineEvent>,
     pub transitions: Vec<MachineTransition>,
     #[serde(default)]
     pub has_default: bool, // `default { self }` — unhandled events stay in current state

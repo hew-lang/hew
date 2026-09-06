@@ -550,6 +550,8 @@ impl HirActorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorInit {
     pub declaration: DefId,
+    /// State bindings in declaration order, distinct from init parameters.
+    pub state_bindings: Vec<HirBinding>,
     pub params: Vec<HirBinding>,
     pub body: HirBlock,
 }
@@ -558,6 +560,8 @@ pub struct HirActorInit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorReceiveFn {
     pub declaration: DefId,
+    /// Exact body bindings for the enclosing actor's declaration-order fields.
+    pub state_bindings: Vec<HirBinding>,
     pub name: String,
     pub is_generator: bool,
     pub params: Vec<HirBinding>,
@@ -599,6 +603,7 @@ pub enum HirActorStateGuard {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorMethod {
     pub declaration: DefId,
+    pub state_bindings: Vec<HirBinding>,
     pub name: String,
     pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
@@ -614,6 +619,7 @@ pub struct HirActorMethod {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLifecycleHook {
     pub declaration: DefId,
+    pub state_bindings: Vec<HirBinding>,
     pub kind: HirLifecycleHookKind,
     pub name: String,
     pub params: Vec<HirBinding>,
@@ -1010,6 +1016,13 @@ pub enum HirShutdownDirective {
     Infinity,
 }
 
+/// Semantic declaration kind, including enums with no inhabited variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirTypeDeclKind {
+    Struct,
+    Enum,
+}
+
 /// Lowered top-level type declaration.
 ///
 /// Carries the `#[resource]` / `#[linear]` marker (if any), the list of
@@ -1018,6 +1031,7 @@ pub enum HirShutdownDirective {
 /// recorded for snapshot stability and future analysis passes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirTypeDecl {
+    pub kind: HirTypeDeclKind,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Checker-owned canonical declaration identity. This is the semantic key
@@ -1637,6 +1651,13 @@ pub enum HirExprKind {
         duration: Box<HirExpr>,
         body: HirBlock,
     },
+    /// Recover this scope's own deadline or logical fault after child drain and
+    /// lexical cleanup. Parent cancellation bypasses the handler.
+    ScopeRecovery {
+        scope: Box<HirExpr>,
+        error: HirBinding,
+        handler: Box<HirExpr>,
+    },
     /// Consume a task expression and produce its child result.
     AwaitTask {
         operand: Box<HirExpr>,
@@ -1983,6 +2004,8 @@ pub enum HirExprKind {
     /// closed `ResolvedImplCall` arm.
     VarSelfMethodCall {
         receiver: Box<HirExpr>,
+        /// Checked receiver acquisition; staging requires an independent copy.
+        receiver_update: hew_types::ReceiverUpdate,
         /// Structured direct or static-trait target carried from checking.
         call_target: hew_types::CallTarget,
         target: HirVarSelfMethodTarget,

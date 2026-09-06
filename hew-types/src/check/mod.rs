@@ -33,11 +33,15 @@ pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
+pub mod effects;
 mod expressions;
 mod generics;
 mod items;
 mod lints;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
+mod machine_effects;
+mod machine_normalize;
+pub use machine_normalize::NormalizedMachines;
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
@@ -73,9 +77,9 @@ pub use self::types::{
     OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
     PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ResultReturnKind, SpanKey, StackHint,
-    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind,
+    SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef,
+    TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
     WireLayoutTable, WireTextFormat,
 };
@@ -1423,9 +1427,14 @@ impl Checker {
             }
             Item::TypeDecl(decl) => {
                 let owner = owner_path(&decl.name);
-                declare(Kind::Type, 0, owner.clone());
+                let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                    Kind::Machine
+                } else {
+                    Kind::Type
+                };
+                declare(kind, 0, owner.clone());
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Type, 0, alias);
+                    declare(kind, 0, alias);
                 }
                 for (index, method) in decl
                     .body
@@ -1575,6 +1584,16 @@ impl Checker {
         } else {
             self.has_checked_program = true;
         }
+        let normalized_machines = match machine_normalize::normalize(program) {
+            Ok(normalized) => normalized,
+            Err(errors) => {
+                self.errors.extend(errors);
+                None
+            }
+        };
+        let program = normalized_machines
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         // Mint the compile's module identities FIRST (rc1-F1 stage A): every
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
@@ -2254,7 +2273,11 @@ impl Checker {
         } else {
             (TypeFactContext::default(), BTreeMap::new())
         };
+        let suspension_effects = self.finish_suspension_effects();
         let mut output = TypeCheckOutput {
+            normalized_machines: normalized_machines.clone(),
+            suspension_effects,
+            recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
@@ -2379,6 +2402,16 @@ impl Checker {
                 .push(TypeError::actor_ref_cycle(span, &desc));
         }
         output.cycle_capable_actors = cycle_capable;
+        if output.errors.is_empty() {
+            output.errors.extend(machine_effects::validate(&output));
+        }
+        if let Some(normalized) = &normalized_machines {
+            for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
+                if let Some(source) = normalized.source_spans.get(&diagnostic.span) {
+                    diagnostic.span = source.clone();
+                }
+            }
+        }
 
         output
     }

@@ -144,6 +144,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        actors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
         value_capabilities: BTreeMap::new(),

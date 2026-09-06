@@ -133,7 +133,8 @@ fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         } => std::iter::once(normal)
             .chain(failures.iter().map(|f| &f.edge))
             .collect(),
-        PhysicalTerminator::Call { normal, unwind, .. }
+        PhysicalTerminator::ActorCall { normal, unwind, .. }
+        | PhysicalTerminator::Call { normal, unwind, .. }
         | PhysicalTerminator::IndirectCall { normal, unwind, .. } => {
             std::iter::once(normal).chain(unwind).collect()
         }

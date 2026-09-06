@@ -5602,3 +5602,17 @@ fn ordinary_error_binding_expressions_take_priority_after_return() {
         }
     }
 }
+
+#[test]
+fn select_arm_binds_an_awaited_operation() {
+    let Expr::Select { arms, timeout } = parse_let_expr(
+        "select { first = await left => first, second = await right => second, after 1s => 0 }",
+    ) else {
+        panic!("expected select");
+    };
+    assert_eq!(arms.len(), 2);
+    assert!(arms
+        .iter()
+        .all(|arm| matches!(arm.source.0, Expr::Await(_))));
+    assert!(timeout.is_some());
+}

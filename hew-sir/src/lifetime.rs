@@ -402,9 +402,10 @@ impl<'a> Flow<'a> {
             .places
             .iter()
             .filter_map(|place| match place.origin {
-                crate::PlaceOrigin::Capture { environment, .. } => {
-                    Some((place.id, OwnerRoot::Value(environment)))
-                }
+                crate::PlaceOrigin::Capture { environment, .. }
+                | crate::PlaceOrigin::ActorState {
+                    state: environment, ..
+                } => Some((place.id, OwnerRoot::Value(environment))),
                 _ => None,
             })
             .chain(
@@ -764,7 +765,8 @@ impl<'a> Flow<'a> {
                 mark_trap(&mut state);
                 successors.extend(self.edge(id, cleanup, state, emit));
             }
-            SemTerminator::Call { normal, unwind, .. }
+            SemTerminator::ActorCall { normal, unwind, .. }
+            | SemTerminator::Call { normal, unwind, .. }
             | SemTerminator::RtCall { normal, unwind, .. }
             | SemTerminator::ValueCall { normal, unwind, .. }
             | SemTerminator::IndirectCall { normal, unwind, .. } => {
@@ -776,7 +778,8 @@ impl<'a> Flow<'a> {
                 successors.extend(self.edge(id, normal, returned, emit));
                 if let CallUnwind::Cleanup(edge) = unwind {
                     let transfers_fault = match &block.terminator {
-                        SemTerminator::Call { .. }
+                        SemTerminator::ActorCall { .. }
+                        | SemTerminator::Call { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. } => true,
                         SemTerminator::RtCall { family, .. } => family
@@ -1444,7 +1447,8 @@ impl<'a> Flow<'a> {
                 // owned copy so their lifetime never depends on this input.
                 let scoped_borrow = matches!(
                     terminator,
-                    SemTerminator::Call { .. }
+                    SemTerminator::ActorCall { .. }
+                        | SemTerminator::Call { .. }
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }

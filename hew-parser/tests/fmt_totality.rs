@@ -525,7 +525,7 @@ fn fmt_totality_expr_struct_init() {
 /// `Expr::Select`
 #[test]
 fn fmt_totality_expr_select() {
-    assert_roundtrip("fn f() {\n    select {\n        v from ch => println(v),\n    }\n}\n");
+    assert_roundtrip("fn f() {\n    select {\n        v = await ch => println(v),\n    }\n}\n");
 }
 
 /// `Expr::Join`

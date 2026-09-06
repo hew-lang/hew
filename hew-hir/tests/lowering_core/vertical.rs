@@ -1264,6 +1264,7 @@ fn program_with_select(select_expr: Expr) -> Program {
         0..1,
     );
     let main_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,

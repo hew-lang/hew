@@ -1069,6 +1069,11 @@ impl Checker {
                 args,
                 builtin,
             } => {
+                // Local actor handles copy an incarnation token; they never
+                // own the actor or clone its state and protocol parameter.
+                if *builtin == Some(BuiltinType::LocalPid) && args.len() == 1 {
+                    return None;
+                }
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.is_user_opaque_type_name(name)
                 {
@@ -2720,6 +2725,7 @@ mod tests {
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 param_ownership: vec![],
                 consumes_receiver: false,
                 returns_receiver_identity: false,

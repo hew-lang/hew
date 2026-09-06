@@ -764,6 +764,7 @@ impl Checker {
                         elem_ty: None,
                         consumes_receiver,
                         requires_mutable_receiver: false,
+                        receiver_update: crate::ReceiverUpdate::Replace,
                         returns_receiver_identity: false,
                     },
                 );
@@ -1153,6 +1154,7 @@ impl Checker {
                 elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 returns_receiver_identity: false,
             },
         );
@@ -1182,6 +1184,7 @@ impl Checker {
                         elem_ty: None,
                         consumes_receiver: false,
                         requires_mutable_receiver: false,
+                        receiver_update: crate::ReceiverUpdate::Replace,
                         returns_receiver_identity: false,
                     },
                 );
@@ -1199,6 +1202,7 @@ impl Checker {
                     elem_ty: None,
                     consumes_receiver: false,
                     requires_mutable_receiver: false,
+                    receiver_update: crate::ReceiverUpdate::Replace,
                     returns_receiver_identity: false,
                 },
             );
@@ -1259,6 +1263,7 @@ impl Checker {
                 elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 returns_receiver_identity: false,
             },
         );
@@ -1347,6 +1352,7 @@ impl Checker {
                 elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 returns_receiver_identity: false,
             },
         );
@@ -2609,6 +2615,7 @@ impl Checker {
                 elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: sig.requires_mutable_receiver,
+                receiver_update: sig.receiver_update,
                 returns_receiver_identity: sig.returns_receiver_identity,
             },
         );
@@ -7018,6 +7025,7 @@ impl Checker {
                     // consumes the receiver as a handle release.
                     consumes_receiver: sig.consumes_receiver,
                     requires_mutable_receiver: sig.requires_mutable_receiver,
+                    receiver_update: sig.receiver_update,
                     returns_receiver_identity: sig.returns_receiver_identity,
                 },
             );
@@ -8816,6 +8824,7 @@ impl Checker {
                                     // handle, does not release it.
                                     consumes_receiver: false,
                                     requires_mutable_receiver: false,
+                                    receiver_update: crate::ReceiverUpdate::Replace,
                                     returns_receiver_identity: false,
                                 },
                             );
@@ -9928,6 +9937,7 @@ impl Checker {
                                     // are not consuming releases.
                                     consumes_receiver,
                                     requires_mutable_receiver: sig.requires_mutable_receiver,
+                                    receiver_update: sig.receiver_update,
                                     returns_receiver_identity: sig.returns_receiver_identity,
                                 },
                             );

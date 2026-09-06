@@ -1,9 +1,13 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::ops::Range;
 
 #[path = "lower_projection.rs"]
 mod projection;
+
+#[path = "lower_actor.rs"]
+mod actor;
 
 #[path = "lower_binding.rs"]
 mod binding;
@@ -537,6 +541,8 @@ struct InstanceService<'a> {
     statuses: Vec<Option<SirLoweringStatus>>,
     by_instance: HashMap<SirInstanceKey, CallableId>,
     closures: Vec<crate::SemClosure>,
+    actors: Vec<crate::SemActor>,
+    actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>)>,
     closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
     closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
     /// Only template headers that back a requested concrete SIR instance are
@@ -708,7 +714,8 @@ fn concrete_user_variant_shape(
         .iter()
         .find_map(|item| match item {
             HirItem::TypeDecl(decl)
-                if decl.declaration == *declaration && !decl.variants.is_empty() =>
+                if decl.declaration == *declaration
+                    && decl.kind == hew_hir::HirTypeDeclKind::Enum =>
             {
                 Some(decl)
             }
@@ -834,9 +841,6 @@ fn require_variant_shape(
     }
     require_type_facts(facts, enum_ty)?;
     let (is_indirect, variants) = concrete_variant_shape(module, enum_ty)?;
-    if variants.is_empty() {
-        return Err(format!("enum `{}` has no variants", enum_ty.user_facing()));
-    }
     for variant in &variants {
         for field in &variant.fields {
             require_type_facts(facts, &field.ty)?;
@@ -949,7 +953,9 @@ fn require_type_shapes(
                 );
             }
         }
-        hew_types::push_type_components(&ty, &mut pending);
+        if actor::declaration(module, &ty).is_none() {
+            hew_types::push_type_components(&ty, &mut pending);
+        }
     }
     Ok(())
 }
@@ -975,6 +981,8 @@ impl<'a> InstanceService<'a> {
             statuses: vec![None; count],
             by_instance: HashMap::new(),
             closures: Vec::new(),
+            actors: Vec::new(),
+            actor_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
             closure_sources: Vec::new(),
             used_templates: std::collections::HashSet::new(),
@@ -1344,6 +1352,21 @@ impl<'a> InstanceService<'a> {
                 callable.0
             )
         })?;
+        if let SemCallableKind::HewActor(actor) = callable_meta.kind {
+            let (function, state_bindings) = self
+                .actor_sources
+                .get(&callable)
+                .ok_or_else(|| "actor body has no checked HIR source".to_string())?;
+            return Ok(LoweringInput {
+                function: Cow::Owned(function.clone()),
+                callable: callable_meta,
+                substitution: TypeSubstitution::empty(),
+                source: BodySource::Actor {
+                    actor,
+                    state_bindings: state_bindings.clone(),
+                },
+            });
+        }
         let function = *self
             .table
             .functions_by_item
@@ -1388,7 +1411,7 @@ impl<'a> InstanceService<'a> {
             BodySource::Function
         };
         Ok(LoweringInput {
-            function,
+            function: Cow::Borrowed(function),
             callable: callable_meta,
             substitution,
             source,
@@ -1706,6 +1729,7 @@ impl<'a> InstanceService<'a> {
             used_templates,
             mut functions,
             closures,
+            actors,
             aggregate_shapes,
             variant_shapes,
             string_literals,
@@ -1739,6 +1763,7 @@ impl<'a> InstanceService<'a> {
             })
             .collect();
         SemModule {
+            actors,
             resources,
             closures,
             callables: table.callables,
@@ -1843,7 +1868,7 @@ fn project_type_facts(
 }
 
 struct LoweringInput<'a> {
-    function: &'a HirFn,
+    function: Cow<'a, HirFn>,
     callable: SemCallable,
     substitution: TypeSubstitution,
     source: BodySource,
@@ -1852,12 +1877,16 @@ struct LoweringInput<'a> {
 enum BodySource {
     Function,
     Closure(Box<HirExpr>),
+    Actor {
+        actor: crate::ActorId,
+        state_bindings: Vec<HirBinding>,
+    },
 }
 
 impl BodySource {
     fn parameters<'a>(&'a self, function: &'a HirFn) -> Result<&'a [HirBinding], String> {
         match self {
-            Self::Function => Ok(&function.params),
+            Self::Function | Self::Actor { .. } => Ok(&function.params),
             Self::Closure(expression) => match &expression.kind {
                 HirExprKind::Closure { params, .. } => Ok(params),
                 _ => Err("closure body source is not a checked literal".to_string()),
@@ -1984,6 +2013,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Closure { .. }
         )
         || collection_type_arguments(ty).is_some()
+        || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
 }
@@ -1999,6 +2029,7 @@ fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || actor::declaration(module, ty).is_some()
         || is_concrete_aggregate_type(facts, ty)
         || is_concrete_variant_type(module, ty)
 }
@@ -2303,7 +2334,7 @@ struct ScalarAggregateParent {
 }
 
 struct Builder<'hir, 'service> {
-    function: &'hir HirFn,
+    function: Cow<'hir, HirFn>,
     service: &'service mut InstanceService<'hir>,
     callable: SemCallable,
     substitution: TypeSubstitution,
@@ -2334,15 +2365,22 @@ struct Builder<'hir, 'service> {
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "constructs the complete body state and binds its checked ABI once"
+    )]
     fn new(
-        function: &'hir HirFn,
+        function: Cow<'hir, HirFn>,
         callable: SemCallable,
         substitution: TypeSubstitution,
         source: &BodySource,
         service: &'service mut InstanceService<'hir>,
     ) -> Result<Self, String> {
-        let source_params = source.parameters(function)?;
-        let receiver_count = usize::from(matches!(source, BodySource::Closure(_)));
+        let source_params = source.parameters(&function)?.to_vec();
+        let receiver_count = usize::from(matches!(
+            source,
+            BodySource::Closure(_) | BodySource::Actor { .. }
+        ));
         if source_params.len() + receiver_count != callable.signature.params.len() {
             return Err(format!(
                 "SIR callable `{}` has {} parameter ABI facts, but its HIR template has {} parameter(s)",
@@ -2423,8 +2461,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             defer_bodies: Vec::new(),
         };
         builder.bind_captures(source)?;
-        builder.bind_private_value_parameters(source_params)?;
-        for parameter in source_params {
+        builder.bind_actor_state(source)?;
+        builder.bind_private_value_parameters(&source_params)?;
+        for parameter in &source_params {
             if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
                 if (parameter.mutable && builder.value_own_kind(value) == Some(OwnKind::None))
                     || builder.value_own_kind(value) == Some(OwnKind::Owned)
@@ -2632,7 +2671,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn lower_source_body(&mut self, source: BodySource) -> Result<Option<Operand>, String> {
         match source {
-            BodySource::Function => self.lower_block(&self.function.body, OwnedBindingUse::Return),
+            BodySource::Function | BodySource::Actor { .. } => {
+                let body = self.function.body.clone();
+                self.lower_block(&body, OwnedBindingUse::Return)
+            }
             BodySource::Closure(expression) => {
                 let HirExprKind::Closure { body, ret_ty, .. } = &expression.kind else {
                     unreachable!()
@@ -3499,9 +3541,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
-            HirExprKind::Return { value } => {
-                return self.lower_function_return(value.as_deref());
-            }
+            HirExprKind::Return { value } => return self.lower_function_return(value.as_deref()),
             HirExprKind::Call {
                 target: CallTarget::Builtin { endpoint },
                 args,
@@ -3516,6 +3556,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_expression: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         match &expr.kind {
+            HirExprKind::ActorSend { .. } => return self.lower_actor_boundary(expr).map(|_| ()),
             HirExprKind::Block(block) => {
                 if let Some(value) = self.lower_scoped_block(block, OwnedBindingUse::Copy)? {
                     if self.owned_live.contains_key(&value.value)
@@ -3533,7 +3574,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
             }
-            HirExprKind::Match { scrutinee, arms } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            HirExprKind::Match { scrutinee, arms }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
                 self.lower_match_control(expr, scrutinee, arms)?;
                 return Ok(());
             }
@@ -3694,6 +3737,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.end_call_loans(&loans)?;
                 Ok(copy)
             }
+            HirExprKind::Spawn { .. } => self
+                .lower_actor_boundary(expr)?
+                .ok_or_else(|| "actor spawn lacks its handle result".into()),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {
@@ -4578,9 +4624,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if scrutinee_ty.is_integer() || matches!(scrutinee_ty, ResolvedTy::Bool | ResolvedTy::Char)
         {
             return self.lower_scalar_match(whole, scrutinee_expr, source_arms);
-        }
-        if source_arms.is_empty() {
-            return Err("variant match has no source arms".to_string());
         }
         let enum_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.service.require_variant_shape(&enum_ty)?;

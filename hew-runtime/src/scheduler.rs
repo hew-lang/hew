@@ -2426,6 +2426,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         prev_context: crate::execution_context::current_context(),
         lock_seat: dispatch_lock_seat_for_actor(actor),
         reply_channel: stashed_reply,
+        checked_fault: crate::actor_native::CheckedActorFault::default(),
     };
     let prev_context = resume_context.prev_context;
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
@@ -3340,60 +3341,21 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     std::process::abort();
                 }
 
-                // Phase α COW: envelope-aware dispatch.  Legacy
-                // (copy-mode) nodes carry payload bytes in
-                // `data`/`data_size` and dispatch by value.
-                // Envelope-mode (aliased) nodes hold a refcounted
-                // `HewMsgEnvelope`; their receive ABI is borrow-only
-                // and does not exist yet (P5.2). Branch on the
-                // discriminator: copy-mode dispatches; envelope-mode
-                // fails closed (see the guard below) rather than
-                // double-dropping a payload through the owned-value
-                // handler.
                 let (dispatch_data, dispatch_size) = if msg_ref.envelope.is_null() {
                     (msg_ref.data, msg_ref.data_size)
                 } else {
-                    // FAIL-CLOSED (P5.3): an envelope-mode (aliased)
-                    // node has reached the *owned-value* dispatch ABI.
-                    //
-                    // Under the D355 borrow model the receiver of an
-                    // aliased message must BORROW the payload read-only
-                    // (via `hew_msg_envelope_payload_ptr`); the single
-                    // final `drop_glue` is owned by the envelope and run
-                    // exactly once by `hew_msg_envelope_release` when the
-                    // node is freed. `dispatch` below is the ordinary
-                    // owned-value handler trampoline — handing a
-                    // destructor-bearing payload (String / Vec / Arc) to
-                    // it *by value* would drop it once in the handler AND
-                    // again in `hew_msg_envelope_release`: a double-free /
-                    // use-after-free.
-                    //
-                    // No compiled program can reach this branch yet:
-                    // codegen alias lowering is a no-op until P5.2 adds
-                    // the borrow-only receive ABI (and an exactly-once-
-                    // drop ASan e2e). This guard exists so that FFI /
-                    // embedding misuse — anything that hand-builds an
-                    // envelope-mode node and feeds it to the scheduler
-                    // before that ABI exists — fails loudly instead of
-                    // corrupting memory. P5.2 removes this guard ONLY
-                    // when it lands the borrow-only receive lowering.
-                    //
-                    // This is the live boundary for the aliased-send gate
-                    // (moved here from the send path in P5.3): the send /
-                    // enqueue / release machinery is fully exercised, but
-                    // owned-value *dispatch* of an envelope node is
-                    // refused. Hard fail (`hew_panic`), never a
-                    // `debug_assert` — release builds must fail closed too.
-                    eprintln!(
-                        "fatal: envelope-mode (aliased) message reached owned-value \
-                             dispatch before the borrow-only receive ABI exists (P5.2); \
-                             refusing to double-drop"
-                    );
-                    crate::actor::hew_panic();
-                    // `hew_panic` never returns (unwinds to the scheduler's
-                    // actor boundary, or exits the process when no recovery
-                    // context is installed). Diverge to satisfy the type.
-                    unreachable!("hew_panic returned from the envelope-mode dispatch guard");
+                    // The generated adapter takes each payload field and clears
+                    // its owner bit before entering checked handler cleanup.
+                    // An aliased envelope cannot satisfy that exclusive contract.
+                    // SAFETY: this dequeued node owns one live envelope reference.
+                    let envelope = unsafe { &*msg_ref.envelope };
+                    if a.dispatch_ownership != crate::actor::HewDispatchOwnership::UniqueEnvelope
+                        || envelope.refcount.load(Ordering::Acquire) != 1
+                    {
+                        eprintln!("fatal: actor dispatch lacks unique envelope ownership");
+                        std::process::abort();
+                    }
+                    (envelope.payload, envelope.payload_size)
                 };
 
                 let mut execution_context = HewExecutionContext {
@@ -3410,6 +3372,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     prev_context: crate::execution_context::current_context(),
                     lock_seat: dispatch_lock_seat_for_actor(actor),
                     reply_channel: msg_ref.reply_channel,
+                    checked_fault: crate::actor_native::CheckedActorFault::default(),
                 };
                 let prev_context = execution_context.prev_context;
                 // Publish a single raw pointer to the dispatch-local context
@@ -3517,15 +3480,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
                             msg_ref.msg_type,
                             dispatch_data,
                             dispatch_size,
-                            // P5-RX sub-stage 1: copy-mode receipt only.
-                            // Only copy-mode nodes
-                            // (`msg_ref.envelope.is_null()`) reach this
-                            // dispatch — envelope-mode nodes fail closed at
-                            // the guard above before this point — so
-                            // borrow_mode is unconditionally 0 here. The
-                            // live envelope-mode receipt (passing 1 + the
-                            // envelope pointer as `dispatch_data`) lands
-                            // with guard removal in a later sub-stage.
+                            // Both admitted adapters own their argument fields.
                             0,
                         )
                     },
@@ -3592,6 +3547,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
                 // codegen returns a non-null handle for in-handler
                 // await/ask/recv suspends, and the suspend edge parks it
                 // below.
+                // SAFETY: the returned callback relinquished this context's
+                // checked completion slot to its sole scheduler activation.
+                let dispatch_result =
+                    unsafe { crate::actor_native::dispatch_result(ec_ptr, dispatch_result) };
                 let suspend_handle: *mut c_void = match dispatch_result {
                     Ok(handle) => {
                         // SAFETY: normal dispatch return matches the cleanup
@@ -3604,35 +3563,13 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         }
                         handle
                     }
-                    Err(panic_payload) => {
+                    Err(failure) => {
                         let _crash_publication = crate::exit_status::CrashPublication::begin();
-                        crate::execution_context::reply_channel_swap_unwind();
-                        // SAFETY: catch_unwind proves every synchronous
-                        // coroutine ramp frame is dead on this worker.
-                        let _ = unsafe {
-                            crate::cont::reclaim_active_coroutine_frames_excluding(
-                                std::ptr::null_mut(),
-                            )
-                        };
-                        // The LLVM landing pads have already destroyed
-                        // ordinary Hew locals. This compatibility escrow
-                        // handles actor-state writes until state itself is
-                        // represented as an OSSA owner.
-                        // SAFETY: this is the scheduler's exclusive recovery
-                        // boundary for the current dispatch; no other worker
-                        // may drain its thread-local cleanup registry.
-                        let outcome = unsafe {
-                            crate::cont::recover_dispatch_crash_cleanup_with_outcome(false)
-                        };
-                        if outcome.state_authority_consumed {
-                            // SAFETY: this activation exclusively owns actor.
-                            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
-                        }
-                        let code = panic_payload
-                            .downcast_ref::<crate::actor::HewPanic>()
-                            .map_or(101, |panic| panic.code);
-                        set_last_error("actor dispatch panicked");
-                        crate::util::quarantine_panic_payload(panic_payload);
+                        // SAFETY: the activation owns the returned native
+                        // completion or caught legacy unwind and its state seat.
+                        let code =
+                            unsafe { crate::actor_native::finish_dispatch_failure(actor, failure) };
+                        set_last_error("actor dispatch failed");
                         crate::crash::record_logical_crash(
                             a.id,
                             code,
@@ -6061,6 +5998,7 @@ mod tests {
         );
 
         let actor = HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 42,
             state: ptr::null_mut(),
@@ -8856,6 +8794,7 @@ mod tests {
         );
 
         let actor = HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 7,
             state: ptr::null_mut(),

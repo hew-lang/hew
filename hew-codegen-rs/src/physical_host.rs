@@ -80,6 +80,9 @@ impl<'a> HostExport<'a> {
                             "C host export does not yet admit indirect calls or callbacks",
                         ));
                     }
+                    PhysicalTerminator::ActorCall { .. } => {
+                        return Err(fail("C host exports cannot start or submit actor work"))
+                    }
                     PhysicalTerminator::RuntimeCall { action, .. } => {
                         if !host_runtime(*action) {
                             return Err(fail(

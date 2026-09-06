@@ -3177,6 +3177,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
     let mut checker = Checker::new(registry);
 
     let inner = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "Inner".to_string(),
@@ -3204,6 +3205,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         lang_item: None,
     };
     let outer = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "Outer".to_string(),
@@ -3231,6 +3233,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         lang_item: None,
     };
     let plain = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "Plain".to_string(),

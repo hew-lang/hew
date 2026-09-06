@@ -3179,8 +3179,8 @@ with per-state fields and compiler-checked transition logic.
   reference type.
 - **Exhaustiveness** — the compiler verifies that every `(State, Event)` pair
   is handled (via an explicit transition, a wildcard, or a `default` handler).
-- **Zero-cost** — compiles to an integer tag plus a C-style union of state
-  structs. No heap allocations, no threads.
+- **Ordinary storage** — a state tag plus its payload, with normal ownership
+  for heap values and output collections. A machine creates no thread.
 
 ### 3.11.1 Declaration Syntax
 
@@ -3193,12 +3193,12 @@ machine Name {
         EventZ,
     }
 
-    // Output vocabulary — optional; lists events this machine may `emit`
+    // Output vocabulary — optional and separate from input events
     emits {
-        EventX,
+        Changed { value: Type },
     }
 
-    // States — at least two required
+    // States — at least one required
     state StateA,                          // unit state (no fields)
     state StateB { field: Type, },         // state with data
 
@@ -3213,7 +3213,7 @@ machine Name {
     on EventX: StateB => StateB reenter { .StateB { field: self.field } }
 
     // Wildcard — applies in all unhandled source states for this event
-    on EventX: _ => _ { state }           // _ => _ means "stay in current state"
+    on EventX: _ => _ { state }           // external transition, even to the same tag
 
     // Depth-1 composite state (substate block; depth > 1 is reserved)
     state Parent {
@@ -3241,7 +3241,7 @@ MachineDecl    = "machine" Ident TypeParams? "{"
 EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
 EventDecl      = Ident [ "{" FieldList "}" ] ;
 FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
-EmitsHeader    = "emits" "{" [ Ident { "," Ident } [ "," ] ] "}" ;
+EmitsHeader    = "emits" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
 
 StateDecl      = "state" Ident ( "{"
                    { Ident ":" Type "," }          (* field declarations *)
@@ -3281,31 +3281,23 @@ hew machine diagram traffic_light.hew --no-check        # skip HIR checks
 
 ### 3.11.2 Constraints
 
-| Constraint                                  | Checked at  | Error if violated                             |
-| ------------------------------------------- | ----------- | --------------------------------------------- |
-| At least two states                         | Types/HIR   | `machine_one_state` negative test             |
-| At least one event                          | Types/HIR   | `machine_no_events` negative test             |
-| No `state` nesting deeper than depth 1; depth-1 composite states are supported | Parse | diagnostic: nested composite states (depth > 1) are reserved |
-| No duplicate explicit transition per (S, E) | Parse/HIR   | `machine_dup_transition` negative test        |
-| No duplicate wildcard for same event        | Parse/HIR   | `machine_dup_wildcard` negative test          |
-| All referenced states/events must be declared | HIR       | `machine_unknown_state/event` negative tests  |
-| All (S, E) pairs covered (exhaustiveness)   | HIR         | `MachineExhaustivenessViolation` diagnostic   |
-| Effect parity: transition body writes ≡ entry writes | HIR  | `MachineEffectParityViolation` diagnostic     |
-| No direct self-emit (`emit E` in transition for event E) | HIR | `MachineEmitCycle` diagnostic          |
+A machine declares at least one state and one input event. Every state/input
+pair needs an explicit rule, a source wildcard or `default { state }`.
+Guarded rules require an unconditional fallback at the same or a lower
+priority. Rules after an unconditional fallback at the same priority are
+unreachable. A fixed target must be constructed on every normal path with
+all payload fields initialized.
 
-Exhaustiveness can be satisfied by: explicit `on` rules, wildcard (`_`-source)
-rules, or a `default` handler.  A `default` handler alone covers all pairs that
-have no other matching rule.
+Machine evaluation is synchronous and pure: guards, transition bodies,
+hooks and their transitive helpers may compute and mutate local value data,
+but cannot perform I/O, interact with actors, suspend, access unsafe memory
+or retain external resource identity. An unknown or indirect call has no
+purity proof and is rejected. Checked computation faults remain possible.
+Inputs, states and outputs must support independent value copies.
 
-**Effect parity:** when a transition body writes a state field (via
-`self.field = …`) and the target state's `entry` block also writes that same
-field, the compiler emits a `MachineEffectParityViolation` diagnostic.  This
-prevents silent shadowing between transition-side and entry-side field
-initialisation.
-
-**Emit-cycle detection:** a transition handling event `E` may not directly
-`emit E` — that would form an immediate re-entry cycle.  Indirect cycles
-(A emits B, B emits A) are not checked.
+The native evaluator currently admits ordinary concrete machines. Const
+parameters, composite states and unclassified generic payloads are not yet
+admitted by this execution path. Parser support alone is not execution support.
 
 ### 3.11.3 Transition Bodies
 
@@ -3382,7 +3374,14 @@ then to `default`.
 `_` in the source position matches any state.  `_` in the target position means
 "return a value of the machine type" (any variant, not a specific one).  The
 conventional identity pattern `on E: _ => _ { state }` keeps the current state
-unchanged.
+unchanged as a value, but still runs its hooks.
+
+A wildcard target is always an external transition: exit hook, transition
+body, then the resulting state's entry hook. This also applies when the
+body returns the source state's tag. `reenter` is allowed and redundant on
+a wildcard target. A fixed same-state target skips exit and entry unless
+it explicitly says `reenter`. Hook selection therefore never needs to
+speculate about or repeat an unevaluated transition body.
 
 Priority order (highest to lowest):
 
@@ -3394,24 +3393,35 @@ Specific transitions always win over wildcards for the same event.
 
 ### 3.11.6 Generated API
 
-The compiler generates the following for every `machine Name { ... }`:
+Each `machine Name` becomes an ordinary state enum and methods, with these
+companion types:
 
-| Generated item              | Usage / behaviour                                                  |
-| ----------------------------| ------------------------------------------------------------------ |
-| State constructors          | `Name.State` (unit) or `Name.State { field: val }` (with data)  |
-| Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
-| Event constructors          | `NameEvent.EventName` (unit) or `NameEvent.EventName { f: v }`  |
-| `m.step(event)`             | Mutates `m` in place; returns `()` — no return value              |
-| `m.state_name()`            | Returns the current state name as `string`                        |
-| Pattern-match support       | Machine values can be matched exactly like enum values             |
+| Generated item | Behaviour |
+| --- | --- |
+| `NameEvent` | Typed input variants from `events` |
+| `NameOutput` | Separate typed output variants from `emits` |
+| `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for default fallback |
+| `NameStep` | Must-use report with `outputs: Vec<NameOutput>` and `disposition: NameStepDisposition` |
+| `m.step(event)` | Stages evaluation and returns `NameStep`, committing `m` only after success |
+| `m.state_name()` | Returns the current state tag as a string |
 
-**Calling `step()`** — both unqualified and qualified event constructors are
-accepted:
+`emit` appends output data in evaluation order; it never recursively feeds
+an input event or performs the represented work. Without an `emits` header,
+`NameOutput` is an empty enum and the report's vector is empty. There is no
+dummy output variant or hidden queue.
+
+The step copies the current owning value into staged evaluation. A checked
+fault before commit leaves the caller's state unchanged and releases the
+candidate and any collected outputs. Successful output values remain valid
+independently of later state changes or the machine's lifetime.
 
 ```hew
-var light = Light.Off;
-light.step(Toggle);                // unqualified (preferred for brevity)
-light.step(LightEvent.Toggle);   // fully qualified (also valid)
+var light: Light = .Off;
+let report = light.step(.Toggle);
+for output in report.outputs {
+    // Interpret the typed output in the surrounding effectful application.
+    handle_output(output);
+}
 ```
 
 **Pattern matching** — machine values can be destructured in `match`, `if let`,
@@ -3434,7 +3444,8 @@ actor ConnectionManager {
     var tcp: TcpState = TcpState.Closed,
 
     receive fn handle(event: TcpStateEvent) {
-        tcp.step(event);
+        let report = tcp.step(event);
+        handle_outputs(report.outputs);
         // React to the new state
         match tcp {
             .Established { local_seq, remote_seq } => {
@@ -3447,30 +3458,9 @@ actor ConnectionManager {
 ```
 
 Because `machine` is a value type, assigning a machine variable copies it.
-The `step()` method mutates the variable in place — it does not return a new
-value.
-
-**Implementation status:** machine-typed actor state fields are
-supported, including heap-payload states (the field rides the enum
-clone/drop substrate; `step()` on a field stores back through the
-state-field overwrite-release path). Generic machine instantiations work for
-bit-copy type arguments (scalars such as `i64`/`f64`/`bool`, and records made
-only of bit-copy fields); a heap-owning type argument (`string`, `Vec<T>`, or
-a record with an owned field) is refused at codegen with a fail-closed
-diagnostic (`requires tag-aware drop`) because the generic machine substrate
-does not yet carry a tag-aware drop plan for an owned payload. Machine-state
-actors are not yet admitted as supervisor children (state constructors are
-not literal child-init values), so supervisor restart-clone of machine
-state is unreachable until that slice widens.
-
-Because there is no shared machine instance, transition OBSERVATION is a
-library pattern, not a language construct: the owner publishes
-transitions into a `std/channel` `Sender` and observers select on the
-receive arm with an `after` safety net. Machine values themselves can
-also travel as channel elements (state snapshots) and pattern-match on
-state variants at the receiver. See
-`examples/machine/select_on_transition.hew` and
-`examples/machine/transition_watch_baseline.hew`.
+A successful `step()` updates its receiver and returns a report. Actor and
+supervisor composition must satisfy their ordinary value ownership and
+lifecycle contracts; it does not introduce a second machine runtime.
 
 ### 3.11.8 Type System Integration
 

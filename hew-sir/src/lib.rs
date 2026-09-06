@@ -7,6 +7,7 @@
 //! owns a conservative subset today; each supported family moves onto
 //! SIR -> MIR and deletes its established HIR -> MIR body lowering.
 
+mod actor;
 mod analysis;
 mod callable;
 mod capability;
@@ -21,6 +22,9 @@ mod projection;
 mod resource;
 mod verify;
 
+pub use actor::{
+    ActorId, ActorOperation, SemActor, SemActorField, SemActorHandler, SemActorOverflow,
+};
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
     DefUseIndex, Dominators, EdgeRef, RewriteError,

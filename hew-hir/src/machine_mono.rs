@@ -1763,6 +1763,21 @@ fn walk_expr(
             diagnostics,
             cap_diag_emitted,
         ),
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            for child in [scope, handler] {
+                walk_expr(
+                    child,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             walk_expr(
                 duration,

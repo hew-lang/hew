@@ -1691,3 +1691,48 @@ fn main() {
         "two-level nested tuple payload destructure must be exhaustive: {errors:?}"
     );
 }
+
+#[test]
+fn empty_enum_match_has_never_type_and_inhabited_matches_are_rejected() {
+    let (errors, _) = parse_and_check(
+        "enum Empty {} fn impossible(value: Empty) -> i64 { match value {} } fn main() {}",
+    );
+    assert!(
+        errors.is_empty(),
+        "empty enum elimination must coerce to the result type: {errors:?}"
+    );
+    for source in [
+        "type Empty {} fn wrong(value: Empty) -> i64 { match value {} } fn main() {}",
+        "enum One { Only } fn wrong(value: One) -> i64 { match value {} } fn main() {}",
+        "fn wrong(value: bool) -> i64 { match value {} } fn main() {}",
+    ] {
+        let (errors, _) = parse_and_check(source);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::NonExhaustiveMatch),
+            "inhabited empty match must be rejected: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn enum_type_cannot_be_constructed_as_empty_record() {
+    for source in [
+        "enum Empty {} fn main() { let _value = Empty {}; }",
+        "enum One { Only } fn main() { let _value = One {}; }",
+    ] {
+        let (errors, _) = parse_and_check(source);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::TypeUsedAsValue),
+            "enum owner construction must be rejected: {errors:?}"
+        );
+    }
+    let (errors, _) = parse_and_check("type Empty {} fn main() { let _value = Empty {}; }");
+    assert!(
+        errors.is_empty(),
+        "empty records remain inhabited: {errors:?}"
+    );
+}

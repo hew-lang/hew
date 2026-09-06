@@ -1197,6 +1197,15 @@ pub const HEW_PRIORITY_LOW: i32 = 2;
 /// drop function that releases.
 pub type HewStateCloneFn = unsafe extern "C-unwind" fn(*const c_void) -> *mut c_void;
 
+/// Payload ownership required by the registered generated dispatch adapter.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HewDispatchOwnership {
+    #[default]
+    CopiedPayload,
+    UniqueEnvelope,
+}
+
 /// Actor struct layout. MUST match the C definition exactly.
 ///
 /// The `sched_link_next` field (intrusive MPSC next pointer) MUST be the
@@ -1592,6 +1601,8 @@ pub struct HewActor {
     /// **ABI note**: appended at the struct tail, after `state_drop_borrowed`,
     /// so no previously-mirrored offset (`id` at 8, `state` at 16) moves.
     pub parked_ask_channel: AtomicPtr<c_void>,
+    /// Published with the dispatch callback before the actor becomes visible.
+    pub dispatch_ownership: HewDispatchOwnership,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -3015,6 +3026,9 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
 /// All three public spawn functions build one of these and delegate to
 /// [`spawn_actor_internal`].
 struct ActorSpawnConfig {
+    dispatch_ownership: HewDispatchOwnership,
+    state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    state_clone_fn: Option<HewStateCloneFn>,
     state: *mut c_void,
     state_size: usize,
     dispatch: Option<HewDispatchFn>,
@@ -3070,6 +3084,11 @@ unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
 unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_void) {
     // SAFETY: caller guarantees these pointers are owned by the in-progress spawn.
     unsafe {
+        if !config.state.is_null() {
+            if let Some(drop) = config.state_drop_fn {
+                drop(config.state);
+            }
+        }
         libc::free(config.state);
         if !init_state.is_null() {
             libc::free(init_state);
@@ -3137,6 +3156,7 @@ fn build_spawned_actor(
     let rt = crate::runtime::rt_current();
 
     Box::new(HewActor {
+        dispatch_ownership: config.dispatch_ownership,
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: identity.id,
         state: config.state,
@@ -3149,8 +3169,8 @@ fn build_spawned_actor(
         init_state_size: config.state_size,
         coalesce_key_fn: config.coalesce_key_fn,
         terminate_fn: None,
-        state_drop_fn: None,
-        state_clone_fn: None,
+        state_drop_fn: config.state_drop_fn,
+        state_clone_fn: config.state_clone_fn,
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
         dispatch_active: AtomicBool::new(false),
@@ -3476,6 +3496,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: actor_state,
             state_size,
             dispatch,
@@ -3538,6 +3561,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: actor_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
@@ -3636,6 +3662,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: cloned_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
@@ -3648,6 +3677,115 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
             adopt: true,
         })
     }
+}
+
+/// Publish initialized native state together with both lifetime callbacks.
+///
+/// # Safety
+/// State is a unique malloc allocation of `size` bytes, with initialized
+/// fields described by `state_drop` and `state_clone`. Callbacks and dispatch
+/// remain valid for the actor's lifetime. The function consumes state on every
+/// outcome. `fault` is a writable, initially null fault slot.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "private generated actor ABI publishes one complete state contract"
+)]
+pub unsafe extern "C" fn hew_actor_spawn_native(
+    state: *mut c_void,
+    size: usize,
+    dispatch: HewDispatchFn,
+    state_drop: unsafe extern "C" fn(*mut c_void),
+    state_clone: HewStateCloneFn,
+    capacity: i32,
+    overflow: i32,
+    cap_bytes: usize,
+    fault: *mut *mut crate::fault::HewFault,
+) -> crate::lifetime::local_handles::HewLocalPidId {
+    // SAFETY: constructors return an owned native mailbox.
+    let mailbox = unsafe {
+        if capacity > 0 {
+            mailbox::hew_mailbox_new_with_policy(
+                usize::try_from(capacity).unwrap_or(usize::MAX),
+                parse_overflow_policy(overflow),
+            )
+        } else {
+            mailbox::hew_mailbox_new()
+        }
+    };
+    // SAFETY: ownership and callbacks are supplied atomically before publication.
+    let actor = unsafe {
+        spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
+            state_drop_fn: Some(state_drop),
+            state_clone_fn: Some(state_clone),
+            state,
+            state_size: size,
+            dispatch: Some(dispatch),
+            sys_dispatch: None,
+            mailbox: mailbox.cast(),
+            budget: HEW_MSG_BUDGET,
+            coalesce_key_fn: None,
+            cycle_capable: false,
+            cap_bytes,
+            adopt: true,
+        })
+    };
+    if actor.is_null() {
+        // SAFETY: the generated caller provides a writable empty fault slot.
+        unsafe {
+            *fault = crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
+        };
+        crate::lifetime::local_handles::HewLocalPidId::INVALID
+    } else {
+        // SAFETY: successful publication returns a live actor with a stable token.
+        unsafe { (*actor).local_pid_id }
+    }
+}
+
+/// Transfer one native message envelope through a stable actor incarnation.
+///
+/// # Safety
+/// `envelope` carries one unique caller-owned reference. This function consumes
+/// it on every outcome. Its payload and destructor describe the target protocol.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn send_native_envelope(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+) -> i32 {
+    let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        // SAFETY: this outcome still owns the transferred reference.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        return HewError::ErrActorStopped as i32;
+    };
+    let delivered = live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the send guard pins this exact actor and its mailbox.
+        let a = unsafe { &*actor };
+        if actor_send_is_terminal(a) || crate::deterministic::check_drop_fault(a.id) {
+            // SAFETY: no queue owns the envelope on this path.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+            return if actor_send_is_terminal(a) {
+                HewError::ErrActorStopped as i32
+            } else {
+                0
+            };
+        }
+        // SAFETY: the mailbox consumes the reference on all enqueue outcomes.
+        let status =
+            unsafe { mailbox::hew_mailbox_send_aliased(a.mailbox.cast(), message, envelope) };
+        if status == 0 {
+            // SAFETY: a message reached the live, pinned actor's mailbox.
+            unsafe { schedule_actor_after_enqueue(actor, a, message) };
+        }
+        status
+    });
+    delivered.unwrap_or_else(|| {
+        // SAFETY: lookup failed before the closure could consume the reference.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        HewError::ErrActorStopped as i32
+    })
 }
 
 /// WASM fork of [`hew_actor_spawn_opts_adopt`]. Same contract.
@@ -3699,6 +3837,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: cloned_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
@@ -3742,6 +3883,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: actor_state,
             state_size,
             dispatch,
@@ -7444,6 +7588,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: actor_state,
             state_size,
             dispatch,
@@ -7482,6 +7629,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: actor_state,
             state_size,
             dispatch,
@@ -7548,6 +7698,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            state_drop_fn: None,
+            state_clone_fn: None,
             state: actor_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
@@ -8410,6 +8563,7 @@ pub mod composition_test_support {
 
     fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         Box::into_raw(Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: u64::MAX - 2_848,
             state: ptr::null_mut(),
@@ -10065,6 +10219,7 @@ mod tests {
             let mailbox = mailbox::hew_mailbox_new();
             assert!(!mailbox.is_null());
             let actor = Box::into_raw(Box::new(HewActor {
+                dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
                 state: ptr::null_mut(),
@@ -11164,6 +11319,7 @@ mod tests {
         let spawn_serial = allocate_actor_serial().expect("serial space is not exhausted");
         let actor_id = crate::pid::next_actor_id(spawn_serial).expect("serial is representable");
         let actor = Box::into_raw(Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
             state: ptr::null_mut(),
@@ -15947,6 +16103,7 @@ mod tests {
         let spawn_serial = allocate_actor_serial().expect("serial space is not exhausted");
         let actor_id = crate::pid::next_actor_id(spawn_serial).expect("serial is representable");
         let actor = Box::into_raw(Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
             state: ptr::null_mut(),

@@ -15,6 +15,7 @@ mod non_root_module_inference_scope {
         return_ty: Option<TypeExpr>,
     ) -> Module {
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -156,6 +157,7 @@ mod non_root_module_inference_scope {
 
         // Root module also has a function with `_` param — should also error.
         let root_fn = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -212,6 +214,7 @@ mod non_root_module_inference_scope {
 
         let make_infer_fn = |name: &str, span_start: usize| -> Spanned<Item> {
             let fd = FnDecl {
+                origin: hew_parser::ast::DeclarationOrigin::Authored,
                 attributes: vec![],
                 is_async: false,
                 is_generator: false,
@@ -292,6 +295,7 @@ mod non_root_module_inference_scope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -371,6 +375,7 @@ mod non_root_module_inference_scope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -630,6 +635,7 @@ mod non_root_module_inference_scope {
             lang_item: None,
         };
         let greeter = TypeDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Private,
             kind: TypeDeclKind::Struct,
             name: "Greeter".to_string(),
@@ -837,6 +843,7 @@ mod non_root_module_inference_scope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,

@@ -1,0 +1,739 @@
+//! Native actor adapters over verified state, message and callable contracts.
+
+use super::*;
+use hew_mir::physical::{ActorId, ActorOperation, SemActor, SemActorHandler};
+use inkwell::types::StructType;
+
+fn symbol(actor: ActorId, suffix: &str) -> String {
+    format!("__hew_actor_{}_{}", actor.0, suffix)
+}
+
+fn message_symbol(actor: ActorId, message: u32) -> String {
+    symbol(actor, &format!("message_{message}_drop"))
+}
+
+fn message_type<'ctx>(
+    module: &PhysicalModule,
+    ctx: &'ctx Context,
+    handler: &SemActorHandler,
+) -> CodegenResult<StructType<'ctx>> {
+    let mut fields = vec![ctx.i8_type().into()];
+    for ty in &handler.params {
+        fields.push(llvm_type(
+            ctx,
+            &module
+                .target
+                .layout(ty)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("actor message field lacks its target layout".into())
+                })?
+                .repr,
+        )?);
+    }
+    Ok(ctx.struct_type(&fields, false))
+}
+
+fn allocate<'ctx>(
+    module: &PhysicalModule,
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    size: u64,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let target = TargetData::create(&module.target.data_layout);
+    let size_ty = ctx.ptr_sized_int_type(&target, None);
+    let allocate = get_or_declare_external(
+        llvm,
+        "hew_actor_payload_alloc",
+        ctx.ptr_type(AddressSpace::default())
+            .fn_type(&[size_ty.into()], false),
+    )?;
+    builder
+        .build_call(
+            allocate,
+            &[size_ty.const_int(size, false).into()],
+            "actor.allocate",
+        )
+        .llvm_ctx("allocate actor wrapper")?
+        .try_as_basic_value()
+        .basic()
+        .map(BasicValueEnum::into_pointer_value)
+        .ok_or_else(|| CodegenError::FailClosed("actor allocation returned void".into()))
+}
+
+impl<'ctx> ModuleEmitter<'ctx, '_> {
+    pub(super) fn emit_actor_runtime_start(
+        &self,
+        builder: &Builder<'ctx>,
+        wrapper: FunctionValue<'ctx>,
+    ) -> CodegenResult<()> {
+        if self.module.actors.is_empty() {
+            return Ok(());
+        }
+        let start = get_or_declare_external(
+            &self.llvm,
+            "hew_sched_init",
+            self.ctx.i32_type().fn_type(&[], false),
+        )?;
+        let status = builder
+            .build_call(start, &[], "runtime.start")
+            .llvm_ctx("start required actor runtime")?
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let ready = self.ctx.append_basic_block(wrapper, "runtime.ready");
+        let failed = self.ctx.append_basic_block(wrapper, "runtime.failed");
+        let ok = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "runtime.ok",
+            )
+            .llvm_ctx("check required runtime startup")?;
+        builder
+            .build_conditional_branch(ok, ready, failed)
+            .llvm_ctx("enter source root after runtime startup")?;
+        builder.position_at_end(failed);
+        builder
+            .build_return(Some(&status))
+            .llvm_ctx("return runtime startup failure")?;
+        builder.position_at_end(ready);
+        Ok(())
+    }
+
+    pub(super) fn emit_actor_runtime_finish(
+        &self,
+        builder: &Builder<'ctx>,
+        status: IntValue<'ctx>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        if self.module.actors.is_empty() {
+            return Ok(status);
+        }
+        let finish = get_or_declare_external(
+            &self.llvm,
+            "hew_native_runtime_finish",
+            self.ctx
+                .i32_type()
+                .fn_type(&[self.ctx.i32_type().into()], false),
+        )?;
+        builder
+            .build_call(finish, &[status.into()], "runtime.finish")
+            .llvm_ctx("drain actor work and finish process runtime")?
+            .try_as_basic_value()
+            .basic()
+            .map(BasicValueEnum::into_int_value)
+            .ok_or_else(|| CodegenError::FailClosed("runtime finish returned void".into()))
+    }
+
+    pub(super) fn emit_actor_descriptors(&self) -> CodegenResult<()> {
+        for actor in &self.module.actors {
+            self.emit_actor_state_callbacks(actor)?;
+            for handler in &actor.handlers {
+                self.emit_actor_message_drop(actor, handler)?;
+            }
+            self.emit_actor_dispatch(actor)?;
+        }
+        Ok(())
+    }
+
+    fn emit_actor_state_callbacks(&self, actor: &SemActor) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let recipe = self
+            .module
+            .actor_recipes
+            .get(&actor.state_ty)
+            .ok_or_else(|| CodegenError::FailClosed("actor state lacks its value recipe".into()))?;
+        let layout = self
+            .module
+            .target
+            .layout(&actor.state_ty)
+            .ok_or_else(|| CodegenError::FailClosed("actor state lacks its layout".into()))?;
+        let drop = self.llvm.add_function(
+            &symbol(actor.id, "state_drop"),
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(drop, "entry"));
+        if let Some(action) = recipe.destroy {
+            let loaded = builder
+                .build_load(
+                    llvm_type(self.ctx, &layout.repr)?,
+                    drop.get_first_param().unwrap().into_pointer_value(),
+                    "actor.state",
+                )
+                .llvm_ctx("load initialized actor state")?;
+            ValueEmitter {
+                module: self.module,
+                ctx: self.ctx,
+                llvm: &self.llvm,
+                builder: &builder,
+                value: drop,
+            }
+            .destroy_loaded_value(loaded, layout, action)?;
+        }
+        builder
+            .build_return(None)
+            .llvm_ctx("finish actor state destruction")?;
+        let clone = self.llvm.add_function(
+            &symbol(actor.id, "state_clone"),
+            ptr.fn_type(&[ptr.into()], false),
+            Some(Linkage::Internal),
+        );
+        builder.position_at_end(self.ctx.append_basic_block(clone, "entry"));
+        if let Some(action) = recipe.clone {
+            let loaded = builder
+                .build_load(
+                    llvm_type(self.ctx, &layout.repr)?,
+                    clone.get_first_param().unwrap().into_pointer_value(),
+                    "actor.state",
+                )
+                .llvm_ctx("load actor state snapshot source")?;
+            let copied = ValueEmitter {
+                module: self.module,
+                ctx: self.ctx,
+                llvm: &self.llvm,
+                builder: &builder,
+                value: clone,
+            }
+            .clone_loaded_value(loaded, layout, action)?;
+            let allocation = allocate(self.module, self.ctx, &self.llvm, &builder, layout.size)?;
+            builder
+                .build_store(allocation, copied)
+                .llvm_ctx("initialize independent actor snapshot")?;
+            builder
+                .build_return(Some(&allocation))
+                .llvm_ctx("return actor state snapshot")?;
+        } else {
+            builder
+                .build_return(Some(&ptr.const_null()))
+                .llvm_ctx("refuse copying non-copyable actor state")?;
+        }
+        Ok(())
+    }
+
+    fn emit_actor_message_drop(
+        &self,
+        actor: &SemActor,
+        handler: &SemActorHandler,
+    ) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let message_ty = message_type(self.module, self.ctx, handler)?;
+        let function = self.llvm.add_function(
+            &message_symbol(actor.id, handler.message_id),
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        let payload = function.get_first_param().unwrap().into_pointer_value();
+        let active = builder
+            .build_load(self.ctx.i8_type(), payload, "message.active")
+            .llvm_ctx("read message ownership")?
+            .into_int_value();
+        let destroy = self.ctx.append_basic_block(function, "destroy");
+        let done = self.ctx.append_basic_block(function, "done");
+        let live = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                active,
+                self.ctx.i8_type().const_zero(),
+                "message.live",
+            )
+            .llvm_ctx("test queued message owner")?;
+        builder
+            .build_conditional_branch(live, destroy, done)
+            .llvm_ctx("drop only unconsumed message payload")?;
+        builder.position_at_end(destroy);
+        builder
+            .build_store(payload, self.ctx.i8_type().const_zero())
+            .llvm_ctx("consume queued message owner")?;
+        for (index, ty) in handler.params.iter().enumerate().rev() {
+            let recipe = &self.module.actor_recipes[ty];
+            if let Some(action) = recipe.destroy {
+                let layout = self.module.target.layout(ty).ok_or_else(|| {
+                    CodegenError::FailClosed("message drop lacks field layout".into())
+                })?;
+                let slot = builder
+                    .build_struct_gep(
+                        message_ty,
+                        payload,
+                        u32::try_from(index + 1).map_err(|_| {
+                            CodegenError::FailClosed("message field index exceeds u32".into())
+                        })?,
+                        "message.field",
+                    )
+                    .llvm_ctx("address queued field")?;
+                let loaded = builder
+                    .build_load(llvm_type(self.ctx, &layout.repr)?, slot, "message.value")
+                    .llvm_ctx("load queued field")?;
+                ValueEmitter {
+                    module: self.module,
+                    ctx: self.ctx,
+                    llvm: &self.llvm,
+                    builder: &builder,
+                    value: function,
+                }
+                .destroy_loaded_value(loaded, layout, action)?;
+            }
+        }
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish queued message destruction")?;
+        builder.position_at_end(done);
+        builder
+            .build_return(None)
+            .llvm_ctx("return from queued message drop")?;
+        Ok(())
+    }
+
+    fn emit_actor_dispatch(&self, actor: &SemActor) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let dispatch = self.llvm.add_function(
+            &symbol(actor.id, "dispatch"),
+            ptr.fn_type(
+                &[
+                    ptr.into(),
+                    ptr.into(),
+                    self.ctx.i32_type().into(),
+                    ptr.into(),
+                    size_ty.into(),
+                    self.ctx.i32_type().into(),
+                ],
+                false,
+            ),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(dispatch, "entry"));
+        let ctx = dispatch.get_nth_param(0).unwrap().into_pointer_value();
+        let state = dispatch.get_nth_param(1).unwrap().into_pointer_value();
+        let message = dispatch.get_nth_param(2).unwrap().into_int_value();
+        let payload = dispatch.get_nth_param(3).unwrap().into_pointer_value();
+        let fault = builder
+            .build_alloca(ptr, "handler.fault")
+            .llvm_ctx("allocate synchronous handler fault")?;
+        builder
+            .build_store(fault, ptr.const_null())
+            .llvm_ctx("initialize handler fault")?;
+        let done = self.ctx.append_basic_block(dispatch, "done");
+        let unknown = self.ctx.append_basic_block(dispatch, "unknown.message");
+        let handlers: Vec<_> = actor
+            .handlers
+            .iter()
+            .map(|handler| {
+                (
+                    handler,
+                    self.ctx.append_basic_block(dispatch, &handler.name),
+                )
+            })
+            .collect();
+        let cases: Vec<_> = handlers
+            .iter()
+            .map(|(handler, block)| {
+                (
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(handler.message_id), false),
+                    *block,
+                )
+            })
+            .collect();
+        builder
+            .build_switch(message, unknown, &cases)
+            .llvm_ctx("dispatch exact actor protocol")?;
+        builder.position_at_end(unknown);
+        let create_fault = external_fault_new(self.ctx, &self.llvm)?;
+        let invalid = builder
+            .build_call(
+                create_fault,
+                &[self.ctx.i32_type().const_int(1, false).into()],
+                "protocol.fault",
+            )
+            .llvm_ctx("create invalid protocol fault")?
+            .try_as_basic_value()
+            .basic()
+            .unwrap();
+        builder
+            .build_store(fault, invalid)
+            .llvm_ctx("retain protocol fault")?;
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("complete invalid protocol dispatch")?;
+        for (handler, block) in handlers {
+            builder.position_at_end(block);
+            let callable = callable(self.module, handler.callable)?;
+            let message_ty = message_type(self.module, self.ctx, handler)?;
+            let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
+            for (index, parameter) in callable.params.iter().skip(1).enumerate() {
+                let slot = builder
+                    .build_struct_gep(
+                        message_ty,
+                        payload,
+                        u32::try_from(index + 1).map_err(|_| {
+                            CodegenError::FailClosed("message index exceeds u32".into())
+                        })?,
+                        "handler.argument",
+                    )
+                    .llvm_ctx("address handler argument")?;
+                args.push(match parameter.carrier {
+                    ParamCarrier::Indirect => slot.into(),
+                    ParamCarrier::Direct => builder
+                        .build_load(
+                            llvm_type(self.ctx, &parameter.layout.repr)?,
+                            slot,
+                            "handler.value",
+                        )
+                        .llvm_ctx("load handler argument")?
+                        .into(),
+                });
+            }
+            // Every field now transfers to the private body's cleanup graph.
+            builder
+                .build_store(payload, self.ctx.i8_type().const_zero())
+                .llvm_ctx("transfer message fields to handler")?;
+            if callable.return_layout.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "actor replies require the suspending reply adapter".into(),
+                ));
+            }
+            args.push(fault.into());
+            builder
+                .build_call(self.functions[&handler.callable], &args, "handler.status")
+                .llvm_ctx("call checked actor body")?;
+            builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("complete actor handler")?;
+        }
+        builder.position_at_end(done);
+        let set_fault = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_dispatch_set_fault",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
+        )?;
+        let returned_fault = builder
+            .build_load(ptr, fault, "returned.fault")
+            .llvm_ctx("load actor dispatch fault")?;
+        builder
+            .build_call(set_fault, &[ctx.into(), returned_fault.into()], "")
+            .llvm_ctx("transfer handler fault to scheduler")?;
+        builder
+            .build_return(Some(&ptr.const_null()))
+            .llvm_ctx("complete synchronous strict actor turn")?;
+        Ok(())
+    }
+}
+
+impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn emit_actor_call(
+        &self,
+        operation: ActorOperation,
+        transfers: &[ArgumentTransfer],
+        result: Option<StorageId>,
+        normal: &PhysicalEdge,
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let id = match operation {
+            ActorOperation::Spawn(id) | ActorOperation::Send { actor: id, .. } => id,
+        };
+        let actor =
+            self.module.actors.get(id.0 as usize).ok_or_else(|| {
+                CodegenError::FailClosed("missing native actor descriptor".into())
+            })?;
+        let mut sources = Vec::new();
+        for transfer in transfers {
+            let ArgumentTransfer::Move(source) = transfer else {
+                return Err(CodegenError::FailClosed(
+                    "actor boundary lacks payload transfer".into(),
+                ));
+            };
+            sources.push(*source);
+        }
+        let status = match operation {
+            ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
+            ActorOperation::Send { message, .. } => {
+                self.emit_actor_send(actor, message, &sources)?
+            }
+        };
+        for source in sources {
+            self.clear_owned(source)?;
+        }
+        self.builder
+            .build_store(self.active_status, status)
+            .llvm_ctx("record actor boundary status")?;
+        self.emit_call_outcome(status, result, normal, unwind)
+    }
+
+    fn emit_actor_spawn(
+        &self,
+        actor: &SemActor,
+        sources: &[StorageId],
+        result: Option<StorageId>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let result = result
+            .ok_or_else(|| CodegenError::FailClosed("spawn lacks stable handle output".into()))?;
+        let layout = self
+            .module
+            .target
+            .layout(&actor.state_ty)
+            .ok_or_else(|| CodegenError::FailClosed("missing actor state layout".into()))?;
+        let state = allocate(self.module, self.ctx, self.llvm, &self.builder, layout.size)?;
+        for (index, source) in sources.iter().take(actor.fields.len()).enumerate() {
+            let field = self
+                .builder
+                .build_struct_gep(
+                    llvm_type(self.ctx, &layout.repr)?.into_struct_type(),
+                    state,
+                    u32::try_from(index)
+                        .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?,
+                    "spawn.field",
+                )
+                .llvm_ctx("address initial actor field")?;
+            self.builder
+                .build_store(field, self.load(*source, "spawn.value")?)
+                .llvm_ctx("initialize actor field")?;
+        }
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let init_failure = if let Some(init) = actor.init {
+            let callable = callable(self.module, init)?;
+            let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
+            for (source, parameter) in sources
+                .iter()
+                .skip(actor.fields.len())
+                .zip(callable.params.iter().skip(1))
+            {
+                arguments.push(match parameter.carrier {
+                    ParamCarrier::Direct => self.load(*source, "init.argument")?.into(),
+                    ParamCarrier::Indirect => self.slots[source.0 as usize].into(),
+                });
+            }
+            arguments.push(self.active_fault.into());
+            let status = self
+                .builder
+                .build_call(self.functions[&init], &arguments, "actor.init.status")
+                .llvm_ctx("initialize actor before publication")?
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
+            let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
+            let failed = self.ctx.append_basic_block(self.value, "actor.init.failed");
+            let ok = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "actor.init.ok",
+                )
+                .llvm_ctx("check actor initialization")?;
+            self.builder
+                .build_conditional_branch(ok, initialized, failed)
+                .llvm_ctx("publish only successfully initialized actors")?;
+            self.builder.position_at_end(failed);
+            let drop = self
+                .llvm
+                .get_function(&symbol(actor.id, "state_drop"))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("actor init cleanup lacks state destructor".into())
+                })?;
+            self.builder
+                .build_call(drop, &[state.into()], "")
+                .llvm_ctx("destroy unpublished actor state")?;
+            let free = external_drop(self.ctx, self.llvm, "free")?;
+            self.builder
+                .build_call(free, &[state.into()], "")
+                .llvm_ctx("free unpublished actor state")?;
+            let joined = self
+                .ctx
+                .append_basic_block(self.value, "actor.spawn.complete");
+            self.builder
+                .build_unconditional_branch(joined)
+                .llvm_ctx("propagate actor init failure")?;
+            self.builder.position_at_end(initialized);
+            Some((status, failed, joined))
+        } else {
+            None
+        };
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let spawn = get_or_declare_external(
+            self.llvm,
+            "hew_actor_spawn_native",
+            size_ty.fn_type(
+                &[
+                    ptr.into(),
+                    size_ty.into(),
+                    ptr.into(),
+                    ptr.into(),
+                    ptr.into(),
+                    self.ctx.i32_type().into(),
+                    self.ctx.i32_type().into(),
+                    size_ty.into(),
+                    ptr.into(),
+                ],
+                false,
+            ),
+        )?;
+        let callback = |suffix| {
+            self.llvm
+                .get_function(&symbol(actor.id, suffix))
+                .map(|function| function.as_global_value().as_pointer_value())
+                .ok_or_else(|| CodegenError::FailClosed("missing actor callback".into()))
+        };
+        let overflow = match actor.overflow {
+            hew_mir::physical::SemActorOverflow::Block => 0,
+            hew_mir::physical::SemActorOverflow::DropNew => 1,
+            hew_mir::physical::SemActorOverflow::DropOld => 2,
+            hew_mir::physical::SemActorOverflow::Fail => 3,
+        };
+        let token = self
+            .builder
+            .build_call(
+                spawn,
+                &[
+                    state.into(),
+                    size_ty.const_int(layout.size, false).into(),
+                    callback("dispatch")?.into(),
+                    callback("state_drop")?.into(),
+                    callback("state_clone")?.into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(actor.mailbox_capacity.unwrap_or(0)), false)
+                        .into(),
+                    self.ctx.i32_type().const_int(overflow, false).into(),
+                    size_ty
+                        .const_int(actor.max_heap_bytes.unwrap_or(0), false)
+                        .into(),
+                    self.active_fault.into(),
+                ],
+                "spawn.token",
+            )
+            .llvm_ctx("publish initialized actor")?
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        self.store(result, token.into())?;
+        let failed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                token,
+                size_ty.const_zero(),
+                "spawn.failed",
+            )
+            .llvm_ctx("check actor publication")?;
+        let status = self
+            .builder
+            .build_select(
+                failed,
+                self.ctx.i32_type().const_int(1, false),
+                self.ctx.i32_type().const_zero(),
+                "spawn.status",
+            )
+            .llvm_ctx("select actor publication status")?
+            .into_int_value();
+        if let Some((init_status, failed, joined)) = init_failure {
+            let published = self.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::FailClosed("actor publication has no LLVM block".into())
+            })?;
+            self.builder
+                .build_unconditional_branch(joined)
+                .llvm_ctx("join actor publication outcome")?;
+            self.builder.position_at_end(joined);
+            let result = self
+                .builder
+                .build_phi(self.ctx.i32_type(), "actor.spawn.status")
+                .llvm_ctx("join initialization and publication statuses")?;
+            result.add_incoming(&[(&init_status, failed), (&status, published)]);
+            Ok(result.as_basic_value().into_int_value())
+        } else {
+            Ok(status)
+        }
+    }
+
+    fn emit_actor_send(
+        &self,
+        actor: &SemActor,
+        message: u32,
+        sources: &[StorageId],
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let handler = actor
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == message)
+            .ok_or_else(|| CodegenError::FailClosed("send lacks its protocol member".into()))?;
+        let message_ty = message_type(self.module, self.ctx, handler)?;
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let size = target.get_abi_size(&message_ty);
+        let payload = allocate(self.module, self.ctx, self.llvm, &self.builder, size)?;
+        self.builder
+            .build_store(payload, self.ctx.i8_type().const_int(1, false))
+            .llvm_ctx("initialize message ownership")?;
+        for (index, source) in sources.iter().skip(1).enumerate() {
+            let slot = self
+                .builder
+                .build_struct_gep(
+                    message_ty,
+                    payload,
+                    u32::try_from(index + 1).map_err(|_| {
+                        CodegenError::FailClosed("message index exceeds u32".into())
+                    })?,
+                    "send.field",
+                )
+                .llvm_ctx("address transferred message field")?;
+            self.builder
+                .build_store(slot, self.load(*source, "send.value")?)
+                .llvm_ctx("initialize transferred message field")?;
+        }
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let send = get_or_declare_external(
+            self.llvm,
+            "hew_actor_send_native",
+            self.ctx.i32_type().fn_type(
+                &[
+                    size_ty.into(),
+                    self.ctx.i32_type().into(),
+                    ptr.into(),
+                    size_ty.into(),
+                    ptr.into(),
+                    ptr.into(),
+                ],
+                false,
+            ),
+        )?;
+        let drop = self
+            .llvm
+            .get_function(&message_symbol(actor.id, message))
+            .ok_or_else(|| CodegenError::FailClosed("message lacks its destructor".into()))?;
+        self.builder
+            .build_call(
+                send,
+                &[
+                    self.load(sources[0], "send.token")?.into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(message), false)
+                        .into(),
+                    payload.into(),
+                    size_ty.const_int(size, false).into(),
+                    drop.as_global_value().as_pointer_value().into(),
+                    self.active_fault.into(),
+                ],
+                "send.status",
+            )
+            .llvm_ctx("submit owned native message")?
+            .try_as_basic_value()
+            .basic()
+            .map(BasicValueEnum::into_int_value)
+            .ok_or_else(|| CodegenError::FailClosed("send returned void".into()))
+    }
+}

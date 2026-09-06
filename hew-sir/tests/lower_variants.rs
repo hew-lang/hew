@@ -41,6 +41,83 @@ fn assert_main_lowered(lowered: &hew_sir::LoweredModule) {
 }
 
 #[test]
+fn empty_enum_vectors_and_exhaustive_empty_matches_lower() {
+    let lowered = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/empty-enum-values.hew"
+    ));
+    assert_main_lowered(&lowered);
+    let impossible = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "impossible")
+        .unwrap_or_else(|| panic!("empty-match body did not lower: {:#?}", lowered.statuses));
+    assert!(impossible.blocks.iter().any(|block| {
+        matches!(&block.terminator, SemTerminator::SwitchVariant { arms, .. } if arms.is_empty())
+    }));
+    let shape = lowered
+        .module
+        .variant_shapes
+        .iter()
+        .find(|shape| shape.variants.is_empty())
+        .unwrap();
+    assert!(
+        hew_sir::variant_field_recipes(
+            shape.id,
+            0,
+            &shape.enum_ty,
+            &lowered.module.variant_shapes,
+            &lowered.module.type_facts,
+        )
+        .is_err(),
+        "an empty enum has no payload to construct or extract"
+    );
+    let mut forged = lowered.module.clone();
+    forged.functions[0].blocks[0].ops.insert(
+        0,
+        hew_sir::SemOp {
+            id: hew_sir::OpId(u32::MAX),
+            kind: SemOpKind::VariantMake {
+                shape: shape.id,
+                variant: 0,
+                fields: Vec::new(),
+            },
+            results: vec![hew_sir::ValueDef {
+                id: hew_sir::ValueId(u32::MAX),
+                ty: shape.enum_ty.clone(),
+                own: hew_sir::OwnKind::None,
+            }],
+            provenance: hew_sir::Provenance::Synthesized,
+        },
+    );
+    assert!(verify_module(&forged).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("variant 0 is out of bounds")
+    )));
+}
+
+#[test]
+fn empty_enum_cannot_be_constructed_as_a_record_or_variant() {
+    for expression in [
+        "QuietOutput {}",
+        "QuietOutput.Missing",
+        "QuietOutput.Missing()",
+    ] {
+        let parsed = hew_parser::parse(&format!(
+            "enum QuietOutput {{}} fn main() {{ let output = {expression}; }}"
+        ));
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let facts = checker.check_program(&parsed.program);
+        assert!(
+            !facts.errors.is_empty(),
+            "admitted impossible constructor {expression}"
+        );
+    }
+}
+
+#[test]
 fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
     let lowered = lower_source(
         r#"

@@ -1,0 +1,30 @@
+machine Gate {
+    events { Decide { stay: bool }, }
+    emits { Trace { text: string }, }
+    state Closed {
+        entry { emit Trace { text: "enter:closed" }; }
+        exit { emit Trace { text: "exit:closed" }; }
+    },
+    state Opened {
+        entry { emit Trace { text: "enter:opened" }; }
+    },
+    on Decide: Closed => _ {
+        emit Trace { text: "body" };
+        if event.stay { .Closed } else { .Opened }
+    }
+    default { state }
+}
+
+fn show(report: GateStep) {
+    for output in report.outputs {
+        match output { .Trace { text } => println(text), }
+    }
+}
+
+fn main() {
+    var gate: Gate = .Closed;
+    show(gate.step(.Decide { stay: true }));
+    println(gate.state_name());
+    show(gate.step(.Decide { stay: false }));
+    println(gate.state_name());
+}

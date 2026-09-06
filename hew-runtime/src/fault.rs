@@ -24,6 +24,12 @@ pub struct HewFault {
     secondary_diagnostics: String,
 }
 
+impl HewFault {
+    pub(crate) fn code(&self) -> i32 {
+        self.code
+    }
+}
+
 /// Create an owned logical-failure code. Unknown codes report as `UnknownFault`.
 ///
 /// Returns one owner, released by [`hew_fault_drop`]. Allocation failure remains

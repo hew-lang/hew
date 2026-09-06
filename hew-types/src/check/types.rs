@@ -280,6 +280,10 @@ pub enum ResultReturnKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
+    /// Ordinary checked program produced by machine normalization, when present.
+    pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
+    /// Checked local recovery semantics; HIR must consume this fact.
+    pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
@@ -522,6 +526,7 @@ pub struct TypeCheckOutput {
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
+    pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
@@ -1317,6 +1322,8 @@ impl Default for TypeCheckOutput {
     /// calls and therefore need no `method_call_rewrites` entries).
     fn default() -> Self {
         Self {
+            normalized_machines: None,
+            recovery_kinds: HashMap::new(),
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
@@ -1348,6 +1355,7 @@ impl Default for TypeCheckOutput {
             entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
+            suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
@@ -1550,6 +1558,16 @@ impl SpanKey {
     }
 }
 
+/// Semantic authority for one checked `handle` or `??` expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryKind {
+    Option,
+    Result,
+    Scope {
+        failure_ty: crate::resolved_ty::ResolvedTy,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallReceiverKind {
     /// The receiver spelling resolved to a lexical value binding. This fact
@@ -1691,6 +1709,7 @@ pub enum MethodCallRewrite {
         /// Checked source receiver contract. HIR carries writeback explicitly;
         /// an emitted body symbol is not a key for rediscovering this fact.
         requires_mutable_receiver: bool,
+        receiver_update: ReceiverUpdate,
         /// Exact receiver-in/result-out ownership identity, derived from the
         /// validated method signature rather than the symbol spelling.
         returns_receiver_identity: bool,
@@ -2376,6 +2395,16 @@ pub enum TypeDefKind {
     Record,
 }
 
+/// How a mutable method acquires the caller's receiver before evaluation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReceiverUpdate {
+    /// Transfer the receiver to the method and replace it on normal return.
+    #[default]
+    Replace,
+    /// Evaluate an independent copy; retain the original until normal return.
+    Staged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -2425,6 +2454,7 @@ pub struct FnSig {
     /// signatures whose receiver was declared by-value, and for free
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
+    pub receiver_update: ReceiverUpdate,
     /// `true` iff this signature was declared with a `consuming self` receiver
     /// (the terminal single-consume surface: `fn build(consuming self) -> T`, a
     /// `#[linear]` type's consuming method).
@@ -2477,6 +2507,7 @@ impl Default for FnSig {
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+            receiver_update: ReceiverUpdate::Replace,
             consumes_receiver: false,
             returns_receiver_identity: false,
             is_builtin_variant: false,
@@ -2583,6 +2614,8 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    /// Exact declarations whose values require an explicit disposition.
+    pub(super) must_use_types: HashSet<crate::DefId>,
     pub(super) env: TypeEnv,
     pub(super) subst: Substitution,
     pub(super) registry: TraitRegistry,
@@ -2783,7 +2816,7 @@ pub struct Checker {
     /// registration.  This is deliberately distinct from `fn_sigs`: a
     /// signature name is an open-set source lookup key, whereas this table is
     /// the checker-owned executable authority for compiler-provided builtins.
-    pub(super) runtime_builtin_targets: HashMap<String, crate::runtime_call::RuntimeCallFamily>,
+    pub(super) builtin_call_targets: HashMap<String, super::CallTarget>,
     /// Exact import bindings for free functions. Values retain the source
     /// declaration identity (`owner.OriginalName`), so an aliased import never
     /// causes the call-target boundary to manufacture `owner.Alias`.
@@ -2797,6 +2830,8 @@ pub struct Checker {
     /// owner set is the ambiguity authority at identifier use sites.
     pub(super) published_bare_const_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
+    pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
+    pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
@@ -2982,6 +3017,8 @@ pub struct Checker {
     /// distinguish an actor ask under `await` (valid) from an actor ask without
     /// `await` (rejected: requires explicit `await`).
     pub(super) inside_await_expr: bool,
+    /// Only these operand calls are explicitly awaited or forked.
+    pub(super) suspension_operands: HashSet<SpanKey>,
     pub(super) loop_depth: u32,
     /// Loop and label floors of a currently checked deferred body.
     pub(super) deferred_body: Option<(u32, usize)>,
@@ -3796,10 +3833,12 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
-            runtime_builtin_targets: HashMap::new(),
+            builtin_call_targets: HashMap::new(),
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),
             published_bare_const_owners: HashMap::new(),
+            recovery_kinds: HashMap::new(),
+            effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
@@ -3842,6 +3881,7 @@ impl Checker {
             current_fails: false,
             in_generator: false,
             inside_await_expr: false,
+            suspension_operands: HashSet::new(),
             loop_depth: 0,
             deferred_body: None,
             loop_labels: Vec::new(),
@@ -3929,6 +3969,7 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            must_use_types: HashSet::new(),
             has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),

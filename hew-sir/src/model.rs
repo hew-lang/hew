@@ -302,6 +302,8 @@ pub enum SemCallableKind {
     HewDirect,
     /// A closure body with an explicit environment receiver.
     HewClosure,
+    /// A private actor body entered with its exclusive initialized state seat.
+    HewActor(crate::ActorId),
 }
 
 /// ABI disposition for one semantic callable parameter.
@@ -588,6 +590,8 @@ pub fn runtime_variant_shape_refs(
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Demanded actors with exact state, body and receive protocol identities.
+    pub actors: Vec<crate::SemActor>,
     /// Exact resource release recipes; ownership remains in SSA and places.
     pub resources: BTreeMap<ResolvedTy, crate::ResourceRelease>,
     /// Concrete environments in canonical module-local identity order.
@@ -884,6 +888,14 @@ pub fn collection_value_dependencies(
                 "collection component `{}` has no semantic copy",
                 ty.user_facing()
             ));
+        }
+        if matches!(&ty, ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::LocalPid), args, ..
+        } if args.len() == 1)
+        {
+            // The protocol parameter describes an actor, not an embedded value.
+            // The handle's checked copy recipe is complete on its own.
+            continue;
         }
         if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&ty) {
             pending.extend_from_slice(arguments);
@@ -1508,6 +1520,14 @@ pub enum SemTerminator {
     },
     /// A call to a runtime symbol family. Per-operand ownership comes from the
     /// family's FFI ownership row, never from the symbol spelling.
+    ActorCall {
+        id: OpId,
+        operation: crate::ActorOperation,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
     RtCall {
         id: OpId,
         family: hew_types::RuntimeCallFamily,
@@ -1578,7 +1598,10 @@ impl SemTerminator {
         match self {
             Self::Panic { message, .. } => visit(OperandSlot(0), message),
             Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
-            Self::Call { args, .. } | Self::RtCall { args, .. } | Self::ValueCall { args, .. } => {
+            Self::Call { args, .. }
+            | Self::RtCall { args, .. }
+            | Self::ActorCall { args, .. }
+            | Self::ValueCall { args, .. } => {
                 for (index, argument) in args.iter().enumerate() {
                     visit(
                         OperandSlot(
@@ -1634,6 +1657,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::ActorCall {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::IndirectCall {
                 result: CallResult::Value(result),
                 ..
@@ -1666,6 +1693,10 @@ impl SemTerminator {
                 ..
             }
             | Self::RtCall {
+                result: CallResult::Unit,
+                ..
+            }
+            | Self::ActorCall {
                 result: CallResult::Unit,
                 ..
             }
@@ -1774,6 +1805,12 @@ impl SemTerminator {
                 ..
             }
             | Self::RtCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ActorCall {
                 args,
                 normal,
                 unwind,
@@ -1910,6 +1947,12 @@ impl SemTerminator {
                 unwind,
                 ..
             }
+            | Self::ActorCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
             | Self::ValueCall {
                 args,
                 normal,
@@ -2012,6 +2055,7 @@ impl SemTerminator {
             }
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. }
             | Self::IndirectCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
@@ -2093,6 +2137,7 @@ impl SemTerminator {
             }
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. }
             | Self::IndirectCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
@@ -2154,6 +2199,7 @@ impl SemTerminator {
                 .map(|arm| &arm.target),
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. }
             | Self::IndirectCall { normal, unwind, .. } => match slot.0 {
                 0 => Some(normal),
@@ -2224,6 +2270,7 @@ impl SemTerminator {
                 .map(|arm| &mut arm.target),
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. }
             | Self::IndirectCall { normal, unwind, .. } => match slot.0 {
                 0 => Some(normal),
@@ -2324,6 +2371,7 @@ impl SemTerminator {
             }
             Self::Call { args, normal, .. }
             | Self::RtCall { args, normal, .. }
+            | Self::ActorCall { args, normal, .. }
             | Self::ValueCall { args, normal, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < args.len()) =>
             {
@@ -2331,6 +2379,7 @@ impl SemTerminator {
             }
             Self::Call { args, normal, .. }
             | Self::RtCall { args, normal, .. }
+            | Self::ActorCall { args, normal, .. }
             | Self::ValueCall { args, normal, .. }
                 if usize::try_from(slot.0)
                     .is_ok_and(|slot| slot < args.len() + normal.args.len()) =>
@@ -2339,6 +2388,7 @@ impl SemTerminator {
             }
             Self::Call { .. }
             | Self::RtCall { .. }
+            | Self::ActorCall { .. }
             | Self::ValueCall { .. }
             | Self::IndirectCall { .. } => "call unwind-edge argument",
             Self::Suspend { inputs, .. }

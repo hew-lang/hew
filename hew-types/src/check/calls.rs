@@ -1444,8 +1444,8 @@ impl Checker {
         // executable identity comes from the typed registry populated during
         // builtin registration, never by reconstructing an ABI symbol from a
         // signature string at this call-site boundary.
-        if let Some(family) = self.runtime_builtin_targets.get(signature_key) {
-            return CallTarget::Runtime(*family);
+        if let Some(target) = self.builtin_call_targets.get(signature_key) {
+            return target.clone();
         }
         // These three layout-witness calls are compiler-intercepted ABI
         // helpers declared synthetically while checking the shipped channel
@@ -2797,7 +2797,10 @@ mod channel_layout_target_tests {
         checker.register_builtins();
         let mut registered_families = 0;
 
-        for (signature_key, family) in &checker.runtime_builtin_targets {
+        for (signature_key, registered) in &checker.builtin_call_targets {
+            let CallTarget::Runtime(family) = registered else {
+                continue;
+            };
             let target = checker.call_target_for_signature(signature_key);
             if crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
                 .is_some()

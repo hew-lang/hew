@@ -185,7 +185,10 @@ pub fn place_plan(
             return Err("projected places have duplicate identities".into());
         }
         match place.origin {
-            PlaceOrigin::Capture { environment, .. } => {
+            PlaceOrigin::Capture { environment, .. }
+            | PlaceOrigin::ActorState {
+                state: environment, ..
+            } => {
                 plan.bases.insert(place.id, PlaceBase::Value(environment));
                 continue;
             }

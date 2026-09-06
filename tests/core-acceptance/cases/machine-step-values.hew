@@ -1,0 +1,78 @@
+machine Handshake {
+    events {
+        Begin { nonce: i64, label: string },
+        Answer { nonce: i64 },
+        TimedOut,
+    }
+    emits {
+        Exchange { nonce: i64, label: string },
+        StartSession { label: string },
+        Refused { reason: string },
+    }
+    state Idle,
+    state Waiting { nonce: i64, label: string },
+    state Established { label: string },
+    state Failed { reason: string },
+
+    on Begin: Idle => Waiting {
+        emit Exchange { nonce: event.nonce, label: event.label };
+        .Waiting { nonce: event.nonce, label: event.label }
+    }
+    on Answer: Waiting => Established when event.nonce == self.nonce {
+        emit StartSession { label: self.label };
+        .Established { label: self.label }
+    }
+    on Answer: Waiting => Failed {
+        emit Refused { reason: "unexpected acknowledgement" };
+        .Failed { reason: "unexpected acknowledgement" }
+    }
+    on TimedOut: Waiting => Failed {
+        emit Refused { reason: self.label };
+        .Failed { reason: self.label }
+    }
+    default { state }
+}
+
+fn main() {
+    var first: Handshake = .Idle;
+    let opening = first.step(.Begin { nonce: 41, label: "hello".to_upper() });
+    var sibling = first;
+    let accepted = first.step(.Answer { nonce: 41 });
+    let rejected = sibling.step(.Answer { nonce: 40 });
+    println(first.state_name());
+    println(sibling.state_name());
+    for output in opening.outputs {
+        match output {
+            .Exchange { nonce, label } => println(f"exchange:{nonce}:{label}"),
+            _ => panic("wrong opening output"),
+        }
+    }
+    for output in accepted.outputs {
+        match output {
+            .StartSession { label } => println(f"accepted:{label}"),
+            _ => panic("wrong accepted output"),
+        }
+    }
+    for output in rejected.outputs {
+        match output {
+            .Refused { reason } => println(reason),
+            _ => panic("wrong rejected output"),
+        }
+    }
+    let retained = {
+        var timeout: Handshake = .Waiting { nonce: 9, label: "timeout".to_upper() };
+        timeout.step(.TimedOut)
+    };
+    for output in retained.outputs {
+        match output {
+            .Refused { reason } => println(reason),
+            _ => panic("wrong timeout output"),
+        }
+    }
+    let ignored = first.step(.TimedOut);
+    println(ignored.outputs.len());
+    match ignored.disposition {
+        .Ignored => println("ignored"),
+        .Taken => panic("terminal state accepted an input"),
+    }
+}

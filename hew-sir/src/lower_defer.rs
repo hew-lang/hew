@@ -213,7 +213,7 @@ impl Builder<'_, '_> {
         for place in used {
             if matches!(
                 self.places[place.0 as usize].origin,
-                PlaceOrigin::Capture { .. }
+                PlaceOrigin::Capture { .. } | PlaceOrigin::ActorState { .. }
             ) {
                 dependencies.insert(place);
                 continue;

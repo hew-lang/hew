@@ -93,6 +93,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         blocks: vec![],
     };
     sir::SemModule {
+        actors: Vec::new(),
         resources: BTreeMap::new(),
         closures: vec![],
         value_capabilities: BTreeMap::new(),

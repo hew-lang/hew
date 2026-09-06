@@ -239,6 +239,7 @@ pub struct SirDiagnostic {
 pub(crate) struct CallableContext<'a> {
     by_id: BTreeMap<CallableId, &'a SemCallable>,
     closures: &'a [crate::SemClosure],
+    actors: &'a [crate::SemActor],
 }
 
 /// Index an already-verified module's callable table.
@@ -250,9 +251,11 @@ pub(crate) struct CallableContext<'a> {
 pub(crate) fn callable_context<'a>(
     callables: &'a [SemCallable],
     closures: &'a [crate::SemClosure],
+    actors: &'a [crate::SemActor],
 ) -> CallableContext<'a> {
     CallableContext {
         closures,
+        actors,
         by_id: callables
             .iter()
             .map(|callable| (callable.id, callable))
@@ -355,9 +358,6 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
                 "concrete type `{}` has more than one variant descriptor",
                 shape.enum_ty.user_facing()
             ));
-        }
-        if shape.variants.is_empty() {
-            refuse("variant descriptor has no variants".to_string());
         }
         let mut variant_names = HashSet::new();
         for variant in &shape.variants {
@@ -890,7 +890,9 @@ fn check_function_with_context(
         ));
     }
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
-    if let Err(reason) = verify_capture_places(function, callable_context) {
+    if let Err(reason) = verify_capture_places(function, callable_context)
+        .and_then(|()| crate::actor::verify_places(function, callable_context.map(|c| c.actors)))
+    {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidCallable {
@@ -1004,6 +1006,7 @@ fn check_function_with_context(
         }
         if let SemTerminator::Call { id, .. }
         | SemTerminator::RtCall { id, .. }
+        | SemTerminator::ActorCall { id, .. }
         | SemTerminator::ValueCall { id, .. }
         | SemTerminator::IndirectCall { id, .. }
         | SemTerminator::CheckedBinary { id, .. }
@@ -1074,6 +1077,15 @@ fn check_function_with_context(
                 &mut diagnostics,
             );
             if let Some(result) = crate::projection::verify_operation(function, op, &types, facts)
+                .or_else(|| {
+                    crate::actor::verify_operation(
+                        function,
+                        op,
+                        &types,
+                        facts,
+                        callable_context.map(|c| c.actors),
+                    )
+                })
                 .or_else(|| verify_capture_operation(function, op, &types, facts, callable_context))
             {
                 if let Err(reason) = result {
@@ -1200,6 +1212,19 @@ fn verify_callable_table<'a>(
     module: &'a SemModule,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) -> CallableContext<'a> {
+    let mut actor_declarations = HashSet::new();
+    for actor in &module.actors {
+        let checked = actor.validate(module).and_then(|()| {
+            if actor_declarations.insert(&actor.declaration) {
+                Ok(())
+            } else {
+                Err("actor declaration is repeated".into())
+            }
+        });
+        if let Err(reason) = checked {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidTerminator { reason }));
+        }
+    }
     let mut instances = HashSet::new();
     for closure in &module.closures {
         let result = closure.validate(module).and_then(|()| {
@@ -1312,6 +1337,19 @@ fn verify_callable_table<'a>(
         }
         let expected_kind = if matches!(callable.instance, CallableInstance::Closure(_)) {
             SemCallableKind::HewClosure
+        } else if let SemCallableKind::HewActor(id) = callable.kind {
+            match module.actor(id) {
+                Some(actor)
+                    if actor.init == Some(callable.id)
+                        || actor
+                            .handlers
+                            .iter()
+                            .any(|handler| handler.callable == callable.id) =>
+                {
+                    SemCallableKind::HewActor(id)
+                }
+                _ => SemCallableKind::HewDirect,
+            }
         } else {
             SemCallableKind::HewDirect
         };
@@ -1331,7 +1369,10 @@ fn verify_callable_table<'a>(
                     ),
                 }));
             }
-            if parameter == 0 && matches!(callable.instance, CallableInstance::Closure(_)) {
+            if parameter == 0
+                && (matches!(callable.instance, CallableInstance::Closure(_))
+                    || matches!(callable.kind, SemCallableKind::HewActor(_)))
+            {
                 // The closure descriptor validates its exact receiver type,
                 // access permission and ownership together.
                 continue;
@@ -1459,6 +1500,7 @@ fn verify_callable_table<'a>(
     CallableContext {
         by_id,
         closures: &module.closures,
+        actors: &module.actors,
     }
 }
 
@@ -2129,6 +2171,7 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || module.actors.iter().any(|actor| actor.handle_ty == *ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
@@ -3450,6 +3493,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
+            | SemTerminator::ActorCall { .. }
             | SemTerminator::ValueCall { .. }
             | SemTerminator::IndirectCall { .. }
             | SemTerminator::Suspend { .. }
@@ -3658,6 +3702,49 @@ fn verify_terminator_shape(
 ) {
     let terminator = &block.terminator;
     match terminator {
+        SemTerminator::ActorCall {
+            id,
+            operation,
+            args,
+            result,
+            unwind,
+            ..
+        } => {
+            let check = (|| {
+                let context =
+                    callable_context.ok_or("actor boundary requires its module contracts")?;
+                let signature = operation.signature(context.actors, |id| {
+                    context
+                        .callable(id)
+                        .map(|callable| callable.signature.clone())
+                })?;
+                if args.len() != signature.params.len()
+                    || args.iter().zip(&signature.params).any(|(arg, param)| {
+                        arg.decision != crate::BoundaryDecision::Move
+                            || types.get(&arg.operand.value) != Some(&param.ty)
+                    })
+                {
+                    return Err(
+                        "actor boundary must transfer its complete typed payload".to_string()
+                    );
+                }
+                match result {
+                    crate::CallResult::Unit if signature.return_ty == ResolvedTy::Unit => {}
+                    crate::CallResult::Value(value)
+                        if value.ty == signature.return_ty
+                            && value.own == OwnKind::of_ty(&value.ty, variants.facts)? => {}
+                    _ => return Err("actor boundary result differs from its protocol".into()),
+                }
+                if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+                {
+                    return Err("actor boundary requires cleanup that propagates its fault".into());
+                }
+                Ok(())
+            })();
+            if let Err(reason) = check {
+                invalid_operation(function, *id, reason, diagnostics);
+            }
+        }
         SemTerminator::FinishDefer { next, .. } => {
             if !defer_drain_suffix(next.target, blocks, &mut BTreeSet::new()) {
                 diagnostics.push(diag(
@@ -4022,7 +4109,11 @@ fn uses_in_op(function: &SemFunction, op: &crate::SemOp) -> Vec<(ValueId, bool)>
     op.visit_operands(|_, operand| uses.push((operand.value, false)));
     op.kind.visit_places(|id| {
         if let Some(crate::PlaceDecl {
-            origin: crate::PlaceOrigin::Capture { environment, .. },
+            origin:
+                crate::PlaceOrigin::Capture { environment, .. }
+                | crate::PlaceOrigin::ActorState {
+                    state: environment, ..
+                },
             ..
         }) = function.places.iter().find(|place| place.id == id)
         {
@@ -4043,6 +4134,7 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     let normal_slots = match term {
         SemTerminator::Call { args, normal, .. }
         | SemTerminator::RtCall { args, normal, .. }
+        | SemTerminator::ActorCall { args, normal, .. }
         | SemTerminator::ValueCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()
         }
@@ -4333,7 +4425,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[]);
+        let context = callable_context(&callables, &[], &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -4352,7 +4444,7 @@ mod parameter_own_kind_tests {
     fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[]);
+        let context = callable_context(&callables, &[], &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -4370,7 +4462,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
-        let context = callable_context(&callables, &[]);
+        let context = callable_context(&callables, &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics =

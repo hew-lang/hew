@@ -1,0 +1,17 @@
+import "../../hew/machine_value_import_support/file_gate.hew";
+import tests.hew.machine_value_import_support.package_gate as remote;
+
+fn main() {
+    var left = file_gate();
+    var right = remote.package_gate();
+    let left_report: GateStep = left.step(.Open);
+    let right_report: remote.GateStep = right.step(.Open);
+    for output in left_report.outputs {
+        match output { .Changed { label } => println(label), }
+    }
+    for output in right_report.outputs {
+        match output { .Changed { label } => println(label), }
+    }
+    println(left.state_name());
+    println(right.state_name());
+}

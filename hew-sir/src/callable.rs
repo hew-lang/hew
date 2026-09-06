@@ -314,6 +314,7 @@ mod tests {
             service.require(required).unwrap();
         }
         SemModule {
+            actors: Vec::new(),
             callables: vec![parent, body],
             closures: vec![SemClosure {
                 id: ClosureId(0),

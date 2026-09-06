@@ -166,9 +166,14 @@ impl Checker {
         let prev_tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
         // chained binary operators) don't overflow.
+        let previous_await = self.inside_await_expr;
+        self.inside_await_expr = self
+            .suspension_operands
+            .contains(&SpanKey::in_module(span, self.current_module_idx));
         let result = stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
             self.synthesize_inner(expr, span)
         });
+        self.inside_await_expr = previous_await;
         self.tail_ok_armed = prev_tail_ok_armed;
         self.publish_checked_expression(expr, span, result)
     }
@@ -563,14 +568,6 @@ impl Checker {
 
             // Await
             Expr::Await(inner) => {
-                // Signal to check_named_method_fallback that an actor-ask method
-                // call under `await` is valid.  Save and restore so nested awaits
-                // (e.g. `await { await expr }`) do not clobber the outer flag.
-                let prev_inside_await = self.inside_await_expr;
-                self.inside_await_expr = true;
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
-                self.inside_await_expr = prev_inside_await;
-
                 // When the user writes `await { method_call }` the inner expression
                 // is an `Expr::Block` wrapping a single trailing method call, not a
                 // bare `Expr::MethodCall`.  Unwrap one level of block so the ask-
@@ -588,6 +585,10 @@ impl Checker {
                     }
                     _ => (&inner.0, &inner.1),
                 };
+
+                self.suspension_operands
+                    .insert(SpanKey::in_module(effective_span, self.current_module_idx));
+                let inner_ty = self.synthesize(&inner.0, &inner.1);
 
                 // await Task<T> → T (simplified)
                 match inner_ty {
@@ -1195,7 +1196,18 @@ impl Checker {
     ) -> Ty {
         let container = self.synthesize(&operand.0, &operand.1);
         let container = self.subst.resolve(&container);
-        let (payload, error_ty) = if error.is_some() {
+        let scope_recovery =
+            error.is_some() && matches!(operand.0, Expr::Scope { .. } | Expr::ScopeDeadline { .. });
+        let (payload, error_ty) = if scope_recovery {
+            Some((
+                container.clone(),
+                Ty::Named {
+                    name: "std.builtins.ScopeFailure".to_string(),
+                    args: Vec::new(),
+                    builtin: None,
+                },
+            ))
+        } else if error.is_some() {
             container
                 .as_result()
                 .map(|(ok, err)| (ok.clone(), err.clone()))
@@ -1222,6 +1234,20 @@ impl Checker {
             }
             (Ty::Error, Ty::Error)
         });
+        let recovery_kind = if scope_recovery {
+            super::RecoveryKind::Scope {
+                failure_ty: ResolvedTy::from_ty(&error_ty)
+                    .expect("ScopeFailure is a concrete source-defined enum"),
+            }
+        } else if error.is_some() {
+            super::RecoveryKind::Result
+        } else {
+            super::RecoveryKind::Option
+        };
+        self.recovery_kinds.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            recovery_kind,
+        );
         let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         if let Some((name, binding_span)) = error {
@@ -2780,36 +2806,41 @@ impl Checker {
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         match expr {
             Expr::ForkChild { expr: child } => {
+                let children = match &child.0 {
+                    Expr::Array(children) | Expr::Tuple(children) => children.as_slice(),
+                    _ => std::slice::from_ref(child.as_ref()),
+                };
+                for branch in children {
+                    if !matches!(branch.0, Expr::Call { .. } | Expr::MethodCall { .. }) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &branch.1,
+                            "fork expects a call or a batch of calls; use fork { ... } for a body"
+                                .to_string(),
+                        );
+                    }
+                    self.suspension_operands
+                        .insert(SpanKey::in_module(&branch.1, self.current_module_idx));
+                }
                 let ret_ty = self.synthesize(&child.0, &child.1);
-                // Mark non-Copy call arguments as moved into the fork child.
-                //
-                // `fork name = f(a, b)` transfers ownership of non-Copy args
-                // into the child task env. The general `Expr::Call` arm of
-                // `synthesize` does NOT mark args as moved (regular function
-                // calls are by-value but the type checker treats them as
-                // borrows), so without this pass a `string` arg remains live
-                // in the parent scope and a subsequent use goes unreported.
-                //
-                // We read each arg's type via `lookup_ref` (no read-count
-                // increment — `synthesize` already counted the read) and
-                // delegate to `mark_expr_moved_if_non_copy`, which gates on
-                // `!Copy` and only marks `Expr::Identifier` nodes.
-                //
-                // WHEN-OBSOLETE: if the general call-arg path gains its own
-                // move-tracking, this pass becomes redundant and can be
-                // deleted. Until then this is the sole source of
-                // UseAfterMove diagnostics for named fork spawn args.
-                if let Expr::Call { args, .. } = &child.0 {
-                    for arg in args {
-                        let (arg_expr, arg_span) = arg.expr();
-                        if let Expr::Identifier(arg_name) = arg_expr {
-                            if let Some(binding_ty) =
-                                self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
-                            {
-                                let resolved = self.subst.resolve(&binding_ty);
-                                self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
+                for branch in children {
+                    match &branch.0 {
+                        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
+                            for arg in args {
+                                let (arg_expr, arg_span) = arg.expr();
+                                if let Expr::Identifier(name) = arg_expr {
+                                    if let Some(ty) =
+                                        self.env.lookup_ref(name).map(|b| b.ty.clone())
+                                    {
+                                        let resolved = self.subst.resolve(&ty);
+                                        self.mark_expr_moved_if_non_copy(
+                                            arg_expr, arg_span, &resolved,
+                                        );
+                                    }
+                                }
                             }
                         }
+                        _ => {}
                     }
                 }
                 Ty::Task(Box::new(ret_ty))
@@ -3022,24 +3053,17 @@ impl Checker {
                 Ty::lambda_pid(msg_ty, reply_ty)
             }
             Expr::Scope { body: block } => {
-                // Type-check the block body for diagnostics; the scope itself is Unit
-                // (it is a lifetime boundary, not a value-producing block).
-                // Track the nesting depth so `fork name = call(...)` statements
-                // can verify they appear inside a scope body.
                 self.task_scope_depth += 1;
-                self.check_block(block, None);
+                let ty = self.check_block(block, None);
                 self.task_scope_depth -= 1;
-                Ty::Unit
+                ty
             }
             Expr::ScopeDeadline { duration, body } => {
-                // A deadline clause is unit-valued, but both of its children are
-                // still ordinary checked source. In particular, direct calls in
-                // the body must publish their canonical targets for HIR lowering;
-                // treating this node as the concurrency fallback's default Unit
-                // silently skipped the entire body.
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
-                self.check_block(body, None);
-                Ty::Unit
+                self.task_scope_depth += 1;
+                let ty = self.check_block(body, None);
+                self.task_scope_depth -= 1;
+                ty
             }
             Expr::UnsafeBlock(block) => {
                 let prev = self.in_unsafe;
@@ -3721,6 +3745,11 @@ impl Checker {
             ) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
                 self.record_type(span, expected);
                 expected.clone()
+            }
+
+            (Expr::Block(_), _) => {
+                self.tail_ok_armed = tail_ok_armed;
+                self.check_expr_with_expected(expr, span, expected)
             }
 
             // Array repeat coercion to Array<T, N> type. The declared length
@@ -7421,7 +7450,28 @@ impl Checker {
         expected: Option<&Ty>,
     ) -> Ty {
         if arms.is_empty() {
-            return Ty::Unit;
+            let resolved = self.subst.resolve(scrutinee_ty);
+            let uninhabited = match &resolved {
+                Ty::Never => true,
+                Ty::Named { name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
+                _ => false,
+            };
+            if uninhabited {
+                return Ty::Never;
+            }
+            if resolved != Ty::Error {
+                self.report_error(
+                    TypeErrorKind::NonExhaustiveMatch,
+                    span,
+                    format!(
+                        "an empty match cannot cover inhabited type `{}`",
+                        resolved.user_facing()
+                    ),
+                );
+            }
+            return Ty::Error;
         }
 
         // If the enclosing context supplies a concrete expected type (e.g. the
@@ -7522,10 +7572,45 @@ impl Checker {
 
     #[expect(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "lambda checking combines contextual inference with capture analysis"
     )]
     pub(super) fn check_lambda(
+        &mut self,
+        is_move: bool,
+        private_captures: &[Spanned<String>],
+        type_params: Option<&[TypeParam]>,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+        expected: Option<(&[Ty], &Ty)>,
+        span: &Span,
+        is_actor_body: bool,
+    ) -> Ty {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let owner = super::effects::EffectBody::Closure(key.clone());
+        self.effect_graph.bodies.entry(owner.clone()).or_default();
+        let previous = self.effect_graph.current_body.replace(owner);
+        let result = self.check_lambda_body(
+            is_move,
+            private_captures,
+            type_params,
+            params,
+            return_type,
+            body,
+            expected,
+            span,
+            is_actor_body,
+        );
+        self.effect_graph.current_body = previous;
+        result
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "lambda checking combines contextual inference with capture analysis"
+    )]
+    fn check_lambda_body(
         &mut self,
         is_move: bool,
         private_captures: &[Spanned<String>],
@@ -7635,6 +7720,7 @@ impl Checker {
             self.check_shadowing(&p.name, &p.name_span);
             self.env
                 .define_param_with_span(p.name.clone(), ty.clone(), false, p.name_span.clone());
+            self.record_callable_parameter(&p.name, i);
             param_tys.push(ty);
         }
 
@@ -8178,6 +8264,17 @@ impl Checker {
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
+        if self
+            .lookup_type_def(name)
+            .is_some_and(|definition| definition.kind == TypeDefKind::Enum)
+        {
+            self.report_error(
+                TypeErrorKind::TypeUsedAsValue,
+                span,
+                format!("enum `{name}` requires a declared variant; it cannot be constructed as a record"),
+            );
+            return Ty::Error;
+        }
         // Fail closed on opaque handle direct construction — but ONLY for
         // cross-module constructions. The module that DECLARES an `#[opaque]`
         // type is the producer: its impl blocks contain the legitimate FFI
@@ -8903,7 +9000,8 @@ impl Checker {
 
     /// Publish a checked expression type without overwriting a more precise
     /// source type recorded during contextual checking.
-    fn publish_checked_expression(&mut self, _expr: &Expr, span: &Span, result: Ty) -> Ty {
+    fn publish_checked_expression(&mut self, expr: &Expr, span: &Span, result: Ty) -> Ty {
+        self.record_expression_effect(expr, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .entry(key.clone())

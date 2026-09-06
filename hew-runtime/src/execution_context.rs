@@ -179,7 +179,7 @@ pub extern "C" fn hew_set_partition_policy(tag: i64) -> bool {
 /// Target-architecture-aware byte size of [`HewExecutionContext`].
 ///
 /// Derived from `size_of` rather than a literal so the value is correct on
-/// both 64-bit native targets (128 bytes) and 32-bit wasm32 targets (96 bytes,
+/// both 64-bit native targets (136 bytes) and 32-bit wasm32 targets (96 bytes,
 /// because four-byte pointers eliminate the pointer-sized padding slots).
 pub const HEW_CTX_SIZE: usize = std::mem::size_of::<HewExecutionContext>();
 
@@ -250,7 +250,7 @@ pub const HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED: u32 = 1 << 1;
 /// |------|--------------|---------------|
 /// | `trace` start | 56 | 40 |
 /// | post-trace start (`partition_policy`) | 96 | 80 |
-/// | struct size | 128 | 96 |
+/// | struct size | 136 | 96 |
 ///
 /// The shift between targets originates in the pre-trace pointer fields:
 /// `actor` (ptr) → `actor_id` (u64, align-padded to 8) → `parent_supervisor`
@@ -296,6 +296,10 @@ pub struct HewExecutionContext {
     /// dispatch (worker A mid-select → worker B inner ask) restores the
     /// outer arm's channel via the `prev_context` chain.
     pub reply_channel: *mut c_void,
+    /// Checked native completion, consumed by the activation's scheduler.
+    /// The slot releases an unconsumed owner during exceptional teardown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub checked_fault: crate::actor_native::CheckedActorFault,
 }
 
 thread_local! {
@@ -395,7 +399,7 @@ pub(crate) fn require_current_context() -> *mut HewExecutionContext {
 /// [`hew_context_restore`] afterward, exactly as the scheduler brackets each
 /// dispatch with `set_current_context`.
 ///
-/// `ctx` is the codegen-built context carrier (the 128-byte stack array whose
+/// `ctx` is the codegen-built context carrier (the `HEW_CTX_SIZE` stack array whose
 /// `actor`/`actor_id` fields the lifecycle site populated). Reinterpreted as a
 /// `*mut HewExecutionContext`; only the fields the hook body reads
 /// (`actor` via `hew_actor_self`) are load-bearing across the install.
@@ -925,7 +929,7 @@ mod tests {
     #[test]
     fn execution_context_size_matches_ctx_size_constant() {
         // HEW_CTX_SIZE is now derived from size_of rather than a literal, so
-        // this assertion holds on all targets (128 on native 64-bit, 96 on
+        // this assertion holds on all targets (136 on native 64-bit, 96 on
         // wasm32) without needing per-target conditional compilation.
         assert_eq!(std::mem::size_of::<HewExecutionContext>(), HEW_CTX_SIZE);
     }

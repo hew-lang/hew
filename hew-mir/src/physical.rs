@@ -5,6 +5,8 @@
 //! been decided by SIR: this lowering resolves each explicit copy or destroy
 //! exactly once to a physical action and never infers another lifetime.
 
+pub use hew_sir::{ActorId, ActorOperation, SemActor, SemActorHandler, SemActorOverflow};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "physical_capability.rs"]
@@ -282,6 +284,10 @@ impl PhysicalTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageOrigin {
+    ActorState {
+        state: StorageId,
+        field: u32,
+    },
     Capture {
         environment: StorageId,
         field: u32,
@@ -805,6 +811,13 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    ActorCall {
+        operation: hew_sir::ActorOperation,
+        args: Vec<ArgumentTransfer>,
+        result: Option<StorageId>,
+        normal: PhysicalEdge,
+        unwind: Option<PhysicalEdge>,
+    },
     EnterDefer {
         defer: DeferId,
         park: FaultParkId,
@@ -915,6 +928,8 @@ pub struct PhysicalFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
+    pub actors: Vec<hew_sir::SemActor>,
+    pub actor_recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     pub resources: Vec<PhysicalResourceDescriptor>,
     pub value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,
@@ -1063,6 +1078,8 @@ pub fn lower_physical_module(
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
+        actor_recipes: actor_value_recipes(module, &ids)?,
+        actors: module.actors.clone(),
         resources,
         value_capabilities: capability::build(module, &ids)?,
         closures: module
@@ -1198,28 +1215,7 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
         maps: map_ids,
         sets: set_ids,
     };
-    let value_recipe = |ty: &ResolvedTy| -> Result<PhysicalValueRecipe, PhysicalError> {
-        let facts = module
-            .type_facts
-            .get(&TypeInstanceKey(ty.clone()))
-            .ok_or_else(|| {
-                PhysicalError::new(format!(
-                    "physical field `{}` has no semantic type facts",
-                    ty.user_facing()
-                ))
-            })?;
-        let own = OwnKind::of_class(facts.class);
-        Ok(PhysicalValueRecipe {
-            ty: ty.clone(),
-            own,
-            clone: clone_action_for_type(ty, facts.clone, &ids)?,
-            destroy: if own == OwnKind::Owned {
-                destroy_action_for_type(ty, &ids)
-            } else {
-                None
-            },
-        })
-    };
+    let value_recipe = |ty: &ResolvedTy| physical_value_recipe(module, &ids, ty);
     let aggregate_glue = aggregates
         .into_iter()
         .map(|(aggregate, own)| {
@@ -1768,6 +1764,12 @@ fn lower_function(
                 OwnKind::of_ty(&place.ty, &module.type_facts).map_err(PhysicalError::new)?
             },
             origin: match place.origin {
+                hew_sir::PlaceOrigin::ActorState { state, field, .. } => {
+                    StorageOrigin::ActorState {
+                        state: lowerer.value(state)?,
+                        field,
+                    }
+                }
                 hew_sir::PlaceOrigin::Capture { environment, field } => StorageOrigin::Capture {
                     environment: lowerer.value(environment)?,
                     field,
@@ -1855,6 +1857,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             ..
         }
         | SemTerminator::RtCall {
+            result: CallResult::Value(result),
+            ..
+        }
+        | SemTerminator::ActorCall {
             result: CallResult::Value(result),
             ..
         }
@@ -2364,6 +2370,26 @@ impl FunctionLowerer<'_> {
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
                 },
             }),
+            SemTerminator::ActorCall {
+                operation,
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } => Ok(PhysicalTerminator::ActorCall {
+                operation: *operation,
+                args: self.argument_transfers(args)?,
+                result: match result {
+                    CallResult::Unit => None,
+                    CallResult::Value(value) => Some(self.value(value.id)?),
+                },
+                normal: self.lower_edge(normal)?,
+                unwind: match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
+                },
+            }),
             SemTerminator::RtCall {
                 family,
                 args,
@@ -2785,6 +2811,9 @@ impl FunctionLowerer<'_> {
 }
 
 fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    for recipe in module.actor_recipes.values() {
+        verify_value_recipe(module, recipe)?;
+    }
     let mut resource_types = BTreeSet::new();
     for resource in &module.resources {
         if !resource_types.insert(&resource.ty) {
@@ -3174,7 +3203,7 @@ fn verify_variant_glue(
         )));
     };
     let expected_tag_bits = match glue.variants.len() {
-        1..=256 => 8,
+        0..=256 => 8,
         257..=65_536 => 16,
         count => {
             return Err(PhysicalError::new(format!(
@@ -4166,7 +4195,10 @@ fn verify_initialization(
     }
 
     for slot in &function.storage {
-        if matches!(slot.origin, StorageOrigin::Capture { .. }) {
+        if matches!(
+            slot.origin,
+            StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+        ) {
             entry.slots[slot.id.0 as usize] = InitState::Initialized;
         }
     }
@@ -4353,7 +4385,10 @@ fn consume_if_owned(
         return Ok(());
     }
     if storage(function, id)?.own == OwnKind::Owned
-        || matches!(storage(function, id)?.origin, StorageOrigin::Capture { .. })
+        || matches!(
+            storage(function, id)?.origin,
+            StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+        )
     {
         require_no_live_borrows(function, state, id)?;
         *state
@@ -4793,6 +4828,13 @@ fn terminator_successors(
             normal,
             unwind,
             ..
+        }
+        | PhysicalTerminator::ActorCall {
+            args,
+            result,
+            normal,
+            unwind,
+            ..
         } => call_successors(
             function,
             args,
@@ -4921,7 +4963,10 @@ fn terminator_successors(
             }
             if function.storage.iter().any(|slot| {
                 slot.own == OwnKind::Owned
-                    && !matches!(slot.origin, StorageOrigin::Capture { .. })
+                    && !matches!(
+                        slot.origin,
+                        StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+                    )
                     && function
                         .place_storage
                         .get(&slot.id)
@@ -5291,6 +5336,46 @@ fn verify_terminator(
                     "physical value call requires its scalar callback result",
                 ));
             }
+            edge(normal)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::ActorCall {
+            operation,
+            args,
+            result,
+            normal,
+            unwind,
+        } => {
+            let signature = actor_signature(module, *operation)?;
+            if args.len() != signature.params.len() {
+                return Err(PhysicalError::new(
+                    "actor boundary argument count differs from protocol",
+                ));
+            }
+            for (argument, parameter) in args.iter().zip(&signature.params) {
+                let ArgumentTransfer::Move(id) = argument else {
+                    return Err(PhysicalError::new(
+                        "actor boundary must transfer each payload owner",
+                    ));
+                };
+                if slot(*id)?.ty != parameter.ty {
+                    return Err(PhysicalError::new(
+                        "actor payload differs from its protocol type",
+                    ));
+                }
+            }
+            match result {
+                None if signature.return_ty == ResolvedTy::Unit => {}
+                Some(id) if slot(*id)?.ty == signature.return_ty => {}
+                _ => {
+                    return Err(PhysicalError::new(
+                        "actor boundary result differs from its protocol",
+                    ))
+                }
+            }
+            let unwind = unwind
+                .as_ref()
+                .ok_or_else(|| PhysicalError::new("actor boundary lacks fault cleanup"))?;
             edge(normal)?;
             edge(unwind)
         }
@@ -5678,6 +5763,85 @@ fn callable_for(
         .get(id.0 as usize)
         .filter(|callable| callable.id == id)
         .ok_or_else(|| PhysicalError::new(format!("unknown physical callable {}", id.0)))
+}
+
+/// Project the checked actor protocol through this module's physical callables.
+///
+/// # Errors
+/// Refuses missing actor declarations, handlers or initializer callables.
+pub fn actor_signature(
+    module: &PhysicalModule,
+    operation: hew_sir::ActorOperation,
+) -> Result<hew_sir::SemSignature, PhysicalError> {
+    operation
+        .signature(&module.actors, |id| {
+            module
+                .callables
+                .iter()
+                .find(|callable| callable.id == id)
+                .map(|callable| hew_sir::SemSignature {
+                    params: callable
+                        .params
+                        .iter()
+                        .map(|param| hew_sir::SemAbiParam {
+                            ty: param.ty.clone(),
+                            passing: param.passing,
+                            caller_visible_projection: param.passing == SemParamPassing::BorrowMut,
+                        })
+                        .collect(),
+                    return_ty: callable.return_ty.clone(),
+                })
+        })
+        .map_err(PhysicalError::new)
+}
+
+fn actor_value_recipes(
+    module: &SemModule,
+    ids: &PhysicalGlueIds,
+) -> Result<BTreeMap<ResolvedTy, PhysicalValueRecipe>, PhysicalError> {
+    module
+        .actors
+        .iter()
+        .flat_map(|actor| {
+            std::iter::once(&actor.state_ty)
+                .chain(actor.fields.iter().map(|field| &field.ty))
+                .chain(actor.handlers.iter().flat_map(|handler| {
+                    handler
+                        .params
+                        .iter()
+                        .chain(std::iter::once(&handler.return_ty))
+                }))
+        })
+        .filter(|ty| **ty != ResolvedTy::Unit)
+        .map(|ty| physical_value_recipe(module, ids, ty).map(|recipe| (ty.clone(), recipe)))
+        .collect::<Result<_, _>>()
+}
+
+fn physical_value_recipe(
+    module: &SemModule,
+    ids: &PhysicalGlueIds,
+    ty: &ResolvedTy,
+) -> Result<PhysicalValueRecipe, PhysicalError> {
+    let facts = module
+        .type_facts
+        .get(&TypeInstanceKey(ty.clone()))
+        .ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical field `{}` has no semantic type facts",
+                ty.user_facing()
+            ))
+        })?;
+    let own = OwnKind::of_class(facts.class);
+    Ok(PhysicalValueRecipe {
+        ty: ty.clone(),
+        own,
+        clone: clone_action_for_type(ty, facts.clone, ids)?,
+        destroy: if own == OwnKind::Owned {
+            destroy_action_for_type(ty, ids)
+        } else {
+            None
+        },
+    })
 }
 
 #[cfg(test)]
@@ -6165,6 +6329,7 @@ mod tests {
             },
         );
         SemModule {
+            actors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
@@ -7344,6 +7509,8 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            actors: Vec::new(),
+            actor_recipes: BTreeMap::new(),
             resources: vec![],
             closures: vec![],
             environment_glue: vec![],

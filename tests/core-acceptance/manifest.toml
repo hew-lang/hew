@@ -3,6 +3,73 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "machine-wildcard-hooks"
+intent = "Wildcard targets always execute exit, body and entry for both same-tag and changed-tag results."
+source = "cases/machine-wildcard-hooks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "exit:closed\nbody\nenter:closed\nClosed\nexit:closed\nbody\nenter:opened\nOpened\n"
+exit = 0
+
+[[case]]
+id = "machine-import-values"
+intent = "Same-leaf file and package machines retain distinct staged methods, helper calls and owning output types."
+source = "cases/machine-import-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "file:left\npackage:right\nOpened\nOpened\n"
+exit = 0
+
+[[case]]
+id = "machine-step-values"
+intent = "Machine steps select guarded fallbacks, retain independent machine copies and return typed owning outputs that outlive the machine scope."
+source = "cases/machine-step-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Established\nFailed\nexchange:41:HELLO\naccepted:HELLO\nunexpected acknowledgement\nTIMEOUT\n0\nignored\n"
+exit = 0
+
+[[case]]
+id = "machine-hook-order"
+intent = "Same-state transitions skip hooks, while reentry and state changes preserve exit, body and entry order with staged owning payload updates."
+source = "cases/machine-hook-order.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "body:A\nexit:AT\nbody:ATX\nentry:ATXB\nexit:ATXBE\nbody:ATXBEX\nATXBEX\n"
+exit = 0
+
+[[case]]
+id = "machine-quiet-values"
+intent = "Machines without outputs return the uniform step report with an uninhabited output type whose vector copies and iteration remain empty."
+source = "cases/machine-quiet-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Idle\n"
+exit = 0
+
+[[case]]
+id = "machine-stage-fault"
+intent = "A fault after collecting owning outputs leaves the caller's machine unchanged and releases partially constructed candidate and output values."
+source = "cases/machine-stage-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "rollback:ORIGINAL\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
 id = "boolean-print"
 intent = "Boolean values returned through the common callable ABI print their exact true and false forms."
 source = "cases/boolean-print.hew"
@@ -22,6 +89,17 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "original:2:7\nreplacement:3\nretained:7\nkey:branch\n"
+exit = 0
+
+[[case]]
+id = "empty-enum-values"
+intent = "Reports with uninhabited output elements copy and drop independently, iterate zero times and return None for lookup while zero-arm elimination remains exhaustive."
+source = "cases/empty-enum-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ORIGINAL\nchanged\n"
 exit = 0
 
 [[case]]

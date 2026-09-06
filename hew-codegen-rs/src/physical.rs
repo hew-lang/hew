@@ -4,6 +4,9 @@
 //! storage, layout, and private ABI choices are already explicit in the
 //! verified physical module.
 
+#[path = "physical_actor.rs"]
+mod actor;
+
 #[path = "physical_callable.rs"]
 mod callable;
 
@@ -243,12 +246,6 @@ fn realize_layout(
                 ty.user_facing()
             )));
         }
-        if shape.variants.is_empty() {
-            return Err(CodegenError::FailClosed(format!(
-                "physical variant `{}` has no declaration-order cases",
-                ty.user_facing()
-            )));
-        }
         let mut variant_layouts = Vec::with_capacity(shape.variants.len());
         for fields in &shape.variants {
             let mut layouts = Vec::with_capacity(fields.len());
@@ -321,7 +318,7 @@ fn realize_layout(
             repr: payload_repr,
         };
         let tag_bits = match shape.variants.len() {
-            1..=256 => 8,
+            0..=256 => 8,
             257..=65_536 => 16,
             count => {
                 return Err(CodegenError::FailClosed(format!(
@@ -575,6 +572,9 @@ fn primitive_repr(
             pointer_layout(ctx, target)?,
             pointer_layout(ctx, target)?,
         ]),
+        actor if actor.is_builtin(hew_types::BuiltinType::LocalPid) => {
+            PhysicalRepr::Integer { bits: pointer_bits }
+        }
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
         encoding if hew_mir::physical::encoding_format(encoding).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
@@ -1354,6 +1354,7 @@ fn build_module_with_host<'ctx>(
     emitter.emit_environment_descriptors()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
+    emitter.emit_actor_descriptors()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
     if let Some(export) = host {
@@ -1622,6 +1623,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let failure = self.ctx.append_basic_block(wrapper, "failure");
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
+        self.emit_actor_runtime_start(&builder, wrapper)?;
         let result = if let Some(layout) = &callable.return_layout {
             Some(
                 builder
@@ -1681,12 +1683,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_call(drop, &[fault_value.into()], "entry.fault.drop")
             .llvm_ctx("drop physical entry fault")?;
+        let status = self.emit_actor_runtime_finish(&builder, status)?;
         builder
             .build_return(Some(&status))
             .llvm_ctx("return physical failure status")?;
 
         builder.position_at_end(success);
         let exit = emit_entry_success(self.ctx, &builder, result, plan.action.clone(), callable)?;
+        let exit = self.emit_actor_runtime_finish(&builder, exit)?;
         builder
             .build_return(Some(&exit))
             .llvm_ctx("return physical process status")?;
@@ -2537,6 +2541,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 failures,
             } => self.emit_checked_binary(*op, *lhs, *rhs, *result, normal, failures),
+            PhysicalTerminator::ActorCall {
+                operation,
+                args,
+                result,
+                normal,
+                unwind,
+            } => self.emit_actor_call(*operation, args, *result, normal, unwind.as_ref()),
             PhysicalTerminator::Call {
                 callee,
                 args,
@@ -5648,6 +5659,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            actors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
@@ -5832,6 +5844,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            actors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
             callables: vec![callable],

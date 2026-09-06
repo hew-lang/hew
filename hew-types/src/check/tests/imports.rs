@@ -1193,6 +1193,7 @@ fn bare_import_registers_qualified_name() {
 /// Helper: build a single-field public struct `TypeDecl`.
 fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
     TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: name.to_string(),
@@ -1669,6 +1670,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
     let mut private_wrap = make_pub_struct("Wrap", "value");
     private_wrap.visibility = Visibility::Private;
     let holder = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "Holder".to_string(),
@@ -2322,6 +2324,7 @@ fn caller() -> i64 {
 #[test]
 fn user_module_registers_types() {
     let struct_decl = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "Config".to_string(),
@@ -2976,6 +2979,7 @@ fn import_alias_multiple_names() {
 /// Build a single-field public struct whose field has the given Named type.
 fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeDecl {
     TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: name.to_string(),
@@ -3060,6 +3064,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         vec![(Item::TypeDecl(payload), 0..0)],
     );
     let wrap = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Enum,
         name: "Wrap".to_string(),
@@ -3574,6 +3579,7 @@ fn local_type_impl_no_orphan_warning() {
     use hew_parser::ast::TraitBound;
     // Locally defined type: impl SomeExternalTrait for LocalType → no orphan warning
     let type_decl = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "LocalType".to_string(),
@@ -3686,6 +3692,7 @@ fn test_file_import_private_items_not_visible() {
     };
 
     let private_fn = Item::Function(FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -3727,6 +3734,7 @@ fn test_file_import_private_items_not_visible() {
     });
 
     let private_type = Item::TypeDecl(TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "PrivateType".to_string(),

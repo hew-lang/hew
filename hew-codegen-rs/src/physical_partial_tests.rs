@@ -256,3 +256,6 @@ fn projected_storage_uses_root_addresses_and_separate_initialization_bits() {
         }
     }
 }
+
+#[path = "physical_runtime_aggregate_tests.rs"]
+mod runtime_results;

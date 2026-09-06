@@ -2078,3 +2078,18 @@ The check requires exactly one timeout diagnostic, a successful REPL exit and
 exactly `42` from the next submission. A separate bounded runner contains a
 broken deadline. This verifies enforced termination and recovery without making
 sub-second startup speed part of the contract. Runtime behaviour is unchanged.
+
+## Count ownership of records returned by collection indexing
+
+Focused native execution tests index a two-string record from real vectors and
+hash maps, then read or destructure its fields. The runtime callback boundary
+must copy each field once on a hit and zero times on a miss. Every original and
+retained string reference must be released, while failed indexing leaves the
+result untouched and returns the bounds fault.
+
+Before normal-edge initialization was fixed, successful vector and map lookups
+each leaked one reference to both fields at O0 and O2; the missing-element
+controls already passed. With the fix, all paths pass at both optimization
+levels. The complete physical MIR and codegen library suites pass through Make,
+as does scoped Rust lint. These count-based runtime checks complement the paired
+generated/runtime sanitizer acceptance cases.

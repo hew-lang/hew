@@ -3539,8 +3539,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// when the result is unused.  A unit direct call is different: there is
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "effect-position dispatch keeps control flow and cleanup together"
+    )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
+            HirExprKind::SubsumedValue { source } => {
+                if self.ty(&source.ty) != self.ty(&expr.ty) {
+                    return Err(
+                        "transparent discarded expression must preserve its exact type".into(),
+                    );
+                }
+                return self.lower_discarded_expr(source);
+            }
+
             HirExprKind::Return { value } => return self.lower_function_return(value.as_deref()),
             HirExprKind::Call {
                 target: CallTarget::Builtin { endpoint },
@@ -3907,10 +3920,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )
             }
             HirExprKind::VarSelfMethodCall { .. } => self.lower_var_self_call(expr),
-            HirExprKind::Call { .. } => self.lower_call(expr, true)?.ok_or_else(|| {
-                "unit-valued direct calls are valid only in a discarded or unit-return context"
-                    .to_string()
-            }),
+            HirExprKind::Call { .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                self.lower_call(expr, false)?;
+                self.emit(expr, SemOpKind::ConstUnit)
+            }
+            HirExprKind::Call { .. } => self
+                .lower_call(expr, true)?
+                .ok_or_else(|| "value-producing checked call has no result".to_string()),
             HirExprKind::SubsumedValue { source, .. } => {
                 self.lower_expr_with_binding_use(source, binding_use)
             }

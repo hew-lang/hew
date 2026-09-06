@@ -18229,6 +18229,7 @@ impl LowerCtx {
             let Some(ty) = self.checker_expr_ty_if_present(&span) else {
                 return self.unsupported_expr(span, "actor delivery operation has no checked type");
             };
+            self.try_register_enum_instantiation_ty(&ty, &span);
             return HirExpr {
                 node: self.ids.node(),
                 site,

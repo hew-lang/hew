@@ -1726,6 +1726,24 @@ impl Checker {
                     return;
                 }
                 let iter_ty = self.synthesize(&iterable.0, &iterable.1);
+                // Generator iteration advances the deferred body; constructing
+                // the iterable does not execute that body.
+                let resolved_iter_ty = self.subst.resolve(&iter_ty);
+                if resolved_iter_ty.as_generator().is_some()
+                    || resolved_iter_ty.as_async_generator().is_some()
+                {
+                    if let Some(owner) = &self.effect_graph.current_body {
+                        self.effect_graph.bodies.insert(owner.clone(), true);
+                    }
+                    if self.deferred_body.is_some() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "a deferred body cannot suspend while advancing a generator"
+                                .to_string(),
+                        );
+                    }
+                }
                 // Infer element type from iterable, and enforce `for await` restrictions.
                 let elem_ty = match &iter_ty {
                     Ty::Array(inner, _) | Ty::Slice(inner) => {

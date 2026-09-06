@@ -87,3 +87,39 @@ fn call_once_erasure_consumes_the_receiver_on_both_continuations() {
     assert!(module.functions.iter().flat_map(|function| &function.blocks)
         .any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Move)));
 }
+
+#[test]
+fn captured_snapshots_and_escaped_environments_have_exact_body_instances() {
+    let module = lower_source(
+        r#"
+        fn heading() -> fn() -> string {
+            var text = "Draft";
+            let read = || text;
+            text = "Published";
+            read
+        }
+        fn main() -> i64 {
+            let read = heading();
+            println(read());
+            println(read());
+            let amount = 40;
+            let add = |value: i64| value + amount;
+            add(2)
+        }
+    "#,
+    );
+    assert_eq!(module.closures.len(), 2);
+    for closure in &module.closures {
+        let body = module
+            .functions
+            .iter()
+            .find(|body| body.callable == closure.body)
+            .unwrap();
+        assert_eq!(body.places.len(), closure.fields.len());
+        assert!(body
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|operation| matches!(operation.kind, SemOpKind::LoadCopy { .. })));
+    }
+}

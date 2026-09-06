@@ -1673,3 +1673,17 @@ and annotated callable values and consuming invocation. Existing demand tests
 now use an unsupported scalar header instead of newly admitted function types;
 collection tests still reject copying non-Clone callable elements. Physical
 callable execution remains the next integration layer.
+
+## Demanded closure bodies and capture production
+
+The existing instance service now demands each checked closure literal under its
+exact enclosing specialization. Body lowering preserves the original HIR source
+and gives its environment an explicit receiver and ordered capture places.
+Construction copies or moves the checker-selected bindings; body operations
+copy, borrow, consume or privately assign the corresponding fields. Consuming
+receivers enter the body's normal and fault cleanup obligations.
+
+Source tests verify escaped string snapshots, repeated captured calls and exact
+literal/body identity alongside function values. The complete SIR Make suite
+passes. Native execution and broader capture combinations remain integration
+work; no native closure acceptance is claimed at this checkpoint.

@@ -56,8 +56,8 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
         .unwrap_or_else(|| panic!("HIR module must declare `{name}`"))
 }
 
-/// Closure construction remains outside this executable SIR slice.
-const UNSUPPORTED_BODY: &str = "let deferred = |x: i64| x + value; value";
+/// Deferred statements remain outside this executable SIR slice.
+const UNSUPPORTED_BODY: &str = "defer { println(value); } value";
 
 #[test]
 fn an_unreachable_unsupported_function_does_not_block_the_reachable_component() {

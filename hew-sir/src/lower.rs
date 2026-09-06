@@ -522,6 +522,9 @@ struct InstanceService<'a> {
     states: Vec<CallableState>,
     statuses: Vec<Option<SirLoweringStatus>>,
     by_instance: HashMap<SirInstanceKey, CallableId>,
+    closures: Vec<crate::SemClosure>,
+    closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
+    closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
     /// Only template headers that back a requested concrete SIR instance are
     /// emitted into the SIR module. HIR remains the authority for unselected
     /// generic definitions, so SIR does not accumulate an unrelated second
@@ -888,6 +891,9 @@ impl<'a> InstanceService<'a> {
             states: vec![CallableState::Unreached; count],
             statuses: vec![None; count],
             by_instance: HashMap::new(),
+            closures: Vec::new(),
+            closures_by_instance: HashMap::new(),
+            closure_sources: Vec::new(),
             used_templates: std::collections::HashSet::new(),
             pending: VecDeque::new(),
             functions: Vec::new(),
@@ -1274,7 +1280,14 @@ impl<'a> InstanceService<'a> {
 
     fn lower_callable(&mut self, callable: CallableId) -> Result<SemFunction, String> {
         let input = self.input_for_callable(callable)?;
-        Builder::new(input.function, input.callable, input.substitution, self)?.lower()
+        Builder::new(
+            input.function,
+            input.callable,
+            input.substitution,
+            &input.source,
+            self,
+        )?
+        .lower(input.source)
     }
 
     fn record_callable_result(
@@ -1314,9 +1327,12 @@ impl<'a> InstanceService<'a> {
                 )
             })?;
         let substitution = match &callable_meta.instance {
-            CallableInstance::Closure(_) => {
-                return Err("closure body demand has no source contract".to_string())
-            }
+            CallableInstance::Closure(id) => self
+                .closure_sources
+                .get(id.0 as usize)
+                .ok_or_else(|| "closure body has no checked literal source".to_string())?
+                .1
+                .clone(),
             CallableInstance::Monomorphic => {
                 if !function.type_params.is_empty() {
                     return Err(format!(
@@ -1338,10 +1354,16 @@ impl<'a> InstanceService<'a> {
                 TypeSubstitution::for_instance(function, &key.type_args)?
             }
         };
+        let source = if let CallableInstance::Closure(id) = callable_meta.instance {
+            BodySource::Closure(self.closure_sources[id.0 as usize].0.clone())
+        } else {
+            BodySource::Function
+        };
         Ok(LoweringInput {
             function,
             callable: callable_meta,
             substitution,
+            source,
         })
     }
 
@@ -1393,6 +1415,96 @@ impl<'a> InstanceService<'a> {
         self.callable(id)
             .cloned()
             .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
+    }
+
+    fn request_closure(
+        &mut self,
+        enclosing: CallableId,
+        expression: &HirExpr,
+        substitution: &TypeSubstitution,
+    ) -> Result<crate::ClosureId, String> {
+        let instance = crate::ClosureInstanceKey {
+            enclosing,
+            literal: expression.node,
+        };
+        if let Some(id) = self.closures_by_instance.get(&instance) {
+            return Ok(*id);
+        }
+        let HirExprKind::Closure { captures, .. } = &expression.kind else {
+            return Err("closure demand requires a checked literal".to_string());
+        };
+        let parent = self
+            .callable(enclosing)
+            .cloned()
+            .ok_or_else(|| "closure has no enclosing instance".to_string())?;
+        let ty = substitution.apply(&expression.ty);
+        self.require_type_facts(&ty)?;
+        let (_, _, capabilities) = crate::callable_parts(&ty)?;
+        let fields: Vec<_> = captures
+            .iter()
+            .map(|capture| crate::SemCaptureField {
+                binding: capture.binding,
+                ty: substitution.apply(&capture.ty),
+                access: capture.access,
+                consumption: capture.consumption,
+            })
+            .collect();
+        for field in &fields {
+            self.require_type_facts(&field.ty)?;
+        }
+        let mut signature = crate::callable_value_signature(&ty, self.checked_facts.rows())?;
+        signature.params.insert(
+            0,
+            SemAbiParam {
+                ty: ty.clone(),
+                passing: match capabilities.call {
+                    hew_types::CallableCallMode::Read => SemParamPassing::Borrow,
+                    hew_types::CallableCallMode::Var => SemParamPassing::BorrowMut,
+                    hew_types::CallableCallMode::Once => SemParamPassing::Consume,
+                },
+                caller_visible_projection: capabilities.call == hew_types::CallableCallMode::Var,
+            },
+        );
+        self.require_signature_shapes(&signature)?;
+        let id = crate::ClosureId(
+            u32::try_from(self.closures.len())
+                .map_err(|_| "closure count exceeds u32".to_string())?,
+        );
+        let body = CallableId(
+            u32::try_from(self.table.callables.len())
+                .map_err(|_| "callable count exceeds u32".to_string())?,
+        );
+        let symbol = format!("{}$closure${}", parent.symbol, expression.node.0);
+        if self
+            .table
+            .callables
+            .iter()
+            .any(|callable| callable.symbol == symbol)
+        {
+            return Err("closure symbol conflicts with another exact callable".to_string());
+        }
+        self.closures.push(crate::SemClosure {
+            id,
+            instance,
+            body,
+            ty,
+            fields,
+        });
+        self.closure_sources
+            .push((Box::new(expression.clone()), substitution.clone()));
+        self.closures_by_instance.insert(instance, id);
+        self.table.callables.push(SemCallable {
+            id: body,
+            instance: CallableInstance::Closure(id),
+            symbol,
+            signature,
+            kind: SemCallableKind::HewClosure,
+            ..parent
+        });
+        self.states.push(CallableState::Queued);
+        self.statuses.push(None);
+        self.pending.push_back(body);
+        Ok(id)
     }
 
     fn request_instance(
@@ -1564,6 +1676,7 @@ impl<'a> InstanceService<'a> {
             checked_facts,
             used_templates,
             mut functions,
+            closures,
             aggregate_shapes,
             variant_shapes,
             string_literals,
@@ -1590,7 +1703,7 @@ impl<'a> InstanceService<'a> {
             &variant_shapes,
         );
         SemModule {
-            closures: Vec::new(),
+            closures,
             callables: table.callables,
             generic_templates,
             root_unit_callables: table.root_unit_callables,
@@ -1696,6 +1809,24 @@ struct LoweringInput<'a> {
     function: &'a HirFn,
     callable: SemCallable,
     substitution: TypeSubstitution,
+    source: BodySource,
+}
+
+enum BodySource {
+    Function,
+    Closure(Box<HirExpr>),
+}
+
+impl BodySource {
+    fn parameters<'a>(&'a self, function: &'a HirFn) -> Result<&'a [HirBinding], String> {
+        match self {
+            Self::Function => Ok(&function.params),
+            Self::Closure(expression) => match &expression.kind {
+                HirExprKind::Closure { params, .. } => Ok(params),
+                _ => Err("closure body source is not a checked literal".to_string()),
+            },
+        }
+    }
 }
 
 fn function_source_origin(module: &HirModule, function: &HirFn) -> FunctionSourceOrigin {
@@ -2137,6 +2268,8 @@ struct Builder<'hir, 'service> {
     source_bindings: Vec<Binding>,
     params: Vec<BlockArg>,
     loops: Vec<Option<LoopScope>>,
+    places: Vec<crate::PlaceDecl>,
+    capture_places: HashMap<BindingId, crate::PlaceId>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2144,24 +2277,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         function: &'hir HirFn,
         callable: SemCallable,
         substitution: TypeSubstitution,
+        source: &BodySource,
         service: &'service mut InstanceService<'hir>,
     ) -> Result<Self, String> {
-        if function.params.len() != callable.signature.params.len() {
+        let source_params = source.parameters(function)?;
+        let receiver_count = usize::from(matches!(source, BodySource::Closure(_)));
+        if source_params.len() + receiver_count != callable.signature.params.len() {
             return Err(format!(
                 "SIR callable `{}` has {} parameter ABI facts, but its HIR template has {} parameter(s)",
                 callable.symbol,
                 callable.signature.params.len(),
-                function.params.len()
+                source_params.len()
             ));
         }
         service.require_signature_shapes(&callable.signature)?;
         let entry = BlockId(0);
-        let mut values = 0;
+        let mut values = u32::try_from(receiver_count).expect("at most one receiver");
         let mut bindings = HashMap::new();
-        let params = function
-            .params
-            .iter()
-            .zip(&callable.signature.params)
+        let params = source_params.iter()
+            .zip(callable.signature.params.iter().skip(receiver_count))
             .enumerate()
             .map(|(index, (param, abi))| {
                 let ty = substitution.apply(&param.ty);
@@ -2199,13 +2333,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .filter(|param| param.own == OwnKind::Owned)
             .map(|param| (param.value, param.ty.clone()))
             .collect();
-        let binding_declarations = function
-            .params
+        let binding_declarations = source_params
             .iter()
             .enumerate()
             .map(|(index, param)| (param.id, index))
             .collect();
-        Ok(Self {
+        let mut builder = Self {
             function,
             service,
             callable,
@@ -2221,10 +2354,61 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             source_bindings,
             params,
             loops: Vec::new(),
-        })
+            places: Vec::new(),
+            capture_places: HashMap::new(),
+        };
+        builder.bind_captures(source)?;
+        Ok(builder)
     }
 
-    fn lower(mut self) -> Result<SemFunction, String> {
+    fn bind_captures(&mut self, source: &BodySource) -> Result<(), String> {
+        let BodySource::Closure(expression) = source else {
+            return Ok(());
+        };
+        let HirExprKind::Closure { captures, .. } = &expression.kind else {
+            unreachable!()
+        };
+        let abi = &self.callable.signature.params[0];
+        let own = OwnKind::of_param(&abi.ty, abi.passing, self.service.checked_facts.rows())?;
+        self.params.insert(
+            0,
+            BlockArg {
+                value: ValueId(0),
+                ty: abi.ty.clone(),
+                own,
+            },
+        );
+        if own == OwnKind::Owned {
+            self.owned_live.insert(ValueId(0), abi.ty.clone());
+        }
+        for (index, capture) in captures.iter().enumerate() {
+            let field =
+                u32::try_from(index).map_err(|_| "capture count exceeds u32".to_string())?;
+            let place = crate::PlaceId(field);
+            self.places.push(crate::PlaceDecl {
+                id: place,
+                ty: self.ty(&capture.ty),
+                origin: crate::PlaceOrigin::Capture {
+                    environment: ValueId(0),
+                    field,
+                },
+            });
+            self.capture_places.insert(capture.binding, place);
+            self.source_bindings.push(Binding {
+                id: crate::BindingId(
+                    u32::try_from(self.source_bindings.len())
+                        .map_err(|_| "binding count exceeds u32".to_string())?,
+                ),
+                name: capture.name.clone(),
+                span: expression.span.clone(),
+                mutable: capture.access == hew_types::ClosureCaptureAccess::Var,
+                target: crate::BindingTarget::Place(place),
+            });
+        }
+        Ok(())
+    }
+
+    fn lower(mut self, source: BodySource) -> Result<SemFunction, String> {
         if self.callable.function != self.function.id
             || self.callable.declaration != self.function.declaration
         {
@@ -2243,6 +2427,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.function.type_params.is_empty(),
         ) {
             (CallableInstance::Monomorphic, true) => {}
+            (CallableInstance::Closure(_), _) if matches!(source, BodySource::Closure(_)) => {}
             (CallableInstance::Generic(key), false)
                 if key.template.declaration == self.function.declaration
                     && key.type_args == self.substitution.args => {}
@@ -2251,7 +2436,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string(),
             ),
         }
-        if self.callable.signature.return_ty != self.ty(&self.function.return_ty) {
+        if matches!(source, BodySource::Function)
+            && self.callable.signature.return_ty != self.ty(&self.function.return_ty)
+        {
             return Err(format!(
                 "SIR callable `{}` return type `{}` differs from substituted HIR template return `{}`",
                 self.callable.symbol,
@@ -2259,7 +2446,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.ty(&self.function.return_ty).user_facing()
             ));
         }
-        let result = self.lower_block(&self.function.body, OwnedBindingUse::Move)?;
+        let result = self.lower_source_body(source)?;
         let result = result
             .map(|operand| {
                 self.coerce_value(
@@ -2297,12 +2484,36 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return_ty: self.callable.signature.return_ty.clone(),
             entry: BlockId(0),
             blocks,
-            // No P1 program produces a function-owned place: HIR-to-SIR
-            // construction does mem2reg and the only escape hatch, an extern
-            // `&`/`&mut` on a local, has no producer on this route yet.
-            places: Vec::new(),
+            places: self.places,
             bindings: self.source_bindings,
         })
+    }
+
+    fn lower_source_body(&mut self, source: BodySource) -> Result<Option<Operand>, String> {
+        match source {
+            BodySource::Function => self.lower_block(&self.function.body, OwnedBindingUse::Move),
+            BodySource::Closure(expression) => {
+                let HirExprKind::Closure { body, ret_ty, .. } = &expression.kind else {
+                    unreachable!()
+                };
+                if self.ty(ret_ty) != self.callable.signature.return_ty {
+                    return Err("closure body return differs from its exact signature".to_string());
+                }
+                if matches!(self.ty(&body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
+                    self.lower_discarded_expr(body)?;
+                    Ok(None)
+                } else {
+                    Ok(Some(Operand {
+                        value: lower_initial_value_transfer(
+                            self,
+                            body,
+                            "closure body result",
+                            OwnedBindingUse::Move,
+                        )?,
+                    }))
+                }
+            }
+        }
     }
 
     /// Lower one HIR expression in a semantic operand position.
@@ -2335,6 +2546,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
         if own != OwnKind::Owned {
+            return Ok(source);
+        }
+        if matches!(expr.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. } if self.capture_places.contains_key(&binding))
+        {
             return Ok(source);
         }
         let source_kind = self.value_own_kind(source);
@@ -2397,6 +2612,119 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 ty.user_facing()
             )),
         }
+    }
+
+    fn capture_field(
+        &self,
+        binding: BindingId,
+    ) -> Option<(crate::PlaceId, crate::SemCaptureField)> {
+        let place = *self.capture_places.get(&binding)?;
+        let CallableInstance::Closure(id) = self.callable.instance else {
+            return None;
+        };
+        self.service
+            .closures
+            .get(id.0 as usize)?
+            .fields
+            .get(place.0 as usize)
+            .cloned()
+            .map(|field| (place, field))
+    }
+
+    fn load_capture(
+        &mut self,
+        binding: BindingId,
+        provenance: Provenance,
+        take: bool,
+    ) -> Result<ValueId, String> {
+        let (place, field) = self
+            .capture_field(binding)
+            .ok_or_else(|| "capture binding has no exact environment field".to_string())?;
+        if take && field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
+            return Err("capture extraction lacks checker-selected consuming access".to_string());
+        }
+        self.emit_typed(
+            provenance,
+            &field.ty,
+            if take {
+                SemOpKind::LoadTake { place }
+            } else {
+                SemOpKind::LoadCopy { place }
+            },
+        )
+    }
+
+    fn lower_closure(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+        let HirExprKind::Closure { captures, .. } = &expression.kind else {
+            unreachable!()
+        };
+        let closure =
+            self.service
+                .request_closure(self.callable.id, expression, &self.substitution)?;
+        let mut fields = Vec::with_capacity(captures.len());
+        for capture in captures {
+            let ty = self.ty(&capture.ty);
+            let take = capture.acquisition == hew_types::ClosureCaptureAcquisition::Move;
+            let provenance = Provenance::Site(expression.site);
+            let value = if self.capture_places.contains_key(&capture.binding) {
+                self.load_capture(capture.binding, provenance, take)?
+            } else {
+                let source = self
+                    .bindings
+                    .get(&capture.binding)
+                    .copied()
+                    .ok_or_else(|| {
+                        "closure construction names an unavailable captured binding".to_string()
+                    })?;
+                if self.value_ty(source).as_ref() != Some(&ty) {
+                    return Err("closure acquisition changes its captured binding type".to_string());
+                }
+                if OwnKind::of_ty(&ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                    let kind = if take {
+                        self.owned_live.remove(&source);
+                        SemOpKind::Move {
+                            source: Operand { value: source },
+                        }
+                    } else {
+                        SemOpKind::CopyValue {
+                            source: Operand { value: source },
+                        }
+                    };
+                    self.emit_typed(provenance, &ty, kind)?
+                } else {
+                    source
+                }
+            };
+            self.owned_live.remove(&value);
+            fields.push(Operand { value });
+        }
+        self.emit(expression, SemOpKind::ClosureMake { closure, fields })
+    }
+
+    fn assign_capture(&mut self, binding: BindingId, value: &HirExpr) -> Result<(), String> {
+        let (place, field) = self
+            .capture_field(binding)
+            .ok_or_else(|| "capture assignment has no concrete field".to_string())?;
+        if field.access != hew_types::ClosureCaptureAccess::Var {
+            return Err("capture assignment requires private mutable access".to_string());
+        }
+        let replacement =
+            lower_initial_value_transfer(self, value, "capture assignment", OwnedBindingUse::Copy)?;
+        let replacement =
+            self.coerce_value(replacement, &field.ty, Provenance::Site(value.site))?;
+        self.owned_live.remove(&replacement);
+        let op = SemOp {
+            id: OpId(self.ops),
+            results: Vec::new(),
+            kind: SemOpKind::StoreAssign {
+                place,
+                value: Operand { value: replacement },
+            },
+            provenance: Provenance::Site(value.site),
+        };
+        self.current_block_mut().append_op(op)?;
+        self.ops += 1;
+        Ok(())
     }
 
     fn coerce_value(
@@ -2863,6 +3191,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string(),
             );
         };
+        if self.capture_places.contains_key(binding) {
+            return self.assign_capture(*binding, value);
+        }
         let binding = *binding;
         let declaration = *self
             .binding_declarations
@@ -3196,6 +3527,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<ValueId, String> {
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
+            HirExprKind::Closure { .. } => self.lower_closure(expr),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {
@@ -3211,6 +3543,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 resolved: ResolvedRef::Binding(binding),
                 ..
             } => {
+                if let Some((_, field)) = self.capture_field(*binding) {
+                    let take = binding_use == OwnedBindingUse::Move
+                        && field.consumption == hew_types::ClosureCaptureConsumption::Consumed;
+                    return self.load_capture(*binding, Provenance::Site(expr.site), take);
+                }
                 let value = self.bindings.get(binding).copied().ok_or_else(|| {
                     format!("binding `{binding}` is not available in the SIR environment")
                 })?;
@@ -4900,6 +5237,31 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
     ) -> Result<Operand, String> {
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &expr.kind
+        {
+            if let Some((place, field)) = self.capture_field(*binding) {
+                if OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                    let value = self.emit_typed(
+                        Provenance::Site(expr.site),
+                        &field.ty,
+                        SemOpKind::LoadBorrow {
+                            place,
+                            environment: Operand {
+                                value: self.params[0].value,
+                            },
+                        },
+                    )?;
+                    loans.push(value);
+                    return Ok(Operand { value });
+                }
+                return Ok(Operand {
+                    value: self.load_capture(*binding, Provenance::Site(expr.site), false)?,
+                });
+            }
+        }
         require_initial_scalar_read(expr.intent)?;
         let (object, shape, field) = match &expr.kind {
             HirExprKind::FieldAccess { object, field } => {
@@ -5098,7 +5460,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let signature =
                     crate::callable_value_signature(&ty, self.service.checked_facts.rows())?;
                 let (_, _, capabilities) = crate::callable_parts(&ty)?;
-                let value = self.lower_expr(callee)?;
+                let value = if capabilities.call == hew_types::CallableCallMode::Once {
+                    self.lower_expr_with_binding_use(callee, OwnedBindingUse::Move)?
+                } else if matches!(callee.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. } if self.capture_places.contains_key(&binding))
+                {
+                    self.lower_borrowed_read(callee, &mut loans)?.value
+                } else {
+                    self.lower_expr(callee)?
+                };
                 let decision = match capabilities.call {
                     hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,
                     hew_types::CallableCallMode::Var => crate::BoundaryDecision::BorrowMut,

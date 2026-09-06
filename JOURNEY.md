@@ -2231,6 +2231,12 @@ context used to generate sibling control-flow paths. Loops carry scalar values
 and retain stable outer places through skipped, consuming and nested exits.
 
 The callback loop, later-argument fault and callback-body fault sources pass
-semantic verification and checked place-lifetime analysis. The producer builds;
-existing IR-oriented source tests and match-scope cleanup still need follow-up.
-This checkpoint does not establish native Local execution.
+semantic verification and checked place-lifetime analysis. Match results copy
+ordinary outer bindings so later uses remain valid, while non-copyable values
+retain their transfer contract. Borrow ancestry uses an index derived from
+operation definitions and the canonical place paths.
+
+The SIR suite passes with source assertions following Local loads, writeback
+and lexical lifetime ends. Malformed-IR cases still reject missing loop and
+fault cleanup, premature owner ends and invalid field loans. Native Local
+execution remains a separate physical integration step.

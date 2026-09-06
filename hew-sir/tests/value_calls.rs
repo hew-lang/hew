@@ -240,15 +240,41 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
                 _ => None,
             })
             .unwrap();
+        let snapshot = main
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.results.iter().any(|result| result.id == argument))
+            .unwrap();
+        assert_eq!(snapshot.results[0].own, hew_sir::OwnKind::Owned);
+        let hew_sir::BindingTarget::Place(left) = main
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "left")
+            .unwrap()
+            .target
+        else {
+            panic!("left must own local storage")
+        };
+        // Identity conversions preserve the same source place. All three
+        // expressions must capture its value before the later mutation.
+        assert!(matches!(snapshot.kind, hew_sir::SemOpKind::LoadCopy { place } if place == left));
+        let mutation = main
+            .blocks
+            .iter()
+            .find(|block| {
+                matches!(
+                    block.terminator,
+                    SemTerminator::RtCall {
+                        family: hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Clear),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
         assert!(
-            main.blocks.iter().flat_map(|b| &b.ops).any(|op| matches!(
-                op.kind,
-                hew_sir::SemOpKind::CopyValue { .. }
-            ) && op
-                .results
-                .iter()
-                .any(|result| result.id == argument)),
-            "the left input must own its pre-mutation snapshot"
+            mutation.ops.iter().any(|op| op.id == snapshot.id),
+            "snapshot must be available before the later argument clears left"
         );
     }
 }
@@ -289,10 +315,18 @@ fn selected_equality_keeps_user_method_fault_cleanup() {
         .unwrap();
     let cleanup = &main.blocks[failure.0 as usize];
     assert!(matches!(cleanup.terminator, SemTerminator::ResumeUnwind));
-    assert!(cleanup
-        .ops
-        .iter()
-        .any(|op| matches!(op.kind, hew_sir::SemOpKind::DestroyValue { .. })));
+    for name in ["left", "right"] {
+        let hew_sir::BindingTarget::Place(owner) = main
+            .bindings
+            .iter()
+            .find(|binding| binding.name == name)
+            .unwrap()
+            .target
+        else {
+            panic!("equality input must have local storage")
+        };
+        assert_eq!(cleanup.ops.iter().filter(|op| matches!(op.kind, hew_sir::SemOpKind::EndLifetime { place } if place == owner)).count(), 1);
+    }
 }
 
 #[test]

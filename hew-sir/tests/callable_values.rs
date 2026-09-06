@@ -305,10 +305,11 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
                 panic!("mutable field call must borrow its stored owner");
             };
             let projection = plan.projection(*place).unwrap();
-            let hew_sir::OwnerRoot::Value(root) = projection.root else {
-                panic!("holder must still use its SSA owner in this producer")
+            let hew_sir::OwnerRoot::Local(root) = projection.root else {
+                panic!("holder must own local storage")
             };
-            assert_eq!(main.binding_naming(root).unwrap().name, "holder");
+            assert!(main.bindings.iter().any(|binding| binding.name == "holder"
+                && binding.target == hew_sir::BindingTarget::Place(root)));
             assert_eq!(projection.path.len(), 1);
             assert_eq!(projection.path[0].field, 0);
             receivers.push(*place);
@@ -406,9 +407,24 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     assert_eq!(advance.params[0].own, hew_sir::OwnKind::Guaranteed);
     let copied = advance.blocks.iter().flat_map(|block| &block.ops)
         .find(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == advance.params[0].value)).unwrap();
+    let private = advance
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find_map(|op| match op.kind {
+            SemOpKind::StoreInit { place, ref value } if value.value == copied.results[0].id => {
+                Some(place)
+            }
+            _ => None,
+        })
+        .expect("the private parameter copy must initialize local storage");
     for block in &advance.blocks {
         if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
-            assert_eq!(callee.operand.value, copied.results[0].id);
+            assert_eq!(callee.decision, hew_sir::BoundaryDecision::BorrowMut);
+            assert!(block.ops.iter().any(
+                |op| matches!(op.kind, SemOpKind::LoadBorrow { place } if place == private)
+                    && op.results[0].id == callee.operand.value
+            ));
         }
     }
     let consuming = module

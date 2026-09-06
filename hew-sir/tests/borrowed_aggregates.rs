@@ -190,11 +190,50 @@ fn projection_borrows_require_exact_shape_field_type_and_ownership() {
 fn projected_owner_cannot_end_while_its_leaf_is_live() {
     let mut module = projected_borrow_module();
     let leaf = leaf_loan(&module.functions[0]);
-    let root = parent(&module, leaf);
-    move_cleanup_before_read(&mut module.functions[0], root);
+    let function = &module.functions[0];
+    let place = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find_map(|op| match op.kind {
+            SemOpKind::LoadBorrow { place } if op.results[0].id == leaf => Some(place),
+            _ => None,
+        })
+        .unwrap();
+    let plan = hew_sir::place_plan(function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let hew_sir::OwnerRoot::Local(root) = plan.projection(place).unwrap().root else {
+        panic!("source owner must have local storage")
+    };
+    let function = &mut module.functions[0];
+    let mut cleanup = None;
+    for block in &mut function.blocks {
+        if let Some(index) = block
+            .ops
+            .iter()
+            .position(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == root))
+        {
+            cleanup = Some(block.ops.remove(index));
+            break;
+        }
+    }
+    let read = function
+        .blocks
+        .iter_mut()
+        .find(|block| {
+            matches!(
+                block.terminator,
+                SemTerminator::RtCall {
+                    family: hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Index),
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    read.ops
+        .push(cleanup.expect("source owner must end on a successor"));
     assert!(verify_module(&module).iter().any(|error| matches!(error.kind,
-        SirDiagnosticKind::OwnershipLifetime { value, reason, .. }
-            if value == root && reason == "value cannot be consumed or ended while a dependent borrow is live")));
+        SirDiagnosticKind::PlaceLifetime { place, reason, .. }
+            if place == root && reason == "value cannot be consumed or ended while a dependent borrow is live")));
 }
 
 #[test]

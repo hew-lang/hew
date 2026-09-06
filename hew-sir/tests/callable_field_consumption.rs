@@ -51,18 +51,51 @@ fn assert_once_field_transfer(source: &str) {
         .iter()
         .find(|function| function.name == "main")
         .unwrap();
+    let callee = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::IndirectCall { callee, .. }
+                if callee.decision == BoundaryDecision::Move =>
+            {
+                Some(callee.operand.value)
+            }
+            _ => None,
+        })
+        .expect("once receiver must transfer to its call");
+    let moved = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.results.iter().any(|result| result.id == callee))
+        .unwrap();
+    let SemOpKind::Move { source } = &moved.kind else {
+        panic!("receiver transfers before its arguments")
+    };
     let taken = main
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
-        .find(|op| matches!(op.kind, SemOpKind::LoadTake { .. }))
+        .find(|op| op.results.iter().any(|result| result.id == source.value))
         .expect("once field must transfer from its existing owner");
-    let moved = main.blocks.iter().flat_map(|block| &block.ops)
-        .find(|op| matches!(&op.kind, SemOpKind::Move { source } if source.value == taken.results[0].id))
-        .expect("receiver transfers before its arguments");
-    assert!(main.blocks.iter().any(|block| matches!(&block.terminator,
-        SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Move
-            && callee.operand.value == moved.results[0].id)));
+    let SemOpKind::LoadTake { place } = taken.kind else {
+        panic!("once receiver must take its stored field")
+    };
+    let plan = hew_sir::place_plan(
+        main,
+        &lowered.module.aggregate_shapes,
+        &lowered.module.type_facts,
+    )
+    .unwrap();
+    assert_eq!(
+        plan.projection(place)
+            .unwrap()
+            .path
+            .iter()
+            .map(|step| step.field)
+            .collect::<Vec<_>>(),
+        [0]
+    );
 }
 
 #[test]
@@ -286,8 +319,52 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
             .results
             .iter()
             .all(|field| field.own == hew_sir::OwnKind::Owned));
-        let transfer = main.blocks.iter().flat_map(|block| &block.ops).find(|op| matches!(&op.kind, SemOpKind::Move { source } if source.value == fields.results[0].id)).expect("the once receiver transfers the extracted field");
-        assert!(main.blocks.iter().any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Move && callee.operand.value == transfer.results[0].id)));
-        assert!(main.blocks.iter().any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Borrow && callee.operand.value == fields.results[1].id)));
+        for (index, decision) in [BoundaryDecision::Move, BoundaryDecision::Borrow]
+            .into_iter()
+            .enumerate()
+        {
+            let place = main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .find_map(|op| match &op.kind {
+                    SemOpKind::StoreInit { place, value }
+                        if value.value == fields.results[index].id =>
+                    {
+                        Some(*place)
+                    }
+                    _ => None,
+                })
+                .expect("each extracted field initializes its own local storage");
+            let call = main
+                .blocks
+                .iter()
+                .find_map(|block| match &block.terminator {
+                    SemTerminator::IndirectCall { callee, .. } if callee.decision == decision => {
+                        Some((block, callee.operand.value))
+                    }
+                    _ => None,
+                })
+                .expect("both callable fields remain usable");
+            let loaded = call
+                .0
+                .ops
+                .iter()
+                .find(|op| match op.kind {
+                    SemOpKind::LoadTake { place: p } if decision == BoundaryDecision::Move => {
+                        p == place
+                    }
+                    SemOpKind::LoadBorrow { place: p } if decision == BoundaryDecision::Borrow => {
+                        p == place
+                    }
+                    _ => false,
+                })
+                .expect("invocation must use the extracted field's storage");
+            if decision == BoundaryDecision::Move {
+                assert!(call.0.ops.iter().any(|op| matches!(&op.kind, SemOpKind::Move { source } if source.value == loaded.results[0].id) && op.results[0].id == call.1));
+            } else {
+                assert_eq!(loaded.results[0].id, call.1);
+            }
+        }
     }
 }

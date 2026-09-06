@@ -87,6 +87,9 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .filter_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
+                if projection.path.is_empty() {
+                    return None;
+                }
                 assert_eq!(projection.path.len(), 1);
                 assert_eq!(projection.path[0].shape, AggregateShapeRef::Tuple);
                 assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
@@ -162,6 +165,9 @@ fn owned_record_shape_and_field_order_are_exact() {
         .filter_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
+                if projection.path.is_empty() {
+                    return None;
+                }
                 assert_eq!(projection.path.len(), 1);
                 assert_eq!(
                     projection.path[0].shape,
@@ -189,7 +195,7 @@ fn owned_record_shape_and_field_order_are_exact() {
                 .iter()
                 .flat_map(|block| &block.ops)
                 .any(|op| {
-                    matches!(op.kind, SemOpKind::CopyValue { .. })
+                    matches!(op.kind, SemOpKind::LoadCopy { .. })
                         && op.results.first().is_some_and(|result| {
                             result.ty == shape.aggregate_ty && result.own == hew_sir::OwnKind::Owned
                         })
@@ -389,7 +395,7 @@ fn aggregate_patterns_consume_copies_and_bind_every_owned_field() {
             .iter()
             .flat_map(|block| &block.ops)
             .any(|operation| {
-                matches!(operation.kind, SemOpKind::CopyValue { .. })
+                matches!(operation.kind, SemOpKind::LoadCopy { .. })
                     && operation.results.first().is_some_and(|result| {
                         lowered
                             .module
@@ -658,7 +664,10 @@ fn scalar_arguments_copy_the_exact_nested_leaf() {
     .unwrap();
     let scalar = operations
         .iter()
-        .find(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
+        .find(|op| {
+            matches!(op.kind, SemOpKind::LoadCopy { .. })
+                && op.results[0].own == hew_sir::OwnKind::None
+        })
         .unwrap();
     let SemOpKind::LoadCopy { place } = scalar.kind else {
         unreachable!()

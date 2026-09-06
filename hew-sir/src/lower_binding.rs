@@ -114,19 +114,16 @@ impl Builder<'_, '_> {
         }
     }
 
-    pub(super) fn value_borrow_root(&self, value: ValueId) -> Result<crate::OwnerRoot, String> {
-        let parent = self
-            .blocks
-            .iter()
-            .flat_map(|block| &block.ops)
-            .find(|operation| operation.results.iter().any(|result| result.id == value))
-            .and_then(|operation| operation.kind.borrow_parent());
-        match parent {
-            Some(crate::PlaceBase::Value(parent)) => self.value_borrow_root(parent),
-            Some(crate::PlaceBase::Place(place)) => {
-                crate::projection::place_path(&self.places, place).map(|(root, _)| root)
+    pub(super) fn value_borrow_root(&self, mut value: ValueId) -> Result<crate::OwnerRoot, String> {
+        loop {
+            match self.borrow_parents.get(&value).copied() {
+                Some(crate::PlaceBase::Value(parent)) => value = parent,
+                Some(crate::PlaceBase::Place(place)) => {
+                    return crate::projection::place_path(&self.places, place)
+                        .map(|(root, _)| root);
+                }
+                None => return Ok(crate::OwnerRoot::Value(value)),
             }
-            None => Ok(crate::OwnerRoot::Value(value)),
         }
     }
 }

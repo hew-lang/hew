@@ -217,15 +217,17 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
         .expect("bytes.push must consume one owner and return its updated owner");
     let push_continuation = main.blocks[push_normal.0 as usize].args[0].value;
     assert_ne!(push_result, push_continuation);
-    assert_eq!(
-        main.bindings
-            .iter()
-            .rev()
-            .find(|binding| binding.name == "copy")
-            .map(|binding| binding.target),
-        Some(hew_sir::BindingTarget::Value(push_continuation)),
-        "the mutable source binding must name the updated owner"
-    );
+    let copy = main
+        .bindings
+        .iter()
+        .find_map(|binding| match binding.target {
+            hew_sir::BindingTarget::Place(place) if binding.name == "copy" => Some(place),
+            _ => None,
+        })
+        .expect("the mutable source binding must have stable storage");
+    assert!(main.blocks[push_normal.0 as usize].ops.iter().any(|op| matches!(&op.kind,
+        SemOpKind::StoreAssign { place, value } if *place == copy && value.value == push_continuation)),
+        "the transformed receiver must return to the same local storage");
 
     let index_unwind = main
         .blocks
@@ -243,7 +245,7 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
     assert!(failure
         .ops
         .iter()
-        .any(|op| matches!(op.kind, SemOpKind::DestroyValue { .. })));
+        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == copy)));
     assert_eq!(
         failure.terminator,
         SemTerminator::Trap {
@@ -440,7 +442,7 @@ fn owned_binding_aliases_copy_and_preserve_source() {
         main.blocks
             .iter()
             .flat_map(|block| &block.ops)
-            .filter(|op| matches!(op.kind, SemOpKind::CopyValue { .. }))
+            .filter(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
             .count(),
         2,
         "each ordinary owned alias must be an independent copy"
@@ -600,10 +602,20 @@ fn owned_block_expressions_destroy_inner_locals_at_scope_exit() {
                 }) else {
                     return false;
                 };
+                let place = block
+                    .ops
+                    .iter()
+                    .find_map(|op| match op.kind {
+                        SemOpKind::StoreInit { place, ref value } if value.value == owner => {
+                            Some(place)
+                        }
+                        _ => None,
+                    })
+                    .expect("scratch must initialize local storage");
                 block.ops.iter().any(|op| {
                     matches!(
                         op.kind,
-                        SemOpKind::DestroyValue { ref value } if value.value == owner
+                        SemOpKind::EndLifetime { place: ended } if ended == place
                     )
                 })
             }),
@@ -707,11 +719,34 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
         .iter()
         .find(|function| function.name == "choose")
         .expect("choose must lower");
-    assert!(choose.blocks.iter().any(|block| {
-        block.args.iter().any(|arg| {
-            arg.ty == hew_types::ResolvedTy::String && arg.own == hew_sir::OwnKind::Owned
-        })
-    }));
+    let hew_sir::BindingTarget::Place(selected) = choose
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "selected")
+        .unwrap()
+        .target
+    else {
+        panic!("selected must have stable local storage")
+    };
+    assert_eq!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .filter(
+                |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == selected)
+            )
+            .count(),
+        3
+    );
+    assert!(
+        !choose
+            .blocks
+            .iter()
+            .flat_map(|block| &block.args)
+            .any(|arg| arg.own == hew_sir::OwnKind::Owned),
+        "lexical owners must not become loop or branch SSA arguments"
+    );
     assert!(choose.blocks.iter().any(|block| matches!(
         &block.terminator,
         SemTerminator::Goto(edge) if !edge.args.is_empty() && edge.target.0 <= block.id.0
@@ -766,10 +801,19 @@ fn checked_arithmetic_failure_cleans_live_owner_before_exact_trap() {
         .iter()
         .find(|block| block.id == failures[0].edge.target)
         .expect("checked failure edge must target a block");
+    let hew_sir::BindingTarget::Place(live) = increment
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "live")
+        .unwrap()
+        .target
+    else {
+        panic!("live must name local storage")
+    };
     assert!(failure_block
         .ops
         .iter()
-        .any(|op| matches!(op.kind, SemOpKind::DestroyValue { .. })));
+        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == live)));
     assert_eq!(
         failure_block.terminator,
         SemTerminator::Trap {

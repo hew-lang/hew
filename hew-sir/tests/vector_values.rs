@@ -90,14 +90,41 @@ fn ordinary_vector_values_share_one_operation_family() {
         ] {
             assert!(ops.contains(&expected), "{element}: missing {expected:?}");
         }
+        let main = module
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .unwrap();
+        let local = |name| match main
+            .bindings
+            .iter()
+            .find(|binding| binding.name == name)
+            .unwrap()
+            .target
+        {
+            hew_sir::BindingTarget::Place(place) => place,
+            hew_sir::BindingTarget::Value(_) => {
+                panic!("{element}: vector binding must own local storage")
+            }
+        };
+        let source = local("values");
+        let independent = local("independent");
+        assert_ne!(source, independent);
+        let copied = main
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find_map(|op| match &op.kind {
+                SemOpKind::StoreInit { place, value } if *place == independent => Some(value.value),
+                _ => None,
+            })
+            .unwrap();
         assert!(
-            module
-                .functions
-                .iter()
-                .flat_map(|function| &function.blocks)
-                .flat_map(|block| &block.ops)
-                .any(|op| matches!(op.kind, SemOpKind::CopyValue { .. })),
-            "{element}: ordinary vector binding must copy"
+            main.blocks.iter().flat_map(|block| &block.ops).any(
+                |op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == source)
+                    && op.results[0].id == copied
+            ),
+            "{element}: ordinary vector alias must copy into independent storage"
         );
     }
 }
@@ -314,6 +341,15 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
         .iter_mut()
         .find(|function| function.name == "main")
         .unwrap();
+    let hew_sir::BindingTarget::Place(owner) = function
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "values")
+        .unwrap()
+        .target
+    else {
+        panic!("vector must own local storage")
+    };
     let failure = function
         .blocks
         .iter()
@@ -334,11 +370,12 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
     let destroy = block
         .ops
         .iter()
-        .position(|op| matches!(op.kind, SemOpKind::DestroyValue { .. }))
+        .position(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == owner))
         .unwrap();
     block.ops.remove(destroy);
     assert!(
-        !verify_module(&missing_cleanup).is_empty(),
+        verify_module(&missing_cleanup).iter().any(|diagnostic| matches!(diagnostic.kind,
+            hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. } if place == owner && reason == "local storage remains active at exit")),
         "dropping failure cleanup must invalidate the owner graph"
     );
 }

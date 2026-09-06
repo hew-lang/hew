@@ -2250,9 +2250,8 @@ struct BindingPlace {
     projections: Vec<(ResolvedTy, AggregateShapeRef, usize)>,
 }
 
-/// Fields retained while one leaf is transferred or replaced. The existing
-/// owned-live relation carries their cleanup obligations across a call.
-struct AggregateParent {
+/// Non-owning aggregate fields retained during a scalar field replacement.
+struct ScalarAggregateParent {
     ty: ResolvedTy,
     shape: AggregateShapeRef,
     index: usize,
@@ -2271,12 +2270,11 @@ struct Builder<'hir, 'service> {
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    /// Definition ancestry derived once from `SemOpKind::borrow_parent`.
+    borrow_parents: HashMap<ValueId, crate::PlaceBase>,
     /// Lexical declarations only. Storage activity and payload availability
     /// belong to the verified place lifetime relation.
     scopes: Vec<Vec<BindingId>>,
-    /// Binding owners that a nested value-producing branch must preserve even
-    /// when its result position otherwise permits moving a fresh local.
-    move_protected_bindings: std::collections::HashSet<BindingId>,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -2367,8 +2365,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings,
             binding_declarations,
             owned_live,
+            borrow_parents: HashMap::new(),
             scopes: vec![Vec::new()],
-            move_protected_bindings: std::collections::HashSet::new(),
             source_bindings,
             params,
             loops: Vec::new(),
@@ -3361,14 +3359,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }))
     }
 
-    /// Take the binding version left by argument evaluation. Destructuring
-    /// transfers siblings into the ordinary owned-live relation; it does not
-    /// snapshot the field container or introduce a second cleanup ledger.
+    /// Extract a scalar leaf and retain its non-owning sibling fields.
     fn take_scalar_place(
         &mut self,
         place: &BindingPlace,
         provenance: &Provenance,
-    ) -> Result<(ValueId, Vec<AggregateParent>), String> {
+    ) -> Result<(ValueId, Vec<ScalarAggregateParent>), String> {
         let mut current = self.scalar_binding(place.binding)?;
         if self.value_own_kind(current) != Some(OwnKind::None)
             || self.value_ty(current).as_ref() != Some(&place.root_ty)
@@ -3382,7 +3378,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Err("scalar aggregate update cannot acquire ownership".into());
             }
             current = fields[*index].id;
-            parents.push(AggregateParent {
+            parents.push(ScalarAggregateParent {
                 ty: ty.clone(),
                 shape: *shape,
                 index: *index,
@@ -3392,20 +3388,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok((current, parents))
     }
 
-    /// Publish the updated leaf through the same parent reconstruction for
-    /// ordinary field assignment and runtime transforms.
+    /// Rebuild a non-owning aggregate after a scalar field assignment.
     fn replace_scalar_aggregate_leaf(
         &mut self,
         binding: BindingId,
         replacement: ValueId,
-        parents: Vec<AggregateParent>,
+        parents: Vec<ScalarAggregateParent>,
         provenance: &Provenance,
     ) -> Result<(), String> {
         if self.value_own_kind(replacement) != Some(OwnKind::None) {
             return Err("scalar aggregate replacement cannot carry ownership".into());
         }
         let mut updated = replacement;
-        for AggregateParent {
+        for ScalarAggregateParent {
             ty,
             shape,
             index,
@@ -4413,7 +4408,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self,
             &arm.body,
             "variant match arm result",
-            OwnedBindingUse::Move,
+            OwnedBindingUse::Copy,
         )?;
         let value = self.coerce_value(value, result_ty, Provenance::Site(arm.body.site))?;
         Ok(Some(Operand { value }))
@@ -4572,9 +4567,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .keys()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        let prior_move_protected = self.move_protected_bindings.clone();
-        self.move_protected_bindings
-            .extend(outer_bindings.iter().copied());
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
         let inherited_bindings = self.bindings.clone();
@@ -4609,9 +4601,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     )?);
                 }
                 if let Some(guard) = &arm.guard {
-                    let saved_protected = self.move_protected_bindings.clone();
-                    self.move_protected_bindings
-                        .extend(self.bindings.keys().copied());
                     let guard_live = self.owned_live.clone();
                     let condition = self.lower_read_operand(guard, "match guard")?.value;
                     let keep_guard_values = guard_live
@@ -4620,7 +4609,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         .map(|(value, ty)| (*value, ty.clone()))
                         .collect::<BTreeMap<_, _>>();
                     self.destroy_live_since(&keep_guard_values)?;
-                    self.move_protected_bindings = saved_protected;
                     failures.push(self.branch_candidate_test(condition)?);
                 }
 
@@ -4664,7 +4652,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
 
-        self.move_protected_bindings = prior_move_protected;
         self.merge_match_exits(exits, &result_ty)
     }
 
@@ -4678,9 +4665,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let result_ty = self.ty(&whole.ty);
         let outer_bindings = self.bindings.keys().copied().collect();
         let outer_live = self.owned_live.clone();
-        let saved_protected = self.move_protected_bindings.clone();
-        self.move_protected_bindings
-            .extend(self.bindings.keys().copied());
         let mut exits = Vec::new();
         let mut fallthrough = true;
         for arm in arms {
@@ -4771,7 +4755,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::Unreachable)?;
         }
-        self.move_protected_bindings = saved_protected;
         self.merge_match_exits(exits, &result_ty)
     }
 
@@ -6504,9 +6487,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             },
         })?;
         let before = self.control_state();
-        let prior_protected = self.move_protected_bindings.clone();
-        self.move_protected_bindings
-            .extend(before.bindings.keys().copied());
         let mut exits = Vec::new();
         for (block, expression) in [(then_block, then_expr), (else_block, else_expr)] {
             self.current = block;
@@ -6537,7 +6517,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 result: Some(Operand { value }),
             });
         }
-        self.move_protected_bindings = prior_protected;
         self.merge_match_exits(exits, &join_ty)?
             .ok_or_else(|| "divergent if expression cannot produce an SSA value".to_string())
     }
@@ -6641,7 +6620,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let value = self.fresh_value();
         self.service.require_type_facts(result_ty)?;
         let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
-        let own = if kind.borrow_parent().is_some() {
+        let own = if let Some(parent) = kind.borrow_parent() {
+            self.borrow_parents.insert(value, parent);
             OwnKind::Guaranteed
         } else {
             own

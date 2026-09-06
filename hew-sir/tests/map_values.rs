@@ -354,7 +354,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
             .ops
             .iter()
             .filter(
-                |op| matches!(&op.kind, SemOpKind::DestroyValue { value } if hew_sir::OwnerRoot::Value(value.value) == parent)
+                |op| matches!(&op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(*place) == parent)
             )
             .count(),
         1,

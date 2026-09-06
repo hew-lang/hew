@@ -88,8 +88,8 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
         .iter()
         .find(|binding| binding.name == "state")
         .unwrap();
-    let BindingTarget::Value(initial) = initial.target else {
-        panic!("state must have an initial owner")
+    let BindingTarget::Place(initial) = initial.target else {
+        panic!("state must have local storage")
     };
     // Construction may copy its field initializer. Mutating the established
     // place must transfer its container, including when another argument reads it.
@@ -97,7 +97,7 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
-        .skip_while(|operation| !operation.results.iter().any(|result| result.id == initial))
+        .skip_while(|operation| !matches!(operation.kind, SemOpKind::StoreInit { place, .. } if place == initial))
         .skip(1)
     {
         if matches!(
@@ -154,14 +154,14 @@ fn assert_receiver_update_order(module: &SemModule) {
         .iter()
         .find(|function| function.name == "main")
         .unwrap();
-    let BindingTarget::Value(root) = main
+    let BindingTarget::Place(root) = main
         .bindings
         .iter()
         .find(|binding| binding.name == "state")
         .unwrap()
         .target
     else {
-        panic!("state must retain its owning SSA root")
+        panic!("state must retain its local storage")
     };
     let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let clear = runtime_block(main, RuntimeCallFamily::Vector(VecValueOp::Clear));
@@ -190,7 +190,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     let (_, place) = taken_receiver(push, args[0].operand.value);
     assert_eq!(place, taken_receiver(clear, clear_args[0].operand.value).1);
     let field = plan.projection(place).unwrap();
-    assert_eq!(field.root, hew_sir::OwnerRoot::Value(root));
+    assert_eq!(field.root, hew_sir::OwnerRoot::Local(root));
     assert_eq!(
         field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
         [0]
@@ -201,7 +201,7 @@ fn assert_receiver_update_order(module: &SemModule) {
         .position(|op| match op.kind {
             SemOpKind::StoreAssign { place, .. } => {
                 let sibling = plan.projection(place).unwrap();
-                sibling.root == hew_sir::OwnerRoot::Value(root)
+                sibling.root == hew_sir::OwnerRoot::Local(root)
                     && sibling
                         .path
                         .iter()
@@ -338,9 +338,9 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         })
         .collect();
     assert_eq!(
-        destroyed
+        main.blocks[cleanup.0 as usize].ops
             .iter()
-            .filter(|&&value| hew_sir::OwnerRoot::Value(value) == field.root)
+            .filter(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root))
             .count(),
         1,
         "the partially initialized root must clean up its remaining fields exactly once"
@@ -359,13 +359,13 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         .find(|block| block.id == cleanup)
         .unwrap();
     fault.ops.retain(
-        |op| !matches!(&op.kind, SemOpKind::DestroyValue { value } if hew_sir::OwnerRoot::Value(value.value) == field.root),
+        |op| !matches!(op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root),
     );
     assert!(
         verify_module(&missing_cleanup)
             .iter()
             .any(|error| matches!(error.kind,
-        hew_sir::SirDiagnosticKind::OwnershipLifetime { value, .. } if hew_sir::OwnerRoot::Value(value) == field.root)),
+        hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. } if hew_sir::OwnerRoot::Local(place) == field.root && reason == "local storage remains active at exit")),
         "omitting remaining-root cleanup must be rejected"
     );
     assert!(
@@ -562,13 +562,13 @@ fn returned_receiver_store(block: &hew_sir::SemBlock, place: hew_sir::PlaceId) -
         .expect("store the returned receiver into the same projected field")
 }
 
-fn assert_root_cleanup(block: &hew_sir::SemBlock, root: ValueId) {
+fn assert_root_cleanup(block: &hew_sir::SemBlock, root: hew_sir::PlaceId) {
     assert_eq!(
         block
             .ops
             .iter()
             .filter(|op| matches!(&op.kind,
-        SemOpKind::DestroyValue { value } if value.value == root))
+        SemOpKind::EndLifetime { place } if *place == root))
             .count(),
         1,
         "each exit cleans up the remaining root exactly once"

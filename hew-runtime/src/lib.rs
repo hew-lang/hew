@@ -1192,4 +1192,5 @@ mod exit_code_resolution_tests {
 #[cfg(test)]
 mod test_string;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod value_close;

@@ -3541,7 +3541,7 @@ impl<'a> Formatter<'a> {
     fn format_select_arm(&mut self, arm: &SelectArm) {
         self.write_indent();
         self.format_pattern(&arm.binding.0);
-        self.write(" from ");
+        self.write(" = ");
         self.format_expr(&arm.source.0);
         self.write(" => ");
         self.format_expr(&arm.body.0);

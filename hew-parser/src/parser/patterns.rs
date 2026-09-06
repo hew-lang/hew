@@ -413,7 +413,7 @@ impl Parser<'_> {
 
     pub(crate) fn parse_select_arm(&mut self) -> Option<SelectArm> {
         let binding = self.parse_pattern()?;
-        self.expect(&Token::From)?;
+        self.expect(&Token::Equal)?;
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;

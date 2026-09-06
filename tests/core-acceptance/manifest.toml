@@ -818,7 +818,7 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "true\n0\ntrue\n0\nOLD:tail\nNEW\n"
+stdout = "true\n0\ntrue\n0\ntrue\n0\nOLD:tail\nNEW\n"
 stderr = ""
 exit = 0
 

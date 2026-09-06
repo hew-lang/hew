@@ -222,34 +222,35 @@ fn ordinary_composite_equality_demands_selected_methods() {
 
 #[test]
 fn equality_snapshots_a_whole_binding_before_later_mutation() {
-    let module = lower_source(
-        r#"
+    for read in ["left", "Vec.from(left)", "Vec.from(Vec.from(left))"] {
+        let source = r#"
         fn main() -> i64 {
             var left = ["kept".to_upper()];
             let right = left;
-            if left == { left.clear(); right } { 1 } else { 0 }
+            if $LEFT == { left.clear(); right } { 1 } else { 0 }
         }
-    "#,
-    );
-    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
-    let argument = main
-        .blocks
-        .iter()
-        .find_map(|b| match &b.terminator {
-            SemTerminator::ValueCall { args, .. } => Some(args[0].operand.value),
-            _ => None,
-        })
-        .unwrap();
-    assert!(
-        main.blocks.iter().flat_map(|b| &b.ops).any(|op| matches!(
-            op.kind,
-            hew_sir::SemOpKind::CopyValue { .. }
-        ) && op
-            .results
+    "#;
+        let module = lower_source(&source.replace("$LEFT", read));
+        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let argument = main
+            .blocks
             .iter()
-            .any(|result| result.id == argument)),
-        "the left input must own its pre-mutation snapshot"
-    );
+            .find_map(|b| match &b.terminator {
+                SemTerminator::ValueCall { args, .. } => Some(args[0].operand.value),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            main.blocks.iter().flat_map(|b| &b.ops).any(|op| matches!(
+                op.kind,
+                hew_sir::SemOpKind::CopyValue { .. }
+            ) && op
+                .results
+                .iter()
+                .any(|result| result.id == argument)),
+            "the left input must own its pre-mutation snapshot"
+        );
+    }
 }
 
 #[test]

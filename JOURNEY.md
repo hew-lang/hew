@@ -1431,3 +1431,16 @@ with its source producer. The permanent bytes case covers independent
 NUL-containing payloads, different lengths, nested owned data and a record key
 whose user Hash pairs with derived Eq over bytes. Bare bytes gains no Hash
 capability. Native execution still awaits the selected-call physical layer.
+
+## Transparent argument transfer review fix
+
+Review found that Vec.from(left) bypassed a required argument snapshot because
+its transparent HIR wrapper hid the binding from the shared transfer helper.
+The equivalent bare-binding control passed while the wrapped control failed the
+SIR ownership-lifetime verifier after a later operand cleared the source.
+
+The transfer helper now unwraps transparent expressions after checking that
+concrete types agree, then applies the existing copy/move and protected-binding
+rules. Paired bare, wrapped and nested-wrapper controls and the permanent native
+read-order source cover the fix. The complete SIR suite and scoped Rust lint
+pass; native wrapper execution remains part of selected-call integration.

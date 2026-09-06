@@ -2260,6 +2260,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, String> {
+        let mut expr = expr;
+        while let HirExprKind::SubsumedValue { source } = &expr.kind {
+            if self.ty(&source.ty) != self.ty(&expr.ty) {
+                return Err("transparent value transfer must preserve its exact type".into());
+            }
+            expr = source;
+        }
         let source = self.lower_expr_with_binding_use(expr, binding_use)?;
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;

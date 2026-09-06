@@ -1,0 +1,24 @@
+import std.fs;
+
+fn failed(path: string) -> bool {
+    match fs.read(path) {
+        .Ok(_) => false,
+        .Err(_) => true,
+    }
+}
+
+fn main() -> i64 {
+    if !failed("resource-missing.txt") { return 1; }
+    if !failed("resource-invalid.txt") { return 2; }
+    if !failed(".") { return 3; }
+    match fs.read("resource-empty.txt") {
+        .Ok(text) => { if text != "" { return 4; } },
+        .Err(_) => return 5,
+    }
+    match fs.read("resource-nul.txt") {
+        .Ok(text) => { if text != "a\0b" { return 6; } },
+        .Err(_) => return 7,
+    }
+    println("read results");
+    0
+}

@@ -579,6 +579,8 @@ pub fn runtime_variant_shape_refs(
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Exact resource release recipes; ownership remains in SSA and places.
+    pub resources: BTreeMap<ResolvedTy, crate::ResourceRelease>,
     /// Concrete environments in canonical module-local identity order.
     pub closures: Vec<SemClosure>,
     /// Checker-selected operations demanded by concrete collection keys.

@@ -39,6 +39,10 @@ mod partial_fixture;
 mod partial_tests;
 
 #[cfg(test)]
+#[path = "physical_resource_tests.rs"]
+mod resource_tests;
+
+#[cfg(test)]
 #[path = "physical_panic_tests.rs"]
 mod panic_tests;
 
@@ -77,6 +81,17 @@ pub struct PhysicalMapId(pub u32);
 /// Module-local identity of a set element copy/drop recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalSetId(pub u32);
+
+/// Module-local identity of an exact resource release contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalResourceId(pub u32);
+
+/// Checked semantic authority for a pointer-carried affine resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalResourceDescriptor {
+    pub ty: ResolvedTy,
+    pub release: hew_sir::ResourceRelease,
+}
 
 /// A canonical map and its exact key and value types, before target layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +134,7 @@ pub struct PhysicalVariantDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PhysicalTypeInventory {
     types: BTreeSet<ResolvedTy>,
+    resources: BTreeMap<ResolvedTy, PhysicalResourceDescriptor>,
     aggregates: BTreeMap<ResolvedTy, PhysicalAggregateDescriptor>,
     variants: BTreeMap<ResolvedTy, PhysicalVariantDescriptor>,
     vectors: BTreeMap<ResolvedTy, PhysicalVectorDescriptor>,
@@ -134,6 +150,10 @@ impl PhysicalTypeInventory {
 
     pub fn types(&self) -> impl Iterator<Item = &ResolvedTy> {
         self.types.iter()
+    }
+
+    pub fn resources(&self) -> impl Iterator<Item = &PhysicalResourceDescriptor> {
+        self.resources.values()
     }
 
     pub fn aggregates(&self) -> impl Iterator<Item = &PhysicalAggregateDescriptor> {
@@ -332,6 +352,7 @@ pub enum CloneAction {
 /// A release selected once from an explicit SIR destroy plus concrete type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DestroyAction {
+    Resource(PhysicalResourceId),
     Encoding(EncodingFormat),
     Callable,
     StringRelease,
@@ -678,6 +699,8 @@ pub struct PhysicalVariantArm {
 /// ownership or failure behaviour from a linker symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalRuntimeAction {
+    FileRead(hew_types::runtime_call::FileReadOp),
+    StreamClose,
     Encoding {
         format: EncodingFormat,
         op: EncodingOp,
@@ -723,6 +746,8 @@ pub enum PhysicalRuntimeAction {
 impl PhysicalRuntimeAction {
     const fn semantic_family(self) -> RuntimeCallFamily {
         match self {
+            Self::FileRead(op) => RuntimeCallFamily::FileRead(op),
+            Self::StreamClose => RuntimeCallFamily::StreamClose,
             Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
             Self::JsonObjectKeys => RuntimeCallFamily::JsonObjectKeys,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
@@ -845,6 +870,7 @@ pub struct PhysicalFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
+    pub resources: Vec<PhysicalResourceDescriptor>,
     pub value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,
     pub target: PhysicalTarget,
@@ -926,6 +952,7 @@ pub fn lower_physical_module(
     })?;
 
     let PhysicalGlue {
+        resources,
         environment_glue,
         aggregate_glue,
         variant_glue,
@@ -989,6 +1016,7 @@ pub fn lower_physical_module(
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
+        resources,
         value_capabilities: capability::build(module, &ids)?,
         closures: module
             .closures
@@ -1020,6 +1048,7 @@ pub fn lower_physical_module(
 
 /// One index for resolving type-directed actions to their concrete recipes.
 struct PhysicalGlueIds {
+    resources: BTreeMap<ResolvedTy, PhysicalResourceId>,
     aggregates: BTreeMap<ResolvedTy, PhysicalAggregateId>,
     variants: BTreeMap<ResolvedTy, PhysicalVariantId>,
     vectors: BTreeMap<ResolvedTy, PhysicalVectorId>,
@@ -1028,6 +1057,7 @@ struct PhysicalGlueIds {
 }
 
 struct PhysicalGlue {
+    resources: Vec<PhysicalResourceDescriptor>,
     environment_glue: Vec<PhysicalEnvironmentGlue>,
     aggregate_glue: Vec<PhysicalAggregateGlue>,
     variant_glue: Vec<PhysicalVariantGlue>,
@@ -1104,7 +1134,17 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
             Ok((set.ty.clone(), PhysicalSetId(index)))
         })
         .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let resources = inventory
+        .resources()
+        .enumerate()
+        .map(|(index, resource)| {
+            let index = u32::try_from(index)
+                .map_err(|_| PhysicalError::new("physical resource count exceeds u32"))?;
+            Ok((resource.ty.clone(), PhysicalResourceId(index)))
+        })
+        .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
     let ids = PhysicalGlueIds {
+        resources,
         aggregates: aggregate_ids,
         variants: variant_ids,
         vectors: vector_ids,
@@ -1274,6 +1314,7 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
     Ok(PhysicalGlue {
+        resources: inventory.resources().cloned().collect(),
         environment_glue,
         aggregate_glue,
         variant_glue,
@@ -1353,6 +1394,7 @@ fn clone_action_for_type(
 
 fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<DestroyAction> {
     match ty {
+        _ if ids.resources.contains_key(ty) => Some(DestroyAction::Resource(ids.resources[ty])),
         _ if encoding_format(ty).is_some() => encoding_format(ty).map(DestroyAction::Encoding),
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some(DestroyAction::Callable),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
@@ -1411,6 +1453,7 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
     }
     let mut inventory = PhysicalTypeInventory {
         types,
+        resources: BTreeMap::new(),
         aggregates: BTreeMap::new(),
         variants: BTreeMap::new(),
         vectors: BTreeMap::new(),
@@ -1424,12 +1467,41 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
     inventory
 }
 
+fn collect_resource_type(
+    module: &SemModule,
+    inventory: &mut PhysicalTypeInventory,
+    ty: &ResolvedTy,
+) -> bool {
+    let Some(release) = module.resources.get(ty) else {
+        return false;
+    };
+    let Some(facts) = module.type_facts.get(&TypeInstanceKey(ty.clone())) else {
+        return false;
+    };
+    if hew_sir::verify_resource_release(ty, release, facts).is_err() {
+        return false;
+    }
+    inventory.resources.insert(
+        ty.clone(),
+        PhysicalResourceDescriptor {
+            ty: ty.clone(),
+            release: release.clone(),
+        },
+    );
+    true
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one recursive inventory walk keeps concrete type descriptors at the same boundary"
+)]
 fn collect_inventory_type(
     module: &SemModule,
     inventory: &mut PhysicalTypeInventory,
     ty: &ResolvedTy,
 ) {
-    if inventory.aggregates.contains_key(ty)
+    if inventory.resources.contains_key(ty)
+        || inventory.aggregates.contains_key(ty)
         || inventory.variants.contains_key(ty)
         || inventory.vectors.contains_key(ty)
         || inventory.maps.contains_key(ty)
@@ -1438,6 +1510,9 @@ fn collect_inventory_type(
         return;
     }
     inventory.types.insert(ty.clone());
+    if collect_resource_type(module, inventory, ty) {
+        return;
+    }
     if let ResolvedTy::Closure { captures, .. } = ty {
         for capture in captures {
             collect_inventory_type(module, inventory, capture);
@@ -1738,6 +1813,8 @@ fn physical_runtime_action(
     family: RuntimeCallFamily,
 ) -> Result<PhysicalRuntimeAction, PhysicalError> {
     Ok(match family {
+        RuntimeCallFamily::FileRead(op) => PhysicalRuntimeAction::FileRead(op),
+        RuntimeCallFamily::StreamClose => PhysicalRuntimeAction::StreamClose,
         RuntimeCallFamily::Encoding { format, op } => {
             PhysicalRuntimeAction::Encoding { format, op }
         }
@@ -2589,8 +2666,30 @@ impl FunctionLowerer<'_> {
     }
 }
 
+fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    let mut resource_types = BTreeSet::new();
+    for resource in &module.resources {
+        if !resource_types.insert(&resource.ty) {
+            return Err(PhysicalError::new("duplicate physical resource authority"));
+        }
+        hew_sir::verify_resource_release(
+            &resource.ty,
+            &resource.release,
+            semantic_type_facts(module, &resource.ty)?,
+        )
+        .map_err(PhysicalError::new)?;
+        if required_layout(&module.target, &resource.ty)?.repr != PhysicalRepr::Pointer {
+            return Err(PhysicalError::new(
+                "resource release requires its pointer carrier",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
     capability::verify(module)?;
+    verify_resources(module)?;
     if module.target.triple.is_empty() || module.target.data_layout.is_empty() {
         return Err(PhysicalError::new(
             "physical module requires a target triple and data layout",
@@ -3300,6 +3399,13 @@ fn verify_destroy_action(
     let own_from_facts = OwnKind::of_class(semantic_type_facts(module, ty)?.class);
     let valid = own == own_from_facts
         && match action {
+            DestroyAction::Resource(id) => {
+                own == OwnKind::Owned
+                    && module
+                        .resources
+                        .get(id.0 as usize)
+                        .is_some_and(|resource| resource.ty == *ty)
+            }
             DestroyAction::Encoding(format) => {
                 own == OwnKind::Owned && encoding_format(ty) == Some(format)
             }
@@ -5792,6 +5898,7 @@ mod tests {
             },
         );
         SemModule {
+            resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![callable],
@@ -6964,6 +7071,7 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            resources: vec![],
             closures: vec![],
             environment_glue: vec![],
             value_capabilities: BTreeMap::new(),

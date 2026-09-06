@@ -1323,7 +1323,7 @@ impl Checker {
                     ),
                 };
             };
-            if let Some(family) = self.encoding_runtime_target(&declaration, extern_decl) {
+            if let Some(family) = self.source_runtime_target(&declaration, extern_decl) {
                 return CallTarget::Runtime(family);
             }
             return CallTarget::Extern {
@@ -1474,10 +1474,10 @@ impl Checker {
         }
     }
 
-    /// A runtime symbol alone never authorizes an encoding operation. Read the
+    /// A runtime symbol alone never authorizes a managed-value operation. Read the
     /// selected declaration's own module and signature, even when a different
     /// declaration was first to mint the shared C ABI contract.
-    fn encoding_runtime_target(
+    fn source_runtime_target(
         &self,
         declaration: &crate::DefId,
         extern_decl: &crate::extern_table::ExternDeclaration,
@@ -1487,7 +1487,12 @@ impl Checker {
             return None;
         }
         let family = crate::RuntimeCallFamily::from_c_symbol(&extern_decl.symbol)?;
-        family.encoding_format()?;
+        // The nominal close wrapper must retain the release declaration for
+        // HIR's exact forwarding proof. SIR selects its runtime action from
+        // that validated lifecycle, after this declaration boundary.
+        if family == crate::RuntimeCallFamily::FileRead(crate::runtime_call::FileReadOp::Close) {
+            return None;
+        }
         let contract = self
             .extern_table
             .contract_for_declaration(declaration.full_path())?;
@@ -1505,16 +1510,22 @@ impl Checker {
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
-        family
-            .matches_encoding_extern(
-                module,
-                declaration.full_path(),
-                &extern_decl.symbol,
-                &params,
-                &result,
-                &contract.consuming_params,
-            )
-            .then_some(family)
+        (family.matches_encoding_extern(
+            module,
+            declaration.full_path(),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
+        ) || family.matches_file_read_extern(
+            module,
+            declaration.full_path(),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
+        ))
+        .then_some(family)
     }
 
     #[expect(

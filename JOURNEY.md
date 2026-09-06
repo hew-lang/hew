@@ -2420,3 +2420,28 @@ repair is required before this source regression can establish acceptance.
 The HTTP client now declares the header vector mutable before pushing the
 content-type pair. This repairs the direct source-checking dependency of the
 HTTP/JSON example without changing request behaviour or resource handling.
+
+## Migrate encoding callers to checked values
+
+The HTTP example handles missing fields and wrong JSON shapes as distinct data
+errors, and MessagePack round-trip assertions unwrap the codec and JSON results
+explicitly. The JSON loop regression copies, mutates and reassigns its array
+while checking that mutation preserves the previous value. JSON/YAML lifetime
+fixtures select values inside a lexical parent scope and invoke captured values
+after that scope ends. Their early-return, panic and scoped-actor probes remain;
+the expected stdout is unchanged. The parse-result loop also verifies the actual
+integer field instead of testing a raw handle tag.
+
+The remaining value-tree use-after-release rejection is TOML-specific and emits
+one moved-value diagnostic. MessagePack's obsolete panic expectations are removed;
+the existing malformed-JSON and empty-input error-detail assertions retain those
+failure boundaries. Binary framing, Unicode and numeric round-trip assertions
+remain intact.
+
+The MessagePack and JSON reassignment suites pass source checking, and the TOML
+rejection matches its updated diagnostic count. Shell lint passes. Other migrated
+callers pass type checking but reach explicit integration boundaries: HTTP `?`
+payloads disagree in HIR despite identical printed JSON Value names; captured
+encoding values fail SIR type-fact lookup for `Value>::eq`; and the parse-result
+loop reaches the missing string `is_empty` runtime contract. Native execution,
+including fault and cancellation probes, remains unverified at this checkpoint.

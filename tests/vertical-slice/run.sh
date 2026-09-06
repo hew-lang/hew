@@ -4102,8 +4102,8 @@ if "${HEW}" check \
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 value_tree_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
-if [[ "${value_tree_use_after_close_count}" -ne 3 ]]; then
-    echo "expected 3 value-tree use-after-close diagnostics, got ${value_tree_use_after_close_count}" >&2
+if [[ "${value_tree_use_after_close_count}" -ne 1 ]]; then
+    echo "expected 1 TOML use-after-close diagnostic, got ${value_tree_use_after_close_count}" >&2
     cat "${reject_output}" >&2
     exit 1
 fi

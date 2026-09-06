@@ -24,10 +24,6 @@
 // Note: requires internet access. Not included in the automated test
 // suite because output depends on network availability.
 //
-// Ownership: every `get_field` / `array_get` call returns a new
-// heap-allocated Value clone. Each such handle is freed before the
-// enclosing scope exits. `print_field` frees the child Value it
-// fetches; it never frees the parent passed by the caller.
 import std.net.http.http_client;
 
 import std.encoding.json.{self, Value};
@@ -37,14 +33,39 @@ fn fetch(url: string) -> Option<string> {
     http_client.get_string(url)
 }
 
-// Extract a string field from a JSON object, print it, and free the child handle.
-// Ownership: `obj` is borrowed — the caller owns and must free it.
-// The child Value returned by `get_field` is owned by this function and freed here.
-fn print_field(obj: Value, key: string) {
-    let child = obj.get_field(key); // owned heap clone — must free
-    let val = child.get_string();
-    println(f"{key}:  {val}");
-    child.free(); // release owned clone
+// Distinguish a missing field from a value of the wrong kind.
+fn required_field(obj: Value, key: string) -> Result<Value, string> {
+    match obj.get_field(key) {
+        .Ok(.Some(value)) => Ok(value),
+        .Ok(.None) => Err(f"missing field: {key}"),
+        .Err(error) => Err(f"{key}: {error}"),
+    }
+}
+
+fn print_field(obj: Value, key: string) -> Result<(), string> {
+    let child = required_field(obj, key)?;
+    match child.get_string() {
+        .Ok(value) => {
+            println(f"{key}:  {value}");
+            Ok(())
+        },
+        .Err(error) => Err(f"{key}: {error}"),
+    }
+}
+
+fn print_slideshow(root: Value) -> Result<(), string> {
+    let slideshow = required_field(root, "slideshow")?;
+    print_field(slideshow, "title")?;
+    print_field(slideshow, "author")?;
+    print_field(slideshow, "date")?;
+    let slides = required_field(slideshow, "slides")?;
+    match slides.array_len() {
+        .Ok(count) => {
+            println(f"slides: {count}");
+            Ok(())
+        },
+        .Err(error) => Err(f"slides: {error}"),
+    }
 }
 
 fn main() {
@@ -54,30 +75,14 @@ fn main() {
         .Some(body) => {
             match json.parse(body) {
                 .Ok(root) => {
-                    // httpbin /json returns a "slideshow" object at the root.
-                    // `get_field` returns a new owned clone — caller must free.
-                    let slideshow = root.get_field("slideshow"); // owned
-                    print_field(slideshow, "title");
-                    print_field(slideshow, "author");
-                    print_field(slideshow, "date");
-
-                    // Count the slides array.
-                    let slides = slideshow.get_field("slides"); // owned
-                    let n = slides.array_len();
-                    println(f"slides: {n}");
-
-                    // Free in reverse acquisition order.
-                    slides.free(); // free before slideshow
-                    slideshow.free(); // free before root
-                    root.free(); // outermost last
+                    match print_slideshow(root) {
+                        .Ok(()) => {},
+                        .Err(message) => println(f"json data error: {message}"),
+                    }
                 },
-                .Err(ParseError.Invalid(msg)) => {
-                    println(f"json parse failed: {msg}");
-                },
+                .Err(error) => println(f"json parse failed: {error}"),
             }
         },
-        .None => {
-            println("http request failed (no network or server unreachable)");
-        },
+        .None => println("http request failed (no network or server unreachable)"),
     }
 }

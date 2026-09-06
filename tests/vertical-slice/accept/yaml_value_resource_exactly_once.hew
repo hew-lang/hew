@@ -1,28 +1,27 @@
-// A captured fluent chain transfers one YAML mapping owner, while get_field
-// creates an independent deep owner that survives closing the root.
+// Selected values and captured copies survive their parent's lexical scope.
 import std.encoding.yaml;
 
 fn early_exit(flag: bool) {
-    let value = yaml.object();
-    value.with("n", yaml.from_int(11));
-    let child = value.get_field("n");
+    var value = yaml.object();
+    value.set("n", yaml.from_int(11)).unwrap();
+    let child = value.get_field("n").unwrap().unwrap();
     if flag {
         return;
     }
-    println(child.get_int());
+    println(child.get_int().unwrap());
 }
 
 fn _panic_exit() {
-    let value = yaml.object();
-    value.with("n", yaml.from_int(12));
-    let _child = value.get_field("n");
+    var value = yaml.object();
+    value.set("n", yaml.from_int(12)).unwrap();
+    let _child = value.get_field("n").unwrap().unwrap();
     panic("yaml value panic probe");
 }
 
 fn cancel_exit() {
-    let value = yaml.object();
-    value.with("n", yaml.from_int(13));
-    let _child = value.get_field("n");
+    var value = yaml.object();
+    value.set("n", yaml.from_int(13)).unwrap();
+    let _child = value.get_field("n").unwrap().unwrap();
     var i: i64 = 0;
     while i < 2 {
         i = i + 1;
@@ -38,17 +37,18 @@ actor YamlCancelDriver {
 }
 
 fn main() {
-    let value = yaml.object().with("n", yaml.from_int(9)).with_null("none");
-    let child = value.get_field("n");
-    value.close();
-    println(child.get_int());
+    let read = {
+        var value = yaml.object();
+        value.set("n", yaml.from_int(9)).unwrap();
+        value.set("none", yaml.null()).unwrap();
+        let child = value.get_field("n").unwrap().unwrap();
+        || child.get_int().unwrap()
+    };
+    println(read());
 
-    // A parse failure returns no parent owner to mutate or free.
+    // A parse failure returns an error without an owning value payload.
     match yaml.parse("[") {
-        .Ok(parsed) => {
-            parsed.free();
-            panic("malformed YAML unexpectedly parsed");
-        },
+        .Ok(_) => panic("malformed YAML unexpectedly parsed"),
         .Err(_) => {},
     }
     early_exit(true);

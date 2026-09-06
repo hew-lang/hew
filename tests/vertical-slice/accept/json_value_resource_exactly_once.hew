@@ -1,28 +1,27 @@
-// Fluent calls preserve one JSON root owner, child Values transfer, and
-// navigation results are independent deep owners.
+// Selected values and captured copies survive their parent's lexical scope.
 import std.encoding.json;
 
 fn early_exit(flag: bool) {
-    let value = json.object();
-    value.with("n", json.from_int(11));
-    let child = value.get_field("n");
+    var value = json.object();
+    value.set("n", json.from_int(11)).unwrap();
+    let child = value.get_field("n").unwrap().unwrap();
     if flag {
         return;
     }
-    println(child.get_int());
+    println(child.get_int().unwrap());
 }
 
 fn _panic_exit() {
-    let value = json.object();
-    value.with("n", json.from_int(12));
-    let _child = value.get_field("n");
+    var value = json.object();
+    value.set("n", json.from_int(12)).unwrap();
+    let _child = value.get_field("n").unwrap().unwrap();
     panic("json value panic probe");
 }
 
 fn cancel_exit() {
-    let value = json.object();
-    value.with("n", json.from_int(13));
-    let _child = value.get_field("n");
+    var value = json.object();
+    value.set("n", json.from_int(13)).unwrap();
+    let _child = value.get_field("n").unwrap().unwrap();
     var i: i64 = 0;
     while i < 2 {
         i = i + 1;
@@ -38,21 +37,19 @@ actor JsonCancelDriver {
 }
 
 fn main() {
-    let value = json.object();
-    value.with("n", json.from_int(7));
-    value.with_bool("flag", true);
-    let child = value.get_field("n");
-    let keys = value.keys();
-    value.close();
-    println(child.get_int());
-    println(keys.array_len());
+    let (read, keys) = {
+        var value = json.object();
+        value.set("n", json.from_int(7)).unwrap();
+        value.set("flag", json.from_bool(true)).unwrap();
+        let child = value.get_field("n").unwrap().unwrap();
+        (|| child.get_int().unwrap(), value.keys().unwrap())
+    };
+    println(read());
+    println(keys.array_len().unwrap());
 
-    // A parse failure returns no parent owner to mutate or free.
+    // A parse failure returns an error without an owning value payload.
     match json.parse("{") {
-        .Ok(parsed) => {
-            parsed.free();
-            panic("malformed JSON unexpectedly parsed");
-        },
+        .Ok(_) => panic("malformed JSON unexpectedly parsed"),
         .Err(_) => {},
     }
     early_exit(true);

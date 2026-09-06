@@ -53,6 +53,29 @@ fn path_extends(path: &[String], prefix: &[String]) -> bool {
     path.len() >= prefix.len() && path[..prefix.len()] == *prefix
 }
 
+/// Places privately replaced on both paths; overlapping parent/child entries
+/// preserve the narrower place that is definitely independent on either path.
+fn common_parameter_replacements(left: &[PlacePath], right: &[PlacePath]) -> Vec<PlacePath> {
+    let mut common = Vec::new();
+    for a in left {
+        for b in right {
+            let shared = if path_extends(a, b) {
+                Some(a)
+            } else if path_extends(b, a) {
+                Some(b)
+            } else {
+                None
+            };
+            if let Some(path) = shared {
+                if !common.contains(path) {
+                    common.push(path.clone());
+                }
+            }
+        }
+    }
+    common
+}
+
 /// A binding in the type environment.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -64,6 +87,9 @@ pub struct Binding {
     pub is_mutable: bool,
     /// Whether this parameter declaration transfers ownership to the callee.
     pub parameter_ownership: ParameterOwnership,
+    /// Parameter places definitely replaced by private values on this path.
+    /// An empty path denotes replacement of the whole parameter binding.
+    pub parameter_replacements: Vec<PlacePath>,
     /// Whether the value has been moved (e.g., sent to an actor)
     pub is_moved: bool,
     /// Where the move happened, for error reporting
@@ -104,10 +130,8 @@ pub struct Binding {
     /// Where this binding came from: a parameter, a user-written local, or a
     /// compiler-synthesised binding.
     ///
-    /// Diagnostics that offer "declare it `var`" as a fix must consult this:
-    /// on a by-value aggregate parameter `var` is itself rejected (see
-    /// `reject_ineffective_mutable_value_param`), so suggesting it there
-    /// routes the user into a construct the compiler refuses.
+    /// Receiver parameters retain their distinct caller-visible write-back
+    /// contract; ordinary mutable value parameters use private storage.
     pub origin: BindingOrigin,
 }
 
@@ -167,14 +191,16 @@ impl Binding {
     }
 }
 
-/// The move/release facts tracked per execution path for one binding.
+/// The move, release and parameter-replacement facts tracked per execution path.
 ///
-/// These four fields are the ONLY flow-sensitive ownership state. `read_count`
+/// This is the canonical flow-sensitive ownership state. `read_count`
 /// and `is_written` are any-path lint accumulators (unused / never-mutated) and
 /// deliberately stay outside the snapshot: restoring them per branch arm would
 /// erase reads and writes that genuinely happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipState {
+    /// Parameter places definitely replaced by private values on this path.
+    pub parameter_replacements: Vec<PlacePath>,
     /// Whether the value has been moved on this path.
     pub is_moved: bool,
     /// Where the move happened, for error reporting.
@@ -248,8 +274,8 @@ pub struct TypeEnv {
     scopes: Vec<HashMap<String, Binding>>,
     /// Deferred bodies registered in each lexical scope, parallel to `scopes`.
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
-    /// Lexical scope floors for active loops, paired with their optional labels.
-    loop_scope_floors: Vec<(Option<String>, usize)>,
+    /// Active loop labels, lexical floors and entry ownership snapshots.
+    loop_scope_floors: Vec<(Option<String>, usize, OwnershipSnapshot)>,
     next_binding_id: u32,
 }
 
@@ -327,8 +353,11 @@ impl TypeEnv {
 
     /// Record the lexical scope depth immediately before a loop body opens.
     pub fn enter_loop(&mut self, label: Option<&str>) {
-        self.loop_scope_floors
-            .push((label.map(str::to_string), self.deferred_scopes.len()));
+        self.loop_scope_floors.push((
+            label.map(str::to_string),
+            self.deferred_scopes.len(),
+            self.ownership_snapshot(),
+        ));
     }
 
     /// Retire the innermost loop boundary.
@@ -338,9 +367,20 @@ impl TypeEnv {
     /// Panics if no loop boundary is active, which indicates an unbalanced
     /// checker traversal.
     pub fn exit_loop(&mut self) {
-        self.loop_scope_floors
+        let (_, _, entry) = self
+            .loop_scope_floors
             .pop()
             .expect("cannot exit loop with no active loop boundary");
+        // A loop body may not run, or may leave before a replacement. Retain
+        // only entry-proven replacements without changing move/release facts.
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if let Some(before) = entry.get(binding.id) {
+                binding.parameter_replacements = common_parameter_replacements(
+                    &before.parameter_replacements,
+                    &binding.parameter_replacements,
+                );
+            }
+        }
     }
 
     /// Deferred bodies materialized by a `break` or `continue` edge.
@@ -350,11 +390,11 @@ impl TypeEnv {
     /// source checker cannot identify the loop boundary.
     #[must_use]
     pub fn loop_edge_defers(&self, label: Option<&str>) -> Option<Vec<Spanned<Expr>>> {
-        let (_, floor) = self
+        let (_, floor, _) = self
             .loop_scope_floors
             .iter()
             .rev()
-            .find(|(candidate, _)| label.is_none() || candidate.as_deref() == label)?;
+            .find(|(candidate, _, _)| label.is_none() || candidate.as_deref() == label)?;
         Some(
             self.deferred_scopes[*floor..]
                 .iter()
@@ -375,6 +415,7 @@ impl TypeEnv {
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
+                    parameter_replacements: Vec::new(),
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -401,6 +442,7 @@ impl TypeEnv {
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
+                    parameter_replacements: Vec::new(),
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -479,6 +521,7 @@ impl TypeEnv {
                     ty,
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
+                    parameter_replacements: Vec::new(),
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -597,6 +640,20 @@ impl TypeEnv {
         })
     }
 
+    /// Whether a selected place still carries an ordinary parameter borrow.
+    #[must_use]
+    pub fn place_borrows_parameter(&self, name: &str, path: &[String]) -> bool {
+        self.lookup_ref(name).is_some_and(|binding| {
+            binding.is_param()
+                && !binding.is_receiver()
+                && binding.parameter_ownership == ParameterOwnership::Borrow
+                && !binding
+                    .parameter_replacements
+                    .iter()
+                    .any(|replacement| path_extends(path, replacement))
+        })
+    }
+
     /// Plug the hole a consuming use left: re-initialising `name` at `path`
     /// gives that storage a fresh owner, discharging every consumed place at or
     /// under it.
@@ -606,6 +663,18 @@ impl TypeEnv {
     pub fn reinit_place(&mut self, name: &str, path: &[String]) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                if binding.is_param()
+                    && binding.parameter_ownership == ParameterOwnership::Borrow
+                    && !binding
+                        .parameter_replacements
+                        .iter()
+                        .any(|replacement| path_extends(path, replacement))
+                {
+                    binding
+                        .parameter_replacements
+                        .retain(|replacement| !path_extends(replacement, path));
+                    binding.parameter_replacements.push(path.to_vec());
+                }
                 binding
                     .moved_places
                     .retain(|moved| !path_extends(&moved.path, path));
@@ -659,6 +728,7 @@ impl TypeEnv {
                 states.insert(
                     binding.id,
                     OwnershipState {
+                        parameter_replacements: binding.parameter_replacements.clone(),
                         is_moved: binding.is_moved,
                         moved_at: binding.moved_at.clone(),
                         moved_places: binding.moved_places.clone(),
@@ -682,6 +752,7 @@ impl TypeEnv {
     /// Join alternative execution paths: for every binding that existed at
     /// `entry`, take the union of its state across `exits`.
     ///
+    /// Definite parameter replacements intersect across reaching exits.
     /// Union (may-analysis) is the sound direction for a consume: a value moved
     /// on any path is not usable after the join. Callers pass one exit snapshot
     /// per path that reaches the join — including the implicit fall-through
@@ -691,6 +762,14 @@ impl TypeEnv {
             HashMap::with_capacity(entry.states.len());
         for (id, entry_state) in &entry.states {
             let mut state = entry_state.clone();
+            // A replacement is definite only when every reaching arm replaced
+            // that place or one of its ancestors. Entry is included only when
+            // the caller supplies it as a real fall-through path.
+            let replacements = exits.iter().filter_map(|exit| exit.states.get(id));
+            state.parameter_replacements = replacements
+                .map(|exit| exit.parameter_replacements.clone())
+                .reduce(|left, right| common_parameter_replacements(&left, &right))
+                .unwrap_or_else(|| entry_state.parameter_replacements.clone());
             for exit in exits {
                 let Some(exit_state) = exit.states.get(id) else {
                     continue;
@@ -728,6 +807,9 @@ impl TypeEnv {
         for scope in scopes.iter_mut() {
             for binding in scope.values_mut() {
                 if let Some(state) = states.get(&binding.id) {
+                    binding
+                        .parameter_replacements
+                        .clone_from(&state.parameter_replacements);
                     binding.is_moved = state.is_moved;
                     binding.moved_at.clone_from(&state.moved_at);
                     binding.moved_places.clone_from(&state.moved_places);
@@ -1085,6 +1167,28 @@ mod tests {
         assert!(!env.lookup_ref("x").unwrap().is_moved);
         env.pop_scope();
         assert!(env.lookup_ref("x").unwrap().is_moved);
+    }
+
+    #[test]
+    fn parameter_replacements_join_selected_places_without_touching_siblings() {
+        let mut env = TypeEnv::new();
+        env.define_param_with_span("holder".to_string(), Ty::Unit, true, 0..1);
+        let entry = env.ownership_snapshot();
+        let parent = vec!["nested".to_string()];
+        let child = vec!["nested".to_string(), "next".to_string()];
+        let sibling = vec!["nested".to_string(), "other".to_string()];
+        env.reinit_place("holder", &parent);
+        let parent_exit = env.ownership_snapshot();
+        env.restore_ownership(&entry);
+        env.reinit_place("holder", &child);
+        let child_exit = env.ownership_snapshot();
+        env.merge_ownership(&entry, &[parent_exit, child_exit]);
+        assert!(!env.place_borrows_parameter("holder", &child));
+        assert!(env.place_borrows_parameter("holder", &sibling));
+        assert!(env.place_borrows_parameter("holder", &[]));
+        let replaced = env.ownership_snapshot();
+        env.merge_ownership(&entry, &[replaced, entry.clone()]);
+        assert!(env.place_borrows_parameter("holder", &child));
     }
 
     #[test]

@@ -78,7 +78,9 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError,
+            | BuiltinType::TimeoutError
+            | BuiltinType::JsonValue
+            | BuiltinType::YamlValue,
         )
         | None => None,
     }

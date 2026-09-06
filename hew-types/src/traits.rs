@@ -908,6 +908,19 @@ impl TraitRegistry {
                         return false;
                     }
                 }
+                // Canonical JSON/YAML values own boxed serde trees. Reads borrow
+                // the tree immutably; mutation requires exclusive access; cloning
+                // allocates an independent tree. This contract supplies Send/Sync
+                // and automatic destruction, independent of opaque handle rules.
+                if builtin.is_some_and(BuiltinType::is_encoding_value) {
+                    return matches!(
+                        marker,
+                        MarkerTrait::Send
+                            | MarkerTrait::Sync
+                            | MarkerTrait::Clone
+                            | MarkerTrait::Drop
+                    );
+                }
                 // Actors are always Send + Sync
                 if self.actors.contains(name)
                     && matches!(marker, MarkerTrait::Send | MarkerTrait::Sync)

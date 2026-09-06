@@ -22,6 +22,7 @@ mod builtins;
 mod callables;
 mod collections;
 mod control_flow;
+mod encoding_values;
 mod entry_exit;
 mod exhaustiveness;
 mod extern_fn;

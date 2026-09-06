@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum BuiltinType {
+    /// Exact shipped `std::encoding::json::Value`, owning a boxed serde tree.
+    JsonValue,
+    /// Exact shipped `std::encoding::yaml::Value`, owning a boxed serde tree.
+    YamlValue,
     Option,
     Result,
     Vec,
@@ -198,6 +202,8 @@ macro_rules! builtin_types {
 }
 
 builtin_types! {
+    JsonValue => "std.encoding.json.Value",
+    YamlValue => "std.encoding.yaml.Value",
     Option => "Option",
     Result => "Result",
     Vec => "Vec",
@@ -260,6 +266,23 @@ builtin_types! {
 }
 
 impl BuiltinType {
+    /// Identify an encoding declaration after the caller has proved that its
+    /// owner is the selected shipped source. Import bindings and catalogue
+    /// lookup alone cannot grant this identity.
+    pub(crate) fn from_encoding_value_source(owner: &str, leaf: &str) -> Option<Self> {
+        match (owner, leaf) {
+            ("std.encoding.json", "Value") => Some(Self::JsonValue),
+            ("std.encoding.yaml", "Value") => Some(Self::YamlValue),
+            _ => None,
+        }
+    }
+
+    /// Whether this discriminator owns a format-specific boxed value tree.
+    #[must_use]
+    pub const fn is_encoding_value(self) -> bool {
+        matches!(self, Self::JsonValue | Self::YamlValue)
+    }
+
     /// Look up a constructor variant registered for this generic builtin enum.
     #[must_use]
     pub fn enum_variant(self, name: &str) -> Option<&'static BuiltinEnumVariant> {
@@ -516,7 +539,9 @@ impl BuiltinType {
             | Self::HewDuplex
             | Self::LambdaActorHandle
             | Self::LambdaPid => 2,
-            Self::HewActor
+            Self::JsonValue
+            | Self::YamlValue
+            | Self::HewActor
             | Self::HewSendHalf
             | Self::HewRecvHalf
             | Self::BoxedActor
@@ -672,7 +697,7 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     }
     if let Some(kind) = builtin_types()
         .iter()
-        .find(|info| info.canonical_name == name)
+        .find(|info| info.canonical_name == name && !info.kind.is_encoding_value())
         .map(|info| info.kind)
     {
         return Some(kind);
@@ -836,7 +861,10 @@ mod tests {
     #[test]
     fn lookup_covers_registered_builtins() {
         for info in builtin_types() {
-            assert_eq!(lookup_builtin_type(info.canonical_name), Some(info.kind));
+            assert_eq!(
+                lookup_builtin_type(info.canonical_name),
+                (!info.kind.is_encoding_value()).then_some(info.kind)
+            );
             assert_eq!(info.kind.canonical_name(), info.canonical_name);
             assert_eq!(info.marker, info.kind.marker());
             assert_eq!(info.close_method, info.kind.close_method());

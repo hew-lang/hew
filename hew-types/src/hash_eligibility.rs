@@ -134,6 +134,13 @@ fn hash_ineligibility(
         // Tuples: tracked but not admitted as layout hash keys in this slice.
         Ty::Tuple(_) => Some(HashEligibility::IneligibleTuple(ty.clone())),
 
+        // Encoding trees need format-specific operations, never an empty
+        // source-field walk. No matching hash operation is currently supplied.
+        Ty::Named {
+            builtin: Some(BuiltinType::JsonValue | BuiltinType::YamlValue),
+            ..
+        } => Some(HashEligibility::IneligibleManaged(ty.clone())),
+
         // Other named types are eligible iff Record kind, not indirect, and every
         // field is hash-eligible. Only `record`-keyword source types are Copy
         // value-semantic; Struct/Enum/Actor/Machine are not layout keys.

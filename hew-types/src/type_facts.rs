@@ -23,7 +23,8 @@ pub enum CloneKind {
     Bits,
     /// Refcount increment.
     Retain,
-    /// Fresh allocation, contents copied bit-wise.
+    /// Fresh independent allocation through the type's semantic clone operation.
+    /// Nested owners must be cloned, never duplicated with raw payload memcpy.
     DeepCopy,
     /// Fresh structure, members copied through their own glue.
     FieldWise,
@@ -577,7 +578,9 @@ impl TypeFactService {
                         BuiltinType::HashMap
                         | BuiltinType::HashSet
                         | BuiltinType::Rc
-                        | BuiltinType::Weak,
+                        | BuiltinType::Weak
+                        | BuiltinType::JsonValue
+                        | BuiltinType::YamlValue,
                     ),
                 ..
             } => Ok(false),
@@ -1269,9 +1272,10 @@ mod tests {
                 BuiltinType::Option => Some((ValueClass::BitCopy, CloneKind::Bits)),
                 BuiltinType::Result => Some((ValueClass::CowValue, CloneKind::FieldWise)),
                 // A collection's buffer is heap, so it is never `BitCopy`.
-                BuiltinType::Vec | BuiltinType::HashSet => {
-                    Some((ValueClass::CowValue, CloneKind::DeepCopy))
-                }
+                BuiltinType::Vec
+                | BuiltinType::HashSet
+                | BuiltinType::JsonValue
+                | BuiltinType::YamlValue => Some((ValueClass::CowValue, CloneKind::DeepCopy)),
                 BuiltinType::HashMap | BuiltinType::HashMapIter | BuiltinType::VecIter => {
                     Some((ValueClass::CowValue, CloneKind::FieldWise))
                 }

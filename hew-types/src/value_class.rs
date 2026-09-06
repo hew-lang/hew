@@ -731,6 +731,9 @@ fn classify(
             BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
                 classify_declaration(name, args, decls, walk)?
             }
+            BuiltinType::JsonValue | BuiltinType::YamlValue => {
+                (ValueClass::CowValue, CloneKind::DeepCopy)
+            }
             BuiltinType::Rc | BuiltinType::Weak | BuiltinType::LambdaPid => affine_retain,
             BuiltinType::Generator
             | BuiltinType::AsyncGenerator

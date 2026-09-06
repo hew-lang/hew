@@ -111,7 +111,9 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
                 BuiltinType::HashMap
                     | BuiltinType::HashSet
                     | BuiltinType::Rc
-                    | BuiltinType::Weak,
+                    | BuiltinType::Weak
+                    | BuiltinType::JsonValue
+                    | BuiltinType::YamlValue,
             ),
             ..
         }

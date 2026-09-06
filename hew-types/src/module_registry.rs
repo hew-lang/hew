@@ -998,10 +998,22 @@ impl ModuleRegistry {
             .canonical_registry_signature_type_identity(&name, canonical_owner)
             .unwrap_or(name);
         crate::ty::Ty::Named {
+            builtin: builtin.or_else(|| self.encoding_value_builtin(&name)),
             name,
             args,
-            builtin,
         }
+    }
+
+    /// Only a declaration in the active, exact shipped source can grant an
+    /// encoding value identity to a registry signature.
+    fn encoding_value_builtin(&self, name: &str) -> Option<crate::BuiltinType> {
+        let (owner, leaf) = name.rsplit_once('.')?;
+        let builtin = crate::BuiltinType::from_encoding_value_source(owner, leaf)?;
+        let id = module_id_from_identity(owner);
+        let info = self.active.modules.get(&id)?;
+        (Self::module_info_declares_nominal(info, leaf)
+            && self.module_info_has_stdlib_authority(&id, info))
+        .then_some(builtin)
     }
 
     /// Check if a fully-qualified name is a drop type across all loaded modules.
@@ -2031,6 +2043,59 @@ mod tests {
         assert!(
             next_program.loaded_modules().next().is_none(),
             "the loaded view must not reveal parse-cache entries from a completed program"
+        );
+    }
+
+    #[test]
+    fn encoding_registry_signatures_acquire_only_loaded_shipped_identity() {
+        use crate::{BuiltinType, Ty};
+        let mut registry = ModuleRegistry::new(vec![]);
+        for (format, kind) in [
+            ("json", BuiltinType::JsonValue),
+            ("yaml", BuiltinType::YamlValue),
+        ] {
+            let owner = format!("std.encoding.{format}");
+            let input = Ty::option(Ty::named(format!("{format}.Value"), vec![]));
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&input, &owner),
+                input
+            );
+            registry.load_compiler_stdlib_module(&owner).unwrap();
+            let expected = Ty::option(Ty::Named {
+                name: kind.canonical_name().to_string(),
+                args: vec![],
+                builtin: Some(kind),
+            });
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&input, &owner),
+                expected
+            );
+            let bare = Ty::named("Value", vec![]);
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&bare, &owner),
+                bare
+            );
+            let foreign = Ty::named("user.Value", vec![]);
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&foreign, &owner),
+                foreign
+            );
+        }
+    }
+
+    #[test]
+    fn encoding_registry_signature_rejects_a_user_source_at_the_same_module_path() {
+        let project = TestHewTree::new("encoding-value-lookalike");
+        fs::create_dir_all(project.root().join("std/encoding")).unwrap();
+        project.write_std_module("encoding/json", "#[resource] #[opaque] pub type Value {}");
+        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
+        registry.load("std.encoding.json").unwrap();
+        assert_eq!(
+            registry.canonicalize_registry_signature_ty(
+                &crate::Ty::named("json.Value", vec![]),
+                "std.encoding.json"
+            ),
+            crate::Ty::named("std.encoding.json.Value", vec![])
         );
     }
 

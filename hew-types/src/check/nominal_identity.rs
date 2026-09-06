@@ -199,9 +199,12 @@ impl Checker {
             )
             .unwrap_or(name);
         crate::ty::Ty::Named {
+            builtin: builtin.or_else(|| {
+                self.resolved_builtin_type(&name)
+                    .filter(|kind| kind.is_encoding_value())
+            }),
             name,
             args,
-            builtin,
         }
     }
 

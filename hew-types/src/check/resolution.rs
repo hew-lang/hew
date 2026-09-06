@@ -69,6 +69,14 @@ impl Checker {
     /// This prevents `import user::channel as channel` and user modules named
     /// `std.channel` from minting Sender/Receiver executable authority.
     pub(super) fn resolved_builtin_type(&self, name: &str) -> Option<BuiltinType> {
+        if let Some((owner, leaf)) = name.rsplit_once('.') {
+            if let Some(builtin) = BuiltinType::from_encoding_value_source(owner, leaf) {
+                return self
+                    .canonical_std_module_sources
+                    .contains(owner)
+                    .then_some(builtin);
+            }
+        }
         let candidate = match name {
             "std.channel.Sender" => Some(BuiltinType::Sender),
             "std.channel.Receiver" => Some(BuiltinType::Receiver),
@@ -3510,6 +3518,7 @@ impl Checker {
                 // collides. Root bare declarations likewise remain user
                 // shadows.
                 let builtin_overrides_source_decl = self.in_stdlib_registration
+                    || builtin.is_some_and(BuiltinType::is_encoding_value)
                     || (builtin.is_some() && crate::ty::is_reserved_type_name(&resolved_name))
                     || self.source_authorized_generated_enum_builtin(&resolved_name) == builtin
                         && builtin.is_some()

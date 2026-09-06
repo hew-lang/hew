@@ -2186,3 +2186,19 @@ The JSON and YAML runtime suites pass, including nested mutation and release,
 signed zero, integer-versus-float distinction, YAML tags and NaNs, and preservation
 after operations rejected by the existing builders. Compiler integration and
 source API changes remain separate from these runtime operations.
+
+## Give encoding values canonical ownership facts
+
+JSON and YAML values now receive distinct builtin identities from their exact
+shipped declarations. Import aliases, reexported signatures and generic wrappers
+preserve those identities; same-named user types and catalogue lookups cannot
+acquire them. The checker publishes semantic deep-copy and automatic-drop
+capabilities for the owned serde trees, with Send and Sync based on independent
+ownership, immutable reads and exclusive mutation. Ordinary opaque resources
+retain their existing ownership rules.
+
+Equality requires the format's explicit Eq implementation. Neither empty opaque
+fields nor pointer identity can supply it, and Hash remains unavailable. Types
+tests cover these decisions and the source-provenance boundary. Public wrapper
+migration, runtime operation descriptors and native clone/drop realization still
+need integration; these checker facts alone do not admit native encoding values.

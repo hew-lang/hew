@@ -2002,3 +2002,11 @@ Native AOT remains primary, with WASM runtime and browser sandbox execution
 retained. LLVM execution engines remain useful compiler test oracles. Runtime
 session/reset hooks, C ABI embedding support and the shared ABI descriptor
 inventory serve AOT or embedding and remain independent of the removed CLI mode.
+
+## Preserve duplicate resource-release refusals across the checker boundary
+
+The combined Types/HIR run exposed an older HIR test that expected the checker
+to accept a second release hidden in an `if`. Ownership snapshot joins now reject
+that use of moved `self` before HIR. The control requires the source diagnostic
+and still lowers the malformed body to prove it cannot acquire HIR automatic
+cleanup authority. The focused two-boundary control passes.

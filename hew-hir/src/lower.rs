@@ -37577,7 +37577,13 @@ impl Widget {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
-        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+        let error = &output.errors[0];
+        assert_eq!(error.kind, hew_types::error::TypeErrorKind::UseAfterMove);
+        assert_eq!(error.message, "use of moved value `self`");
+        assert_eq!(error.source_module.as_deref(), Some("std.fs"));
+        // The checker now rejects the duplicate release through the branch.
+        // HIR must still refuse lifecycle authority for this malformed body.
         let candidate = output
             .opaque_resource_candidates
             .candidates

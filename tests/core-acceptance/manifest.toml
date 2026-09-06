@@ -1128,3 +1128,38 @@ timeout_seconds = 15
 [case.expected]
 stdout = "CONSUMED:8\nyes\n0\nCONSUMED:8\nno\n0\nSELECTED:8\n8\nSELECTED:8\n8\n"
 exit = 0
+
+[[case]]
+id = "local-callback-loop-exits"
+intent = "Owned lexical callbacks survive skipped loops or become empty after consuming exits; replacement, continue, nested loops, early return, consumed parameters and captured callbacks retain their lexical cleanup."
+source = "cases/local-callback-loop-exits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "after immutable\nIMMUTABLE:9\nafter immutable\nafter mutable\nRESTORED:8\nMUTABLE:7\nafter mutable\nRESTORED:8\nINITIAL:7\nROUND 0:7\nROUND 1:7\nafter replacements\nFINAL:5\nafter nested 0\nafter nested 1\nNESTED 0:8\nafter nested 0\nNESTED 1:8\nafter nested 1\nafter return loop\n7\nRETURN:6\n9\nafter parameter\nPARAMETER:9\nafter parameter\nafter captured\nCAPTURED:8\nafter captured\n"
+exit = 0
+
+[[case]]
+id = "local-callback-loop-argument-fault"
+intent = "A callback transferred before a later argument faults is released without invocation; the skipped-loop path and heap-owning caller siblings also clean up."
+source = "cases/local-callback-loop-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "after argument:CALLER:2\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "local-callback-loop-body-fault"
+intent = "A consuming callback fault cleans its captured strings and bytes, callback-local vector and caller siblings, while skipped loops retain ownership until lexical exit."
+source = "cases/local-callback-loop-body-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "after body:CALLER:2\nentered:BODY:4\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

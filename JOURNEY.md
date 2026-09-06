@@ -2135,3 +2135,17 @@ The previous controls required hardware-signal wording and synthesized JSON
 diagnostics. Both failed against the checked-fault output before their assertions
 were migrated. The separate controls for silent workers, hardware signals and
 Windows fault statuses remain unchanged, as does the product output.
+
+## Exercise lexical callback ownership across loop exits
+
+The new callback fixtures cover zero iterations and consuming breaks for
+immutable and mutable locals, replacement after a conditional take, continue,
+nested scopes, early returns, consumed parameters and owned captures. Separate
+argument and callback-body faults require cleanup of allocated strings, bytes
+and vectors on both sides of the call boundary. Observable work follows each
+loop so later release-order instrumentation can detect premature cleanup.
+
+At the published partial-aggregate baseline, all fixtures reach SIR and fail its
+ownership verifier on the conditional whole-owner join. They are pending
+acceptance cases for function-owned Local storage; native execution and paired
+sanitizer validation are not yet claimed.

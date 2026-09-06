@@ -40,9 +40,6 @@ pub struct ReplSession {
     /// Target triple for compilation (e.g. `wasm32-wasi`). When `None` the
     /// host native target is used.
     eval_target: Option<String>,
-    /// JIT execution mode.  When `None` (or `Worker`), uses the existing
-    /// AOT+spawn path.  When `Inprocess`, routes through LLJIT.
-    jit_mode: Option<crate::args::JitMode>,
 }
 
 #[derive(Debug)]
@@ -157,16 +154,6 @@ enum TypeQueryFailure {
 enum ExpressionEvalPlan {
     Compile { auto_print: bool },
     Display(String),
-}
-
-/// One explicit lowering/execution selection for an eval compilation.
-///
-/// Native and WASM AOT both consume this shared configuration, preventing a
-/// new compiler-lane flag from being threaded into only one execution backend.
-#[derive(Clone, Copy)]
-struct EvalBackendOptions<'a> {
-    target: Option<&'a str>,
-    jit_mode: Option<crate::args::JitMode>,
 }
 
 #[derive(Debug)]
@@ -613,7 +600,6 @@ impl ReplSession {
             execution_timeout,
             project_dir: None,
             eval_target: None,
-            jit_mode: None,
         }
     }
 
@@ -632,7 +618,6 @@ impl ReplSession {
             execution_timeout,
             project_dir,
             eval_target: None,
-            jit_mode: None,
         }
     }
 
@@ -657,14 +642,6 @@ impl ReplSession {
         session
     }
 
-    /// Set the JIT execution mode for this session.
-    ///
-    /// `Inprocess` routes through LLJIT; `Worker` (or `None`) uses the
-    /// existing AOT+spawn path.
-    pub fn set_jit_mode(&mut self, mode: Option<crate::args::JitMode>) {
-        self.jit_mode = mode;
-    }
-
     #[cfg(test)]
     pub(crate) fn add_item_for_test(&mut self, source: &str) {
         self.session.add_item(source);
@@ -674,13 +651,6 @@ impl ReplSession {
         self.eval_target.as_deref().is_some_and(|t| {
             crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
         })
-    }
-
-    fn backend_options(&self) -> EvalBackendOptions<'_> {
-        EvalBackendOptions {
-            target: self.eval_target.as_deref(),
-            jit_mode: self.jit_mode,
-        }
     }
 
     /// Evaluate a line of input and return the result.
@@ -760,7 +730,7 @@ impl ReplSession {
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
@@ -866,7 +836,7 @@ impl ReplSession {
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
@@ -947,7 +917,7 @@ impl ReplSession {
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &kind);
@@ -1300,7 +1270,7 @@ impl ReplSession {
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => Ok(output),
             Err(error) => Err(CliEvalError::from(error)),
@@ -1441,33 +1411,27 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
     }
 }
 
-/// Compile the given already-parsed program to a native binary in a temporary
-/// directory and execute it, returning its stdout.
-///
-/// Import resolution and typecheck are performed here (not by the caller)
-/// so that the codegen pipeline sees stdlib type information in the same order
-/// as the frontend-to-codegen path.  The REPL's fast in-process typecheck is
-/// kept for user-facing error reporting only; this function runs the full
-/// correctly-ordered pipeline for codegen.
+/// Use the same project resolution and compilation options for native and WASI eval.
 fn eval_compile_options(
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> crate::compile::CompileOptions {
     crate::compile::CompileOptions {
         project_dir,
-        target: backend.target.map(str::to_owned),
+        target: target.map(str::to_owned),
         repl_fragment: true,
         ..crate::compile::CompileOptions::default()
     }
 }
 
-fn run_inprocess_compiled(
+/// Compile a native executable and capture its output from a child process.
+fn run_native_eval_compiled(
     program: hew_parser::ast::Program,
     source: &str,
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -1479,7 +1443,7 @@ fn run_inprocess_compiled(
         source,
         source_label,
         &bin_path,
-        &eval_compile_options(project_dir, backend),
+        &eval_compile_options(project_dir, target),
     )
     .map_err(|_channel| CompiledEvalError::DiagnosticsRendered)?;
 
@@ -1508,65 +1472,23 @@ fn run_inprocess_compiled(
     }
 }
 
-/// Dispatch to JIT, native, or WASM execution depending on mode and target.
-///
-/// Only `Some(Inprocess)` routes to the fail-closed `ORCv2` gap guard, because
-/// the user explicitly asked for the in-process LLJIT path that does not exist
-/// yet. `Auto` means "best available", which today is the AOT path — failing
-/// closed on it would be a category error — so it falls through alongside
-/// `Worker` and `None`. When `target` resolves to a WASM target, routes through
-/// wasmtime; otherwise falls through to the native `run_inprocess_compiled`
-/// AOT+spawn path.
+/// Compile and execute through the native worker or WASI runtime.
 fn run_eval_compiled(
     program: hew_parser::ast::Program,
     source: &str,
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
-    // Only an explicit `--jit=inprocess` reaches the fail-closed guard. `Auto`
-    // selects the best available backend (today: AOT) and must not fail closed.
-    if matches!(backend.jit_mode, Some(crate::args::JitMode::Inprocess)) {
-        return run_inprocess_jit(program, source, source_label, project_dir);
-    }
-
-    let is_wasm = backend.target.is_some_and(|t| {
+    let is_wasm = target.is_some_and(|t| {
         crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
     });
 
     if is_wasm {
-        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, backend)
+        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, target)
     } else {
-        run_inprocess_compiled(program, source, source_label, timeout, project_dir, backend)
-    }
-}
-
-/// Fail closed for the unavailable in-process JIT path.
-///
-/// The Rust-codegen `ORCv2` bridge is not implemented yet. Keep this helper as a
-/// narrow adapter, but do not compile or execute here.
-fn run_inprocess_jit(
-    _program: hew_parser::ast::Program,
-    _source: &str,
-    _source_label: &str,
-    _project_dir: Option<PathBuf>,
-) -> Result<String, CompiledEvalError> {
-    match crate::jit::run_jit(&[]) {
-        Ok(_exit_code) => {
-            // JIT output went directly to stdout; return empty to avoid
-            // double-printing in emit_eval_output.
-            Ok(String::new())
-        }
-        Err(crate::jit::JitError::ExecFailed(msg)) => {
-            // Treat JIT exec failure as a runtime failure with exit code 1.
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout: String::new(),
-                stderr: msg,
-                exit_code: 1,
-                signal: None,
-            })
-        }
+        run_native_eval_compiled(program, source, source_label, timeout, project_dir, target)
     }
 }
 
@@ -1577,7 +1499,7 @@ fn run_wasm_eval_compiled(
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -1588,7 +1510,7 @@ fn run_wasm_eval_compiled(
         source,
         source_label,
         &module_path,
-        &eval_compile_options(project_dir, backend),
+        &eval_compile_options(project_dir, target),
     )
     .map_err(|_channel| CompiledEvalError::DiagnosticsRendered)?;
 
@@ -1643,14 +1565,12 @@ fn prompts_for_terminal_state(
 pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::IsTerminal;
 
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
-    session.set_jit_mode(jit);
     let (primary_prompt, continuation_prompt) = prompts_for_terminal_state(
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
@@ -1722,10 +1642,8 @@ pub fn eval_one(
     expr: &str,
     timeout: Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
 ) -> Result<String, CliEvalError> {
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
-    session.set_jit_mode(jit);
     session.eval_cli(expr, "<eval>")
 }
 
@@ -1738,7 +1656,6 @@ pub fn eval_file(
     path: &str,
     timeout: Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
 ) -> Result<String, CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
@@ -1757,7 +1674,6 @@ pub fn eval_file(
     } else {
         ReplSession::for_path_with_target(path, timeout, target)
     };
-    session.set_jit_mode(jit);
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
@@ -2182,7 +2098,7 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None, None);
+        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None);
         assert_eq!(result.unwrap(), "6\n");
     }
 
@@ -2328,7 +2244,7 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2341,7 +2257,7 @@ mod tests {
         let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
         std::fs::write(&path, "1 +\n2\n").unwrap();
 
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2437,7 +2353,6 @@ mod tests {
         let result = eval_file(
             main_path.to_str().expect("main path is valid UTF-8"),
             DEFAULT_EVAL_TIMEOUT,
-            None,
             None,
         );
         assert!(
@@ -2597,7 +2512,7 @@ mod tests {
         if !require_wasi_toolchain() {
             return;
         }
-        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"), None);
+        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
         assert_eq!(result.unwrap(), "3\n");
     }
 
@@ -2610,7 +2525,6 @@ mod tests {
             r#"println("hello from wasi")"#,
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
-            None,
         );
         assert_eq!(result.unwrap(), "hello from wasi\n");
     }
@@ -2657,106 +2571,7 @@ mod tests {
             path.to_str().unwrap(),
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
-            None,
         );
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
-    }
-
-    /// `--jit=auto` selects the best-available backend (today AOT) and runs the
-    /// program, while `--jit=inprocess` fails closed through the unavailable
-    /// LLJIT guard. They no longer share an error shape: `auto` is a working
-    /// alias for AOT, not a category error.
-    #[test]
-    fn jit_auto_falls_back_to_aot_while_inprocess_fails_closed() {
-        let source = "fn main() { println(\"hello\"); }";
-        let parse_result = hew_parser::parse(source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "parse failed: {:?}",
-            parse_result.errors
-        );
-
-        // `inprocess` fails closed even without a toolchain — it never reaches
-        // codegen.
-        let inprocess_result = run_eval_compiled(
-            parse_result.program.clone(),
-            source,
-            "<test>",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            EvalBackendOptions {
-                target: None,
-                jit_mode: Some(crate::args::JitMode::Inprocess),
-            },
-        );
-        assert!(
-            inprocess_result.is_err(),
-            "Inprocess mode must fail closed while in-process JIT is unavailable"
-        );
-
-        // `auto` falls through to the AOT path, which needs the native
-        // toolchain to compile and run.
-        if !require_toolchain() {
-            return;
-        }
-        let auto_result = run_eval_compiled(
-            parse_result.program,
-            source,
-            "<test>",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            EvalBackendOptions {
-                target: None,
-                jit_mode: Some(crate::args::JitMode::Auto),
-            },
-        );
-        assert_eq!(
-            auto_result.expect("Auto mode must succeed via AOT fallback"),
-            "hello\n",
-            "Auto (AOT) should produce the program's stdout"
-        );
-    }
-
-    /// `JitMode::Worker` routes to the AOT+spawn path (`run_inprocess_compiled`),
-    /// producing the same output as when `--jit` is absent.
-    /// Skipped when the native toolchain is unavailable.
-    #[test]
-    fn jit_worker_mode_produces_same_result_as_no_jit_flag() {
-        if !require_toolchain() {
-            return;
-        }
-        let result_no_flag = eval_one("1 + 1", DEFAULT_EVAL_TIMEOUT, None, None)
-            .expect("eval without --jit should succeed");
-        let result_worker = eval_one(
-            "1 + 1",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            Some(crate::args::JitMode::Worker),
-        )
-        .expect("eval with --jit=worker should succeed");
-        assert_eq!(
-            result_no_flag, result_worker,
-            "--jit=worker should produce identical output to no --jit flag"
-        );
-    }
-
-    #[test]
-    fn set_jit_mode_stores_mode_on_session() {
-        let mut session = ReplSession::new();
-        assert_eq!(
-            session.jit_mode, None,
-            "new session should have no jit mode"
-        );
-        session.set_jit_mode(Some(crate::args::JitMode::Inprocess));
-        assert_eq!(
-            session.jit_mode,
-            Some(crate::args::JitMode::Inprocess),
-            "set_jit_mode should persist the supplied mode on the session"
-        );
-        session.set_jit_mode(None);
-        assert_eq!(
-            session.jit_mode, None,
-            "set_jit_mode(None) should clear the mode"
-        );
     }
 }

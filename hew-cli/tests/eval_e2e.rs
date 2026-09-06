@@ -2828,32 +2828,6 @@ fn eval_repl_never_prints_cumulative_failure_counter() {
     );
 }
 
-/// Clap-level smoke test: `--jit=worker` is a recognised flag and the
-/// REPL exits successfully when it is supplied.
-///
-/// NOTE: This test does NOT verify that the flag is wired through to
-/// `ReplSession::set_jit_mode` — both the pre-fix and post-fix code paths
-/// exit 0 for this input.  The wiring invariant is covered by the unit test
-/// `eval::repl::tests::set_jit_mode_stores_mode_on_session` in `repl.rs`.
-///
-/// `--jit=worker` (AOT+spawn) is used here rather than `--jit=inprocess` or
-/// `--jit=auto` because both of those route to `run_inprocess_jit`, which
-/// SIGSEGVs on Linux (#1523).  `--jit=worker` exercises the same clap
-/// flag-routing path without triggering the in-process JIT crash.
-#[test]
-fn eval_repl_jit_worker_flag_accepted_by_clap() {
-    require_codegen();
-
-    let output = run_eval_with_stdin(&["eval", "--jit=worker"], "1 + 1\n:quit\n");
-
-    assert!(
-        output.status.success(),
-        "hew eval --jit=worker exited non-zero\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 /// End-to-end: a user function that returns `Result<i64, string>` constructs
 /// `Ok` / `Err`, and a match-statement on the result binds each variant's
 /// payload and dispatches per-arm bodies. Guards against the substrate gap
@@ -3361,7 +3335,7 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
 // `hew eval` reliability fixes, verified end-to-end:
 //   * whole-program completeness lints stay silent for REPL fragments
 //   * runtime failures surface a cause in both raw and `--json` output
-//   * `--jit auto` falls back to AOT; `--jit inprocess` fails closed
+//   * Removed execution-mode flags are rejected by the CLI
 // ---------------------------------------------------------------------------
 
 fn assert_repl_emits_line(output: &Output, expected: &str) {
@@ -3579,44 +3553,25 @@ fn eval_divide_by_zero_json_surfaces_cause() {
 }
 
 #[test]
-fn eval_jit_auto_falls_back_to_aot() {
-    require_codegen();
-    // `--jit auto` chooses the best available backend (today AOT) and runs.
-    let output = Command::new(hew_binary())
-        .args(["eval", "--jit", "auto", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "--jit auto should fall back to AOT and exit 0; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "3", "stdout: {stdout}");
-}
-
-#[test]
-fn eval_jit_inprocess_fails_closed() {
-    require_codegen();
-    // `--jit inprocess` is intentionally fail-closed (#1227/#1235).
-    let output = Command::new(hew_binary())
-        .args(["eval", "--jit", "inprocess", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-    assert!(
-        !output.status.success(),
-        "--jit inprocess must fail closed; stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("unavailable") && combined.contains("#1227"),
-        "fail-closed message should cite the unimplemented JIT bridge; output:\n{combined}"
-    );
+fn eval_rejects_removed_jit_flag() {
+    for args in [
+        vec!["eval", "--jit=worker"],
+        vec!["eval", "--jit", "auto", "1 + 2"],
+        vec!["eval", "--jit=inprocess", "--json", "1 + 2"],
+        vec!["eval", "--target", "wasm32-wasi", "--jit=auto", "1 + 2"],
+    ] {
+        let output = Command::new(hew_binary())
+            .args(&args)
+            .current_dir(repo_root())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
+        assert!(output.stdout.is_empty(), "args: {args:?}");
+        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        assert!(
+            stderr.contains("unexpected argument '--jit"),
+            "expected an unknown-option diagnostic for {args:?}: {stderr}"
+        );
+    }
 }

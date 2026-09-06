@@ -558,31 +558,6 @@ pub struct DocArgs {
 // Eval
 // ---------------------------------------------------------------------------
 
-/// JIT execution mode for `hew eval`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum JitMode {
-    /// Choose the best available execution backend automatically.
-    ///
-    /// Today this is the AOT compile-and-spawn path: the in-process LLJIT
-    /// backend (#1227/#1235) is not implemented yet, so `auto` falls back to
-    /// AOT rather than failing. A future LLJIT backend will be selected here
-    /// transparently.
-    Auto,
-
-    /// Run the compiled module in-process via LLJIT (no subprocess).
-    ///
-    /// Currently unavailable: the Rust v0.5 `ORCv2`/LLJIT bridge is not
-    /// implemented yet (#1227/#1235), so this mode fails closed with an
-    /// explanatory error. Use `auto` (or omit `--jit`) for the AOT path.
-    Inprocess,
-
-    /// AOT-compile and spawn a child process (current default behaviour).
-    ///
-    /// Selecting this mode explicitly routes through the existing
-    /// `run_inprocess_compiled` AOT+spawn path unchanged.
-    Worker,
-}
-
 #[derive(Debug, Args)]
 #[command(after_help = EVAL_AFTER_HELP)]
 pub struct EvalArgs {
@@ -595,16 +570,6 @@ pub struct EvalArgs {
     /// Compilation target triple (e.g. `wasm32-wasi`).
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
-    /// JIT execution mode.
-    ///
-    /// `auto`      — choose the best available backend (today: AOT, since the
-    ///               in-process LLJIT backend is not implemented yet).
-    /// `inprocess` — in-process LLJIT; currently unavailable (#1227/#1235) and
-    ///               fails closed with an explanatory error.
-    /// `worker`    — AOT-compile and spawn a child process (default when this
-    ///               flag is absent).
-    #[arg(long, value_name = "MODE")]
-    pub jit: Option<JitMode>,
     /// Emit a machine-readable JSON run contract on stdout instead of raw program output.
     ///
     /// The JSON object always contains:

@@ -1989,3 +1989,16 @@ independent roots, while cursor reads borrow the exact vector field.
 The affected test binaries and the full SIR component pass. This validates
 semantic lowering and verification; native partial-field realization remains a
 separate integration requirement.
+
+## AOT evaluation
+
+Removed the dormant CLI JIT modes and the unavailable ORCv2 adapter. Native
+`hew eval` compiles each submission and runs it in a child process; WASI eval
+continues to compile a module and execute it through wasmtime. The removed
+`--jit` option now receives the ordinary unknown-option diagnostic.
+
+Hew-managed JIT execution is outside the current product targets and roadmap.
+Native AOT remains primary, with WASM runtime and browser sandbox execution
+retained. LLVM execution engines remain useful compiler test oracles. Runtime
+session/reset hooks, C ABI embedding support and the shared ABI descriptor
+inventory serve AOT or embedding and remain independent of the removed CLI mode.

@@ -444,11 +444,10 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
 }
 
 fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
-    for key in module
-        .type_facts
-        .keys()
-        .filter(|key| hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some())
-    {
+    for key in module.type_facts.keys().filter(|key| {
+        matches!(key.0, ResolvedTy::Task(_))
+            || hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
+    }) {
         if !module.resources.contains_key(&key.0) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
                 ty: key.0.clone(),
@@ -2109,7 +2108,11 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some() {
         return true;
     }
-    is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+    is_initial_scalar(ty)
+        || matches!(
+            ty,
+            ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_)
+        )
 }
 
 /// Value types physical MIR can realize without borrowing, drops, allocation,

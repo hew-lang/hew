@@ -11,6 +11,8 @@ use hew_types::{
 /// One exact release authority transported from the checked source boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceRelease {
+    /// Affine reference to scope-owned task execution and its eventual result.
+    Task,
     /// HIR has validated the consuming close body's forwarding to this release.
     Nominal {
         lifecycle: Box<hew_hir::OpaqueResourceLifecycle>,
@@ -38,6 +40,7 @@ impl ResourceRelease {
     /// Refuses releases outside the synchronous file-resource contract.
     pub fn runtime_family(&self) -> Result<RuntimeCallFamily, String> {
         match self {
+            Self::Task => Ok(RuntimeCallFamily::TaskFree),
             Self::Nominal { lifecycle, .. } => {
                 RuntimeCallFamily::from_c_symbol(&lifecycle.release_symbol)
                     .filter(|family| *family == RuntimeCallFamily::FileRead(FileReadOp::Close))
@@ -58,6 +61,9 @@ pub(crate) fn resource_release_from_hir(
     module: &hew_hir::HirModule,
     ty: &ResolvedTy,
 ) -> Option<ResourceRelease> {
+    if matches!(ty, ResolvedTy::Task(_)) {
+        return Some(ResourceRelease::Task);
+    }
     match FileReadHandleKind::of_ty(ty)? {
         FileReadHandleKind::Nominal => {
             let lifecycle = module
@@ -109,6 +115,13 @@ pub fn verify_resource_release(
     if facts.class != ValueClass::AffineResource || facts.clone != CloneKind::None {
         return Err("resource release requires affine ownership without a copy recipe".into());
     }
+    if *release == ResourceRelease::Task {
+        return if matches!(ty, ResolvedTy::Task(_)) {
+            Ok(())
+        } else {
+            Err("task release requires an exact Task result type".into())
+        };
+    }
     let family = release.runtime_family()?;
     let contract = family
         .semantic_contract()
@@ -124,6 +137,7 @@ pub fn verify_resource_release(
         );
     }
     match release {
+        ResourceRelease::Task => unreachable!("handled exact task release above"),
         ResourceRelease::Builtin(RuntimeDropDescriptor::StreamClose)
             if FileReadHandleKind::Stream.matches(ty) =>
         {

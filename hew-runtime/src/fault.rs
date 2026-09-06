@@ -12,6 +12,10 @@ use hew_cabi::string::{string_as_str, HewString};
 
 use crate::internal::types::{ExitReason, HEW_TRAP_USER_PANIC};
 
+/// Private completion codes kept distinct from source panic and trap codes.
+pub const HEW_FAULT_CANCELLED: i32 = -1;
+pub const HEW_FAULT_DEADLINE: i32 = -2;
+
 /// An opaque, uniquely owned logical fault. Never free with a foreign allocator.
 #[derive(Debug)]
 pub struct HewFault {
@@ -148,6 +152,12 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 }
 
 fn fault_reason(code: i32) -> &'static str {
+    if code == HEW_FAULT_CANCELLED {
+        return "Cancelled";
+    }
+    if code == HEW_FAULT_DEADLINE {
+        return "Deadline";
+    }
     match ExitReason::from_error_code(code) {
         // A logical handle cannot make a hardware fault recoverable.
         ExitReason::Signal(_) | ExitReason::Normal => "UnknownFault",

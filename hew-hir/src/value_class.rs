@@ -423,7 +423,8 @@ impl ValueClass {
             // (via `hew_gen_free`), and is never bit-copied. Classifying it as
             // `AffineResource` makes the construction binding enter `owned_locals`
             // and get a scope-exit drop.
-            ResolvedTy::CancellationToken
+            // A task handle owns a reference independently of scope execution.
+            ResolvedTy::Task(_) | ResolvedTy::CancellationToken
             | ResolvedTy::Named {
                 builtin: Some(
                     BuiltinType::Generator
@@ -458,14 +459,6 @@ impl ValueClass {
                     }
                 }
             }
-            // Task handles are consume-once: MirCheck::MustConsume fires if a
-            // ForkTaskHandle binding is live at an exit without being consumed
-            // via AwaitTask or the implicit block-end join. Linear is the
-            // correct class — it threads through C2's existing UseAfterConsume /
-            // MustConsume machinery without new checks. The inner type T's own
-            // class is checked independently when the task is awaited and T is
-            // produced.
-            ResolvedTy::Task(_) => Self::Linear,
             // An abstract parameter's value-class depends on the type that
             // monomorphisation substitutes in. Until then it is genuinely
             // unknown, so it routes through the conservative `Unknown` arm

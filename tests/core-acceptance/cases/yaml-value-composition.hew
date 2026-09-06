@@ -1,0 +1,53 @@
+import std.encoding.yaml;
+
+type Envelope { value: yaml.Value }
+
+fn retained() -> yaml.Value {
+    var child = yaml.array();
+    child.push(yaml.from_string("déjà\0vu")).unwrap();
+    var original = yaml.object();
+    original.set("items", child).unwrap();
+    var edited = original;
+    edited.set("items", yaml.null()).unwrap();
+    child.push(yaml.from_int(8)).unwrap();
+    println(child.array_len().unwrap());
+    println(edited.get_field("items").unwrap().unwrap().type_of() == Kind.Null);
+    original.get_field("items").unwrap().unwrap()
+}
+
+fn capture_value(value: yaml.Value) -> fn[clone]() -> string {
+    || value.array_get(0).unwrap().unwrap().get_string().unwrap()
+}
+
+fn main() -> i64 {
+    var values = retained();
+    let snapshot = values;
+    let captured = capture_value(values);
+    values.push(yaml.from_bool(false)).unwrap();
+    println(values.array_len().unwrap());
+    println(snapshot.array_len().unwrap());
+    println(captured().len());
+    println(captured() == "déjà\0vu");
+    let encoded = snapshot.stringify().unwrap();
+    println(yaml.parse(encoded).unwrap() == snapshot);
+    var wrong = yaml.from_string("unchanged");
+    println(wrong.push(values).is_err());
+    println(wrong.get_string().unwrap());
+    println(values.array_len().unwrap());
+    println(values.array_get(2).unwrap().is_none());
+    println(values.array_get(-1).is_err());
+    println(yaml.parse("[").is_err());
+    println(yaml.from_int(7).get_int().unwrap());
+    var envelope = Envelope { value: yaml.array() };
+    let original = envelope;
+    envelope.value.push(yaml.from_int(11)).unwrap();
+    println(envelope.value.array_len().unwrap());
+    println(original.value.array_len().unwrap());
+    values.push({
+        values.push(yaml.from_int(99)).unwrap();
+        yaml.from_int(100)
+    }).unwrap();
+    println(values.array_len().unwrap());
+    println(snapshot.array_len().unwrap());
+    0
+}

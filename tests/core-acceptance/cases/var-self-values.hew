@@ -1,0 +1,84 @@
+type Counter { value: i64 }
+trait Bump { fn bump(var self, amount: i64) -> i64; }
+impl Bump for Counter {
+    fn bump(var self, amount: i64) -> i64 {
+        self.value += amount;
+        self.value
+    }
+}
+
+impl Bump for i64 {
+    fn bump(var self, amount: i64) -> i64 {
+        self += amount;
+        if amount == 2 { return self; }
+        self
+    }
+}
+
+type Text { value: string }
+type Envelope { text: Text, sibling: string }
+trait Replace { fn replace(var self, value: string) -> string; }
+impl Replace for Text {
+    fn replace(var self, value: string) -> string {
+        let previous = self.value;
+        self.value = value;
+        previous
+    }
+}
+
+trait Snapshot { fn snapshot(var self, early: bool) -> Text; }
+impl Snapshot for Text {
+    fn snapshot(var self, early: bool) -> Text {
+        if early { return self; }
+        self
+    }
+}
+
+type Holder<T> { payload: T }
+trait Touch { fn touch(var self, early: bool); }
+impl<T> Touch for Holder<T> {
+    fn touch(var self, early: bool) {
+        if early { return; }
+    }
+}
+
+fn main() -> i64 {
+    var counter = Counter { value: 10 };
+    println(counter.bump(2));
+    println(counter.value);
+    var text = Text { value: "initial".to_upper() };
+    println(text.replace(text.value));
+    println(text.replace({
+        text.replace("nested".to_upper());
+        "final".to_upper()
+    }));
+    println(text.value);
+    var envelope = Envelope { text: text, sibling: "sibling".to_upper() };
+    println(envelope.text.replace("field".to_upper()));
+    println(envelope.text.value);
+    println(envelope.sibling);
+    println(text.value);
+    var pair = (Text { value: "tuple".to_upper() }, "peer".to_upper());
+    println(pair.0.replace("updated".to_upper()));
+    println(pair.0.value);
+    println(pair.1);
+    var owned = Holder { payload: "kept".to_upper() };
+    owned.touch(true);
+    owned.touch(false);
+    println(owned.payload);
+    var scalar = Holder { payload: 7 };
+    scalar.touch(true);
+    scalar.touch(false);
+    println(scalar.payload);
+    var primitive: i64 = 10;
+    println(primitive.bump(2));
+    println(primitive.bump(3));
+    println(primitive);
+    let early = text.snapshot(true);
+    let late = text.snapshot(false);
+    text.replace("after snapshots".to_upper());
+    println(early.value);
+    println(late.value);
+    println(text.value);
+    0
+}

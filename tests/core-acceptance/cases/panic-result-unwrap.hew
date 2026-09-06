@@ -1,0 +1,16 @@
+fn failed() -> Result<string, string> {
+    Err("owned error".to_upper())
+}
+
+fn unwrap_failure() -> string {
+    let sibling = ["callee owner".to_upper(), "retained".to_upper()];
+    println(sibling[0]);
+    failed().unwrap()
+}
+
+fn main() -> i64 {
+    let caller = "caller owner".to_upper();
+    println(caller);
+    println(unwrap_failure());
+    0
+}

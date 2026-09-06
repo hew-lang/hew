@@ -1,0 +1,20 @@
+type Text { value: string }
+trait Replace { fn replace(var self, consume value: string, divisor: i64) -> i64; }
+impl Replace for Text {
+    fn replace(var self, consume value: string, divisor: i64) -> i64 {
+        self.value = value;
+        println(self.value);
+        8 / divisor
+    }
+}
+
+fn run(divisor: i64) -> i64 {
+    var text = Text { value: "original".to_upper() };
+    let sibling = ["caller".to_upper(), "retained".to_upper()];
+    println(sibling[0]);
+    text.replace("replacement".to_upper(), divisor)
+}
+
+fn main() -> i64 {
+    run(0)
+}

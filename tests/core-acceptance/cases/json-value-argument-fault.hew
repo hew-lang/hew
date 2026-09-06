@@ -1,0 +1,18 @@
+import std.encoding.json;
+
+fn consume_value(consume value: json.Value, later: i64) {
+    println(value.stringify().unwrap());
+    println(later);
+}
+
+fn run(divisor: i64) {
+    let sibling = json.parse("[\"retained\", {\"child\": [1, 2, 3]}]").unwrap();
+    let transferred = json.parse("{\"owned\": [\"nested\", 42]}").unwrap();
+    println(sibling.array_len().unwrap());
+    consume_value(transferred, 10 / divisor);
+}
+
+fn main() -> i64 {
+    run(0);
+    0
+}

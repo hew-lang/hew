@@ -1185,3 +1185,130 @@ timeout_seconds = 15
 [case.expected]
 stdout = "true\nfalse\nfalse\n0\n1\n2\n"
 exit = 0
+
+[[case]]
+id = "json-value-composition"
+intent = "Independent encoding copies and selected children survive parent scope and closure capture, preserve Unicode and embedded NUL, and compose with checked mutation, absence and parse errors."
+source = "cases/json-value-composition.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\ntrue\n2\n1\n7\ntrue\ntrue\ntrue\nunchanged\n2\ntrue\ntrue\ntrue\n7\n1\n0\n4\n1\n"
+exit = 0
+
+[[case]]
+id = "json-value-argument-fault"
+intent = "A consuming encoding value and nested caller sibling both clean up when later argument evaluation faults before the callee begins."
+source = "cases/json-value-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "yaml-value-composition"
+intent = "Independent encoding copies and selected children survive parent scope and closure capture, preserve Unicode and embedded NUL, and compose with checked mutation, absence and parse errors."
+source = "cases/yaml-value-composition.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\ntrue\n2\n1\n7\ntrue\ntrue\ntrue\nunchanged\n2\ntrue\ntrue\ntrue\n7\n1\n0\n4\n1\n"
+exit = 0
+
+[[case]]
+id = "yaml-value-argument-fault"
+intent = "A consuming encoding value and nested caller sibling both clean up when later argument evaluation faults before the callee begins."
+source = "cases/yaml-value-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "var-self-values"
+intent = "Mutable methods return values and updated scalar, owned and projected receivers, snapshot aliased arguments, observe nested argument mutation, and preserve generic unit results on both return paths."
+source = "cases/var-self-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "12\n12\nINITIAL\nNESTED\nFINAL\nFINAL\nFIELD\nSIBLING\nFINAL\nTUPLE\nUPDATED\nPEER\nKEPT\n7\n12\n15\n15\nFINAL\nFINAL\nAFTER SNAPSHOTS\n"
+exit = 0
+
+[[case]]
+id = "var-self-argument-fault"
+intent = "A later argument fault releases an earlier consuming argument and leaves the untaken method receiver available for caller cleanup."
+source = "cases/var-self-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "var-self-body-fault"
+intent = "A method fault after replacement releases its transferred receiver and child while the caller cleans siblings without writing back an absent result."
+source = "cases/var-self-body-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER\nREPLACEMENT\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "panic-owned-message"
+intent = "A projected dynamic panic message survives callback and caller ownership cleanup with its full Unicode and embedded NUL contents."
+source = "cases/panic-owned-message.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\nINVOKE OWNER\nCALLBACK OWNER\n"
+stderr = "hew: failure: UserPanic (212): ÉCHEC\u0000APRÈS\n"
+exit = 212
+
+[[case]]
+id = "panic-result-unwrap"
+intent = "Failed Result unwrap releases its owned error and caller siblings before propagating a message-bearing panic through the checked call boundary."
+source = "cases/panic-result-unwrap.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\nCALLEE OWNER\n"
+stderr = "hew: failure: UserPanic (212): called 'unwrap()' on an 'Err' value\n"
+exit = 212
+
+[[case]]
+id = "scalar-pattern-values"
+intent = "Scalar matches preserve integer width boundaries, character values, ordered guards and binding fallbacks while returning enums and independent owned strings."
+source = "../../hew-sir/tests/fixtures/scalar_match.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0
+
+[[case]]
+id = "closure-factories"
+intent = "Named and anonymous closure factories retain independent captured strings after returning through tail expressions and explicit returns."
+source = "../../hew-types/tests/fixtures/closure_factories.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

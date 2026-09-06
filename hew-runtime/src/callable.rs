@@ -276,7 +276,7 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn borrow_invoke(
+    unsafe extern "C" fn borrow_value(
         raw: *mut c_void,
         arguments: *const *mut c_void,
         result: *mut c_void,
@@ -294,12 +294,28 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn borrow_invoke(
+        raw: *mut c_void,
+        arguments: *const *mut c_void,
+        result: *mut c_void,
+        fault: *mut *mut c_void,
+        state: *mut c_void,
+    ) -> *mut c_void {
+        // SAFETY: test hosting supplies the exact slots and a live invocation.
+        unsafe {
+            let status = borrow_value(raw, arguments, result, fault);
+            crate::coro_state::hew_coro_state_finish(state.cast(), status);
+        }
+        ptr::null_mut()
+    }
+
     unsafe extern "C" fn once_invoke(
         raw: *mut c_void,
         arguments: *const *mut c_void,
         result: *mut c_void,
         fault: *mut *mut c_void,
-    ) -> i32 {
+        state: *mut c_void,
+    ) -> *mut c_void {
         let descriptor = descriptor();
         let mut owner = HewCallableValue {
             environment: raw,
@@ -312,10 +328,11 @@ mod tests {
                 fault.write(Box::into_raw(Box::new(29_i32)).cast());
                 29
             } else {
-                borrow_invoke(raw, arguments, result, fault)
+                borrow_value(raw, arguments, result, fault)
             };
             hew_callable_drop(&raw mut owner);
-            status
+            crate::coro_state::hew_coro_state_finish(state.cast(), status);
+            ptr::null_mut()
         }
     }
 
@@ -373,7 +390,8 @@ mod tests {
             let mut result = 0_i64;
             let mut fault = ptr::null_mut();
             assert_eq!(
-                descriptor.invoke_borrow.unwrap()(
+                crate::coro_root::hew_coro_run_callable(
+                    descriptor.invoke_borrow.unwrap(),
                     copy.environment,
                     arguments.as_ptr(),
                     (&raw mut result).cast(),
@@ -507,14 +525,16 @@ mod tests {
             _arguments: *const *mut c_void,
             result: *mut c_void,
             fault: *mut *mut c_void,
-        ) -> i32 {
+            state: *mut c_void,
+        ) -> *mut c_void {
             assert!(environment.is_null());
             // SAFETY: The test provides writable result and fault slots.
             unsafe {
                 result.cast::<i64>().write(42);
                 fault.write(ptr::null_mut());
+                crate::coro_state::hew_coro_state_finish(state.cast(), 0);
             }
-            0
+            ptr::null_mut()
         }
         let layout = HewValueLayout {
             size: 0,
@@ -546,7 +566,8 @@ mod tests {
             let mut result = 0_i64;
             let mut fault = ptr::null_mut();
             assert_eq!(
-                (descriptor.invoke_borrow.unwrap())(
+                crate::coro_root::hew_coro_run_callable(
+                    descriptor.invoke_borrow.unwrap(),
                     copy.environment,
                     ptr::null(),
                     (&raw mut result).cast(),
@@ -579,7 +600,8 @@ mod tests {
             // SAFETY: The caller transfers/invalidate its carrier before the
             // once adapter, which owns cleanup regardless of returned status.
             unsafe {
-                let status = (descriptor.invoke_once)(
+                let status = crate::coro_root::hew_coro_run_callable(
+                    descriptor.invoke_once,
                     raw,
                     arguments.as_ptr(),
                     (&raw mut result).cast(),

@@ -17,10 +17,11 @@ use crate::value::HewValueLayout;
 /// the caller must invalidate the transferred carrier before invoking it.
 /// Argument ownership and slot layouts are established by the compiler.
 ///
-/// Status zero initializes `result_out` (unless the result is unit) and clears
-/// `fault_out`. Nonzero status leaves `result_out` untouched and transfers the
-/// opaque fault through `fault_out`. Adapters must not unwind or longjmp across
-/// this C boundary. Runtime helpers do not invoke or dispatch these adapters.
+/// The adapter returns its LLVM continuation and publishes completion through
+/// the invocation state. Successful completion initializes `result_out` (unless
+/// unit) and clears `fault_out`; failure leaves the result untouched and transfers
+/// the owned fault. The caller drives the frame until completion, then destroys
+/// it before releasing invocation state. Adapters must not unwind or longjmp.
 ///
 /// # Safety
 /// The environment and argument slots must match the adapter's exact compiler
@@ -31,7 +32,8 @@ pub type HewCallableInvoke = unsafe extern "C" fn(
     argument_slots: *const *mut c_void,
     result_out: *mut c_void,
     fault_out: *mut *mut c_void,
-) -> i32;
+    invocation_state: *mut c_void,
+) -> *mut c_void;
 
 /// Immutable compiler-authored environment and invocation contract.
 #[repr(C)]

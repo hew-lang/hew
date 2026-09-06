@@ -874,7 +874,6 @@ pub mod arena;
 #[cfg(target_arch = "wasm32")]
 #[path = "arena_wasm.rs"]
 pub mod arena;
-pub mod wake;
 // Expose arena_wasm as a distinct module in native test builds so its unit
 // tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
 // guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.

@@ -6,7 +6,8 @@
 //! caller; publishing a terminal status follows initialization of those slots.
 
 use crate::task_scope::{
-    hew_cancel_observe, hew_cancel_token_is_requested, hew_cancel_unobserve, HewCancelObserver,
+    hew_cancel_observe, hew_cancel_token_cancel, hew_cancel_token_is_requested,
+    hew_cancel_token_new_child, hew_cancel_token_release, hew_cancel_unobserve, HewCancelObserver,
     HewCancellationToken,
 };
 use crate::wake::{HewWaker, OwnedWaker};
@@ -36,9 +37,11 @@ pub struct HewCoroState {
 
 impl Drop for HewCoroState {
     fn drop(&mut self) {
-        // SAFETY: this object owns its unique subscription. Detachment also
-        // releases the token reference keeping self.token valid.
-        unsafe { hew_cancel_unobserve(self.observer) };
+        // SAFETY: this object owns its subscription and invocation-local token.
+        unsafe {
+            hew_cancel_unobserve(self.observer);
+            hew_cancel_token_release(self.token);
+        }
     }
 }
 
@@ -46,8 +49,8 @@ impl Drop for HewCoroState {
 ///
 /// # Safety
 /// `waker` must point to a live descriptor obeying [`HewWaker`]'s contract.
-/// `token` must be null or a live token; the state retains it transitively via
-/// its cancellation subscription. Free the state after destroying its frame.
+/// `token` must be null or a live parent token. The state owns a fresh child
+/// token and retains its ancestry. Free it after destroying its frame.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_new(
     waker: *const HewWaker,
@@ -58,6 +61,8 @@ pub unsafe extern "C" fn hew_coro_state_new(
     }
     // SAFETY: the caller keeps the descriptor and token live during creation.
     let retained = unsafe { OwnedWaker::retain(&*waker) };
+    // SAFETY: the caller keeps the parent token live during child creation.
+    let token = unsafe { hew_cancel_token_new_child(token) };
     // SAFETY: token and the retained descriptor are live for registration.
     let observer = unsafe { hew_cancel_observe(token, retained.descriptor()) };
     Box::into_raw(Box::new(HewCoroState {
@@ -96,6 +101,35 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     let parent = unsafe { &*parent };
     // SAFETY: parent retains both inputs for child construction.
     unsafe { hew_coro_state_new(parent.waker.descriptor(), parent.token) }
+}
+
+/// Request cancellation of this invocation and its descendants.
+/// Siblings and the parent retain their independent cancellation state.
+///
+/// # Safety
+/// `state` must be a live invocation state through this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_cancel(state: *const HewCoroState) {
+    if !state.is_null() {
+        // SAFETY: the caller keeps the state and its owned token live.
+        unsafe { hew_cancel_token_cancel((*state).token, 1) };
+    }
+}
+
+/// Borrow the invocation's token when creating a nested structured scope.
+///
+/// # Safety
+/// `state` must remain live for the returned borrow. The scope must retain the
+/// token or create its child before returning control to the caller.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_token(
+    state: *const HewCoroState,
+) -> *mut HewCancellationToken {
+    if state.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the caller keeps the state live for this borrow.
+    unsafe { (*state).token }
 }
 
 /// Borrow the readiness descriptor for registration of an operation.
@@ -254,9 +288,6 @@ pub unsafe extern "C" fn hew_coro_state_resume_yield(state: *mut HewCoroState) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task_scope::{
-        hew_cancel_token_cancel, hew_cancel_token_new_child, hew_cancel_token_release,
-    };
     use crate::wake::blocking::Readiness;
 
     #[test]
@@ -279,6 +310,29 @@ mod tests {
             hew_coro_state_free(state);
             operation.wake();
             assert!(ready.take_ready());
+        }
+    }
+
+    #[test]
+    fn child_cancellation_preserves_siblings_and_parent_cancellation_reaches_all() {
+        let (_, waker) = Readiness::new();
+        // SAFETY: the test owns all invocation states and releases children first.
+        unsafe {
+            let parent = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
+            let first = hew_coro_state_child(parent);
+            let second = hew_coro_state_child(parent);
+            let grandchild = hew_coro_state_child(first);
+            hew_coro_state_cancel(first);
+            assert_eq!(hew_coro_state_is_cancelled(first), 1);
+            assert_eq!(hew_coro_state_is_cancelled(grandchild), 1);
+            assert_eq!(hew_coro_state_is_cancelled(parent), 0);
+            assert_eq!(hew_coro_state_is_cancelled(second), 0);
+            hew_coro_state_free(grandchild);
+            hew_coro_state_free(first);
+            hew_coro_state_cancel(parent);
+            assert_eq!(hew_coro_state_is_cancelled(second), 1);
+            hew_coro_state_free(second);
+            hew_coro_state_free(parent);
         }
     }
 

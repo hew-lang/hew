@@ -176,8 +176,9 @@ unsafe extern "C" fn unused_invoke(
     _: *const *mut c_void,
     _: *mut c_void,
     _: *mut *mut c_void,
-) -> i32 {
-    0
+    _: *mut c_void,
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 #[test]

@@ -92,3 +92,51 @@ pub unsafe extern "C" fn hew_coro_run_root(
     }
     status
 }
+
+/// Drive an erased callable at an explicit synchronous hosting boundary.
+///
+/// # Safety
+/// The invocation adapter, environment, argument pointers and output slots must
+/// obey `HewCallableInvoke`'s exact typed ownership contract. As with the process
+/// root driver, this function must not run on an actor worker.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_run_callable(
+    invoke: hew_cabi::callable::HewCallableInvoke,
+    environment: *mut c_void,
+    argument_slots: *const *mut c_void,
+    result_out: *mut c_void,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    struct Arguments {
+        invoke: hew_cabi::callable::HewCallableInvoke,
+        environment: *mut c_void,
+        slots: *const *mut c_void,
+    }
+    unsafe extern "C" fn start(
+        arguments: *mut c_void,
+        result: *mut c_void,
+        fault: *mut *mut HewFault,
+        state: *mut HewCoroState,
+    ) -> *mut c_void {
+        // SAFETY: the hosting call retains this exact argument bundle and all
+        // invocation inputs until the shared root driver finishes.
+        unsafe {
+            let args = &*arguments.cast::<Arguments>();
+            (args.invoke)(
+                args.environment,
+                args.slots,
+                result,
+                fault.cast(),
+                state.cast(),
+            )
+        }
+    }
+    let mut args = Arguments {
+        invoke,
+        environment,
+        slots: argument_slots,
+    };
+    // SAFETY: the caller supplies the invocation contract; the bundle remains
+    // on this stack until the shared driver has destroyed the finished frame.
+    unsafe { hew_coro_run_root(start, (&raw mut args).cast(), result_out, fault_out.cast()) }
+}

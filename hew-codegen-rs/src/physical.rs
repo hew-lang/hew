@@ -1363,11 +1363,7 @@ fn build_module_with_host<'ctx>(
         .llvm
         .verify()
         .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
-    if physical
-        .callables
-        .iter()
-        .any(|callable| callable.is_resumable)
-    {
+    if emitter.llvm.get_function("llvm.coro.id").is_some() {
         coro::lower(&emitter.llvm, machine)?;
     }
     Ok(emitter.llvm)

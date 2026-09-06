@@ -376,9 +376,9 @@ pub struct SemCallable {
     /// generic specialization.  This is the authoritative semantic instance
     /// identity; `symbol` is only its derived emitted-name projection.
     pub instance: CallableInstance,
-    /// Exact emitted body symbol. Monomorphic callables retain the resolver's
-    /// direct-call symbol; a generic callable derives this only after its
-    /// canonical semantic instance has been selected.
+    /// Exact private-ABI body symbol, assigned in the reserved `__hew_`
+    /// namespace from the resolver's direct-call symbol. Generic instances and
+    /// closures derive their names from that same private symbol authority.
     pub symbol: String,
     pub source_origin: FunctionSourceOrigin,
     pub signature: SemSignature,

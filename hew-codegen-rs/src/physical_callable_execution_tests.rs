@@ -535,7 +535,7 @@ fn assert_source_cleanup(name: &str, source: &str, expected: Option<i64>, drops:
     let main = physical
         .callables
         .iter()
-        .find(|row| row.symbol == "main")
+        .find(|row| row.declaration.full_path() == "main")
         .unwrap();
     let symbol = emitted_symbol(&physical, main);
     for optimized in [false, true] {

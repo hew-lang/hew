@@ -93,7 +93,7 @@ fn ordinary_vector_values_share_one_operation_family() {
         let main = module
             .functions
             .iter()
-            .find(|function| function.name == "main")
+            .find(|function| function.declaration.full_path() == "main")
             .unwrap();
         let local = |name| match main
             .bindings
@@ -243,7 +243,7 @@ fn generic_vector_copy_and_early_return_keep_exact_elements() {
     assert!(module
         .functions
         .iter()
-        .any(|function| function.name.starts_with("first")));
+        .any(|function| function.declaration.full_path() == "first"));
 }
 
 fn index_module() -> hew_sir::SemModule {
@@ -266,7 +266,7 @@ fn verifier_rejects_a_wrong_element_even_with_the_right_arity() {
     let function = module
         .functions
         .iter_mut()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let wrong = function
         .blocks
@@ -339,7 +339,7 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
     let function = missing_cleanup
         .functions
         .iter_mut()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let hew_sir::BindingTarget::Place(owner) = function
         .bindings

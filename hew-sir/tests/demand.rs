@@ -174,7 +174,7 @@ fn the_dump_reports_every_unsupported_body_with_a_reason() {
         "the dump must report each failure exactly once:\n{dump}"
     );
     assert!(
-        dump.contains("fn main("),
+        dump.contains("fn __hew_fn_main("),
         "the dump must still carry the IR it could lower:\n{dump}"
     );
 }
@@ -200,7 +200,7 @@ fn a_fully_lowered_program_dumps_no_unsupported_stanza() {
         !dump.contains("; unsupported: "),
         "a fully lowered program must report no failure:\n{dump}"
     );
-    assert!(dump.contains("fn add_one("));
+    assert!(dump.contains("fn __hew_fn_add_one("));
 }
 
 /// A module with no entry is not a program: it demands nothing, and the dump
@@ -468,7 +468,7 @@ fn unreached_headers_publish_nested_record_and_variant_shapes() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "stranded")
+        .find(|callable| callable.declaration.full_path() == "stranded")
         .expect("the unreached declaration must retain its admitted header");
     let result = lowered
         .module

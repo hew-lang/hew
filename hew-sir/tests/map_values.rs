@@ -301,7 +301,11 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
         }
     "#,
     );
-    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    let main = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path() == "main")
+        .unwrap();
     let (borrowed, fault) = main
         .blocks
         .iter()
@@ -367,7 +371,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     replaced
         .functions
         .iter_mut()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap()
         .blocks
         .iter_mut()
@@ -721,7 +725,7 @@ fn borrowed_collection_reads_do_not_demand_key_callbacks() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.name == "size" => {
+            hew_hir::HirItem::Function(function) if function.declaration.full_path() == "size" => {
                 Some(function.declaration.clone())
             }
             _ => None,

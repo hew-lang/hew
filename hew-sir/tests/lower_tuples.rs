@@ -85,7 +85,7 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
     assert_eq!(
         dump,
         concat!(
-            "fn main() -> i64 {\n",
+            "fn __hew_fn_main() -> i64 {\n",
             "bb0:\n",
             "    %0 = const 0\n",
             "    %1 = const 42\n",

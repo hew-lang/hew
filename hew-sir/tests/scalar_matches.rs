@@ -47,7 +47,9 @@ fn scalar_literal_predicates_cannot_change_the_checked_width_or_kind() {
             .items
             .iter_mut()
             .find_map(|item| match item {
-                HirItem::Function(function) if function.name == "tag_kind" => Some(function),
+                HirItem::Function(function) if function.declaration.full_path() == "tag_kind" => {
+                    Some(function)
+                }
                 _ => None,
             })
             .unwrap();

@@ -115,7 +115,7 @@ fn argument_alias_and_nested_mutation_precede_the_receiver_take() {
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let BindingTarget::Place(receiver) = main
         .bindings

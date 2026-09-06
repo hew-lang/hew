@@ -152,7 +152,7 @@ fn run_index(map: bool, failed: bool) {
     let callee = physical
         .callables
         .iter()
-        .find(|callee| callee.symbol == "inspect")
+        .find(|callee| callee.declaration.full_path() == "inspect")
         .unwrap();
     let symbol = emitted_symbol(&physical, callee);
     let mut failures = Vec::new();

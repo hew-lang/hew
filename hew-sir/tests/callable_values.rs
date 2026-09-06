@@ -52,11 +52,11 @@ fn function_values_demand_their_bodies_and_share_indirect_call_cleanup() {
     assert!(module
         .functions
         .iter()
-        .any(|function| function.name == "increment"));
+        .any(|function| function.declaration.full_path() == "increment"));
     assert!(!module
         .functions
         .iter()
-        .any(|function| function.name == "unrelated"));
+        .any(|function| function.declaration.full_path() == "unrelated"));
     assert!(module
         .functions
         .iter()
@@ -284,7 +284,7 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let mut receivers = Vec::new();
@@ -343,7 +343,7 @@ fn declared_consuming_parameters_own_their_normal_and_fault_cleanup() {
         let invoke = module
             .functions
             .iter()
-            .find(|function| function.name == "invoke")
+            .find(|function| function.declaration.full_path() == "invoke")
             .unwrap();
         assert_eq!(invoke.params[0].own, hew_sir::OwnKind::Owned);
         assert_eq!(
@@ -402,7 +402,7 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     let advance = module
         .functions
         .iter()
-        .find(|function| function.name == "advance")
+        .find(|function| function.declaration.full_path() == "advance")
         .unwrap();
     assert_eq!(advance.params[0].own, hew_sir::OwnKind::Guaranteed);
     let copied = advance.blocks.iter().flat_map(|block| &block.ops)
@@ -430,7 +430,7 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     let consuming = module
         .functions
         .iter()
-        .find(|function| function.name == "consume_advance")
+        .find(|function| function.declaration.full_path() == "consume_advance")
         .unwrap();
     assert_eq!(consuming.params[0].own, hew_sir::OwnKind::Owned);
     assert!(!consuming.blocks.iter().flat_map(|block| &block.ops)
@@ -446,7 +446,7 @@ fn borrowed_callable_replacements_share_local_storage_across_branches() {
         let function = module
             .functions
             .iter()
-            .find(|function| function.name == name)
+            .find(|function| function.declaration.full_path() == name)
             .unwrap();
         assert_eq!(function.params[0].own, hew_sir::OwnKind::Guaranteed);
         let hew_sir::BindingTarget::Place(local) = function
@@ -562,7 +562,7 @@ fn private_replacement_keeps_pre_assignment_reads_borrowed() {
     let function = module
         .functions
         .iter()
-        .find(|function| function.name == "replace")
+        .find(|function| function.declaration.full_path() == "replace")
         .unwrap();
     let first_call = function
         .blocks

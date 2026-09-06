@@ -29,7 +29,7 @@ pub fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|function| function.name == "probe")
+        .find(|function| function.declaration.full_path() == "probe")
         .unwrap()
 }
 

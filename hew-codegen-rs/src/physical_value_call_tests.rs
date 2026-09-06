@@ -45,7 +45,7 @@ fn selected_calls(source: &str, triple: &str) -> PhysicalModule {
         .functions
         .iter()
         .filter_map(|function| {
-            let capability = match function.name.as_str() {
+            let capability = match function.declaration.full_path() {
                 "selected_eq" => ValueCapability::Eq,
                 "selected_hash" => ValueCapability::Hash,
                 _ => return None,
@@ -117,7 +117,7 @@ fn expose_probe<'ctx>(
     let callable = physical
         .callables
         .iter()
-        .find(|callable| callable.symbol == name)
+        .find(|callable| callable.declaration.full_path() == name)
         .unwrap();
     let callee = llvm
         .get_function(&emitted_symbol(physical, callable))

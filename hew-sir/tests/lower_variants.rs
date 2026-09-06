@@ -74,7 +74,7 @@ fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "inspect")
+        .find(|callable| callable.declaration.full_path() == "inspect")
         .expect("inspect must have an exact callable header");
     assert_eq!(inspect.signature.params[0].passing, SemParamPassing::Borrow);
     let body = lowered
@@ -104,7 +104,7 @@ fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("main must have a body");
     assert_eq!(
         main.blocks
@@ -189,7 +189,7 @@ fn fresh_option_match_accounts_for_unbound_owned_payload() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "classify")
+        .find(|function| function.declaration.full_path() == "classify")
         .expect("classify must have a body");
     let some_block = classify
         .blocks
@@ -296,7 +296,7 @@ fn guarded_variant_match_lowers_explicit_predicate_cfg() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "choose")
+        .find(|function| function.declaration.full_path() == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     assert!(choose.blocks.iter().any(|block| matches!(
         block.terminator,
@@ -336,7 +336,7 @@ fn scalar_literal_payloads_use_their_exact_sir_constants() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "classify")
+        .find(|function| function.declaration.full_path() == "classify")
         .expect("classify must have a body");
     let operations = classify
         .blocks
@@ -432,7 +432,7 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "choose")
+        .find(|function| function.declaration.full_path() == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     let fallback = choose
         .bindings
@@ -484,7 +484,7 @@ fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "classify")
+        .find(|function| function.declaration.full_path() == "classify")
         .expect("classify must have a body");
     assert!(
         classify
@@ -528,7 +528,7 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "choose")
+        .find(|function| function.declaration.full_path() == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     assert!(
         choose
@@ -572,7 +572,7 @@ fn unit_match_allows_a_selected_divergent_handler() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "handle")
+        .find(|function| function.declaration.full_path() == "handle")
         .expect("handle must have a body");
     assert!(handle
         .blocks
@@ -610,7 +610,7 @@ fn result_propagation_lowers_expression_return_without_a_fake_value() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "pair")
+        .find(|function| function.declaration.full_path() == "pair")
         .unwrap_or_else(|| panic!("pair must have a body: {:#?}", lowered.statuses));
     assert_eq!(
         pair.blocks
@@ -642,7 +642,7 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "stop")
+        .find(|function| function.declaration.full_path() == "stop")
         .unwrap_or_else(|| panic!("stop must have a body: {:#?}", lowered.statuses));
     assert_eq!(
         stop.blocks.len(),
@@ -685,7 +685,7 @@ fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "choose")
+        .find(|function| function.declaration.full_path() == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     assert!(choose
         .blocks
@@ -725,7 +725,7 @@ fn owning_if_expression_joins_independent_string_values() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "describe")
+        .find(|function| function.declaration.full_path() == "describe")
         .unwrap_or_else(|| panic!("describe must have a body: {:#?}", lowered.statuses));
     assert!(describe.blocks.iter().any(|block| {
         block

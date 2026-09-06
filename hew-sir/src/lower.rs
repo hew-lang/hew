@@ -242,9 +242,9 @@ impl InstanceService<'_> {
 
 /// Deterministic SIR view of the HIR direct-call projection.
 ///
-/// The HIR dispatcher is still the owner of exact emitted symbols.  SIR only
-/// projects those checked facts into its semantic callable table; it never
-/// reconstructs a symbol from a declaration's presentation spelling.
+/// HIR owns the resolved direct-call projection. SIR assigns its private
+/// emitted namespace once from that projection; it never reconstructs a
+/// symbol from a declaration's presentation spelling.
 #[derive(Debug, Clone)]
 struct GenericTemplate<'a> {
     function: &'a HirFn,
@@ -346,6 +346,11 @@ impl<'a> CallableTable<'a> {
                 );
                 continue;
             };
+            // Every Hew body uses the private status ABI, including root `pub`
+            // functions. Reserve its exact emitted name here so a source name
+            // such as `open` cannot interpose a native C function. Instances
+            // and closures derive their symbols from this same authority.
+            let symbol = format!("__hew_fn_{symbol}");
             if !function.type_params.is_empty() {
                 let signature = match generic_template_signature(function) {
                     Ok(signature) => signature,

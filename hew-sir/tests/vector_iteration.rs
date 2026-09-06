@@ -80,7 +80,11 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
         }
     ",
     );
-    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    let main = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path() == "main")
+        .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
     let mut reads = 0;
     for block in &main.blocks {
@@ -256,7 +260,7 @@ fn missing_break_cleanup_is_rejected_by_the_ownership_verifier() {
     let function = module
         .functions
         .iter_mut()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let local = function
         .bindings

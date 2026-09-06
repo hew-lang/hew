@@ -63,7 +63,7 @@ fn call_result_outside_its_normal_edge_is_rejected() {
         let main = module
             .functions
             .iter_mut()
-            .find(|f| f.name == "main")
+            .find(|f| f.declaration.full_path() == "main")
             .unwrap();
         let block = main
             .blocks
@@ -161,12 +161,12 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
     let add_one = module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "add_one")
+        .find(|callable| callable.declaration.full_path() == "add_one")
         .expect("scalar callee must have a resolved callable");
     let main_callable = module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "main")
+        .find(|callable| callable.declaration.full_path() == "main")
         .expect("root main must have a resolved callable");
     assert!(
         module
@@ -187,7 +187,7 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         module
             .callable(entry)
             .map(|callable| callable.symbol.as_str()),
-        Some("main")
+        Some("__hew_fn_main")
     );
     let main = module
         .function_index()
@@ -201,8 +201,8 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         module
             .callable(callee)
             .map(|callable| callable.symbol.as_str()),
-        Some("add_one"),
-        "SIR call must carry CallableId, whose table owns the exact HIR symbol"
+        Some("__hew_fn_add_one"),
+        "SIR call must carry CallableId, whose table owns the exact private emitted symbol"
     );
     assert!(
         verify_module(module).is_empty(),
@@ -245,7 +245,7 @@ fn unit_direct_call_is_a_zero_result_sir_terminator() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "unit_helper")
+        .find(|callable| callable.declaration.full_path() == "unit_helper")
         .expect("unit-returning declaration must retain an ABI callable entry");
     assert_eq!(unit_helper.signature.return_ty, hew_types::ResolvedTy::Unit);
     assert!(
@@ -319,7 +319,7 @@ fn scalar_binding_and_explicit_return_transfers_lower_without_erasing_resource_r
         .module
         .functions
         .iter()
-        .find(|function| function.name == "f")
+        .find(|function| function.declaration.full_path() == "f")
         .expect("the scalar helper must have a SIR body");
     assert!(
         f.blocks.iter().any(|block| matches!(
@@ -405,7 +405,7 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
     let countdown = module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "countdown")
+        .find(|callable| callable.declaration.full_path() == "countdown")
         .expect("recursive declaration must have a callable-table entry");
     let function = module
         .function_index()
@@ -518,15 +518,21 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         "id<i64>, id<bool>, relay<i64>, and countdown<i64> must be the complete concrete SIR instance set: {generic_callables:#?}"
     );
     assert!(
-        lowered
-            .module
-            .functions
-            .iter()
-            .all(|function| !["id", "relay", "countdown"].contains(&function.name.as_str())),
+        lowered.module.functions.iter().all(|function| ![
+            "__hew_fn_id",
+            "__hew_fn_relay",
+            "__hew_fn_countdown"
+        ]
+        .contains(&function.name.as_str())),
         "generic origin templates must never appear as abstract SIR functions: {:#?}",
         lowered.module.functions
     );
-    for symbol in ["id$$i64", "id$$bool", "relay$$i64", "countdown$$i64"] {
+    for symbol in [
+        "__hew_fn_id$$i64",
+        "__hew_fn_id$$bool",
+        "__hew_fn_relay$$i64",
+        "__hew_fn_countdown$$i64",
+    ] {
         assert!(
             lowered
                 .module
@@ -539,7 +545,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
 
     let id_i64 = generic_callables
         .iter()
-        .find(|callable| callable.symbol == "id$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_id$$i64")
         .expect("nested forwarding must request id<i64>");
     let id_i64_key = match &id_i64.instance {
         CallableInstance::Generic(key) => key,
@@ -557,7 +563,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
     );
     let relay_i64 = generic_callables
         .iter()
-        .find(|callable| callable.symbol == "relay$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_relay$$i64")
         .expect("main must request relay<i64>");
     let relay_body = lowered
         .module
@@ -571,7 +577,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
 
     let countdown_i64 = generic_callables
         .iter()
-        .find(|callable| callable.symbol == "countdown$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_countdown$$i64")
         .expect("main must request countdown<i64>");
     let countdown_body = lowered
         .module
@@ -591,8 +597,8 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         lowered.callable_statuses
     );
     let dump = dump_sir(&lowered.module);
-    assert!(dump.contains("fn relay$$i64("));
-    assert!(dump.contains("fn countdown$$i64("));
+    assert!(dump.contains("fn __hew_fn_relay$$i64("));
+    assert!(dump.contains("fn __hew_fn_countdown$$i64("));
 
     let mut forged_signature = lowered.module.clone();
     let id_i64_index = usize::try_from(id_i64.id.0).expect("callable ID fits usize");
@@ -673,13 +679,13 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "even$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_even$$i64")
         .expect("main must request a concrete even<i64> callable");
     let odd = lowered
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "odd$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_odd$$i64")
         .expect("even<i64> must request a concrete odd<i64> callable");
     for (caller, expected_callee) in [(even, odd.id), (odd, even.id)] {
         let body = lowered

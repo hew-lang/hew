@@ -19,7 +19,7 @@ fn panic_requires_a_live_borrowed_string_and_finite_fault_cleanup() {
             let f = module
                 .functions
                 .iter_mut()
-                .find(|f| f.name == "panic_probe")
+                .find(|f| f.declaration.full_path() == "panic_probe")
                 .unwrap();
             match corruption {
                 0 => {
@@ -106,7 +106,7 @@ fn physical_panic_cannot_change_transfer_or_replace_fault_cleanup() {
             let id = module
                 .callables
                 .iter()
-                .find(|c| c.symbol == "panic_probe")
+                .find(|c| c.declaration.full_path() == "panic_probe")
                 .unwrap()
                 .id;
             let f = module

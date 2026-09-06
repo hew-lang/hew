@@ -699,8 +699,6 @@ pub struct Parser<'src> {
     pub(crate) allow_implicit_self_params: bool,
     /// Number of enclosing `scope { ... }` expression bodies being parsed.
     pub(crate) scope_expr_depth: usize,
-    /// Number of enclosing `fork { ... }` child-task block bodies being parsed.
-    pub(crate) fork_block_depth: usize,
     /// True while parsing an `if`/`while` condition or `match` scrutinee at the
     /// top level (outside any bracketing delimiter). In that position a bare
     /// identifier immediately followed by `{` must NOT be read as a struct

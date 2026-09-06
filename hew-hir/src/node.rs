@@ -1618,15 +1618,6 @@ pub enum HirExprKind {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
         task_ty: ResolvedTy,
-        /// `true` when this spawn was written as `fork t = callee()` (the task handle
-        /// is bound to a name and can be awaited for its result). `false` for an
-        /// implicit/unbound spawn (`callee()` as a bare statement inside a `scope{}`
-        /// body — the task handle is immediately discarded).
-        ///
-        /// MIR lowering uses this to determine whether a non-unit-returning callee
-        /// is permissible (bound → value-task supported) or must reject (unbound →
-        /// the result would be silently discarded, fail-closed).
-        bound: bool,
     },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.
@@ -1644,19 +1635,10 @@ pub enum HirExprKind {
         duration: Box<HirExpr>,
         body: HirBlock,
     },
-    /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
-    /// positions in v0.5: statement-position inside a `scope{}` body. Future
-    /// versions extend this to select-arm source expressions (cluster-5).
-    ///
-    /// `output_ty` is the inner `T` extracted from the binding's
-    /// `ResolvedTy::Task(T)`. Stored here so codegen can emit the result slot
-    /// without re-inspecting the binding's type.
+    /// Consume a task expression and produce its child result.
     AwaitTask {
-        /// The name of the task-handle binding being consumed.
-        binding_name: String,
-        /// The resolved binding id of the task handle.
-        binding_id: BindingId,
-        /// The `T` from `Task<T>` — the type produced by this await.
+        operand: Box<HirExpr>,
+        /// The `T` from `Task<T>`.
         output_ty: ResolvedTy,
     },
     /// `await_restart <supervised-child>` — suspend the current actor until the

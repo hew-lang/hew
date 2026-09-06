@@ -822,18 +822,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 }
             }
         }
-        HirExprKind::AwaitTask {
-            binding_name,
-            binding_id,
-            output_ty,
-            ..
-        } => {
-            writeln!(
-                out,
-                "{pad}  await-task {binding_name} ({binding_id}) -> {}",
-                output_ty.user_facing()
-            )
-            .expect("write to string");
+        HirExprKind::AwaitTask { operand, output_ty } => {
+            writeln!(out, "{pad}  await-task -> {}", output_ty.user_facing())
+                .expect("write to string");
+            dump_expr(out, operand, indent + 2);
         }
         HirExprKind::AwaitRestart { child } => {
             writeln!(out, "{pad}  await-restart").expect("write to string");

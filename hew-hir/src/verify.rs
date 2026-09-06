@@ -661,19 +661,7 @@ impl Verifier {
                 self.expr(duration);
                 self.block(body);
             }
-            HirExprKind::AwaitTask { binding_id, .. } => {
-                // Verify the binding-id referenced by the await is known to the verifier.
-                // If it's not in `self.bindings`, that indicates a dangling reference.
-                if !self.bindings.contains(binding_id) {
-                    self.diagnostics.push(self.diagnostic(
-                        HirDiagnosticKind::DanglingRef {
-                            resolved: ResolvedRef::Binding(*binding_id),
-                        },
-                        expr.span.clone(),
-                        "await-task references a binding that was not declared in resolved HIR",
-                    ));
-                }
-            }
+            HirExprKind::AwaitTask { operand, .. } => self.expr(operand),
             HirExprKind::Select(select) => {
                 for arm in &select.arms {
                     match &arm.kind {

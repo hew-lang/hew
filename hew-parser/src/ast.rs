@@ -315,24 +315,15 @@ pub enum Expr {
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
     },
-    /// Structured-concurrency block: `scope { ... }`.
-    ///
-    /// Establishes a lexical-lifetime boundary for any tasks spawned inside.
-    /// Statement-position call expressions become spawned tasks (TI-1);
-    /// `fork name = call(...)` statements introduce `Task<T>` bindings (TI-2).
-    /// All tasks are awaited at the closing brace.
+    /// A smaller lexical lifetime boundary for child tasks: `scope { ... }`.
     Scope {
         body: Block,
     },
-    /// Child-task binding inside a `scope { ... }` block: `fork name = call(...)`
-    /// or bare `fork call(...)`.
-    ///
-    /// Outside a scope this is malformed and rejected during HIR lowering.
+    /// Start a child and produce its handle: `fork work(input)`.
     ForkChild {
-        binding: Option<String>,
         expr: Box<Spanned<Expr>>,
     },
-    /// Anonymous child-task block inside a `scope { ... }` block: `fork { ... }`.
+    /// Start a child whose result is the block's result: `fork { ... }`.
     ForkBlock {
         body: Block,
     },

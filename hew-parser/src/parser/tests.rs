@@ -3494,70 +3494,35 @@ fn scope_in_let_initialiser_is_refused() {
 }
 
 #[test]
-fn parser_scope_block_distinct_from_fork_child() {
-    let body = parse_main_body("scope { 1 };\nscope { fork child = run(); };\n");
-    let Stmt::Expression((Expr::Scope { .. }, _)) = &body.stmts[0].0 else {
-        panic!("expected scope statement: {:?}", body.stmts[0]);
-    };
-    let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[1].0 else {
-        panic!("expected outer scope block: {:?}", body.stmts[1]);
-    };
-    let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &inner.stmts[0].0 else {
-        panic!("expected child fork expression: {:?}", inner.stmts[0]);
-    };
-    assert_eq!(binding.as_deref(), Some("child"));
+fn fork_is_an_ordinary_value_expression() {
+    for source in [
+        "let child = fork run();",
+        "consume(fork run());",
+        "let value = await fork run();",
+        "let tasks = [fork first(), fork second()];",
+        "let batch = fork [first(), second()];",
+        "let mixed = fork (load(), count());",
+        "let child = fork { let nested = fork run(); await nested };",
+        "scope { let child = fork run(); await child; }",
+    ] {
+        let result = parse(&format!("fn main() {{ {source} }}"));
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+    }
 }
 
 #[test]
-fn parse_fork_child_with_binding() {
-    let body = parse_main_body("fork child = run();");
-    let Stmt::Expression((Expr::ForkChild { binding, expr }, _)) = &body.stmts[0].0 else {
-        panic!("expected fork child expression: {:?}", body.stmts[0]);
-    };
-    assert_eq!(binding.as_deref(), Some("child"));
-    assert!(
-        matches!(&expr.0, Expr::Call { .. }),
-        "expected child expression call, got {:?}",
-        expr.0
-    );
-}
-
-#[test]
-fn parse_fork_child_bare() {
+fn fork_bare_call_retains_its_operand() {
     let body = parse_main_body("fork run();");
-    let Stmt::Expression((Expr::ForkChild { binding, expr }, _)) = &body.stmts[0].0 else {
-        panic!("expected bare fork child expression: {:?}", body.stmts[0]);
+    let Stmt::Expression((Expr::ForkChild { expr }, _)) = &body.stmts[0].0 else {
+        panic!("expected fork expression: {:?}", body.stmts[0]);
     };
-    assert!(binding.is_none(), "expected bare fork child binding");
-    assert!(
-        matches!(&expr.0, Expr::Call { .. }),
-        "expected bare child expression call, got {:?}",
-        expr.0
-    );
+    assert!(matches!(&expr.0, Expr::Call { .. }));
 }
 
 #[test]
-fn parse_nested_scope_block_and_child() {
-    let body = parse_scope_stmt_body("scope { fork run(); fork child = work(); child };");
-    assert_eq!(body.stmts.len(), 2, "expected two child statements");
-    assert!(matches!(
-        &body.stmts[0].0,
-        Stmt::Expression((Expr::ForkChild { binding: None, .. }, _))
-    ));
-    assert!(matches!(
-        &body.stmts[1].0,
-        Stmt::Expression((
-            Expr::ForkChild {
-                binding: Some(name),
-                ..
-            },
-            _
-        )) if name == "child"
-    ));
-    assert!(matches!(
-        body.trailing_expr.as_deref(),
-        Some((Expr::Identifier(name), _)) if name == "child"
-    ));
+fn fork_special_binding_syntax_is_removed() {
+    let result = parse("fn main() { fork child = run(); }");
+    assert!(!result.errors.is_empty());
 }
 
 #[test]
@@ -3577,19 +3542,6 @@ fn parse_scope_fork_block_after_deadline() {
         duration.0
     );
     assert!(body.stmts.is_empty(), "deadline body should be empty");
-}
-
-#[test]
-fn parse_unscoped_fork_block_rejects() {
-    let result = parse("fn main() { fork { long_op(); } }");
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|err| err.message.contains("only valid inside `scope")),
-        "unscoped fork block must be rejected: {:?}",
-        result.errors
-    );
 }
 
 #[test]

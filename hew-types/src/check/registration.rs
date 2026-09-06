@@ -3361,6 +3361,9 @@ impl Checker {
         if td.resource_marker == hew_parser::ast::ResourceMarker::Linear {
             self.registry.register_linear_type(guard_key.clone());
         }
+        if td.is_opaque {
+            self.user_opaque_type_names.insert(guard_key.clone());
+        }
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,

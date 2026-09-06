@@ -86,6 +86,9 @@ pub enum DeclarationMarker {
 /// own `type_params`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeclaredType {
+    /// Source-owned encoding representation selected by the checker.
+    /// A source spelling or opacity alone cannot grant this discriminator.
+    pub builtin: Option<BuiltinType>,
     pub marker: DeclarationMarker,
     /// The declaration carries `#[opaque]`, so its members are not the whole
     /// value and the Aggregate rule cannot see through it.

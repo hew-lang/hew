@@ -7663,6 +7663,9 @@ struct LowerCtx {
     /// type instance. HIR projects this fact but does not derive a second
     /// ownership answer from type shape.
     type_facts: std::collections::BTreeMap<hew_types::TypeInstanceKey, hew_types::TypeFacts>,
+    /// Checked declaration metadata supplies representation facts that the
+    /// source annotation and `Ty::Named` expression spelling cannot carry.
+    type_declarations: std::collections::BTreeMap<String, hew_types::value_class::DeclaredType>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions dispatching to a user
     /// trait impl instead of the structural default (D340). Consulted at
@@ -8427,6 +8430,7 @@ impl LowerCtx {
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             type_facts: tc_output.type_facts.clone(),
+            type_declarations: tc_output.type_fact_context.declarations().clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
@@ -13006,9 +13010,24 @@ impl LowerCtx {
         // User-source inherent impls on VecIter still take the guard below.
         let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
             && self.current_module_name.as_deref() == Some("std.iter");
+        // Encoding values retain a compiler representation, but their methods
+        // are ordinary source bodies in the checked declaration's own module.
+        let is_declaring_encoding_impl = builtin_impl_kind
+            .is_some_and(BuiltinType::is_encoding_value)
+            && matches!(&resolved_impl_self_ty, ResolvedTy::Named { name, .. } if {
+                self.identity.declarations().any(|(occurrence, declaration)| {
+                    self.identity.declaration_by_path(name) == Some(declaration)
+                        && occurrence.module().is_some_and(|module| {
+                            Some(self.identity.module_path(module))
+                                == self.current_module_name.as_deref()
+                                    .or_else(|| self.identity.root_module_path())
+                        })
+                })
+            });
         if !target_is_alias
             && !is_duration_ctor_block
             && !is_std_iter_vec_iter_extension
+            && !is_declaring_encoding_impl
             && decl.trait_bound.is_none()
             && builtin_impl_kind.is_some()
         {
@@ -23256,6 +23275,9 @@ impl LowerCtx {
     /// already-lowered generic arguments. Split out of `lower_type` to keep
     /// that dispatcher under the line budget.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        if let Some(checked) = self.checked_encoding_type(name, &args) {
+            return checked;
+        }
         let type_name = hew_types::short_name(name);
         let current_module_is_file_import = self
             .current_module_name
@@ -23274,6 +23296,9 @@ impl LowerCtx {
         if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
+                if let Some(checked) = self.checked_encoding_type(&qualified, &args) {
+                    return checked;
+                }
                 // Several compiler carriers (notably Stream/Sink and lifecycle
                 // payloads) are non-opaque source declarations. Recover their
                 // builtin identity only while lowering a canonical `std.*`
@@ -23341,6 +23366,9 @@ impl LowerCtx {
         // opaque user identity keeps its full qualified name.
         let canonical = self.canonical_current_module_record_name(name);
         if canonical != name {
+            if let Some(checked) = self.checked_encoding_type(&canonical, &args) {
+                return checked;
+            }
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
                 return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
@@ -23637,6 +23665,14 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
+        if let Some(expected) = builtin.filter(|kind| kind.is_encoding_value()) {
+            if let Some(checked) = self
+                .checked_encoding_type(&name, &args)
+                .filter(|ty| ty.is_builtin(expected))
+            {
+                return checked;
+            }
+        }
         if matches!(builtin, Some(BuiltinType::ChildRef | BuiltinType::LocalPid)) {
             if let [ResolvedTy::Named {
                 name: actor_name, ..
@@ -24074,6 +24110,24 @@ impl LowerCtx {
                 self.source_type_identities
                     .contains(&format!("{module_full_path}.{name}"))
             })
+    }
+
+    /// Read encoding identity and opacity from the checker-owned declaration.
+    /// Neither a catalogue match nor an opaque annotation supplies authority.
+    fn checked_encoding_type(&self, name: &str, args: &[ResolvedTy]) -> Option<ResolvedTy> {
+        let declaration = self.type_declarations.get(name)?;
+        let builtin = declaration
+            .builtin
+            .filter(|kind| kind.is_encoding_value())?;
+        if !args.is_empty() || !declaration.type_params.is_empty() {
+            return None;
+        }
+        Some(ResolvedTy::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin: Some(builtin),
+            is_opaque: declaration.is_opaque,
+        })
     }
 
     /// Resolve an owner-qualified compiler carrier using source provenance.
@@ -39231,6 +39285,113 @@ impl Widget {
         );
         let pass = function_named(&lowered, "pass");
         assert_option_try_match(first_let_value(pass));
+    }
+
+    #[test]
+    fn selected_encoding_import_keeps_checked_identity_through_try() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        for (format, builtin) in [
+            ("json", BuiltinType::JsonValue),
+            ("yaml", BuiltinType::YamlValue),
+        ] {
+            let parsed = hew_parser::parse(&format!(
+                r#"
+                import std.encoding.{format}.{{self, Value}};
+                fn required_field(obj: Value, key: string) -> Result<Value, string> {{
+                    match obj.get_field(key) {{
+                        .Ok(.Some(value)) => Ok(value),
+                        .Ok(.None) => Err("missing field"),
+                        .Err(error) => Err(error),
+                    }}
+                }}
+                fn result_probe(obj: Value) -> Result<Value, string> {{
+                    let child = required_field(obj, "field")?;
+                    Ok(child)
+                }}
+                fn option_probe(value: Option<Value>) -> Option<Value> {{
+                    let child = value?;
+                    Some(child)
+                }}
+            "#
+            ));
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let mut program = parsed.program;
+            let Item::Import(import) = &mut program.items[0].0 else {
+                panic!("import fixture")
+            };
+            let imported = hew_parser::parse(
+                r"
+                #[opaque] pub type Value {}
+                impl Value {
+                    pub fn get_field(self, key: string) -> Result<Option<Value>, string> {
+                        Ok(Some(self))
+                    }
+                }
+                ",
+            );
+            assert!(imported.errors.is_empty(), "{:?}", imported.errors);
+            import.resolved_items = Some(imported.program.items.clone());
+            import.resolved_source_paths =
+                vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .join(format!("std/encoding/{format}/{format}.hew"))];
+            let module = ModuleId::new(vec!["std".into(), "encoding".into(), format.into()]);
+            let root = ModuleId::root();
+            let mut graph = ModuleGraph::new(root.clone());
+            graph
+                .add_module(Module {
+                    id: module.clone(),
+                    items: imported.program.items,
+                    imports: Vec::new(),
+                    source_paths: import.resolved_source_paths.clone(),
+                    doc: None,
+                })
+                .unwrap();
+            graph.topo_order = vec![module, root];
+            program.module_graph = Some(graph);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let tco = checker.check_program(&program);
+            assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+            let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+            assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+            let expected = ResolvedTy::Named {
+                name: builtin.canonical_name().to_string(),
+                args: Vec::new(),
+                builtin: Some(builtin),
+                is_opaque: true,
+            };
+            let required = function_named(&lowered, "required_field");
+            assert_eq!(required.params[0].ty, expected);
+            for name in ["result_probe", "option_probe"] {
+                let expression = first_let_value(function_named(&lowered, name));
+                let HirExprKind::Match { arms, .. } = &expression.kind else {
+                    panic!("`?` must lower to a success/error match: {expression:#?}")
+                };
+                assert_eq!(expression.ty, expected);
+                assert_eq!(arms[0].bindings[0].ty, expected);
+                assert_eq!(arms[0].body.ty, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
+            let name = builtin.canonical_name();
+            ctx.opaque_type_short_names.insert(name.to_string());
+            ctx.canonical_std_source_type_identities
+                .insert(name.to_string());
+            let opaque = ResolvedTy::named_opaque(name, vec![]);
+            assert_eq!(ctx.resolve_named_type_ref(name, vec![]), opaque);
+            assert_eq!(ctx.qualify_current_module_record_ty(opaque.clone()), opaque);
+        }
     }
 
     #[test]

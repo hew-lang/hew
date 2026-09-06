@@ -241,6 +241,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         let Some(definition) = definition else {
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
+                builtin: None,
                 marker,
                 is_opaque,
                 type_params: Vec::new(),
@@ -249,6 +250,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         };
         if marker != DeclarationMarker::None {
             return Some(DeclaredType {
+                builtin: None,
                 marker,
                 is_opaque,
                 type_params: definition.type_params.clone(),
@@ -324,6 +326,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // builtin row is for a name the checker has no declaration of at
         // all.
         Some(DeclaredType {
+            builtin: None,
             marker,
             is_opaque,
             type_params: definition.type_params.clone(),
@@ -710,8 +713,14 @@ impl Checker {
         let rendered = names
             .into_iter()
             .filter_map(|name| {
-                crate::value_class::ClassDeclarations::declared_type(&declarations, &name)
-                    .map(|declaration| (name, declaration))
+                crate::value_class::ClassDeclarations::declared_type(&declarations, &name).map(
+                    |mut declaration| {
+                        declaration.builtin = self
+                            .resolved_builtin_type(&name)
+                            .filter(|kind| kind.is_encoding_value());
+                        (name, declaration)
+                    },
+                )
             })
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())

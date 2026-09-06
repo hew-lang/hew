@@ -33,6 +33,9 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let ty = &output.fn_sigs[&format!("std.encoding.{format}.identity")].return_type;
         assert_eq!(ty, &encoding_ty(kind));
+        let declaration = &output.type_fact_context.declarations()[kind.canonical_name()];
+        assert_eq!(declaration.builtin, Some(kind));
+        assert!(declaration.is_opaque);
         assert_ne!(
             ty_is_eq_eligible(ty, &output.type_defs),
             EqEligibility::Eligible
@@ -65,6 +68,10 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert!(lookalike.errors.is_empty(), "{:?}", lookalike.errors);
         let ty = &lookalike.fn_sigs[&format!("std.encoding.{format}.identity")].return_type;
         assert!(matches!(ty, Ty::Named { builtin: None, .. }));
+        assert_eq!(
+            lookalike.type_fact_context.declarations()[kind.canonical_name()].builtin,
+            None
+        );
 
         let comparison = check_source_in_canonical_std_module(
             &format!("{source}\nfn compare(left: Value, right: Value) -> bool {{ left == right }}"),

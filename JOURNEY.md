@@ -2464,3 +2464,17 @@ suites pass at both optimization levels after the private-parameter repair.
 The combined pipeline exposed two physical tests that still searched for SSA
 destroy operations. They now inspect the corresponding Local lifetime ends,
 retaining recursive aggregate cleanup and invalid assignment-source checks.
+
+## Preserve checked encoding identity through error propagation
+
+An imported JSON or YAML value could pass type checking and then fail HIR
+lowering at `?`: the checker payload and the function's `Result` payload printed
+the same name, but carried different representation facts. HIR had reconstructed
+one from an opaque annotation and stripped the other's checked builtin identity.
+
+The shared declaration metadata now carries the checker's representation
+discriminator alongside opacity. Module-graph registration retains opaque
+declarations before imports, and HIR consumes those facts for encoding annotations
+and expression types. The declaring module's ordinary methods retain their bodies;
+opaque lookalikes acquire no encoding authority. Source regressions exercise
+selected imports, nested field-selection matches, and Result/Option propagation.

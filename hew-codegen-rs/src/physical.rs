@@ -2954,22 +2954,29 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringEquals => {
+            PhysicalRuntimeAction::StringEquals | PhysicalRuntimeAction::StringStartsWith => {
+                let (symbol, return_type) = match action {
+                    PhysicalRuntimeAction::StringEquals => {
+                        ("hew_string_equals", self.ctx.i32_type())
+                    }
+                    PhysicalRuntimeAction::StringStartsWith => {
+                        ("hew_string_starts_with", self.ctx.bool_type())
+                    }
+                    _ => unreachable!("matched string predicate"),
+                };
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_string_equals",
-                    self.ctx
-                        .i32_type()
-                        .fn_type(&[ptr.into(), ptr.into()], false),
+                    symbol,
+                    return_type.fn_type(&[ptr.into(), ptr.into()], false),
                 )?;
                 let value = self
                     .runtime_call_value(
                         function,
                         &[
-                            self.load(source(0)?, "equals.left")?.into(),
-                            self.load(source(1)?, "equals.right")?.into(),
+                            self.load(source(0)?, "predicate.left")?.into(),
+                            self.load(source(1)?, "predicate.right")?.into(),
                         ],
-                        "string.equals",
+                        "string.predicate",
                     )?
                     .into_int_value();
                 let truth = self
@@ -2977,17 +2984,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_int_compare(
                         IntPredicate::NE,
                         value,
-                        self.ctx.i32_type().const_zero(),
-                        "string.equals.truth",
+                        return_type.const_zero(),
+                        "string.predicate.truth",
                     )
-                    .llvm_ctx("normalize string equality")?;
+                    .llvm_ctx("normalize string predicate")?;
                 let dest = required_result()?;
                 let bool_ty =
                     llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
                 let truth = self
                     .builder
-                    .build_int_z_extend(truth, bool_ty, "string.equals.bool")
-                    .llvm_ctx("widen string equality result")?;
+                    .build_int_z_extend(truth, bool_ty, "string.predicate.bool")
+                    .llvm_ctx("widen string predicate result")?;
                 self.store(dest, truth.into())?;
             }
             PhysicalRuntimeAction::StringToBytesOwned => {
@@ -5689,6 +5696,47 @@ mod tests {
             Some(ctx.i64_type().into())
         );
         assert_eq!(byte_length.get_type().count_param_types(), 1);
+    }
+
+    #[test]
+    fn string_prefix_uses_the_runtime_boolean_abi_across_native_targets() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let semantic = lower_source_with_registry(
+            r#"
+            import std.string;
+            fn main() -> i64 {
+                if "éclair".starts_with("é") { 0 } else { 1 }
+            }
+            "#,
+            ModuleRegistry::new(vec![root]),
+        );
+        let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+        for triple in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+        ] {
+            let target = physical_target_for_inventory(triple, &inventory).unwrap();
+            let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+            let ctx = Context::create();
+            let machine =
+                crate::llvm::target_machine_for_triple_with_opt_level(triple, OptLevel::O0)
+                    .unwrap();
+            let module = build_module(&ctx, verified.module(), "string_prefix", &machine).unwrap();
+            module.verify().unwrap();
+            let prefix = module.get_function("hew_string_starts_with").unwrap();
+            assert_eq!(
+                prefix.get_type().get_return_type(),
+                Some(ctx.bool_type().into())
+            );
+            assert_eq!(
+                prefix.get_type().get_param_types(),
+                vec![ctx.ptr_type(AddressSpace::default()).into(); 2]
+            );
+        }
     }
 
     #[test]

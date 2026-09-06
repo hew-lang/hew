@@ -2158,3 +2158,14 @@ has no logical failure edge. This fills the native contract missing from the
 MIR benchmark's quoting helper. The existing runtime retains its length-aware
 Unicode and embedded-NUL behaviour. Runtime-contract tests pass; physical
 realization and source execution follow as separate validation steps.
+
+## Realize the prefix predicate with its native boolean ABI
+
+Physical MIR selects the prefix operation from its verified runtime family.
+LLVM borrows both managed string handles and widens the runtime boolean to Hew's
+boolean storage. String equality retains its distinct integer-returning ABI;
+the common predicate emitter preserves that difference explicitly.
+
+The physical MIR and codegen library suites pass. Targeted LLVM verification
+checks the boolean result and pointer parameters on Linux x64, Windows x64 and
+macOS arm64. Source execution and sanitizer checks remain pending.

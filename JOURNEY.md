@@ -1902,3 +1902,7 @@ The current website and playground use compiler WASM semantic tokens, not a
 separate TextMate grammar; updating those packages belongs with the integrated
 compiler artefact. The compiler's tree-sitter lock is unchanged until the
 new downstream commit is available to the integration publisher.
+
+### Concrete identity for empty closure environments
+
+Preserve `Ty::Closure` for every literal even when lexical shadowing removes all captures. HIR now receives the concrete environment type directly from the checker. Added source-to-HIR controls for plain, annotated and shadow-filtered literals, and updated the contextual-lambda assertion to the concrete representation. Make component tests initially exposed only that obsolete assertion; native integration remains the coordinating lane's validation.

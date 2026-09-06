@@ -7721,19 +7721,13 @@ impl Checker {
             }
         }
 
-        if captures.is_empty() {
-            Ty::Function {
-                capabilities,
-                params: param_tys,
-                ret: Box::new(ret_ty),
-            }
-        } else {
-            Ty::Closure {
-                capabilities,
-                params: param_tys,
-                ret: Box::new(ret_ty),
-                captures,
-            }
+        // Every literal has a concrete environment type, including an empty one.
+        // Callable guarantees do not erase the identity needed by HIR and SIR.
+        Ty::Closure {
+            capabilities,
+            params: param_tys,
+            ret: Box::new(ret_ty),
+            captures,
         }
     }
 

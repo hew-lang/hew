@@ -538,3 +538,19 @@ fn mutable_callable_field_call_keeps_the_selected_projection() {
         "evaluate the receiver before the arguments"
     );
 }
+
+#[test]
+fn zero_capture_literals_keep_concrete_closure_identity() {
+    for source in [
+        "fn main() { let f = || 7; f(); }",
+        "fn main() { let f: fn[clone]() -> i64 = || 7; f(); }",
+        "fn main() { let count = 90; let f = capture(var count) || { var count = 1; count += 1; count }; f(); }",
+    ] {
+        let output = typecheck_and_lower(source);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let closure = find_closure_in_fn(&output, "main").expect("closure literal");
+        assert!(matches!(&closure.ty, ResolvedTy::Closure { captures, .. } if captures.is_empty()), "{:?}", closure.ty);
+        let HirExprKind::Closure { captures, .. } = &closure.kind else { unreachable!() };
+        assert!(captures.is_empty());
+    }
+}

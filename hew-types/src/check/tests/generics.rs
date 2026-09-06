@@ -114,10 +114,11 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
 
     assert_eq!(
         output.expr_types.get(&SpanKey::from(&lambda_span)),
-        Some(&Ty::Function {
+        Some(&Ty::Closure {
             capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
+            captures: vec![],
         })
     );
 }

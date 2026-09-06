@@ -114,8 +114,22 @@ pub struct Binding {
 /// Ownership explicitly declared at a source parameter boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterOwnership {
+    /// The caller keeps ownership throughout the call.
     Borrow,
+    /// The declaration acquires the argument's ownership.
     Consume,
+}
+
+impl ParameterOwnership {
+    /// Translate an explicit source declaration without inspecting the body.
+    #[must_use]
+    pub fn from_consume(is_consume: bool) -> Self {
+        if is_consume {
+            Self::Consume
+        } else {
+            Self::Borrow
+        }
+    }
 }
 
 /// What produced a [`Binding`].
@@ -426,11 +440,7 @@ impl TypeEnv {
     pub fn set_parameter_consume(&mut self, name: &str, is_consume: bool) {
         if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
             debug_assert!(binding.is_param());
-            binding.parameter_ownership = if is_consume {
-                ParameterOwnership::Consume
-            } else {
-                ParameterOwnership::Borrow
-            };
+            binding.parameter_ownership = ParameterOwnership::from_consume(is_consume);
         }
     }
 

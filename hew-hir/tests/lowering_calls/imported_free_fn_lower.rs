@@ -517,3 +517,31 @@ fn generic_function_value_keeps_an_imported_private_helper_reachable() {
         output.module.monomorphisations
     );
 }
+
+#[test]
+fn consuming_module_function_values_are_refused_before_hir() {
+    for root in [
+        "import m; fn main() { let erased = m.take; }",
+        "import m as helpers; fn main() { let erased = helpers.take<i64>; }",
+        "import m; fn main() { let erased: fn(i64) = m.take; }",
+    ] {
+        let program =
+            build_program_with_imported_module("pub fn take<T>(consume value: T) {}", root);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.iter().any(|error| error
+                .message
+                .contains("callable types do not preserve parameter ownership modes")),
+            "{root}: {:?}",
+            tco.errors
+        );
+    }
+    let program = build_program_with_imported_module(
+        "pub fn take<T>(consume value: T) {}",
+        "import m; fn main() { m.take(4); }",
+    );
+    let (output, tco) = lower_with_checker(&program);
+    assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}

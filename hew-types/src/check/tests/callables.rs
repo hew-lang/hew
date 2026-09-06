@@ -108,6 +108,7 @@ fn once_invocation_requires_an_owned_parameter() {
             .iter()
             .find(|error| error.message.contains("E_OWN_CONSUME_BORROWED"))
             .expect("borrowed once diagnostic");
+        assert_eq!(error.kind, TypeErrorKind::OwnConsumeBorrowed);
         assert!(error
             .suggestions
             .iter()
@@ -352,6 +353,7 @@ fn once_callable_fields_require_explicit_destructuring() {
                 .iter()
                 .find(|error| error.message.contains("E_OWN_PARTIAL_CONSUME"))
                 .expect("partial consume diagnostic");
+            assert_eq!(error.kind, TypeErrorKind::OwnPartialConsume);
             assert!(error
                 .suggestions
                 .iter()
@@ -527,4 +529,86 @@ fn generic_function_values_enforce_explicit_arity_and_inferred_bounds() {
         let output = check_source(source);
         assert!(!output.errors.is_empty(), "accepted invalid function value: {source}");
     }
+}
+
+#[test]
+fn consuming_function_items_cannot_erase_parameter_ownership() {
+    for source in [
+        "fn invoke(consume f: fn[once]() -> i64) { f(); } fn main() { let erased = invoke; }",
+        "fn take<T>(consume value: T) {} fn main() { let erased = take<i64>; }",
+        "fn take<T>(consume value: T) {} fn main() { let erased: fn(i64) = take; }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("callable types do not preserve parameter ownership modes")),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+    let output = check_source(
+        "fn invoke(consume f: fn[once]() -> i64) { f(); } fn main() { invoke(|| 1); }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn lambda_parameters_keep_the_ordinary_borrow_contract() {
+    for source in [
+        "fn main() { let invoke = |f: fn[once]() -> i64| f(); }",
+        "fn main() { let invoke: fn(fn[once]() -> i64) -> i64 = |f| f(); }",
+        "fn main() { let invoke = move |f: fn[once, clone]() -> i64| f(); }",
+    ] {
+        let output = check_source(source);
+        let error = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed)
+            .unwrap_or_else(|| panic!("{source}: {:?}", output.errors));
+        assert!(error
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.contains("named function")
+                && suggestion.contains("consume f:")));
+    }
+    let output =
+        check_source("fn main() { let invoke = |f: fn() -> i64| { f(); f() }; invoke(|| 7); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn declared_consume_arguments_invalidate_cloneable_callables() {
+    for call in ["take(f)", "take(f: f)"] {
+        let source = format!("fn take(consume f: fn[once, clone]() -> i64) {{ f(); }} fn main() {{ let f: fn[once, clone]() -> i64 = || 7; {call}; f(); }}");
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+    let output = check_source("fn take(consume f: fn[clone]() -> i64) {} fn main() { let f: fn[clone]() -> i64 = || 7; take(f); f(); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "{:?}",
+        output.errors
+    );
+    let output = check_source("fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(f: fn[once, clone]() -> i64) { take(f); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
+        "{:?}",
+        output.errors
+    );
+    let output = check_source("fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(consume f: fn[once, clone]() -> i64) { take(f); } fn main() { forward(|| 7); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

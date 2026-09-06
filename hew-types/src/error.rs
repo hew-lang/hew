@@ -822,6 +822,10 @@ pub enum TypeErrorKind {
     UseAfterMove,
     /// A linear value was used after its unique consume operation.
     UseAfterConsume,
+    /// A consuming operation requires ownership of a borrowed parameter.
+    OwnConsumeBorrowed,
+    /// Consuming a local aggregate field requires explicit destructuring.
+    OwnPartialConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
     /// A `gen fn` return-type annotation spells the generator handle
@@ -1530,6 +1534,8 @@ impl TypeErrorKind {
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
+            Self::OwnConsumeBorrowed => "E_OWN_CONSUME_BORROWED",
+            Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::ActorRefCycle => "ActorRefCycle",

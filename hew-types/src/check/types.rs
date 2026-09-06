@@ -2387,6 +2387,9 @@ pub struct FnSig {
     pub type_param_bounds: HashMap<String, Vec<String>>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
+    /// Ownership explicitly declared for each parameter, aligned with `params`.
+    /// Callable value types cannot preserve consuming slots, so erasure is refused.
+    pub param_ownership: Vec<crate::env::ParameterOwnership>,
     pub return_type: Ty,
     pub is_async: bool,
     pub accepts_kwargs: bool,
@@ -2465,6 +2468,7 @@ impl Default for FnSig {
             type_param_bounds: HashMap::new(),
             param_names: vec![],
             params: vec![],
+            param_ownership: vec![],
             return_type: Ty::Unit,
             is_async: false,
             accepts_kwargs: false,

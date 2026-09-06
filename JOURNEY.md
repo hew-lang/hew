@@ -1910,3 +1910,33 @@ Preserve `Ty::Closure` for every literal even when lexical shadowing removes all
 ### Diagnose forbidden once-callable consumption at the source boundary
 
 Preserve explicit parameter consume declarations independently of local mutability. Once invocation through a borrowed parameter now reports `E_OWN_CONSUME_BORROWED` with a declaration fix; direct consumption of a callable field in a live local aggregate reports `E_OWN_PARTIAL_CONSUME` with an explicit-destructuring fix. Clone capability does not authorize implicit cloning for invocation. Approved closure environment captures retain their existing place contract. Focused Make callable tests cover borrowed and consumed parameters, reuse, ordinary non-Clone argument borrowing, both field-call spellings and destructuring. No ordinary-call transfer path was removed: the current shared argument checker already borrows.
+
+### Pin the published callable grammar
+
+Update the tree-sitter source lock to the published callable grammar revision `dc48c15f0f1ee91250e76377dedfba414658ed7d`. The focused Make corpus check passes with the pinned CLI in a separate parser cache. Reusing the earlier baseline cache loaded the baseline parser despite the new source checkout; the isolated cache rebuilt the intended grammar. The earlier full parity comparison retained the same pre-existing failures and is not claimed green. The Studio grammar diff remains uncommitted because its existing dependency conflict blocks its normal lint hook.
+
+## Enforce consuming callable projection admission
+
+SIR currently lacks a verified transfer for consuming one field of a live local
+aggregate. It now refuses once-call receivers that are record or tuple projections before
+projection lowering can copy them. Borrowed aggregate roots receive the distinct
+borrowed-consumption refusal. Explicit environment capture places retain their
+existing consuming contract.
+
+Focused producer controls cover Clone+Once and non-Clone record and tuple
+receivers, borrowed roots, and explicit record destructuring into an owned
+once-callable plus a still-live sibling. The negative controls also exercise the
+SIR guard when frontend diagnostics already report the invalid source. No local
+partial-initialization state or record ABI change is introduced.
+
+## Execute explicit callable destructuring
+
+Native source controls now exercise record and tuple destructuring for both
+Clone+Once and non-Clone callable fields. The sibling remains usable after the
+once call. Record controls count environment destruction separately at O0 and
+O2, including argument-evaluation and callable-body faults, and verify that a
+fault leaves result-out storage untouched. These execute the existing whole-
+aggregate ownership transfer; no local partial-move machinery is introduced.
+
+The focused codegen execution controls pass. SIR ownership has been handed back
+to integration after the consuming-projection guard checkpoint.

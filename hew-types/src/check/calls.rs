@@ -357,6 +357,7 @@ impl Checker {
                     if let Some(param_ty) = freshened_params.get(i) {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, param_ty);
+                        self.record_declared_callable_argument(sig, i, expr, sp);
                     }
                 }
             }
@@ -405,6 +406,7 @@ impl Checker {
                     if let Some(param_ty) = freshened_params.get(i) {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, param_ty);
+                        self.record_declared_callable_argument(sig, i, expr, sp);
                     }
                 }
 
@@ -414,6 +416,7 @@ impl Checker {
                             if let Some(param_ty) = freshened_params.get(idx) {
                                 let (expr, sp) = arg.expr();
                                 self.check_against(expr, sp, param_ty);
+                                self.record_declared_callable_argument(sig, idx, expr, sp);
                             }
                         } else if !accepts_kwargs {
                             let (_, sp) = arg.expr();

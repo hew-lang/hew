@@ -2720,6 +2720,7 @@ mod tests {
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                param_ownership: vec![],
                 consumes_receiver: false,
                 returns_receiver_identity: false,
                 is_builtin_variant: false,

@@ -7459,6 +7459,12 @@ impl Checker {
             }),
             type_param_bounds: self
                 .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
+            param_ownership: fd
+                .params
+                .iter()
+                .skip(skip)
+                .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
+                .collect(),
             param_names,
             params,
             return_type,
@@ -8085,6 +8091,7 @@ impl Checker {
         let extern_symbol = registered.extern_symbol.clone();
 
         let mut sig = FnSig {
+            param_ownership: registered.param_ownership.clone(),
             type_params: all_type_params,
             type_param_bounds,
             param_names,
@@ -10547,6 +10554,11 @@ impl Checker {
                 )
             });
             let mut sig = FnSig {
+                param_ownership: f
+                    .params
+                    .iter()
+                    .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
+                    .collect(),
                 param_names,
                 params,
                 return_type,
@@ -13666,6 +13678,11 @@ impl Checker {
             type_params,
             type_param_bounds: self
                 .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
+            param_ownership: fd
+                .params
+                .iter()
+                .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
+                .collect(),
             param_names,
             params,
             return_type,

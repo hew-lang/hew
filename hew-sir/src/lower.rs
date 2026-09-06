@@ -5540,6 +5540,45 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(continuation)
     }
 
+    /// D345: consuming a live aggregate field requires explicit destructuring.
+    /// Check before evaluating the receiver: ordinary projection lowering is a
+    /// copy and must never manufacture an owner for a consuming field call.
+    fn reject_projected_callable_consume(&self, callee: &HirExpr) -> Result<(), String> {
+        let mut root = callee;
+        let mut projected = false;
+        loop {
+            root = match &root.kind {
+                HirExprKind::SubsumedValue { source } => source,
+                HirExprKind::FieldAccess { object, .. } => {
+                    projected = true;
+                    object
+                }
+                HirExprKind::TupleIndex { tuple, .. } => {
+                    projected = true;
+                    tuple
+                }
+                _ => break,
+            };
+        }
+        if !projected {
+            return Ok(());
+        }
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &root.kind
+        {
+            if self
+                .bindings
+                .get(binding)
+                .is_some_and(|value| self.value_own_kind(*value) == Some(OwnKind::Guaranteed))
+            {
+                return Err("E_OWN_CONSUME_BORROWED: a borrowed aggregate field cannot be consumed; acquire an owned aggregate and destructure it first".into());
+            }
+        }
+        Err("E_OWN_PARTIAL_CONSUME: a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into())
+    }
+
     /// Direct and indirect user calls share argument capture and both cleanup paths.
     #[allow(
         clippy::too_many_lines,
@@ -5575,6 +5614,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     crate::callable_value_signature(&ty, self.service.checked_facts.rows())?;
                 let (_, _, capabilities) = crate::callable_parts(&ty)?;
                 let value = if capabilities.call == hew_types::CallableCallMode::Once {
+                    self.reject_projected_callable_consume(callee)?;
                     self.lower_expr_with_binding_use(callee, OwnedBindingUse::Move)?
                 } else if matches!(
                     callee.kind,

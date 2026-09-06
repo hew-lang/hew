@@ -21,6 +21,16 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let sig = self.fn_sigs[signature_key].clone();
+        if sig
+            .param_ownership
+            .contains(&crate::env::ParameterOwnership::Consume)
+            || sig.consumes_receiver
+        {
+            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, span,
+                "cannot use a consuming function declaration as a callable value: callable types do not preserve parameter ownership modes".to_string(),
+                vec!["call the declaration directly to preserve its consume contract".to_string()]);
+            return Ty::Error;
+        }
         let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
         let assoc_bindings = self
             .fn_type_param_assoc_bindings
@@ -275,37 +285,78 @@ impl Checker {
                     self.errors.push(error);
                 }
             }
-            CallableCallMode::Once => {
-                if let Some((root, path)) = &place {
-                    // An approved closure environment capture is its own owned place.
-                    let captured = self.lambda_capture_depth.is_some_and(|capture_depth| {
-                        self.env
-                            .lookup_ref_with_depth(root)
-                            .is_some_and(|(depth, _)| depth < capture_depth)
-                    });
-                    if !captured {
-                        if self.env.lookup_ref(root).is_some_and(|binding| {
-                            binding.is_param()
-                                && binding.parameter_ownership
-                                    == crate::env::ParameterOwnership::Borrow
-                        }) {
-                            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &callee.1,
-                                format!("E_OWN_CONSUME_BORROWED: cannot invoke a once callable through borrowed parameter `{root}`"),
-                                vec![format!("declare the parameter `consume {root}: ...` before consuming it")]);
-                            return;
-                        }
-                        if !path.is_empty() {
-                            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &callee.1,
-                                "E_OWN_PARTIAL_CONSUME: cannot consume a callable field of a live local aggregate".to_string(),
-                                vec!["explicitly destructure the aggregate into local bindings, then invoke the callable binding".to_string()]);
-                            return;
-                        }
-                    }
-                }
-                self.mark_expr_moved(&callee.0, &callee.1);
-            }
+            CallableCallMode::Once => self.record_callable_consumption(&callee.0, &callee.1),
         }
     }
+
+    pub(super) fn record_declared_callable_argument(
+        &mut self,
+        sig: &super::FnSig,
+        index: usize,
+        expr: &Expr,
+        span: &Span,
+    ) {
+        if sig.param_ownership.get(index) != Some(&crate::env::ParameterOwnership::Consume) {
+            return;
+        }
+        let key = super::SpanKey::in_module(span, self.current_module_idx);
+        if self
+            .expr_types
+            .get(&key)
+            .is_some_and(|ty| self.subst.resolve(ty).contains_callable())
+            && !self.reject_borrowed_callable_consumption(expr, span)
+        {
+            self.mark_expr_moved(expr, span);
+        }
+    }
+
+    fn is_current_closure_capture(&self, root: &str) -> bool {
+        self.lambda_capture_depth.is_some_and(|capture_depth| {
+            self.env
+                .lookup_ref_with_depth(root)
+                .is_some_and(|(depth, _)| depth < capture_depth)
+        })
+    }
+
+    fn reject_borrowed_callable_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
+        let Some((root, _)) = self.expr_place(expr) else {
+            return false;
+        };
+        // A closure environment capture follows its existing acquisition contract.
+        if self.is_current_closure_capture(&root)
+            || !self.env.lookup_ref(&root).is_some_and(|binding| {
+                binding.is_param()
+                    && binding.parameter_ownership == crate::env::ParameterOwnership::Borrow
+            })
+        {
+            return false;
+        }
+        let suggestion = if self.lambda_capture_depth.is_some() {
+            format!("lambda parameters cannot declare consume; use a named function with a `consume {root}: ...` parameter")
+        } else {
+            format!("declare the parameter `consume {root}: ...` before consuming it")
+        };
+        self.report_error_with_suggestions(TypeErrorKind::OwnConsumeBorrowed, span,
+            format!("E_OWN_CONSUME_BORROWED: cannot consume a callable through borrowed parameter `{root}`"),
+            vec![suggestion]);
+        true
+    }
+
+    fn record_callable_consumption(&mut self, expr: &Expr, span: &Span) {
+        if self.reject_borrowed_callable_consumption(expr, span) {
+            return;
+        }
+        if let Some((root, path)) = self.expr_place(expr) {
+            if !path.is_empty() && !self.is_current_closure_capture(&root) {
+                self.report_error_with_suggestions(TypeErrorKind::OwnPartialConsume, span,
+                    "E_OWN_PARTIAL_CONSUME: cannot consume a callable field of a live local aggregate".to_string(),
+                    vec!["explicitly destructure the aggregate into local bindings, then invoke the callable binding".to_string()]);
+                return;
+            }
+        }
+        self.mark_expr_moved(expr, span);
+    }
+
     pub(super) fn callable_erasure_loses_obligation(&self, expected: &Ty, actual: &Ty) -> bool {
         match (expected, actual) {
             (Ty::Function { .. }, Ty::Closure { .. }) => {

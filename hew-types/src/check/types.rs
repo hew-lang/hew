@@ -292,6 +292,14 @@ pub enum CheckedSelectSource {
     },
 }
 
+/// A task place borrowed while later selection sources are evaluated.
+#[derive(Debug)]
+pub(super) struct PreparedSelectTask {
+    pub binding: TypeBindingId,
+    pub path: Vec<String>,
+    pub span: Span,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -3034,6 +3042,7 @@ pub struct Checker {
     pub(super) inside_await_expr: bool,
     /// Only these operand calls are explicitly awaited or forked.
     pub(super) suspension_operands: HashSet<SpanKey>,
+    pub(super) prepared_select_tasks: Vec<PreparedSelectTask>,
     pub(super) loop_depth: u32,
     /// Loop and label floors of a currently checked deferred body.
     pub(super) deferred_body: Option<(u32, usize)>,
@@ -3899,6 +3908,7 @@ impl Checker {
             in_generator: false,
             inside_await_expr: false,
             suspension_operands: HashSet::new(),
+            prepared_select_tasks: Vec::new(),
             loop_depth: 0,
             deferred_body: None,
             loop_labels: Vec::new(),

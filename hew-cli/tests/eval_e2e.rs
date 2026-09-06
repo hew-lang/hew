@@ -3575,3 +3575,39 @@ fn eval_rejects_removed_jit_flag() {
         );
     }
 }
+
+#[test]
+fn eval_repl_recovers_after_worker_trap_and_type_error() {
+    require_codegen();
+    let output = run_eval_with_stdin(
+        &["eval", "--quiet"],
+        "1 / 0\nlet bad: i64 = \"oops\";\n6 * 7\n:quit\n",
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "REPL did not recover: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+    assert!(
+        stderr.contains("DivideByZero"),
+        "worker trap missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("type mismatch: expected `i64`, found `string`"),
+        "type error missing: {stderr}"
+    );
+}
+
+#[test]
+fn eval_aot_timeout_stops_worker_and_allows_next_submission() {
+    require_codegen();
+    let output = run_eval_with_stdin(
+        &["eval", "--quiet", "--timeout", "100ms"],
+        "for i in 0..2000000000 { }\n6 * 7\n:quit\n",
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "REPL did not recover: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+    assert!(
+        stderr.contains("evaluation timed out after 100ms"),
+        "worker timeout missing: {stderr}"
+    );
+}

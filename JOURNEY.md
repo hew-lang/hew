@@ -1940,3 +1940,15 @@ aggregate ownership transfer; no local partial-move machinery is introduced.
 
 The focused codegen execution controls pass. SIR ownership has been handed back
 to integration after the consuming-projection guard checkpoint.
+
+## Preserve declared cleanup boundaries for partial fields
+
+The canonical type-fact service now exposes the exact nominal declaration marker
+without inferring it from copyability or the value class. A plain generic record
+containing a resource remains distinct from a resource-marked container. The
+query validates declaration identity and arity but grants no field access.
+
+The record-contract suite passes. An initial attempt to reuse transparent field
+admission for the marker query incorrectly excluded resource declarations; the
+final query reads their declaration metadata independently. Projected SIR will
+retain this marker alongside its separately verified aggregate shape.

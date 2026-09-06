@@ -384,6 +384,31 @@ impl TypeFactService {
         Ok((instance, fields))
     }
 
+    /// Read a nominal type's own declaration marker. A plain record may
+    /// contain resources without acquiring their whole-value cleanup boundary.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-nominal types, missing declarations and incorrect arity.
+    /// This query does not grant transparent field access.
+    pub fn declaration_marker(&self, ty: &ResolvedTy) -> Result<crate::DeclarationMarker, String> {
+        let instance = ty
+            .nominal_instance()
+            .ok_or_else(|| format!("`{}` has no nominal declaration", ty.user_facing()))?;
+        let declaration = self
+            .context
+            .declarations
+            .get(instance.nominal.full_path())
+            .ok_or_else(|| format!("`{}` has no declaration facts", ty.user_facing()))?;
+        if declaration.type_params.len() != instance.args.len() {
+            return Err(format!(
+                "`{}` has incorrect type argument arity",
+                ty.user_facing()
+            ));
+        }
+        Ok(declaration.marker)
+    }
+
     /// Ensure one concrete type and its components have rows.
     ///
     /// # Errors

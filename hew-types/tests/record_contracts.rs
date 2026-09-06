@@ -75,6 +75,32 @@ fn record_contract_requires_a_declaration_and_exact_arity() {
 }
 
 #[test]
+fn record_marker_belongs_to_the_container_declaration() {
+    use hew_types::DeclarationMarker;
+    let mut service = facts(
+        "#[resource] type Handle { id: i64 } type Wrapper<T> { value: T } fn main() -> i64 { 0 }",
+    );
+    let handle = ResolvedTy::named_user("Handle", vec![]);
+    let wrapper = ResolvedTy::named_user("Wrapper", vec![handle.clone()]);
+    assert_eq!(service.require(&handle).unwrap().clone, CloneKind::None);
+    assert_eq!(service.require(&wrapper).unwrap().clone, CloneKind::None);
+    assert_eq!(
+        service.declaration_marker(&handle).unwrap(),
+        DeclarationMarker::Resource
+    );
+    assert_eq!(
+        service.declaration_marker(&wrapper).unwrap(),
+        DeclarationMarker::None
+    );
+    assert!(service
+        .declaration_marker(&ResolvedTy::named_user("Wrapper", vec![]))
+        .is_err());
+    assert!(service
+        .declaration_marker(&ResolvedTy::named_user("Missing", vec![]))
+        .is_err());
+}
+
+#[test]
 fn value_capabilities_preserve_selected_methods_and_derived_defaults() {
     use hew_types::{
         ValueCapability::{Eq, Hash},

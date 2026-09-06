@@ -195,8 +195,8 @@ fn main() {
 }
 "#,
         "scope cleanup\nparent cleanup\n",
-        255,
-        "Cancelled",
+        254,
+        "Deadline",
     );
 }
 
@@ -218,7 +218,7 @@ fn main() {
 }
 "#,
         "call cleanup\nscope cleanup\nparent cleanup\n",
-        255,
-        "Cancelled",
+        254,
+        "Deadline",
     );
 }

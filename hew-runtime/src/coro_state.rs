@@ -212,6 +212,22 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
     }
 }
 
+/// Classify cancellation at the current lexical boundary for fault transport.
+///
+/// # Safety
+/// `state` is a live invocation state. Call after observing cancellation, or
+/// while cooperatively destroying its frame.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
+    // SAFETY: the live state's retained token owns its complete ancestry.
+    let reason = unsafe { crate::task_scope::cancel_token_reason((*state).token) };
+    if reason == crate::fault::HEW_FAULT_DEADLINE {
+        crate::fault::HEW_FAULT_DEADLINE
+    } else {
+        crate::fault::HEW_FAULT_CANCELLED
+    }
+}
+
 /// Read the outcome after a ramp/resume returns to its execution owner.
 ///
 /// # Safety
@@ -350,9 +366,14 @@ mod tests {
             let lexical = hew_cancel_token_new_child(parent);
             hew_coro_state_enter_token(state, lexical);
             let child = hew_coro_state_child(state);
+            hew_cancel_token_cancel(lexical, crate::fault::HEW_FAULT_DEADLINE);
             hew_cancel_token_cancel(lexical, 1);
             assert_eq!(hew_coro_state_is_cancelled(state), 1);
             assert_eq!(hew_coro_state_is_cancelled(child), 1);
+            assert_eq!(
+                hew_coro_state_cancel_code(child),
+                crate::fault::HEW_FAULT_DEADLINE
+            );
             assert_eq!(hew_cancel_token_is_requested(parent), 0);
             hew_coro_state_free(child);
             hew_coro_state_leave_token(state);
@@ -360,6 +381,10 @@ mod tests {
             assert_eq!(hew_coro_state_is_cancelled(state), 0);
             hew_cancel_token_cancel(parent, 1);
             assert_eq!(hew_coro_state_is_cancelled(state), 1);
+            assert_eq!(
+                hew_coro_state_cancel_code(state),
+                crate::fault::HEW_FAULT_CANCELLED
+            );
             hew_coro_state_free(state);
         }
     }

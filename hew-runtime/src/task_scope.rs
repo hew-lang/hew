@@ -242,6 +242,12 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
     cabi_guard!(token.is_null());
     // SAFETY: caller guarantees `token` is valid.
     let t = unsafe { &*token };
+    // Publish the winning reason before making cancellation observable. A
+    // competing requester may publish the state, but cannot replace the reason.
+    let reason = if reason == 0 { 1 } else { reason };
+    let _ = t
+        .reason
+        .compare_exchange(0, reason, Ordering::AcqRel, Ordering::Acquire);
     if t.state
         .compare_exchange(
             HewCancellationState::Active as i32,
@@ -251,7 +257,6 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
         )
         .is_ok()
     {
-        t.reason.store(reason, Ordering::Release);
         let observers = {
             let mut registered = t.observers.lock_or_recover();
             std::mem::take(&mut *registered)
@@ -295,6 +300,24 @@ pub unsafe extern "C" fn hew_cancel_token_is_requested(token: *mut HewCancellati
         // SAFETY: caller guarantees `token` is valid.
         unsafe { cancel_token_is_requested_raw(token) },
     )
+}
+
+/// Read the reason of the nearest requested cancellation boundary.
+///
+/// Zero means neither this token nor an ancestor has requested cancellation.
+///
+/// # Safety
+/// `token` is null or a live token retained through this call.
+pub(crate) unsafe fn cancel_token_reason(mut token: *mut HewCancellationToken) -> i32 {
+    while !token.is_null() {
+        // SAFETY: the caller retains the token and each token retains its parent.
+        let current = unsafe { &*token };
+        if token_state(current).is_requested() {
+            return current.reason.load(Ordering::Acquire);
+        }
+        token = current.parent;
+    }
+    0
 }
 
 fn cancel_token_is_requested(token: *mut HewCancellationToken) -> bool {

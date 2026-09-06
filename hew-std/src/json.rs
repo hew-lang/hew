@@ -83,6 +83,44 @@ fn stringify_result_to_string(result: Result<String, serde_json::Error>) -> *mut
 // C ABI exports
 // ---------------------------------------------------------------------------
 
+/// Create an independent deep copy of a JSON value, borrowing `val`.
+///
+/// The returned owner is released with [`hew_json_free`]. Null input returns
+/// null; a live JSON null value produces a live copy. Allocation failure follows
+/// the Rust allocator's abort policy, as it does for parsing and extraction.
+/// This operation does not change the parser error slot.
+///
+/// # Safety
+///
+/// `val` must be null or a live [`HewJsonValue`] readable for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_clone(val: *const HewJsonValue) -> *mut HewJsonValue {
+    // SAFETY: the caller supplies null or a live, readable value.
+    let Some(value) = (unsafe { val.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    boxed_value(value.inner.clone())
+}
+
+/// Compare JSON values by serde's format-specific value equality.
+///
+/// Returns 1 when equal and 0 otherwise. Both inputs are borrowed. Any null
+/// pointer returns 0, including two null pointers: invalid handles are not JSON
+/// null values. Integer and float representations remain distinct; floating
+/// signed zero compares equal. The parser error slot is unchanged.
+///
+/// # Safety
+///
+/// Each input must be null or a live [`HewJsonValue`] readable for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_eq(lhs: *const HewJsonValue, rhs: *const HewJsonValue) -> i32 {
+    // SAFETY: the caller supplies null or live, readable values.
+    match unsafe { (lhs.as_ref(), rhs.as_ref()) } {
+        (Some(lhs), Some(rhs)) => i32::from(lhs.inner == rhs.inner),
+        _ => 0,
+    }
+}
+
 /// Parse a JSON string into a [`HewJsonValue`].
 ///
 /// Returns null on parse error or invalid input.
@@ -954,6 +992,122 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { hew_json_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn cloned_tree_and_selected_child_own_independent_values() {
+        let baseline = live_value_boxes();
+        let original = parse(r#"{"colour":"blue","items":["one"]}"#);
+        let items = ManagedString::new("items");
+        let colour = ManagedString::new("colour");
+        let red = ManagedString::new("red");
+        let two = ManagedString::new("two");
+        let three = ManagedString::new("three");
+        // SAFETY: all inputs are live owners or borrowed managed strings.
+        // Insertion consumes copied_items; every other owner is released once.
+        unsafe {
+            let copy = hew_json_clone(original);
+            assert_eq!(hew_json_eq(original, copy), 1);
+            let child = hew_json_get_field(original, items.as_ptr());
+            hew_json_array_push_string(child, two.as_ptr());
+            let copied_items = hew_json_get_field(copy, items.as_ptr());
+            hew_json_array_push_string(copied_items, three.as_ptr());
+            hew_json_object_set(copy, items.as_ptr(), copied_items);
+            hew_json_object_set_string(copy, colour.as_ptr(), red.as_ptr());
+            assert_eq!(hew_json_eq(original, copy), 0);
+            assert_eq!(
+                read_and_free_string(hew_json_stringify(original)),
+                r#"{"colour":"blue","items":["one"]}"#
+            );
+            hew_json_free(original);
+            assert_eq!(
+                read_and_free_string(hew_json_stringify(copy)),
+                r#"{"colour":"red","items":["one","three"]}"#
+            );
+            hew_json_free(copy);
+            assert_eq!(
+                read_and_free_string(hew_json_stringify(child)),
+                r#"["one","two"]"#
+            );
+            hew_json_free(child);
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn semantic_equality_preserves_json_number_and_container_rules() {
+        let baseline = live_value_boxes();
+        for (left, right, expected) in [
+            ("1", "1.0", 0),
+            ("-0.0", "0.0", 1),
+            ("18446744073709551615", "18446744073709551615", 1),
+            ("9007199254740992", "9007199254740993", 0),
+            (r#"{"b":2,"a":1}"#, r#"{"a":1,"b":2}"#, 1),
+            (r#"{"a":1,"a":2}"#, r#"{"a":2}"#, 1),
+            ("[1,2]", "[2,1]", 0),
+        ] {
+            let lhs = parse(left);
+            let rhs = parse(right);
+            assert!(!lhs.is_null() && !rhs.is_null());
+            // SAFETY: parsed values and the clone are live independent owners.
+            unsafe {
+                let copy = hew_json_clone(lhs);
+                assert_eq!(hew_json_eq(lhs, copy), 1, "clone of {left}");
+                assert_eq!(hew_json_eq(copy, rhs), expected, "{left} versus {right}");
+                assert_eq!(hew_json_eq(rhs, copy), expected, "{right} versus {left}");
+                hew_json_free(lhs);
+                hew_json_free(rhs);
+                hew_json_free(copy);
+            }
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn value_operations_distinguish_null_handles_and_preserve_parse_errors() {
+        let baseline = live_value_boxes();
+        let value = parse("null");
+        let invalid = parse("{");
+        assert!(!value.is_null());
+        assert!(invalid.is_null());
+        let error = get_parse_last_error();
+        assert!(!error.is_empty());
+        // SAFETY: value and copy are live; invalid is the permitted null handle.
+        unsafe {
+            assert!(hew_json_clone(invalid).is_null());
+            let copy = hew_json_clone(value);
+            assert!(!copy.is_null());
+            assert_eq!(hew_json_type(copy), 0);
+            assert_eq!(hew_json_eq(value, copy), 1);
+            assert_eq!(hew_json_eq(invalid, invalid), 0);
+            assert_eq!(hew_json_eq(value, invalid), 0);
+            assert_eq!(hew_json_eq(invalid, value), 0);
+            assert_eq!(get_parse_last_error(), error);
+            hew_json_free(copy);
+            hew_json_free(value);
+        }
+        clear_parse_last_error();
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn rejected_float_mutation_preserves_original_and_copy() {
+        let baseline = live_value_boxes();
+        let original = parse(r#"{"items":["one"],"number":7}"#);
+        let number = ManagedString::new("number");
+        // SAFETY: original and copy remain live independent owners throughout.
+        unsafe {
+            let copy = hew_json_clone(original);
+            hew_json_object_set_float(copy, number.as_ptr(), f64::NAN);
+            assert_eq!(hew_json_eq(original, copy), 1);
+            assert_eq!(
+                read_and_free_string(hew_json_stringify(copy)),
+                r#"{"items":["one"],"number":7}"#
+            );
+            hew_json_free(original);
+            hew_json_free(copy);
+        }
+        assert_eq!(live_value_boxes(), baseline);
     }
 
     #[test]

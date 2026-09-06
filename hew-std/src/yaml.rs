@@ -184,6 +184,46 @@ fn is_yaml_anchor_alias_name_byte(byte: u8) -> bool {
 // C ABI exports
 // ---------------------------------------------------------------------------
 
+/// Create an independent deep copy of a YAML value, borrowing `val`.
+///
+/// The copy preserves mapping keys and insertion order, tags and scalar kinds.
+/// Release the returned owner with [`hew_yaml_free`]. Null input returns null;
+/// a live YAML null value produces a live copy. Allocation failure follows the
+/// Rust allocator's abort policy, as it does for parsing and extraction.
+/// This operation does not change the parser error slot.
+///
+/// # Safety
+///
+/// `val` must be null or a live [`HewYamlValue`] readable for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_clone(val: *const HewYamlValue) -> *mut HewYamlValue {
+    // SAFETY: the caller supplies null or a live, readable value.
+    let Some(value) = (unsafe { val.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    boxed_value(value.inner.clone())
+}
+
+/// Compare YAML values by serde's format-specific value equality.
+///
+/// Returns 1 when equal and 0 otherwise. Both inputs are borrowed. Tags
+/// participate; integer and float representations remain distinct; floating
+/// signed zero and YAML NaNs compare equal. Mapping equality ignores insertion
+/// order. Any null pointer returns 0, including two null pointers: invalid
+/// handles are not YAML null values. The parser error slot is unchanged.
+///
+/// # Safety
+///
+/// Each input must be null or a live [`HewYamlValue`] readable for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_eq(lhs: *const HewYamlValue, rhs: *const HewYamlValue) -> i32 {
+    // SAFETY: the caller supplies null or live, readable values.
+    match unsafe { (lhs.as_ref(), rhs.as_ref()) } {
+        (Some(lhs), Some(rhs)) => i32::from(lhs.inner == rhs.inner),
+        _ => 0,
+    }
+}
+
 /// Parse a YAML string into a [`HewYamlValue`].
 ///
 /// Returns null on parse error or invalid input.
@@ -1061,6 +1101,126 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { hew_yaml_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn cloned_tree_and_selected_child_own_independent_values() {
+        let baseline = live_value_boxes();
+        let original = parse("colour: blue\nitems:\n- !Status queued\n- 7: value\n");
+        let items = ManagedString::new("items");
+        let colour = ManagedString::new("colour");
+        let red = ManagedString::new("red");
+        let two = ManagedString::new("two");
+        let three = ManagedString::new("three");
+        // SAFETY: all inputs are live owners or borrowed managed strings.
+        // Insertion consumes copied_items; every other owner is released once.
+        unsafe {
+            let copy = hew_yaml_clone(original);
+            assert_eq!(hew_yaml_eq(original, copy), 1);
+            let child = hew_yaml_get_field(original, items.as_ptr());
+            hew_yaml_array_push_string(child, two.as_ptr());
+            let copied_items = hew_yaml_get_field(copy, items.as_ptr());
+            hew_yaml_array_push_string(copied_items, three.as_ptr());
+            hew_yaml_object_set(copy, items.as_ptr(), copied_items);
+            hew_yaml_object_set_string(copy, colour.as_ptr(), red.as_ptr());
+            assert_eq!(hew_yaml_eq(original, copy), 0);
+            assert_eq!(
+                read_and_free_string(hew_yaml_stringify(original)),
+                "colour: blue\nitems:\n- !Status queued\n- 7: value\n"
+            );
+            hew_yaml_free(original);
+            assert_eq!(
+                read_and_free_string(hew_yaml_stringify(copy)),
+                "colour: red\nitems:\n- !Status queued\n- 7: value\n- three\n"
+            );
+            hew_yaml_free(copy);
+            assert_eq!(
+                read_and_free_string(hew_yaml_stringify(child)),
+                "- !Status queued\n- 7: value\n- two\n"
+            );
+            hew_yaml_free(child);
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn semantic_equality_preserves_yaml_numbers_tags_and_mapping_rules() {
+        let baseline = live_value_boxes();
+        for (left, right, expected) in [
+            ("1", "1.0", 0),
+            ("-0.0", "0.0", 1),
+            (".nan", ".NaN", 1),
+            (".inf", "-.inf", 0),
+            ("18446744073709551615", "18446744073709551615", 1),
+            ("9007199254740992", "9007199254740993", 0),
+            ("!Status queued", "!Status queued", 1),
+            ("!Status queued", "!Other queued", 0),
+            ("!Status queued", "queued", 0),
+            ("b: 2\na: 1", "a: 1\nb: 2", 1),
+            ("7: value", "'7': value", 0),
+            ("[1,2]", "[2,1]", 0),
+        ] {
+            let lhs = parse(left);
+            let rhs = parse(right);
+            assert!(!lhs.is_null() && !rhs.is_null());
+            // SAFETY: parsed values and the clone are live independent owners.
+            unsafe {
+                let copy = hew_yaml_clone(lhs);
+                assert_eq!(hew_yaml_eq(lhs, copy), 1, "clone of {left}");
+                assert_eq!(hew_yaml_eq(copy, rhs), expected, "{left} versus {right}");
+                assert_eq!(hew_yaml_eq(rhs, copy), expected, "{right} versus {left}");
+                hew_yaml_free(lhs);
+                hew_yaml_free(rhs);
+                hew_yaml_free(copy);
+            }
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn value_operations_distinguish_null_handles_and_preserve_parse_errors() {
+        let baseline = live_value_boxes();
+        let value = parse("null");
+        let invalid = parse("a: 1\na: 2");
+        assert!(!value.is_null());
+        assert!(invalid.is_null());
+        let error = get_parse_last_error();
+        assert!(!error.is_empty());
+        // SAFETY: value and copy are live; invalid is the permitted null handle.
+        unsafe {
+            assert!(hew_yaml_clone(invalid).is_null());
+            let copy = hew_yaml_clone(value);
+            assert!(!copy.is_null());
+            assert_eq!(hew_yaml_type(copy), 0);
+            assert_eq!(hew_yaml_eq(value, copy), 1);
+            assert_eq!(hew_yaml_eq(invalid, invalid), 0);
+            assert_eq!(hew_yaml_eq(value, invalid), 0);
+            assert_eq!(hew_yaml_eq(invalid, value), 0);
+            assert_eq!(get_parse_last_error(), error);
+            hew_yaml_free(copy);
+            hew_yaml_free(value);
+        }
+        clear_parse_last_error();
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn wrong_shape_mutation_preserves_original_and_copy() {
+        let baseline = live_value_boxes();
+        let original = parse("items: [!Status queued]\n");
+        // SAFETY: original and copy remain live independent owners throughout.
+        unsafe {
+            let copy = hew_yaml_clone(original);
+            hew_yaml_array_push_int(copy, 7);
+            assert_eq!(hew_yaml_eq(original, copy), 1);
+            assert_eq!(
+                read_and_free_string(hew_yaml_stringify(copy)),
+                "items:\n- !Status queued\n"
+            );
+            hew_yaml_free(original);
+            hew_yaml_free(copy);
+        }
+        assert_eq!(live_value_boxes(), baseline);
     }
 
     #[test]

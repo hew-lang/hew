@@ -2172,3 +2172,17 @@ preserve their distinct runtime result ABIs while sharing the boolean
 normalization path. The full lint run has clean Rust diagnostics; its benchmark
 now reaches the next unsupported string operation, `trim`. Machine lowering
 and the pinned grammar remain separate unfinished capabilities.
+
+## Copy encoding trees as independent values
+
+JSON and YAML now expose runtime deep-copy and semantic equality operations over
+their existing boxed serde carriers. Copies and extracted children remain usable
+after parent release, and changing one tree leaves the others intact. Equality
+retains each format's number, mapping and tag rules; invalid handles stay distinct
+from live null values. The existing release primitives destroy each independent
+owner without adding source-level cleanup requirements.
+
+The JSON and YAML runtime suites pass, including nested mutation and release,
+signed zero, integer-versus-float distinction, YAML tags and NaNs, and preservation
+after operations rejected by the existing builders. Compiler integration and
+source API changes remain separate from these runtime operations.

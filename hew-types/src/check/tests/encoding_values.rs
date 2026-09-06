@@ -109,22 +109,71 @@ fn encoding_values_select_only_explicit_eq_methods() {
             .unwrap()
             .clone();
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
-        let resolved = ResolvedTy::from_ty(&encoding_ty(kind)).unwrap();
-        let selected = service
-            .capability_plan(&resolved, ValueCapability::Eq)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            selected.plan(),
-            &ValueMethodPlan::User {
-                method: expected,
-                type_args: vec![]
-            }
+        for opaque in [false, true] {
+            let mut resolved = ResolvedTy::from_ty(&encoding_ty(kind)).unwrap();
+            let ResolvedTy::Named { is_opaque, .. } = &mut resolved else {
+                unreachable!()
+            };
+            *is_opaque = opaque;
+            let selected = service
+                .capability_plan(&resolved, ValueCapability::Eq)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                selected.plan(),
+                &ValueMethodPlan::User {
+                    method: expected.clone(),
+                    type_args: vec![]
+                }
+            );
+            assert!(service
+                .capability_plan(&resolved, ValueCapability::Hash)
+                .unwrap()
+                .is_none());
+        }
+    }
+}
+
+#[test]
+fn generic_equality_preserves_opaque_encoding_type_arguments() {
+    for (format, kind) in [
+        ("json", BuiltinType::JsonValue),
+        ("yaml", BuiltinType::YamlValue),
+    ] {
+        let source = format!(
+            r"
+            {VALUE_SOURCE}
+            type Holder<T> {{ value: T }}
+            impl<T> Eq for Holder<T> {{ fn eq(self, other: Holder<T>) -> bool {{ true }} }}
+        "
         );
-        assert!(service
-            .capability_plan(&resolved, ValueCapability::Hash)
-            .unwrap()
-            .is_none());
+        let module: Vec<String> = ["std", "encoding", format].map(str::to_string).into();
+        let output = check_source_in_canonical_std_module(&source, &module);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
+        let value = ResolvedTy::Named {
+            name: kind.canonical_name().to_string(),
+            args: vec![],
+            builtin: Some(kind),
+            is_opaque: true,
+        };
+        for argument in [
+            value.clone(),
+            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![value]),
+        ] {
+            let receiver = ResolvedTy::named_user(
+                format!("std.encoding.{format}.Holder"),
+                vec![argument.clone()],
+            );
+            let selection = service
+                .capability_plan(&receiver, ValueCapability::Eq)
+                .unwrap()
+                .unwrap();
+            let ValueMethodPlan::User { type_args, .. } = selection.plan() else {
+                panic!("expected explicit generic equality")
+            };
+            assert_eq!(type_args, &[argument]);
+        }
     }
 }
 

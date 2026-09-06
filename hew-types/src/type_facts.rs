@@ -171,32 +171,41 @@ impl ImplMethodBinders {
             .receiver
             .substitute_named_params_parallel(&replacements);
         let mut subst = crate::ty::Substitution::new();
-        crate::unify::unify(&mut subst, &pattern, &receiver.to_ty()).map_err(|_| {
+        let receiver_ty = receiver.to_ty();
+        crate::unify::unify(&mut subst, &pattern, &receiver_ty).map_err(|_| {
             ClassError::UnknownDeclaration {
                 name: method.display_name().to_string(),
             }
         })?;
+        // Unification permits checker aliases. Compare in the checker's type
+        // domain to retain exact builtin and nominal identities: converting
+        // back to ResolvedTy would invent `is_opaque: false`, since Ty cannot
+        // carry declaration opacity.
+        if subst.resolve(&pattern) != receiver_ty {
+            return Err(ClassError::UnknownDeclaration {
+                name: method.display_name().to_string(),
+            });
+        }
         let type_args: Vec<_> = self
             .impl_params
             .iter()
             .zip(variables)
             .map(|(name, var)| {
-                ResolvedTy::from_ty(&subst.resolve(&crate::Ty::Var(var)))
-                    .map_err(|_| ClassError::TypeParam { name: name.clone() })
+                let argument = subst.resolve(&crate::Ty::Var(var));
+                // An impl binder is instantiated by a component of the
+                // concrete receiver. Preserve that checked boundary type,
+                // including opacity inside nested arguments, rather than
+                // reconstructing it through the lossy Ty round trip.
+                let mut components = vec![receiver.clone()];
+                while let Some(component) = components.pop() {
+                    if component.to_ty() == argument {
+                        return Ok(component);
+                    }
+                    push_type_components(&component, &mut components);
+                }
+                Err(ClassError::TypeParam { name: name.clone() })
             })
             .collect::<Result<_, _>>()?;
-        // Unification permits checker aliases; final capability selection must
-        // retain exact builtin and nominal identities after substitution.
-        let instantiated = ResolvedTy::from_ty(&subst.resolve(&pattern)).map_err(|_| {
-            ClassError::UnknownDeclaration {
-                name: method.display_name().to_string(),
-            }
-        })?;
-        if instantiated != *receiver {
-            return Err(ClassError::UnknownDeclaration {
-                name: method.display_name().to_string(),
-            });
-        }
         let refusal = || ClassError::UnknownDeclaration {
             name: method.display_name().to_string(),
         };

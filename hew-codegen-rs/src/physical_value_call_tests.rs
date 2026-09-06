@@ -311,7 +311,7 @@ fn source_selected_eq_fault_preserves_status_owner_and_caller_result_at_o0_o2() 
 #[test]
 fn source_selected_value_calls_verify_at_o0_o2_for_windows_and_macos() {
     for triple in ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"] {
-        for source in [COMPOSITE_SOURCE, FAULT_SOURCE] {
+        for source in [COMPOSITE_SOURCE, FAULT_SOURCE, BYTES_SOURCE] {
             let physical = physical_for_triple(source, triple);
             let ctx = Context::create();
             let llvm = llvm(&ctx, &physical);
@@ -497,6 +497,120 @@ fn generic_user_eq_keeps_borrowed_owners_on_success_and_fault_at_o0_o2() {
             );
             hew_runtime::string::hew_string_drop(left);
             hew_runtime::string::hew_string_drop(right);
+        }
+    }
+}
+
+const BYTES_SOURCE: &str =
+    include_str!("../../tests/core-acceptance/cases/selected-bytes-equality.hew");
+
+thread_local! {
+    static PRINTED_STRINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn capture_string(value: *const c_void) {
+    let mut output = std::mem::MaybeUninit::uninit();
+    // SAFETY: the print ABI borrows a managed string. Convert it through the
+    // public runtime API and release the temporary bytes owner after recording.
+    unsafe {
+        hew_runtime::string::hew_string_to_bytes_owned(value.cast(), output.as_mut_ptr());
+        let bytes = output.assume_init();
+        let text = if bytes.len == 0 {
+            String::new()
+        } else {
+            String::from_utf8(
+                std::slice::from_raw_parts(
+                    bytes.ptr.add(bytes.offset as usize),
+                    bytes.len as usize,
+                )
+                .to_vec(),
+            )
+            .unwrap()
+        };
+        hew_runtime::bytes::hew_bytes_drop(bytes.ptr);
+        PRINTED_STRINGS.with_borrow_mut(|values| values.push(text));
+    }
+}
+
+#[test]
+fn source_nested_bytes_eq_and_user_hash_key_execute_at_o0_o2() {
+    let physical = physical(BYTES_SOURCE);
+    assert!(physical
+        .value_capabilities
+        .contains_key(&(ResolvedTy::Bytes, ValueCapability::Eq)));
+    assert!(!physical
+        .value_capabilities
+        .contains_key(&(ResolvedTy::Bytes, ValueCapability::Hash)));
+    for optimized in [false, true] {
+        PRINTED_BOOLS.with_borrow_mut(Vec::clear);
+        PRINTED_STRINGS.with_borrow_mut(Vec::clear);
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let symbol = expose_probe(&ctx, &llvm, &physical, "main");
+        let engine = engine(&llvm, optimized);
+        engine.add_global_mapping(
+            &llvm.get_function("hew_println_bool").unwrap(),
+            capture_bool as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &llvm.get_function("hew_println_str").unwrap(),
+            capture_string as *const () as usize,
+        );
+        let mut result = -1;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: the wrapper exposes main's verified result and fault outputs.
+        unsafe {
+            assert_eq!(
+                engine
+                    .get_function::<MainBody>(&symbol)
+                    .unwrap()
+                    .call(&raw mut result, &raw mut fault),
+                0
+            );
+        }
+        assert_eq!(result, 0);
+        assert!(fault.is_null());
+        PRINTED_BOOLS.with_borrow(|values| assert_eq!(values, &[true; 6]));
+        PRINTED_STRINGS.with_borrow(|values| assert_eq!(values, &["STORED"]));
+    }
+}
+
+#[test]
+fn source_bytes_eq_borrows_only_the_active_region_at_o0_o2() {
+    let physical = physical(
+        r#"
+        fn probe(a: bytes, b: bytes) -> bool { a == b }
+        fn main() -> i64 { if probe("A\0B".to_bytes(), "A\0B".to_bytes()) { 0 } else { 1 } }
+    "#,
+    );
+    for optimized in [false, true] {
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let symbol = expose_probe(&ctx, &llvm, &physical, "probe");
+        let engine = engine(&llvm, optimized);
+        // SAFETY: the probe borrows valid Bytes triples; each underlying buffer
+        // stays live until its single Rust-side release after all comparisons.
+        unsafe {
+            let probe = engine.get_function::<EqCallback>(&symbol).unwrap();
+            let mut a = hew_runtime::bytes::hew_bytes_from_static(b"xA\0By".as_ptr(), 5);
+            a.offset = 1;
+            a.len = 3;
+            let b = hew_runtime::bytes::hew_bytes_from_static(b"A\0B".as_ptr(), 3);
+            let mut short = hew_runtime::bytes::hew_bytes_from_static(b"A\0B".as_ptr(), 3);
+            short.len = 2;
+            let empty = hew_runtime::bytes::BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            assert!(equal(&probe, &a, &b));
+            assert!(!equal(&probe, &a, &short));
+            assert!(equal(&probe, &empty, &empty));
+            assert!(!equal(&probe, &a, &empty));
+            assert_eq!(std::slice::from_raw_parts(a.ptr, 5), b"xA\0By");
+            for value in [a, b, short] {
+                hew_runtime::bytes::hew_bytes_drop(value.ptr);
+            }
         }
     }
 }

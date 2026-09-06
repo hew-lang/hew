@@ -1491,3 +1491,23 @@ fault modules verify before and after O2 optimization for Windows x64 and macOS
 arm64; execution here is Linux JIT. Source fixtures and their SIR/Types producers
 are supplied prerequisites. Native platform and combined safety acceptance stay
 with integration.
+
+## Selected value call validation complete
+
+Bytes equality now has source-driven JIT controls for nested owned values and
+record keys combining user Hash with derived Eq. A borrowed Bytes probe compares
+only the active region, including embedded NULs and empty values, while retaining
+the caller's original buffers. Bare Bytes still has no Hash selection. The same
+source module verifies before and after O2 optimization for Windows x64 and macOS
+arm64.
+
+After applying the transparent-transfer prerequisite, the complete MIR/codegen
+library suites and scoped Rust lint pass through Make. The native acceptance
+runner passes at O0 and O2 for selected composite equality, callback fault
+propagation, operand read order, collection parent arguments and Bytes equality.
+The fault case preserves the expected DivideByZero status; read-order coverage
+includes the transparent Vec.from wrapper.
+
+Native execution here is Linux. Windows and macOS execution and combined
+ASan/LSan acceptance remain with integration. Supplied SIR, checker and fixture
+prerequisites are unchanged by this layer.

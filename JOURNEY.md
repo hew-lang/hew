@@ -2517,3 +2517,11 @@ without ownership. Source and malformed-result controls cover scalar and owning
 records, generic methods, early returns, nested mutation, borrowed arguments and
 fault cleanup. These checks establish the SIR contract; native execution and
 projected source admission remain integration work.
+
+The projected source controls now pass through the checker and SIR. Nested field
+and tuple receivers preserve sibling updates and whole-root replacement during
+later argument evaluation, including borrowed aliases and fault paths. Bare unit
+returns retain one result/receiver pair. Primitive receivers also honour the
+explicit receiver transfer while remaining bitcopy values. Returning `self` as
+the method's result copies that value independently before transferring the
+receiver into its writeback field.

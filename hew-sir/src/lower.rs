@@ -4911,10 +4911,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    /// Lower an immutable, no-drop tuple as one semantic aggregate value.
-    ///
-    /// The tuple's exact `ResolvedTy` is retained; neither its field layout nor
-    /// an addressable temporary is introduced at the HIR → SIR boundary.
+    /// Construct a tuple from exact semantic fields, including receiver transfers.
     fn lower_tuple_make(
         &mut self,
         expr: &HirExpr,
@@ -4935,6 +4932,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 expected_elements.len()
             ));
         }
+        // The marked receiver occupies the writeback field of the established
+        // dual return. The method result may itself mention Self; it keeps the
+        // ordinary source copy policy and must not take the writeback receiver.
+        let receiver_return = tuple_ty == self.ty(&self.function.return_ty)
+            && self.function.var_self_receiver.is_some_and(|binding| {
+                elements.get(1).is_some_and(|element| {
+                    element.intent == IntentKind::Consume
+                        && matches!(element.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. }
+                            if id == binding)
+                })
+            });
         let mut lowered_elements = Vec::with_capacity(elements.len());
         for (index, (element, expected_ty)) in elements.iter().zip(expected_elements).enumerate() {
             let actual_ty = self.ty(&element.ty);
@@ -4945,7 +4953,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     expected_ty.user_facing()
                 ));
             }
-            let value = if is_initial_value_type(&tuple_ty) {
+            let value = if is_initial_value_type(&tuple_ty) && !receiver_return {
                 self.lower_read_operand(element, &format!("tuple literal element {index}"))?
             } else {
                 Operand {
@@ -4953,10 +4961,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self,
                         element,
                         &format!("owned tuple field {index}"),
-                        if element.intent == IntentKind::Consume
-                            && matches!(element.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. }
-                                if self.function.var_self_receiver == Some(binding))
-                        {
+                        if receiver_return && index == 1 {
                             OwnedBindingUse::Move
                         } else {
                             OwnedBindingUse::Copy

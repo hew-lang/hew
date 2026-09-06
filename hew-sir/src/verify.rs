@@ -2169,6 +2169,16 @@ fn verify_operation_shape(
     }
     let result = &operation.results[0];
     match &operation.kind {
+        SemOpKind::ConstUnit => {
+            if result.ty != ResolvedTy::Unit || result.own != crate::OwnKind::None {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "const unit must produce exactly Unit without ownership".to_string(),
+                    diagnostics,
+                );
+            }
+        }
         SemOpKind::ConstI64(_) if !result.ty.is_integer() => diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidConstType {
@@ -2708,7 +2718,6 @@ fn verify_operation_shape(
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
         SemOpKind::LoadBorrow { .. }
-        | SemOpKind::ConstUnit
         | SemOpKind::ConstDuration(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }

@@ -8,6 +8,9 @@ mod projection;
 #[path = "lower_binding.rs"]
 mod binding;
 
+#[path = "lower_var_self.rs"]
+mod var_self;
+
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
     HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
@@ -1865,7 +1868,8 @@ fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> 
             .iter()
             .map(|parameter| SemAbiParam {
                 ty: parameter.ty.clone(),
-                passing: if parameter.is_consume {
+                passing: if parameter.is_consume || function.var_self_receiver == Some(parameter.id)
+                {
                     SemParamPassing::Consume
                 } else {
                     SemParamPassing::ReadOnly
@@ -1913,7 +1917,7 @@ fn callable_signature_with_substitution(
         params.push(SemAbiParam {
             ty,
             passing: if OwnKind::of_class(row.class) == OwnKind::Owned {
-                if parameter.is_consume {
+                if parameter.is_consume || function.var_self_receiver == Some(parameter.id) {
                     SemParamPassing::Consume
                 } else {
                     SemParamPassing::Borrow
@@ -2046,6 +2050,17 @@ fn lower_initial_value_transfer(
     binding_use: OwnedBindingUse,
 ) -> Result<ValueId, String> {
     let ty = builder.ty(&expr.ty);
+    if ty == ResolvedTy::Unit && matches!(expr.intent, IntentKind::Read | IntentKind::Consume) {
+        if matches!(
+            expr.kind,
+            HirExprKind::Literal(HirLiteral::Unit) | HirExprKind::VarSelfMethodCall { .. }
+        ) {
+            return builder.lower_expr(expr);
+        }
+        // A unit method result still evaluates its effects before returning Self.
+        builder.lower_discarded_expr(expr)?;
+        return builder.emit(expr, SemOpKind::ConstUnit);
+    }
     if is_initial_value_type(&ty) {
         require_initial_value_transfer(expr.intent, &ty, context)?;
         return builder.lower_expr(expr);
@@ -2164,6 +2179,9 @@ fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> R
             expr.intent,
             ty.user_facing()
         ));
+    }
+    if matches!(expr.kind, HirExprKind::VarSelfMethodCall { .. }) {
+        return builder.lower_var_self_call(expr).map(|_| ());
     }
     if !matches!(expr.kind, HirExprKind::Call { .. }) {
         return Err(
@@ -3440,8 +3458,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let HirExprKind::Return { value } = &expr.kind {
             return self.lower_function_return(value.as_deref());
         }
-        require_initial_scalar_read(expr.intent)
-            .map_err(|reason| format!("discarded expression: {reason}"))?;
+        if self.ty(&expr.ty) != ResolvedTy::Unit || expr.intent != IntentKind::Consume {
+            require_initial_scalar_read(expr.intent)
+                .map_err(|reason| format!("discarded expression: {reason}"))?;
+        }
         let live_before_expression: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         match &expr.kind {
@@ -3761,6 +3781,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     },
                 )
             }
+            HirExprKind::VarSelfMethodCall { .. } => self.lower_var_self_call(expr),
             HirExprKind::Call { .. } => self.lower_call(expr, true)?.ok_or_else(|| {
                 "unit-valued direct calls are valid only in a discarded or unit-return context"
                     .to_string()
@@ -3844,6 +3865,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn lower_literal(&mut self, expr: &HirExpr, literal: &HirLiteral) -> Result<ValueId, String> {
         match literal {
+            HirLiteral::Unit if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                self.emit(expr, SemOpKind::ConstUnit)
+            }
             HirLiteral::Integer(value) => {
                 if !self.ty(&expr.ty).is_integer() {
                     return Err(format!(
@@ -4929,7 +4953,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self,
                         element,
                         &format!("owned tuple field {index}"),
-                        OwnedBindingUse::Copy,
+                        if element.intent == IntentKind::Consume
+                            && matches!(element.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. }
+                                if self.function.var_self_receiver == Some(binding))
+                        {
+                            OwnedBindingUse::Move
+                        } else {
+                            OwnedBindingUse::Copy
+                        },
                     )?,
                 }
             };
@@ -5755,10 +5786,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string(),
             );
         }
+        let lowered_args = self.lower_user_arguments(args, &signature.params, &mut loans)?;
+        self.finish_user_call(
+            callee,
+            signature,
+            lowered_args,
+            &loans,
+            &live_before_arguments,
+            value_required,
+        )
+    }
+
+    /// Capture arguments while keeping earlier consumed values live until the call.
+    fn lower_user_arguments(
+        &mut self,
+        args: &[HirExpr],
+        params: &[SemAbiParam],
+        loans: &mut Vec<ValueId>,
+    ) -> Result<Vec<crate::BoundaryOperand>, String> {
         let receiver_loan_depth = self.argument_receiver_loans.len();
-        self.argument_receiver_loans.extend(&loans);
+        self.argument_receiver_loans.extend(loans.iter().copied());
         let mut lowered_args = Vec::with_capacity(args.len());
-        for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
+        for (index, (arg, expected)) in args.iter().zip(params).enumerate() {
             let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
             let operand = if expected.passing == SemParamPassing::Consume {
                 let value = self.lower_consuming_value(arg)?;
@@ -5777,7 +5826,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     )?,
                 }
             } else if self.ty(&arg.ty) == expected.ty {
-                self.lower_call_read(arg, &mut loans, stable_tail, true)?
+                self.lower_call_read(arg, loans, stable_tail, true)?
             } else {
                 let value = lower_initial_value_transfer(
                     self,
@@ -5804,6 +5853,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
         self.argument_receiver_loans.truncate(receiver_loan_depth);
+        Ok(lowered_args)
+    }
+
+    /// One user-call boundary owns argument temporaries and both continuations.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "normal and fault continuations share one ownership boundary"
+    )]
+    fn finish_user_call(
+        &mut self,
+        callee: PreparedCallee,
+        signature: SemSignature,
+        lowered_args: Vec<crate::BoundaryOperand>,
+        loans: &[ValueId],
+        live_before_arguments: &std::collections::HashSet<ValueId>,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
         for argument in &lowered_args {
             if argument.decision == crate::BoundaryDecision::Move {
                 self.owned_live.remove(&argument.operand.value);
@@ -5820,8 +5886,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .filter(|value| !live_before_arguments.contains(value))
             .copied()
             .collect();
-        let return_ty = &signature.return_ty;
-        let (result, normal, continuation) = if *return_ty == ResolvedTy::Unit {
+        let return_ty = signature.return_ty.clone();
+        let (result, normal, continuation) = if return_ty == ResolvedTy::Unit {
             if value_required {
                 return Err("unit-valued call cannot produce an SSA value".to_string());
             }
@@ -5834,8 +5900,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 None,
             )
         } else {
-            self.service.require_type_facts(return_ty)?;
-            let own = OwnKind::of_ty(return_ty, self.service.checked_facts.rows())?;
+            self.service.require_type_facts(&return_ty)?;
+            let own = OwnKind::of_ty(&return_ty, self.service.checked_facts.rows())?;
             let raw = self.fresh_value();
             let continuation = self.fresh_value();
             let normal = self.new_block(vec![BlockArg {
@@ -5873,19 +5939,59 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         ))?;
         self.current = unwind;
         self.owned_live = live_at_call.clone();
-        self.end_call_loans(&loans)?;
+        self.end_call_loans(loans)?;
         self.destroy_all_live()?;
         self.set_terminator(SemTerminator::ResumeUnwind)?;
         self.current = normal_block;
         self.owned_live = live_at_call;
-        self.end_call_loans(&loans)?;
+        self.end_call_loans(loans)?;
         for value in temporaries.into_iter().rev() {
             self.emit_destroy(value)?;
         }
         if let Some((value, OwnKind::Owned)) = continuation {
-            self.owned_live.insert(value, self.ty(&expr.ty));
+            self.owned_live.insert(value, return_ty);
         }
         Ok(continuation.map(|(value, _)| value))
+    }
+
+    /// Snapshot borrowed arguments which would otherwise overlap the receiver take.
+    fn snapshot_receiver_arguments(
+        &mut self,
+        selected: crate::PlaceId,
+        lowered_args: &mut [crate::BoundaryOperand],
+        loans: &mut Vec<ValueId>,
+        provenance: &Provenance,
+    ) -> Result<(), String> {
+        let (root, _) = crate::projection::place_path(&self.places, selected)?;
+        for argument in lowered_args {
+            let value = argument.operand.value;
+            if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
+                && self.value_borrow_root(value)? == root
+            {
+                let ty = self
+                    .value_ty(value)
+                    .ok_or_else(|| "borrowed argument has no type".to_string())?;
+                argument.operand.value = self.emit_typed(
+                    provenance.clone(),
+                    &ty,
+                    SemOpKind::CopyValue {
+                        source: Operand { value },
+                    },
+                )?;
+            }
+        }
+        let related = loans
+            .iter()
+            .copied()
+            .filter_map(|loan| match self.value_borrow_root(loan) {
+                Ok(owner) if owner == root => Some(Ok(loan)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.end_call_loans(&related)?;
+        loans.retain(|loan| !related.contains(loan));
+        Ok(())
     }
 
     fn lower_call(
@@ -6011,35 +6117,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let selected = self
                 .owned_projection(place)?
                 .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
-            let (root, _) = crate::projection::place_path(&self.places, selected)?;
-            for argument in &mut lowered_args {
-                let value = argument.operand.value;
-                if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
-                    && self.value_borrow_root(value)? == root
-                {
-                    let ty = self
-                        .value_ty(value)
-                        .ok_or_else(|| "borrowed argument has no type".to_string())?;
-                    argument.operand.value = self.emit_typed(
-                        Provenance::Site(expr.site),
-                        &ty,
-                        SemOpKind::CopyValue {
-                            source: Operand { value },
-                        },
-                    )?;
-                }
-            }
-            let related = loans
-                .iter()
-                .copied()
-                .filter_map(|loan| match self.value_borrow_root(loan) {
-                    Ok(owner) if owner == root => Some(Ok(loan)),
-                    Ok(_) => None,
-                    Err(error) => Some(Err(error)),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            self.end_call_loans(&related)?;
-            loans.retain(|loan| !related.contains(loan));
+            self.snapshot_receiver_arguments(
+                selected,
+                &mut lowered_args,
+                &mut loans,
+                &Provenance::Site(expr.site),
+            )?;
         }
 
         // Consumed arguments stay owned during later argument evaluation so

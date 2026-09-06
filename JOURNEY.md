@@ -2502,3 +2502,18 @@ name. HIR verifies the first-parameter identity, mutability and returned type,
 and retains structured declaration targets on mutable method calls. Concrete and
 generic source tests cover explicit and fallthrough receiver returns; malformed
 markers and endpoint-only targets are rejected.
+
+## Lower mutable methods through ordinary ownership boundaries
+
+SIR now consumes HIR's explicit mutable receiver identity when deriving callable
+parameters and returning the receiver. Calls evaluate ordinary arguments before
+taking the current receiver, preserve aliased arguments through canonical place
+paths, and install the returned receiver only after a normal return. Argument
+faults and callee faults use the existing call cleanup and local lifetimes.
+
+The existing dual return also carries unit method results. Their effects execute
+before receiver transfer, and the unit constant relation requires exactly Unit
+without ownership. Source and malformed-result controls cover scalar and owning
+records, generic methods, early returns, nested mutation, borrowed arguments and
+fault cleanup. These checks establish the SIR contract; native execution and
+projected source admission remain integration work.

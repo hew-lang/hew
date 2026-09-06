@@ -23,7 +23,7 @@ fn declarations(clone: bool) -> String {
 }
 
 fn assert_lowered(source: &str) -> LoweredModule {
-    let lowered = lower(source);
+    let mut lowered = lower(source);
     assert!(
         lowered
             .callable_statuses
@@ -38,6 +38,8 @@ fn assert_lowered(source: &str) -> LoweredModule {
         "{diagnostics:?}\n{}",
         hew_sir::dump_sir(&lowered.module)
     );
+    hew_sir::canonicalize_module_constant_cfg(&mut lowered.module)
+        .expect("verified field partitions must survive compiler CFG canonicalization");
     lowered
 }
 

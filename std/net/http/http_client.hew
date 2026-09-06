@@ -126,7 +126,7 @@ fn empty_headers() -> Vec<(string, string)> {
 }
 
 fn content_type_headers(content_type: string) -> Vec<(string, string)> {
-    let headers: Vec<(string, string)> = Vec.new();
+    var headers: Vec<(string, string)> = Vec.new();
     headers.push(("Content-Type", content_type));
     headers
 }

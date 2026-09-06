@@ -2414,3 +2414,9 @@ The focused import regression compiles but still stops before its transfer
 assertions: HIR currently drops the canonical encoding identity, causing a value
 binding to be mistaken for an unsupported aggregate. That separate identity
 repair is required before this source regression can establish acceptance.
+
+## Allow the HTTP content-type helper to populate headers
+
+The HTTP client now declares the header vector mutable before pushing the
+content-type pair. This repairs the direct source-checking dependency of the
+HTTP/JSON example without changing request behaviour or resource handling.

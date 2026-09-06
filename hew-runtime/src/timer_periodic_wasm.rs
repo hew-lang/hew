@@ -553,6 +553,7 @@ mod tests {
                 state_drop_consumed: AtomicBool::new(false),
                 state_drop_borrowed: AtomicBool::new(false),
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+                checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
             }));
             Self { actor, counter }
         }

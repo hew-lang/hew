@@ -2292,3 +2292,11 @@ declaration, including faults before initialization. Branch lowering restores
 the full lexical context so nested-match declarations cannot leak into sibling
 paths. Mixed borrowed and replaced paths remain explicitly unsupported by SIR;
 the checker still rejects mutations without definite private replacement.
+
+## Validate composed Local source execution
+
+The complete native and paired generated/runtime address and leak sanitizer
+suites pass at both optimization levels after the private-parameter repair.
+The combined pipeline exposed two physical tests that still searched for SSA
+destroy operations. They now inspect the corresponding Local lifetime ends,
+retaining recursive aggregate cleanup and invalid assignment-source checks.

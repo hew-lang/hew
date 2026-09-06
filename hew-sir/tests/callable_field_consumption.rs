@@ -1,23 +1,17 @@
-//! D345: a consuming callable field is acquired through whole-value destructuring.
+//! Current projected-consume guards and the owning destructure control.
 
-use hew_hir::{lower_program_host_target, ResolutionCtx};
+use hew_hir::{lower_program_host_target, HirExprKind, HirItem, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, BoundaryDecision, LoweredModule, SemOpKind, SemTerminator,
     SirLoweringStatus,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{module_registry::ModuleRegistry, CallableCallMode, Checker, ResolvedTy};
 
-fn lower(source: &str, rejection: bool) -> LoweredModule {
+fn lower(source: &str) -> LoweredModule {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    // Negative cases exercise SIR's independent guard even when the checker
-    // has already reported the source ownership diagnostic. The typed HIR and
-    // exact SIR refusal below must still be present; unrelated failures cannot
-    // satisfy the assertion.
-    if !rejection {
-        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
-    }
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     lower_module(&hir.module, &checked)
@@ -29,7 +23,69 @@ fn declarations(clone: bool) -> String {
 }
 
 fn assert_refused(source: &str, function: &str, code: &str) {
-    let lowered = lower(source, true);
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(
+        checked
+            .errors
+            .iter()
+            .any(|error| error.message.contains(code)),
+        "{source}: {:?}",
+        checked.errors
+    );
+
+    // Source rejection can stop aggregate type-fact publication. Build the
+    // independent SIR witness from accepted read-callable source, then change
+    // only the projected call receiver's invocation mode. This must reach the
+    // ownership guard, never pass because an aggregate descriptor is missing.
+    let read_source = source
+        .replace("fn[once, clone]", "fn[clone]")
+        .replace("fn[once]", "fn");
+    let parsed = hew_parser::parse(&read_source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let mut hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let baseline = lower_module(&hir.module, &checked);
+    assert!(
+        baseline
+            .statuses
+            .iter()
+            .any(|status| status.name == function
+                && matches!(status.status, SirLoweringStatus::Lowered)),
+        "{:?}",
+        baseline.statuses
+    );
+    assert!(
+        verify_module(&baseline.module).is_empty(),
+        "{:?}",
+        verify_module(&baseline.module)
+    );
+    let body = hir
+        .module
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            HirItem::Function(body) if body.name == function => Some(body),
+            _ => None,
+        })
+        .expect("guard fixture function");
+    let tail = body.body.tail.as_mut().expect("projected call tail");
+    let HirExprKind::Call { callee, .. } = &mut tail.kind else {
+        panic!("guard fixture tail must be a call");
+    };
+    assert!(matches!(
+        callee.kind,
+        HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+    ));
+    let ResolvedTy::Function { capabilities, .. } = &mut callee.ty else {
+        panic!("projected receiver must have an erased callable type");
+    };
+    assert_eq!(capabilities.call, CallableCallMode::Read);
+    capabilities.call = CallableCallMode::Once;
+    let lowered = lower_module(&hir.module, &checked);
     assert!(lowered.statuses.iter().any(|status| {
         status.name == function && matches!(&status.status, SirLoweringStatus::Unsupported { reason } if reason.contains(code))
     }), "{:?}", lowered.statuses);
@@ -74,7 +130,7 @@ fn borrowed_once_record_fields_require_an_owned_destructure() {
 fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
     for clone in [false, true] {
         let source = format!("{} fn main() -> i64 {{ let value = Two {{ a: answer, b: sibling }}; let Two {{ a, b }} = value; let first = a(); first + b() }}", declarations(clone));
-        let lowered = lower(&source, false);
+        let lowered = lower(&source);
         assert!(
             lowered.statuses.iter().any(|status| status.name == "main"
                 && matches!(status.status, SirLoweringStatus::Lowered)),

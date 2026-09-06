@@ -1993,6 +1993,28 @@ fn first_let_value(result: &ParseResult) -> &Expr {
 }
 
 #[test]
+fn parse_send_description_and_existing_send_calls() {
+    let submitted =
+        parse("fn main() { let outcome = send policy(worker, on_full: .Wait).process(job); }");
+    assert!(submitted.errors.is_empty(), "{:?}", submitted.errors);
+    let Expr::Send(message) = first_let_value(&submitted) else {
+        panic!("expected submission prefix");
+    };
+    assert!(matches!(&message.0, Expr::MethodCall { method, .. } if method == "process"));
+    for source in [
+        "fn main() { let outcome = channel.send(value); }",
+        "fn main() { let outcome = send(value); }",
+    ] {
+        let call = parse(source);
+        assert!(call.errors.is_empty(), "{:?}", call.errors);
+        assert!(matches!(
+            first_let_value(&call),
+            Expr::Call { .. } | Expr::MethodCall { .. }
+        ));
+    }
+}
+
+#[test]
 fn parse_clone_prefix_expression() {
     let source = "fn main() { let a = clone x; }";
     let result = parse(source);

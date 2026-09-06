@@ -33,7 +33,16 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
-        .any(|op| matches!(op.kind, SemOpKind::TaskSpawn { .. }))
+        .any(|op| {
+            matches!(
+                op.kind,
+                SemOpKind::TaskSpawn { .. }
+                    | SemOpKind::TaskScopeEnter {
+                        duration: Some(_),
+                        ..
+                    }
+            )
+        })
     {
         return;
     }
@@ -60,11 +69,19 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
 
 impl Builder<'_, '_> {
     pub(super) fn enter_task_scope(&mut self) -> Result<TaskScopeId, String> {
+        self.enter_task_scope_with_deadline(None)
+    }
+
+    fn enter_task_scope_with_deadline(
+        &mut self,
+        duration: Option<Operand>,
+    ) -> Result<TaskScopeId, String> {
         let scope = TaskScopeId(self.ops);
         self.emit_place_operation(
             SemOpKind::TaskScopeEnter {
                 scope,
                 parent: self.task_scopes.last().map(|(scope, _)| *scope),
+                duration,
             },
             Provenance::Synthesized,
         )?;
@@ -113,9 +130,20 @@ impl Builder<'_, '_> {
     }
 
     pub(super) fn lower_task_scope(&mut self, body: &HirBlock) -> Result<Option<ValueId>, String> {
+        self.lower_task_scope_with_deadline(body, None)
+    }
+
+    pub(super) fn lower_task_scope_with_deadline(
+        &mut self,
+        body: &HirBlock,
+        duration: Option<&HirExpr>,
+    ) -> Result<Option<ValueId>, String> {
+        let duration = duration
+            .map(|duration| self.lower_expr(duration).map(|value| Operand { value }))
+            .transpose()?;
         let floor = self.scopes.len();
         self.scopes.push(Vec::new());
-        self.enter_task_scope()?;
+        self.enter_task_scope_with_deadline(duration)?;
         let result = self.lower_block(body, OwnedBindingUse::Return)?;
         if self.is_open() {
             if result

@@ -17,11 +17,11 @@
 //! import std.fs;
 //!
 //! fn load_config(path: string) -> Result<string, fs.IoError> {
-//!     fs.read(path)
+//!     await fs.read(path)
 //! }
 //!
 //! fn main() {
-//!     match load_config("config.toml") {
+//!     match await load_config("config.toml") {
 //!         .Ok(data) => println(data),
 //!         .Err(e) => {
 //!             match e {
@@ -32,6 +32,8 @@
 //!     }
 //! }
 //! ```
+
+import std.encoding.utf8;
 
 // ── Error type ───────────────────────────────────────────────────────
 /// Structured error type for file-system operations.
@@ -192,29 +194,17 @@ fn last_io_error() -> IoError {
 /// import std.fs;
 ///
 /// fn main() {
-///     match fs.read("main.hew") {
+///     match await fs.read("main.hew") {
 ///         .Ok(src) => println(src),
 ///         .Err(_) => println("could not read main.hew"),
 ///     }
 /// }
 /// ```
 pub fn read(file_path: string) -> Result<string, IoError> {
-    unsafe {
-        let file = hew_file_read_stream_open(file_path);
-        if hew_file_read_stream_is_valid(file) {
-            let contents = hew_file_read_stream_collect_string(file);
-            let failed = hew_stream_has_error();
-            let kind = hew_stream_last_error_kind() as i64;
-            let errno = hew_stream_last_errno();
-            let _ = hew_stream_last_error();
-            if failed {
-                Err(io_error_from_kind(kind, errno as i64))
-            } else {
-                Ok(contents)
-            }
-        } else {
-            Err(last_io_error())
-        }
+    let data = (await read_bytes(file_path))?;
+    match utf8.decode(data) {
+        .Ok(text) => Ok(text),
+        .Err(_) => Err(IoError.Other(0)),
     }
 }
 
@@ -223,7 +213,7 @@ pub fn read(file_path: string) -> Result<string, IoError> {
 /// Returns `Ok(())` on success.
 pub fn write(file_path: string, content: string) -> Result<(), IoError> {
     match unsafe {
-        hew_file_write(file_path, content)
+        await hew_file_write(file_path, content)
     } {
         0 => Ok(()),
         _ => Err(last_io_error()),
@@ -289,13 +279,13 @@ pub fn size(path: string) -> i64 {
 /// import std.fs;
 ///
 /// fn main() {
-///     let data = fs.read_bytes("image.png").unwrap();
+///     let data = (await fs.read_bytes("image.png")).unwrap();
 ///     println(data.len());
 /// }
 /// ```
 pub fn read_bytes(file_path: string) -> Result<bytes, IoError> {
     unsafe {
-        let data = hew_file_read_bytes(file_path);
+        let data = await hew_file_read_bytes(file_path);
         let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno();
         if errno != 0 {
@@ -319,7 +309,7 @@ pub fn read_bytes(file_path: string) -> Result<bytes, IoError> {
 /// Write a `bytes` value to a file, creating or overwriting it.
 pub fn write_bytes(file_path: string, data: bytes) -> Result<(), IoError> {
     match unsafe {
-        hew_file_write_bytes(file_path, data)
+        await hew_file_write_bytes(file_path, data)
     } {
         0 => Ok(()),
         _ => Err(last_io_error()),

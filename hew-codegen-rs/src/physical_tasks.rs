@@ -64,6 +64,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         scope: TaskScopeId,
         parent: Option<TaskScopeId>,
+        duration: Option<StorageId>,
     ) -> CodegenResult<()> {
         let token = if let Some(parent) = parent {
             self.task_pointer_call(
@@ -77,10 +78,37 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(self.task_scopes[&scope], handle)
             .llvm_ctx("retain lexical task scope")?;
+        let token = self.task_pointer_call("hew_task_scope_cancel_token", &[handle.into()])?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let enter = coro::external(
+            self.llvm,
+            "hew_coro_state_enter_token",
+            self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        self.builder
+            .build_call(enter, &[self.task_frame()?.state.into(), token.into()], "")
+            .llvm_ctx("enter lexical cancellation token")?;
+        if let Some(duration) = duration {
+            let arm = coro::external(
+                self.llvm,
+                "hew_checked_scope_deadline",
+                self.ctx
+                    .void_type()
+                    .fn_type(&[pointer.into(), self.ctx.i64_type().into()], false),
+            )?;
+            self.builder
+                .build_call(
+                    arm,
+                    &[handle.into(), self.load(duration, "scope.duration")?.into()],
+                    "",
+                )
+                .llvm_ctx("arm lexical deadline")?;
+        }
         Ok(())
     }
 
     pub(super) fn emit_task_scope_close(&self, scope: TaskScopeId) -> CodegenResult<()> {
+        self.free_handle("hew_coro_state_leave_token", self.task_frame()?.state)?;
         self.free_handle("hew_checked_scope_close", self.task_scope_handle(scope)?)
     }
 
@@ -208,7 +236,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("choose task result transfer")?;
         self.builder.position_at_end(abandoned);
         self.free_handle("hew_checked_task_wait_free", wait)?;
-        self.initialize_active_fault(hew_runtime::fault::HEW_FAULT_CANCELLED)?;
+        self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(take);
         let private_status = self.state_value("hew_checked_task_wait_private_status", wait)?;
@@ -391,7 +419,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(cancellation, cancelled, success)
             .llvm_ctx("dispatch parent cancellation")?;
         self.builder.position_at_end(cancelled);
-        self.initialize_active_fault(hew_runtime::fault::HEW_FAULT_CANCELLED)?;
+        self.initialize_cancellation_fault()?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(failure);
         self.emit_edge(unwind)?;

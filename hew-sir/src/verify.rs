@@ -2188,7 +2188,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
 fn is_initial_value_type(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(ty, ResolvedTy::Tuple(elements)
-            if !elements.is_empty() && elements.iter().all(is_initial_value_type))
+            if elements.iter().all(is_initial_value_type))
 }
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
@@ -2198,7 +2198,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
         || matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
-        || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
+        || matches!(ty, ResolvedTy::Tuple(_))
         || module.aggregate_shape_for_type(ty).is_some()
         || module.variant_shape_for_type(ty).is_some()
 }
@@ -2303,6 +2303,20 @@ fn verify_operation_shape(
             }
         }
         return;
+    }
+    if let SemOpKind::TaskScopeEnter {
+        duration: Some(duration),
+        ..
+    } = &operation.kind
+    {
+        if types.get(&duration.value) != Some(&ResolvedTy::Duration) {
+            invalid_operation(
+                function,
+                operation.id,
+                "scope deadline requires Duration".into(),
+                diagnostics,
+            );
+        }
     }
     if matches!(
         operation.kind,

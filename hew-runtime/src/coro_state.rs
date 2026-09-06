@@ -7,8 +7,8 @@
 
 use crate::task_scope::{
     hew_cancel_observe, hew_cancel_token_cancel, hew_cancel_token_is_requested,
-    hew_cancel_token_new_child, hew_cancel_token_release, hew_cancel_unobserve, HewCancelObserver,
-    HewCancellationToken,
+    hew_cancel_token_new_child, hew_cancel_token_release, hew_cancel_token_retain,
+    hew_cancel_unobserve, HewCancelObserver, HewCancellationToken,
 };
 use crate::wake::{HewWaker, OwnedWaker};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -30,6 +30,7 @@ pub enum CoroStatus {
 pub struct HewCoroState {
     waker: OwnedWaker,
     token: *mut HewCancellationToken,
+    enclosing_tokens: Vec<*mut HewCancellationToken>,
     observer: *mut HewCancelObserver,
     status: AtomicI32,
     private_status: AtomicI32,
@@ -41,6 +42,9 @@ impl Drop for HewCoroState {
         unsafe {
             hew_cancel_unobserve(self.observer);
             hew_cancel_token_release(self.token);
+            for token in self.enclosing_tokens.drain(..) {
+                hew_cancel_token_release(token);
+            }
         }
     }
 }
@@ -68,6 +72,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
     Box::into_raw(Box::new(HewCoroState {
         waker: retained,
         token,
+        enclosing_tokens: Vec::new(),
         observer,
         status: AtomicI32::new(CoroStatus::Pending as i32),
         private_status: AtomicI32::new(1),
@@ -132,6 +137,48 @@ pub unsafe extern "C" fn hew_coro_state_token(
     unsafe { (*state).token }
 }
 
+/// Enter a lexical cancellation boundary for this invocation's operations.
+///
+/// # Safety
+/// State is exclusively borrowed by its executing frame. Token is a live
+/// descendant of the current token. Every entry is paired with a leave after
+/// the scope's children and operation producers have drained.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_enter_token(
+    state: *mut HewCoroState,
+    token: *mut HewCancellationToken,
+) {
+    // SAFETY: the frame exclusively owns state and retains token during entry.
+    unsafe {
+        let state = &mut *state;
+        hew_cancel_token_retain(token);
+        hew_cancel_unobserve(state.observer);
+        state.enclosing_tokens.push(state.token);
+        state.token = token;
+        state.observer = hew_cancel_observe(token, state.waker.descriptor());
+    }
+}
+
+/// Restore the enclosing cancellation boundary after lexical cleanup.
+///
+/// # Safety
+/// State is exclusively borrowed by its executing frame and has a matching
+/// token entry. No operation still borrows the token being left.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_leave_token(state: *mut HewCoroState) {
+    // SAFETY: caller guarantees balanced entries and completed scope cleanup.
+    unsafe {
+        let state = &mut *state;
+        let Some(token) = state.enclosing_tokens.pop() else {
+            std::process::abort();
+        };
+        hew_cancel_unobserve(state.observer);
+        hew_cancel_token_release(state.token);
+        state.token = token;
+        state.observer = hew_cancel_observe(token, state.waker.descriptor());
+    }
+}
+
 /// Borrow the readiness descriptor for registration of an operation.
 ///
 /// # Safety
@@ -162,6 +209,22 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
     } else {
         // SAFETY: the state retains this non-null token through its observer.
         unsafe { hew_cancel_token_is_requested(token) }
+    }
+}
+
+/// Classify cancellation at the current lexical boundary for fault transport.
+///
+/// # Safety
+/// `state` is a live invocation state. Call after observing cancellation, or
+/// while cooperatively destroying its frame.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
+    // SAFETY: the live state's retained token owns its complete ancestry.
+    let reason = unsafe { crate::task_scope::cancel_token_reason((*state).token) };
+    if reason == crate::fault::HEW_FAULT_DEADLINE {
+        crate::fault::HEW_FAULT_DEADLINE
+    } else {
+        crate::fault::HEW_FAULT_CANCELLED
     }
 }
 
@@ -291,6 +354,40 @@ pub unsafe extern "C" fn hew_coro_state_resume_yield(state: *mut HewCoroState) -
 mod tests {
     use super::*;
     use crate::wake::blocking::Readiness;
+
+    #[test]
+    fn lexical_cancellation_reaches_nested_calls_then_restores_parent() {
+        let (_ready, waker) = Readiness::new();
+        // SAFETY: locally owned invocation and lexical tokens have balanced
+        // references; nested calls stop before their enclosing scope is left.
+        unsafe {
+            let state = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
+            let parent = hew_coro_state_token(state);
+            let lexical = hew_cancel_token_new_child(parent);
+            hew_coro_state_enter_token(state, lexical);
+            let child = hew_coro_state_child(state);
+            hew_cancel_token_cancel(lexical, crate::fault::HEW_FAULT_DEADLINE);
+            hew_cancel_token_cancel(lexical, 1);
+            assert_eq!(hew_coro_state_is_cancelled(state), 1);
+            assert_eq!(hew_coro_state_is_cancelled(child), 1);
+            assert_eq!(
+                hew_coro_state_cancel_code(child),
+                crate::fault::HEW_FAULT_DEADLINE
+            );
+            assert_eq!(hew_cancel_token_is_requested(parent), 0);
+            hew_coro_state_free(child);
+            hew_coro_state_leave_token(state);
+            hew_cancel_token_release(lexical);
+            assert_eq!(hew_coro_state_is_cancelled(state), 0);
+            hew_cancel_token_cancel(parent, 1);
+            assert_eq!(hew_coro_state_is_cancelled(state), 1);
+            assert_eq!(
+                hew_coro_state_cancel_code(state),
+                crate::fault::HEW_FAULT_CANCELLED
+            );
+            hew_coro_state_free(state);
+        }
+    }
 
     #[test]
     fn cancelled_invocation_keeps_token_alive_and_late_wake_survives_teardown() {

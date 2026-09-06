@@ -577,6 +577,7 @@ pub enum PhysicalOp {
     TaskScopeEnter {
         scope: hew_sir::TaskScopeId,
         parent: Option<hew_sir::TaskScopeId>,
+        duration: Option<StorageId>,
     },
     TaskScopeClose {
         scope: hew_sir::TaskScopeId,
@@ -1437,7 +1438,7 @@ fn aggregate_shape_ref(
     ty: &ResolvedTy,
 ) -> Result<AggregateShapeRef, PhysicalError> {
     match ty {
-        ResolvedTy::Tuple(fields) if !fields.is_empty() => Ok(AggregateShapeRef::Tuple),
+        ResolvedTy::Tuple(_) => Ok(AggregateShapeRef::Tuple),
         _ => module
             .aggregate_shape_for_type(ty)
             .map(|shape| AggregateShapeRef::Record(shape.id))
@@ -1697,7 +1698,7 @@ fn collect_inventory_type(
         return;
     }
     let fields = match ty {
-        ResolvedTy::Tuple(fields) if !fields.is_empty() => Some(fields.clone()),
+        ResolvedTy::Tuple(fields) => Some(fields.clone()),
         _ => module
             .aggregate_shape_for_type(ty)
             .map(|shape| shape.fields.iter().map(|field| field.ty.clone()).collect()),
@@ -2226,9 +2227,17 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 callee: *callable,
             }),
-            SemOpKind::TaskScopeEnter { scope, parent } => one(PhysicalOp::TaskScopeEnter {
+            SemOpKind::TaskScopeEnter {
+                scope,
+                parent,
+                duration,
+            } => one(PhysicalOp::TaskScopeEnter {
                 scope: *scope,
                 parent: *parent,
+                duration: duration
+                    .as_ref()
+                    .map(|duration| self.value(duration.value))
+                    .transpose()?,
             }),
             SemOpKind::TaskScopeClose { scope } => {
                 one(PhysicalOp::TaskScopeClose { scope: *scope })
@@ -2472,7 +2481,7 @@ impl FunctionLowerer<'_> {
                 unwind,
                 ..
             } => Ok(PhysicalTerminator::ActorCall {
-                operation: *operation,
+                operation: operation.clone(),
                 args: self.argument_transfers(args)?,
                 result: match result {
                     CallResult::Unit => None,
@@ -4039,7 +4048,16 @@ fn verify_operation_storage(
 ) -> Result<(), PhysicalError> {
     match operation {
         PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
-        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskScopeEnter { duration, .. } => {
+            if let Some(duration) = duration {
+                if storage(function, *duration)?.ty != ResolvedTy::Duration {
+                    return Err(PhysicalError::new(
+                        "scope deadline requires Duration storage",
+                    ));
+                }
+            }
+        }
+        PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::TaskSpawn {
             callable,
             dest,
@@ -4581,7 +4599,12 @@ fn apply_operation(
             }
             state.defers.register(*defer, *scope, dependencies)?;
         }
-        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskScopeEnter { duration, .. } => {
+            if let Some(duration) = duration {
+                initialized(function, state, *duration, block, "scope deadline")?;
+            }
+        }
+        PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::GeneratorMake { callable, dest, .. }
         | PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;
@@ -5602,7 +5625,7 @@ fn verify_terminator(
             normal,
             unwind,
         } => {
-            let signature = actor_signature(module, *operation)?;
+            let signature = actor_signature(module, operation)?;
             if args.len() != signature.params.len() {
                 return Err(PhysicalError::new(
                     "actor boundary argument count differs from protocol",
@@ -6027,7 +6050,7 @@ fn callable_for(
 /// Refuses missing actor declarations, handlers or initializer callables.
 pub fn actor_signature(
     module: &PhysicalModule,
-    operation: hew_sir::ActorOperation,
+    operation: &hew_sir::ActorOperation,
 ) -> Result<hew_sir::SemSignature, PhysicalError> {
     operation
         .signature(&module.actors, |id| {

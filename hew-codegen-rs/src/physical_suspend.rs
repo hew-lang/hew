@@ -300,15 +300,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(completed);
         self.free_handle("hew_coro_sleep_free", operation)?;
         self.emit_edge(normal)?;
-        for (block, edge, code) in [
-            (cancelled, cancel, hew_runtime::fault::HEW_FAULT_CANCELLED),
-            (failed, unwind, HEW_TRAP_USER_PANIC),
-        ] {
-            self.builder.position_at_end(block);
-            self.free_handle("hew_coro_sleep_free", operation)?;
-            self.initialize_active_fault(code)?;
-            self.emit_edge(edge)?;
-        }
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_coro_sleep_free", operation)?;
+        self.initialize_cancellation_fault()?;
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(failed);
+        self.free_handle("hew_coro_sleep_free", operation)?;
+        self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)?;
         Ok(())
     }
 

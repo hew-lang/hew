@@ -63,9 +63,9 @@ fn main() {
     let recorder = spawn Recorder(label: prefix);
     prefix = "changed:";
     var message = "one";
-    recorder.append(message);
+    let _ = send recorder.append(message);
     message = message + "two";
-    recorder.append(message);
+    let _ = send recorder.append(message);
 }
 "#,
         "original:one\noriginal:oneonetwo\n",
@@ -89,7 +89,7 @@ type Directory {
 }
 fn deliver(directory: Directory) {
     for ledger in directory.ledgers {
-        ledger.add(3);
+        let _ = send ledger.add(3);
     }
 }
 fn main() {
@@ -121,7 +121,7 @@ fn initializer_finishes_before_message_delivery() {
 }
 fn main() {
     let recorder = spawn Recorder(initial: "ready:");
-    recorder.append("done");
+    let _ = send recorder.append("done");
 }
 "#,
         "boot:ready:done\n",
@@ -142,7 +142,7 @@ actor Ordered {
 }
 fn main() {
     let ordered = spawn Ordered(second: mark("second"), first: mark("first"));
-    ordered.show();
+    let _ = send ordered.show();
 }
 "#,
         "second\nfirst\ndefault\nfirstseconddefault\n",
@@ -165,7 +165,7 @@ fn handler_fault_runs_message_and_state_defers() {
 }
 fn main() {
     let worker = spawn Worker(label: "initial");
-    worker.fail("message-cleanup");
+    let _ = send worker.fail("message-cleanup");
 }
 "#,
         "message-cleanup\nactor-cleanup\n",
@@ -189,11 +189,132 @@ fn initializer_fault_cleans_state_and_root_before_publication() {
 fn main() {
     defer { println("root-cleanup"); }
     let broken = spawn Broken(message: "init-cleanup".to_upper());
-    broken.show();
+    let _ = send broken.show();
 }
 "#,
         "INIT-CLEANUP\nroot-cleanup\n",
         212,
         "UserPanic",
+    );
+}
+
+#[test]
+fn description_readdress_preserves_the_owned_payload() {
+    run_actor(
+        r#"type Parcel { label: string, notes: Vec<string> }
+fn payload() -> Parcel { Parcel { label: "payload".to_upper(), notes: ["owned".to_upper()] } }
+actor Worker {
+    var name: string,
+    receive fn process(parcel: Parcel) { println(name + parcel.label + ":" + parcel.notes[0]); }
+}
+fn main() {
+    let primary = spawn Worker(name: "wrong:");
+    let backup = spawn Worker(name: "backup:");
+    let message = primary.process(payload());
+    println("constructed");
+    let readdressed = message.to(backup);
+    let _ = send readdressed;
+}
+"#,
+        "constructed\nbackup:PAYLOAD:OWNED\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn unsubmitted_description_does_not_run_the_handler() {
+    run_actor(
+        r#"type Parcel { label: string, notes: Vec<string> }
+fn payload() -> Parcel { Parcel { label: "payload".to_upper(), notes: ["owned".to_upper()] } }
+actor Worker { receive fn process(_parcel: Parcel) { println("must-not-run"); } }
+fn main() {
+    let worker = spawn Worker();
+    let _message = worker.process(payload());
+    println("constructed");
+}
+"#,
+        "constructed\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn receive_arguments_evaluate_in_source_order_before_protocol_ordering() {
+    run_actor(
+        r#"fn number() -> i64 { println("number"); 7 }
+fn text() -> string { println("text"); "payload" }
+actor Worker { receive fn process(number: i64, text: string) { println(number); println(text); } }
+fn main() {
+    let worker = spawn Worker();
+    let _ = send worker.process(text: text(), number: number());
+}
+"#,
+        "text\nnumber\n7\npayload\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn failure_carrier_transfers_its_owned_message_field() {
+    run_actor(
+        r#"type Parcel { label: string, notes: Vec<string> }
+fn payload() -> Parcel { Parcel { label: "payload".to_upper(), notes: ["owned".to_upper()] } }
+actor Worker { receive fn process(parcel: Parcel) { println(parcel.label + ":" + parcel.notes[0]); } }
+fn main() {
+    let worker = spawn Worker();
+    let pending = worker.process(payload());
+    let failure = SendFailure { reason: .Full, message: pending };
+    let _ = send failure.message;
+}
+"#,
+        "PAYLOAD:OWNED\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn full_mailbox_returns_message_for_retry_and_explicit_discard_drops_it() {
+    run_actor(
+        r#"type Parcel { label: string, notes: Vec<string> }
+fn payload(label: string) -> Parcel {
+    Parcel { label: label.to_upper(), notes: ["owned".to_upper()] }
+}
+actor Worker {
+    mailbox 1,
+    receive fn process(parcel: Parcel) {
+        if parcel.label == "RETRY" { println(parcel.label + ":" + parcel.notes[0]); }
+    }
+    receive fn exercise(me: LocalPid<Worker>, backup: LocalPid<Worker>) {
+        let _ = send me.process(payload("filler"));
+        let newest = policy(me, on_full: .DropNewest);
+        match send newest.process(payload("discard")) {
+            .Ok(.Discarded) => println("discarded"),
+            _ => panic("expected explicit discard"),
+        }
+        match send me.process(payload("retry")) {
+            .Err(rejected) => {
+                match rejected.reason {
+                    .Full => println("full"),
+                    _ => panic("expected full mailbox"),
+                }
+                let _ = send rejected.message.to(backup);
+            }
+            .Ok(_) => panic("expected rejection"),
+        }
+    }
+}
+fn main() {
+    let worker = spawn Worker();
+    let backup = spawn Worker();
+    let _ = send worker.exercise(worker, backup);
+}
+"#,
+        "discarded\nfull\nRETRY:OWNED\n",
+        0,
+        "",
     );
 }

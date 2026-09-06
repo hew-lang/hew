@@ -223,16 +223,11 @@ impl<'src> Parser<'src> {
 
     /// Whether the current position is a contextual `clone <operand>` prefix.
     ///
-    /// True only when the current token is the identifier `clone` AND the next
-    /// token begins an operand (`token_begins_clone_operand`). When `clone` is
-    /// followed by a continuation token (`.`, `(`, `[`, `?`, an infix operator,
-    /// or a terminator) it stays an ordinary identifier — so `x.clone()`,
-    /// `fn clone(...)`, and `clone(args)` are unaffected. The adjacency check
-    /// is precedence-free: `clone x` was always a parse error before (two
-    /// adjacent primaries), so repurposing it cannot change the meaning of any
-    /// previously valid program.
-    pub(crate) fn peek_is_clone_prefix(&self) -> bool {
-        matches!(self.peek(), Some(Token::Identifier(name)) if *name == "clone")
+    /// Recognize a contextual value prefix followed by an operand. Method and
+    /// function uses keep their ordinary spelling: `x.send()` and `send(x)`
+    /// remain calls, while `send x.message()` submits the description.
+    pub(crate) fn peek_is_value_prefix(&self, prefix: &str) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == prefix)
             && self
                 .peek_at(self.pos + 1)
                 .is_some_and(token_begins_clone_operand)

@@ -25,7 +25,7 @@ pub(crate) fn verify(function: &SemFunction) -> Result<(), String> {
         let mut stack = entries[&id].clone();
         for op in &block.ops {
             match op.kind {
-                SemOpKind::TaskScopeEnter { scope, parent } => {
+                SemOpKind::TaskScopeEnter { scope, parent, .. } => {
                     if stack.last().map(|(id, _)| *id) != parent
                         || stack.iter().any(|(id, _)| *id == scope)
                     {

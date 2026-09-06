@@ -190,13 +190,13 @@ impl Checker {
         let ty = self.synthesize(expr, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
         if matches!(
-            self.actor_method_dispatch.get(&key),
-            Some(ActorMethodKind::CheckedFire(_))
+            self.actor_delivery_calls.get(&key),
+            Some(crate::actor_delivery::ActorDeliveryCall::Submit { .. })
         ) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "policy-sensitive actor send result must be handled; use `?`, `match`, or an explicit `let _ = ...` acknowledgment"
+                "actor send result must be handled; use `?`, `match`, or an explicit `let _ = ...` acknowledgment"
                     .to_string(),
             );
         }

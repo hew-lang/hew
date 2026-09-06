@@ -36,7 +36,7 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
 fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
     out.push(expr);
     match &expr.kind {
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             visit_expr(callee, out);
             for arg in args {
                 visit_expr(arg, out);
@@ -47,7 +47,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(arg, out);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -99,10 +100,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(operand, out);
         }
         HirExprKind::SubsumedValue { source, .. } => visit_expr(source, out),
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 visit_expr(elem, out);
             }
@@ -339,9 +337,9 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorSend { method_id, .. } if method_id == "Counter::increment"
+            HirExprKind::ActorMessage { method_id, .. } if method_id == "Counter::increment"
         )),
-        "c.increment(10) should lower to HirExprKind::ActorSend: {:#?}",
+        "c.increment(10) should lower to HirExprKind::ActorMessage: {:#?}",
         main.body
     );
     assert!(

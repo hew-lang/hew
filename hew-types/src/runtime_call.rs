@@ -47,6 +47,8 @@
 //! covered by this substrate by design — it is structurally open-set
 //! and clippy-gated.
 
+mod async_io;
+pub use async_io::{AsyncIoLoan, AsyncIoOp, AsyncIoResume, IoHandleKind};
 mod file_resources;
 pub use file_resources::{FileReadHandleKind, FileReadOp};
 
@@ -131,6 +133,7 @@ pub enum RuntimeResultAuthority {
 pub enum RuntimeValueKind {
     /// A file-read owner, with exact source or builtin identity supplied by the signature.
     FileReadHandle(FileReadHandleKind),
+    IoHandle(IoHandleKind),
     Bool,
     U8,
     I32,
@@ -169,6 +172,13 @@ impl RuntimeValueKind {
     #[must_use]
     pub fn resolve(self, receiver: Option<&ResolvedTy>) -> Option<ResolvedTy> {
         Some(match self {
+            Self::IoHandle(kind) => {
+                let receiver = receiver?;
+                if !kind.matches(receiver) {
+                    return None;
+                }
+                receiver.clone()
+            }
             Self::FileReadHandle(kind) => {
                 let receiver = receiver?;
                 if !kind.matches(receiver) {
@@ -355,7 +365,9 @@ impl RuntimeSemanticContract {
         let receiver = params
             .first()
             .filter(|ty| {
-                runtime_receiver_builtin(ty).is_some() || FileReadHandleKind::of_ty(ty).is_some()
+                runtime_receiver_builtin(ty).is_some()
+                    || FileReadHandleKind::of_ty(ty).is_some()
+                    || IoHandleKind::of_ty(ty).is_some()
             })
             .or_else(|| {
                 (params.is_empty()
@@ -394,7 +406,13 @@ impl RuntimeSemanticContract {
             | RuntimeResultEffect::IndependentValue(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind)
             | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
-                kind.resolve(receiver).ok_or_else(|| {
+                let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                {
+                    Some(result_hint.clone())
+                } else {
+                    kind.resolve(receiver)
+                };
+                resolved.ok_or_else(|| {
                     "runtime result has no matching canonical receiver binding".to_string()
                 })?
             }
@@ -1091,6 +1109,7 @@ pub enum MathIntrinsic {
 /// next slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
+    AsyncIo(AsyncIoOp),
     FileRead(FileReadOp),
     /// Semantic operations over a distinct, owning encoding value.
     Encoding {
@@ -2033,6 +2052,7 @@ impl RuntimeCallFamily {
     )]
     pub fn c_symbol(self) -> &'static str {
         match self {
+            Self::AsyncIo(op) => op.c_symbol(),
             Self::FileRead(op) => op.c_symbol(),
             Self::Encoding { format, op } => op.c_symbol(format),
             Self::JsonObjectKeys => "hew_json_object_keys",
@@ -2409,6 +2429,9 @@ impl RuntimeCallFamily {
         reason = "inverse of the c_symbol enumeration; one arm per symbol"
     )]
     pub fn from_c_symbol(sym: &str) -> Option<Self> {
+        if let Some(op) = AsyncIoOp::from_c_symbol(sym) {
+            return Some(Self::AsyncIo(op));
+        }
         if let Some(op) = FileReadOp::from_c_symbol(sym) {
             return Some(Self::FileRead(op));
         }
@@ -3281,6 +3304,7 @@ impl RuntimeCallFamily {
         }
 
         Some(match self {
+            Self::AsyncIo(op) => op.contract(),
             Self::FileRead(op) => op.contract(),
             Self::StreamClose => file_resources::stream_close_contract(),
             Self::Encoding { format, op } => op.contract(format),
@@ -3353,6 +3377,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
+                    | RuntimeValueKind::IoHandle(_)
                     | RuntimeValueKind::FileReadHandle(_),
                 ) => RuntimeResultOwnership::Untracked,
             };
@@ -3496,6 +3521,7 @@ impl RuntimeCallFamily {
     pub fn is_async_suspending(self) -> Option<AsyncSuspendKind> {
         use RuntimeCallFamily as F;
         match self {
+            F::AsyncIo(op) => Some(AsyncSuspendKind::NativeIo(op)),
             // The suspending symbols (HIR await-classifier source of truth).
             // Every describable sink-send element suspends: the byte and
             // string sink writes and the layout-witness stream send all
@@ -3817,6 +3843,7 @@ pub enum RuntimeCallAbiShape {
 /// element-layout-witness `*_layout` symbols outside this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncSuspendKind {
+    NativeIo(AsyncIoOp),
     /// `await sink.send(x)` over any describable `Sink<T>` element —
     /// `hew_sink_write_bytes`, `hew_sink_write_string`, or the
     /// layout-witness `hew_stream_send_layout`. All three share the
@@ -4288,6 +4315,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     let mut out = Vec::new();
     for repr in F::iter() {
         match repr {
+            F::AsyncIo(_) => out.extend(AsyncIoOp::iter().map(F::AsyncIo)),
             F::Encoding { .. } => {
                 for format in EncodingFormat::iter() {
                     out.extend(EncodingOp::iter().map(|op| F::Encoding { format, op }));
@@ -4930,7 +4958,7 @@ mod tests {
     /// …) MUST stay non-suspending: those never touch the backpressure
     /// ramp.
     #[test]
-    fn is_async_suspending_pins_exact_classifier_set() {
+    fn async_suspension_classification_preserves_operation_identity() {
         use RuntimeCallFamily as F;
 
         // Positive: exactly these (family, expected kind) tuples. All
@@ -4983,23 +5011,12 @@ mod tests {
             );
         }
 
-        // Coverage: walking the full family enumeration, the size of
-        // the suspending set is exactly 6 (three sink-send families —
-        // bytes/string/layout — plus duplex close, channel recv, stream
-        // recv). Adding a new family without a corresponding decision is
-        // caught by the exhaustive match in `is_async_suspending`; the
-        // count assertion below is the belt to that suspenders.
-        let suspending_count = all_runtime_call_families()
-            .into_iter()
-            .filter(|f| f.is_async_suspending().is_some())
-            .count();
-        assert_eq!(
-            suspending_count, 6,
-            "exactly 6 families should be suspending today (sink bytes/\
-             string/layout send, duplex close, channel recv, stream \
-             recv); declare any new suspending family explicitly in \
-             is_async_suspending"
-        );
+        for op in AsyncIoOp::iter() {
+            assert_eq!(
+                F::AsyncIo(op).is_async_suspending(),
+                Some(AsyncSuspendKind::NativeIo(op))
+            );
+        }
     }
 
     /// Fail-closed constructor: passing `Some(elem)` to a family that

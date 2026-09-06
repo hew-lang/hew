@@ -607,9 +607,6 @@ fn require_aggregate_shape(
 ) -> Result<AggregateShapeRef, String> {
     require_type_facts(facts, aggregate_ty)?;
     if let ResolvedTy::Tuple(fields) = aggregate_ty {
-        if fields.is_empty() {
-            return Err("empty tuples have no owned aggregate shape".to_string());
-        }
         for field in fields {
             require_type_facts(facts, field)?;
         }
@@ -659,6 +656,28 @@ fn concrete_builtin_variant_shape(
     args: &[ResolvedTy],
     builtin: hew_types::BuiltinType,
 ) -> Result<(bool, Vec<SemVariant>), String> {
+    if let ResolvedTy::Named { name, .. } = enum_ty {
+        if args.is_empty()
+            && hew_types::builtin_enums::has_exact_monomorphic_builtin_enum_identity(
+                name,
+                Some(builtin),
+            )
+        {
+            let declaration = hew_types::builtin_enums::monomorphic_builtin_enum(name)
+                .ok_or("canonical builtin enum lost its source declaration")?;
+            return Ok((
+                false,
+                declaration
+                    .variants
+                    .iter()
+                    .map(|variant| SemVariant {
+                        name: variant.name.to_string(),
+                        fields: Vec::new(),
+                    })
+                    .collect(),
+            ));
+        }
+    }
     let expected_origin = match builtin {
         hew_types::BuiltinType::Option => "Option",
         hew_types::BuiltinType::Result => "Result",
@@ -2026,8 +2045,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
 }
 
 fn is_concrete_aggregate_type(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
-        || concrete_record_fields(facts, ty).is_ok()
+    matches!(ty, ResolvedTy::Tuple(_)) || concrete_record_fields(facts, ty).is_ok()
 }
 
 fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
@@ -2054,7 +2072,7 @@ fn is_supported_call_return(module: &HirModule, facts: &TypeFactService, ty: &Re
 fn is_initial_value_type(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(ty, ResolvedTy::Tuple(elements)
-            if !elements.is_empty() && elements.iter().all(is_initial_value_type))
+            if elements.iter().all(is_initial_value_type))
 }
 
 fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
@@ -3272,7 +3290,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                                 self,
                                 expr,
                                 "binding initializer",
-                                OwnedBindingUse::Copy,
+                                if binding.is_consume {
+                                    OwnedBindingUse::Move
+                                } else {
+                                    OwnedBindingUse::Copy
+                                },
                             )
                         })
                         .transpose()?
@@ -3589,6 +3611,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_task_scope(body)?;
                 return Ok(());
             }
+            HirExprKind::ScopeDeadline { duration, body }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
+                self.lower_task_scope_with_deadline(body, Some(duration))?;
+                return Ok(());
+            }
             HirExprKind::SubsumedValue { source } => {
                 if self.ty(&source.ty) != self.ty(&expr.ty) {
                     return Err(
@@ -3613,7 +3641,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_expression: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         match &expr.kind {
-            HirExprKind::ActorSend { .. } => return self.lower_actor_boundary(expr).map(|_| ()),
             HirExprKind::Block(block) => {
                 if let Some(value) = self.lower_scoped_block(block, OwnedBindingUse::Copy)? {
                     if self.owned_live.contains_key(&value.value)
@@ -3802,6 +3829,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent scope cannot produce a SIR value".into()),
             },
+            HirExprKind::ScopeDeadline { duration, body } => {
+                match self.lower_task_scope_with_deadline(body, Some(duration))? {
+                    Some(value) => Ok(value),
+                    None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                    None => Err("divergent scope cannot produce a SIR value".into()),
+                }
+            }
             HirExprKind::RecordCloneCall { src, .. }
                 if matches!(
                     self.ty(&src.ty),
@@ -3817,6 +3851,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::Spawn { .. } => self
                 .lower_actor_boundary(expr)?
                 .ok_or_else(|| "actor spawn lacks its handle result".into()),
+            HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
+            HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {

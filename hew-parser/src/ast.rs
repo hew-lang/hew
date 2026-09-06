@@ -416,6 +416,9 @@ pub enum Expr {
     },
     Await(Box<Spanned<Expr>>),
 
+    /// Submit an owned actor message description and return its delivery result.
+    Send(Box<Spanned<Expr>>),
+
     /// `await_restart <supervised-child>` — suspend the current actor until the
     /// named supervised child's slot is Live again (it restarted), then resume
     /// with the same stable `ChildRef<ChildType>`. A dedicated prefix

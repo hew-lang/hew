@@ -142,9 +142,17 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
     }
     match &op.kind {
-        SemOpKind::TaskScopeEnter { scope, parent } => {
-            writeln!(out, "task_scope.enter #{} parent {:?}", scope.0, parent)
-                .expect("write to String");
+        SemOpKind::TaskScopeEnter {
+            scope,
+            parent,
+            duration,
+        } => {
+            writeln!(
+                out,
+                "task_scope.enter #{} parent {:?} duration {:?}",
+                scope.0, parent, duration
+            )
+            .expect("write to String");
         }
         SemOpKind::TaskScopeClose { scope } => {
             writeln!(out, "task_scope.close #{}", scope.0).expect("write to String");

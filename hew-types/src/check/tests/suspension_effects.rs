@@ -2,6 +2,152 @@ use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
 #[test]
+fn actor_ask_task_boundaries_preserve_reply_and_transport_errors() {
+    let source = r"
+actor Worker {
+    receive fn value() -> i64 { 41 }
+    receive fn checked() -> Result<i64, string> { Ok(41) }
+}
+fn main() {
+    let worker = spawn Worker();
+    let direct = await worker.value();
+    let child = fork worker.value();
+    let joined = await child;
+    let checked = fork worker.checked();
+    let checked_joined = await checked;
+    let batch = fork (worker.value(), worker.checked());
+    let batch_joined = await batch;
+    let values = fork [worker.value(), worker.value()];
+    let values_joined = await values;
+    let selected = select { value = await worker.value() => value };
+    let callback = actor |n: i64| -> i64 { n };
+    let callback_direct = await callback(1);
+    let callback_child = fork callback(2);
+    let callback_joined = await callback_child;
+}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let reply = crate::Ty::result(crate::Ty::I64, crate::Ty::ask_error());
+    let checked_reply = crate::Ty::result(
+        crate::Ty::result(crate::Ty::I64, crate::Ty::String),
+        crate::Ty::ask_error(),
+    );
+    for (expression, expected) in [
+        ("worker.value()", reply.clone()),
+        ("await worker.value()", reply.clone()),
+        (
+            "fork worker.value()",
+            crate::Ty::Task(Box::new(reply.clone())),
+        ),
+        ("await child", reply.clone()),
+        ("await checked", checked_reply.clone()),
+        (
+            "await batch",
+            crate::Ty::Tuple(vec![reply.clone(), checked_reply]),
+        ),
+        (
+            "await values",
+            crate::Ty::Named {
+                name: "Vec".into(),
+                builtin: Some(crate::BuiltinType::Vec),
+                args: vec![reply.clone()],
+            },
+        ),
+        (
+            "select { value = await worker.value() => value }",
+            reply.clone(),
+        ),
+        ("await callback(1)", reply.clone()),
+        ("fork callback(2)", crate::Ty::Task(Box::new(reply.clone()))),
+        ("await callback_child", reply),
+    ] {
+        let start = source.find(expression).unwrap();
+        assert_eq!(
+            output.expr_types.get(&crate::check::SpanKey::in_module(
+                &(start..start + expression.len()),
+                0
+            )),
+            Some(&expected),
+            "{expression}"
+        );
+    }
+    let captures: Vec<_> = output
+        .suspension_effects
+        .fork_transfers
+        .iter()
+        .filter(|(key, _)| &source[key.start..key.end] == "worker")
+        .collect();
+    assert_eq!(captures.len(), 6);
+    for (_, fact) in captures {
+        assert_eq!(fact.acquisition, crate::ClosureCaptureAcquisition::Snapshot);
+        assert!(fact.is_send && fact.is_sync);
+    }
+}
+
+#[test]
+fn fork_task_boundary_moves_nominal_resources_and_rejects_borrowed_views() {
+    let source = "#[resource] type Socket { fd: i64 } fn read(socket: Socket) -> i64 { socket.fd } fn main() { let socket = Socket { fd: 1 }; let child = fork read(socket); let result = await child; }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .suspension_effects
+        .fork_transfers
+        .iter()
+        .any(|(key, fact)| &source[key.start..key.end] == "socket"
+            && fact.acquisition == crate::ClosureCaptureAcquisition::Move
+            && fact.is_send));
+    for (source, expected) in [
+        ("#[resource] type Socket { fd: i64 } fn read(socket: Socket) -> i64 { socket.fd } fn launch(socket: Socket) { let child = fork read(socket); } fn main() {}", crate::error::TypeErrorKind::OwnConsumeBorrowed),
+        ("#[resource] type Socket { fd: i64 } fn read(socket: Socket) -> i64 { socket.fd } fn main() { let socket = Socket { fd: 1 }; let child = fork read(socket); println(socket.fd); }", crate::error::TypeErrorKind::UseAfterMove),
+        ("extern \"C\" { fn get() -> &i64; fn read(value: &i64) -> i64; } fn main() { unsafe { let view = get(); let child = fork read(view); } }", crate::error::TypeErrorKind::InvalidSend),
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.iter().any(|error| error.kind == expected), "{source}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn actor_ask_task_boundary_transfers_resources_once() {
+    let source = r"
+#[resource] type Socket { fd: i64 }
+impl Socket { fn detach(consuming self) -> i64 { self.fd } }
+actor Worker { receive fn read(socket: Socket) -> i64 { socket.detach() } }
+fn main() {
+    let worker = spawn Worker();
+    let socket = Socket { fd: 1 };
+    let child = fork worker.read(socket);
+    let result = await child;
+    let second = Socket { fd: 2 };
+    let third = Socket { fd: 3 };
+    let batch = fork (worker.read(second), worker.read(third));
+    let results = await batch;
+}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for name in ["socket", "second", "third"] {
+        assert!(output
+            .suspension_effects
+            .fork_transfers
+            .iter()
+            .any(|(key, fact)| &source[key.start..key.end] == name
+                && fact.acquisition == crate::ClosureCaptureAcquisition::Move));
+    }
+    let source = source.replace("worker.read(third)", "worker.read(second)");
+    let output = check_source(&source);
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            error.kind,
+            crate::error::TypeErrorKind::UseAfterMove
+                | crate::error::TypeErrorKind::UseAfterConsume
+        )),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn select_join_ignores_a_diverging_winner() {
     let output = check_source("fn choose() -> i64 { let first = fork { 41 }; let second = fork { 0 }; select { a = await first => return a, b = await second => b }; await first } fn main() {} ");
     assert!(output.errors.is_empty(), "{:?}", output.errors);

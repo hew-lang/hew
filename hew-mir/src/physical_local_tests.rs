@@ -254,6 +254,50 @@ fn certified_cleanup_can_cross_a_finite_diamond_but_cannot_escape_or_cycle() {
 }
 
 #[test]
+fn certified_fault_cleanup_drains_tasks_without_admitting_ordinary_continuation() {
+    let mut module = fixture(Case::LinearTrap);
+    let function = probe(&mut module);
+    let edge = PhysicalEdge {
+        target: BlockId(1),
+        transfers: vec![],
+        leaf_transfers: vec![],
+    };
+    function.blocks[0].terminator = PhysicalTerminator::TaskScopeJoin {
+        scope: TaskScopeId(0),
+        cancel: true,
+        normal: edge.clone(),
+        unwind: edge,
+    };
+    function.blocks.push(PhysicalBlock {
+        id: BlockId(1),
+        arguments: vec![],
+        ops: vec![PhysicalOp::TaskScopeClose {
+            scope: TaskScopeId(0),
+        }],
+        terminator: PhysicalTerminator::PropagateFault,
+    });
+    // Scope ancestry and fault availability have separate physical analyses.
+    // This refinement must retain its incoming-fault obligation across a drain.
+    let needs_fault = partial::verify_trap_cleanup_refinement(function).unwrap();
+    assert!(needs_fault.contains(&BlockId(0)));
+    assert!(needs_fault.contains(&BlockId(1)));
+
+    for ordinary_join in [false, true] {
+        let mut broken = function.clone();
+        if ordinary_join {
+            let PhysicalTerminator::TaskScopeJoin { cancel, .. } = &mut broken.blocks[0].terminator
+            else {
+                panic!("task drain")
+            };
+            *cancel = false;
+        } else {
+            broken.blocks[1].terminator = PhysicalTerminator::Return { value: None };
+        }
+        assert!(partial::verify_trap_cleanup_refinement(&broken).is_err());
+    }
+}
+
+#[test]
 fn expanded_local_partitions_refuse_missing_zero_sized_cells_and_synthetic_root_bits() {
     let semantic = partial_fixture::local_module(partial_fixture::Case::MixedReplacement);
     let module = lower_physical_module(&semantic, target_for_inventory(&semantic))

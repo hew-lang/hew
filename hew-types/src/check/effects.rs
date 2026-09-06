@@ -325,7 +325,6 @@ impl Checker {
     }
 
     /// Consume the actor policy checker's immutable submission verdict.
-    #[allow(dead_code, reason = "actor policy checker integration hook")]
     pub(super) fn record_submission_suspension(&mut self, span: &Span, may_suspend: bool) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.suspension_operands.insert(key.clone());
@@ -406,11 +405,14 @@ impl Checker {
             _ => None,
         }
         .or_else(|| {
-            (!matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }))
-                .then(|| self.direct_call_targets.get(&key))
-                .flatten()
-                .cloned()
-                .map(CallableOrigin::Target)
+            (!matches!(
+                expr,
+                Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
+            ))
+            .then(|| self.direct_call_targets.get(&key))
+            .flatten()
+            .cloned()
+            .map(CallableOrigin::Target)
         })
     }
 
@@ -428,8 +430,13 @@ impl Checker {
             || self.resolved_calls.contains_key(&key)
             || self.method_call_rewrites.contains_key(&key)
             || self.dyn_trait_method_calls.contains_key(&key)
-            || self.actor_method_dispatch.contains_key(&key);
-        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) && checked_invocation {
+            || self.actor_method_dispatch.contains_key(&key)
+            || self.actor_delivery_calls.contains_key(&key);
+        if matches!(
+            expr,
+            Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
+        ) && checked_invocation
+        {
             let origin = match expr {
                 Expr::Call { function, .. } => {
                     self.expression_callable_origin(&function.0, &function.1)
@@ -509,7 +516,10 @@ impl Checker {
         // the child callable's own effect. Awaiting an ordinary call instead
         // takes its effect from the invocation edge below.
         let intrinsic = match expr {
-            Expr::Await(inner) => !matches!(inner.0, Expr::Call { .. } | Expr::MethodCall { .. }),
+            Expr::Await(inner) => !matches!(
+                inner.0,
+                Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
+            ),
             Expr::AwaitRestart(_)
             | Expr::Join(_)
             | Expr::Select { .. }

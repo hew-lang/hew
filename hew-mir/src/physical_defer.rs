@@ -176,7 +176,8 @@ fn operation_storage(
     locals: &mut BTreeSet<StorageId>,
 ) {
     match operation {
-        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskScopeEnter { duration, .. } => used.extend(duration),
+        PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::GeneratorMake { dest, callable, .. }
         | PhysicalOp::TaskSpawn { dest, callable, .. } => {
             defined.insert(*dest);

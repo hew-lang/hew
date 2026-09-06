@@ -329,9 +329,10 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         } => {
             ast_expr_has_break(&left.0, query, depth) || ast_expr_has_break(&right.0, query, depth)
         }
-        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
-            ast_expr_has_break(&operand.0, query, depth)
-        }
+        Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
+        | Expr::Send(operand)
+        | Expr::Clone(operand) => ast_expr_has_break(&operand.0, query, depth),
         Expr::Is { lhs, rhs } => {
             ast_expr_has_break(&lhs.0, query, depth) || ast_expr_has_break(&rhs.0, query, depth)
         }

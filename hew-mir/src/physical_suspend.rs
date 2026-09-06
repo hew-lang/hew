@@ -30,7 +30,7 @@ pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(
         let mut stack = states[&id].clone();
         for op in &block.ops {
             match op {
-                PhysicalOp::TaskScopeEnter { scope, parent } => {
+                PhysicalOp::TaskScopeEnter { scope, parent, .. } => {
                     if stack.last().map(|(scope, _)| scope) != parent.as_ref()
                         || stack.iter().any(|(active, _)| active == scope)
                     {
@@ -65,8 +65,17 @@ pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(
             stack.last_mut().unwrap().1 = true;
         }
         let edges = super::defer::edges(&block.terminator);
-        if edges.is_empty() && !stack.is_empty() {
-            return Err(PhysicalError::new("physical exit leaves task storage live"));
+        // Ownership lowering keeps impossible fault-dispatch successors as
+        // Unreachable blocks. They are not executable scope exits; the fault
+        // verifier separately rejects abandoning an active fault there.
+        if edges.is_empty()
+            && !stack.is_empty()
+            && !matches!(block.terminator, PhysicalTerminator::Unreachable)
+        {
+            return Err(PhysicalError::new(format!(
+                "physical exit {id:?} ({:?}) leaves task storage live: {stack:?}",
+                block.terminator
+            )));
         }
         for edge in edges {
             if let Some(previous) = states.get(&edge.target) {

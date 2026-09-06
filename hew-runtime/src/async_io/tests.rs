@@ -53,6 +53,93 @@ fn await_ready(signal: &ReadySignal) {
 }
 
 #[test]
+fn resume_restores_owned_errors_and_clears_stale_success_errors() {
+    // SAFETY: a null waker is permitted for a manually completed operation.
+    let operation = unsafe { HewAsyncIo::new(ptr::null()) };
+    let producer = Arc::clone(&operation);
+    std::thread::spawn(move || {
+        crate::stream_error::set_last_error("unrelated worker error".into());
+        producer.complete(Err(IoFailure::from_io(
+            "read file",
+            &io::Error::new(io::ErrorKind::NotFound, "owned operation failure"),
+        )));
+    })
+    .join()
+    .unwrap();
+    crate::stream_error::set_last_error("unrelated caller error".into());
+    // SAFETY: the Arc retains operation, and the returned error string is owned.
+    unsafe {
+        assert_eq!(
+            hew_async_io_restore_error(Arc::as_ptr(&operation)),
+            AsyncIoStatus::Error as i32
+        );
+        assert_eq!(
+            crate::stream_error::hew_stream_last_error_kind(),
+            crate::stream_error::IO_ERROR_KIND_NOT_FOUND
+        );
+        assert_eq!(crate::stream_error::hew_stream_last_errno(), libc::EIO);
+        let message = crate::stream_error::hew_stream_last_error();
+        assert_eq!(string_as_str(message), "read file: owned operation failure");
+        string_release(message);
+    }
+    // SAFETY: null waker is valid; the Arc owns this pending operation.
+    let success = unsafe { HewAsyncIo::new(ptr::null()) };
+    crate::stream_error::set_last_error("keep while pending".into());
+    // SAFETY: success remains live throughout the status/restore calls.
+    unsafe {
+        assert_eq!(
+            hew_async_io_restore_error(Arc::as_ptr(&success)),
+            AsyncIoStatus::Pending as i32
+        );
+    }
+    assert_eq!(
+        crate::stream_error::take_last_error().as_deref(),
+        Some("keep while pending")
+    );
+    success.complete(Ok(IoValue::Bytes(Vec::new())));
+    crate::stream_error::set_last_error_with_errno("stale".into(), libc::EIO);
+    // SAFETY: success remains live and ready.
+    unsafe {
+        assert_eq!(
+            hew_async_io_restore_error(Arc::as_ptr(&success)),
+            AsyncIoStatus::Success as i32
+        );
+    }
+    assert!(crate::stream_error::take_last_error().is_none());
+    assert_eq!(crate::stream_error::take_last_errno(), 0);
+}
+
+#[test]
+fn string_file_write_owns_its_inputs_after_submission() {
+    let _runtime = crate::runtime_test_guard();
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("text.txt");
+    let path = string_from_str(destination.to_str().unwrap());
+    let expected = "snow 雪\0tail";
+    let content = string_from_str(expected);
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: submission copies both live strings and retains the waker.
+    let operation = unsafe {
+        let operation = hew_async_file_write_string(path, content, &descriptor(&signal));
+        string_release(path);
+        string_release(content);
+        operation
+    };
+    await_ready(&signal);
+    let mut count = -1;
+    // SAFETY: the operation is live; count is writable; free releases it.
+    unsafe {
+        assert_eq!(
+            hew_async_io_take_count(operation, &raw mut count),
+            AsyncIoStatus::Success as i32
+        );
+        hew_async_io_free(operation);
+    }
+    assert_eq!(count, i64::try_from(expected.len()).unwrap());
+    assert_eq!(std::fs::read(destination).unwrap(), expected.as_bytes());
+}
+
+#[test]
 fn file_read_write_own_inputs_and_preserve_binary_contents() {
     let _runtime = crate::runtime_test_guard();
     let directory = tempfile::tempdir().unwrap();

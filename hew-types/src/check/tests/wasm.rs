@@ -1868,8 +1868,8 @@ fn main() {
                 let a = spawn Responder(value: 1);
                 let b = spawn Responder(value: 2);
                 let result = select {
-                    x = a.get() => x,
-                    y = b.get() => y,
+                    x = a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
+                    y = b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
                     after 1ms => -1,
                 };
                 println(result);
@@ -1910,8 +1910,8 @@ fn main() {
                 let b = spawn Responder(value: 2);
                 let timeout = 1ms;
                 let result = select {
-                    x = a.get() => x,
-                    y = b.get() => y,
+                    x = a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
+                    y = b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
                     after timeout => -1,
                 };
                 println(result);

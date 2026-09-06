@@ -18,7 +18,7 @@ use crate::wake::{HewWaker, OwnedWaker};
 
 mod file;
 mod net;
-pub use file::{hew_async_file_read, hew_async_file_write};
+pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read};
 
 #[cfg(test)]
@@ -49,7 +49,9 @@ impl IoFailure {
     pub(crate) fn from_io(operation: &str, error: &io::Error) -> Self {
         Self {
             kind: crate::stream_error::io_error_kind_tag(error.kind()),
-            errno: error.raw_os_error().unwrap_or(0),
+            // Existing source wrappers distinguish failure from EOF/success
+            // using nonzero errno, including portable errors without an OS code.
+            errno: error.raw_os_error().unwrap_or(libc::EIO),
             message: format!("{operation}: {error}"),
         }
     }
@@ -437,6 +439,34 @@ pub unsafe extern "C" fn hew_async_io_take_handle(
     handle.0 = -1;
     *state = State::Taken;
     AsyncIoStatus::Success as i32
+}
+
+/// Restore ordinary I/O error metadata on the resumed execution thread.
+/// Success clears stale errors; pending/cancelled operations leave the channel
+/// unchanged. Call immediately before continuing the existing source wrapper,
+/// while the operation is still owned; this does not consume its result.
+///
+/// # Safety
+/// `operation` is null or a live operation reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_io_restore_error(operation: *const HewAsyncIo) -> i32 {
+    // SAFETY: the caller owns a live reference through its resume edge.
+    let Some(operation) = (unsafe { operation.as_ref() }) else {
+        return AsyncIoStatus::Error as i32;
+    };
+    let state = operation.state.lock_or_recover();
+    match &*state {
+        State::Ready(Err(error)) => crate::stream_error::set_last_error_with_errno_and_kind(
+            error.message.clone(),
+            error.errno,
+            error.kind,
+        ),
+        State::Ready(Ok(_)) | State::Taken => {
+            let _ = crate::stream_error::take_last_error();
+        }
+        State::Pending(_) | State::Cancelled => {}
+    }
+    state.status() as i32
 }
 
 /// Return the operation's portable stream error-kind tag, without consuming it.

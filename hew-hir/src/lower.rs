@@ -57,6 +57,8 @@ use crate::node::{
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
+mod fork;
+
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
 /// can reject unsupported constructs before codegen. Kept minimal to avoid
@@ -1005,8 +1007,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
-                    | crate::HirDiagnosticKind::SpawnedClosureSignatureUnsupported { .. }
-                    | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
@@ -4788,6 +4788,77 @@ pub fn lower_program_with_mono_cap(
     } else {
         None
     };
+    let mut delivery_declarations = Vec::new();
+    if !ctx.actor_delivery_calls.is_empty()
+        || ctx
+            .actor_method_dispatch
+            .values()
+            .any(|kind| matches!(kind, ActorMethodKind::Message { .. }))
+    {
+        if let Some(builtins) = builtin_callable_impl_program.as_ref() {
+            for name in hew_types::actor_delivery::DECLARATIONS {
+                let Some((source, span)) =
+                    builtins.items.iter().find_map(|(item, span)| match item {
+                        Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
+                        _ => None,
+                    })
+                else {
+                    continue;
+                };
+                let canonical_name = format!("std.builtins.{name}");
+                let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
+                else {
+                    ctx.unsupported(
+                        span.clone(),
+                        "actor delivery declaration identity",
+                        "checker-boundary",
+                    );
+                    continue;
+                };
+                let mut source = source.clone();
+                source.name.clone_from(&canonical_name);
+                let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+                ctx.type_classes
+                    .insert(canonical_name.clone(), (decl.marker, None));
+                ctx.type_member_tys.insert(
+                    canonical_name.clone(),
+                    decl.fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .chain(decl.variants.iter().flat_map(hew_hir_variant_field_tys))
+                        .collect(),
+                );
+                if decl.kind == HirTypeDeclKind::Struct {
+                    ctx.record_registry.insert(
+                        canonical_name.clone(),
+                        RecordEntry {
+                            id: decl.id,
+                            type_params: decl.type_params.clone(),
+                            fields: decl
+                                .fields
+                                .iter()
+                                .map(|field| (field.name.clone(), field.ty.clone()))
+                                .collect(),
+                        },
+                    );
+                }
+                if decl.kind == HirTypeDeclKind::Enum {
+                    ctx.enum_variants_by_name
+                        .insert(canonical_name.clone(), decl.variants.clone());
+                    ctx.enum_type_params
+                        .insert(canonical_name.clone(), decl.type_params.clone());
+                    ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
+                    for (index, variant) in decl.variants.iter().enumerate() {
+                        ctx.machine_ctor_registry.insert(
+                            format!("{canonical_name}::{}", variant.name),
+                            (canonical_name.clone(), index),
+                        );
+                    }
+                }
+                delivery_declarations.push(decl);
+            }
+        }
+    }
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
@@ -5825,6 +5896,7 @@ pub fn lower_program_with_mono_cap(
         );
     }
 
+    items.extend(delivery_declarations.into_iter().map(HirItem::TypeDecl));
     if let Some(decl) = scope_failure {
         items.push(HirItem::TypeDecl(decl));
     }
@@ -7052,7 +7124,7 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(operand, out, trait_out);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
                 out.push((name.clone(), expr.site));
@@ -7067,7 +7139,8 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
@@ -7153,10 +7226,7 @@ fn collect_call_sites_in_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
             }
@@ -7636,6 +7706,7 @@ struct LowerCtx {
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    actor_delivery_calls: HashMap<SpanKey, hew_types::actor_delivery::ActorDeliveryCall>,
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
@@ -7659,6 +7730,8 @@ struct LowerCtx {
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
+    checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,
+    fork_call_inputs: Option<fork::ForkCallInputs>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -8454,6 +8527,7 @@ impl LowerCtx {
             width_cast_lowerings: tc_output.width_cast_lowerings.clone(),
             try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
+            actor_delivery_calls: tc_output.actor_delivery_calls.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             conn_await_reads: tc_output.conn_await_reads.clone(),
             listener_await_accepts: tc_output.listener_await_accepts.clone(),
@@ -8462,6 +8536,8 @@ impl LowerCtx {
             recovery_kinds: tc_output.recovery_kinds.clone(),
             checked_call_effects: tc_output.suspension_effects.calls.clone(),
             select_sources: tc_output.select_sources.clone(),
+            checked_fork_transfers: tc_output.suspension_effects.fork_transfers.clone(),
+            fork_call_inputs: None,
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -8623,6 +8699,7 @@ impl LowerCtx {
                 tc_output.try_width_cast_lowerings.clone(),
             ),
             std::mem::take(&mut self.actor_method_dispatch),
+            std::mem::take(&mut self.actor_delivery_calls),
             std::mem::take(&mut self.machine_method_dispatch),
             std::mem::take(&mut self.method_call_receiver_kinds),
             std::mem::take(&mut self.dyn_trait_coercions),
@@ -8635,6 +8712,11 @@ impl LowerCtx {
             ),
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
             std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
+            std::mem::replace(
+                &mut self.checked_fork_transfers,
+                tc_output.suspension_effects.fork_transfers.clone(),
+            ),
+            std::mem::take(&mut self.fork_call_inputs),
             std::mem::replace(
                 &mut self.checked_call_effects,
                 tc_output.suspension_effects.calls.clone(),
@@ -8653,6 +8735,7 @@ impl LowerCtx {
             self.width_cast_lowerings,
             self.try_width_cast_lowerings,
             self.actor_method_dispatch,
+            self.actor_delivery_calls,
             self.machine_method_dispatch,
             self.method_call_receiver_kinds,
             self.dyn_trait_coercions,
@@ -8662,6 +8745,8 @@ impl LowerCtx {
             self.resolved_expr_types,
             self.recovery_kinds,
             self.select_sources,
+            self.checked_fork_transfers,
+            self.fork_call_inputs,
             self.checked_call_effects,
             self.record_init_type_args,
         ) = saved;
@@ -10131,7 +10216,10 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
             scan_expr_for_private_refs(&left.0, pf, out);
             scan_expr_for_private_refs(&right.0, pf, out);
         }
-        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
+        | Expr::Send(operand)
+        | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
         Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
@@ -11011,14 +11099,18 @@ impl LowerCtx {
                     );
                 }
             }
-            HirExprKind::Call { callee, args, .. }
-            | HirExprKind::SpawnedCall { callee, args, .. } => {
+            HirExprKind::Call { callee, args, .. } => {
                 self.wrap_var_self_explicit_expr_returns(callee, receiver, abi_return_ty);
                 for arg in args {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::ActorSend {
+            HirExprKind::ActorDelivery {
+                receiver: target,
+                args,
+                ..
+            }
+            | HirExprKind::ActorMessage {
                 receiver: target,
                 args,
                 ..
@@ -11082,10 +11174,7 @@ impl LowerCtx {
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirExprKind::TupleLiteral { elements }
-            | HirExprKind::ForkBatch {
-                children: elements, ..
-            } => {
+            HirExprKind::TupleLiteral { elements } => {
                 for elem in elements {
                     self.wrap_var_self_explicit_expr_returns(elem, receiver, abi_return_ty);
                 }
@@ -17993,6 +18082,9 @@ impl LowerCtx {
     )]
     fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let span = expr.1.clone();
+        if let Some(input) = self.fork_input(&span, intent) {
+            return input;
+        }
         // `self.count` inside an actor body names the state binding `count`.
         // The checker resolved the projection to that binding and published the
         // span, so rewrite the receiver spelling to the bare name and lower it
@@ -18126,6 +18218,46 @@ impl LowerCtx {
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
         let site = self.ids.site();
+        if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).copied() {
+            use hew_types::actor_delivery::ActorDeliveryCall;
+            let (receiver, args) = match (&operation, &expr.0) {
+                (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. }) if args.len() == 2 => (
+                    self.lower_expr(args[0].expr(), IntentKind::Read),
+                    Vec::new(),
+                ),
+                (ActorDeliveryCall::Readdress { .. }, Expr::MethodCall { receiver, args, .. }) => (
+                    self.lower_expr(receiver, IntentKind::Consume),
+                    args.iter()
+                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect(),
+                ),
+                (ActorDeliveryCall::Submit { .. }, Expr::Send(message)) => {
+                    (self.lower_expr(message, IntentKind::Consume), Vec::new())
+                }
+                _ => {
+                    return self.unsupported_expr(
+                        span,
+                        "actor delivery operation disagrees with its checked source",
+                    )
+                }
+            };
+            let Some(ty) = self.checker_expr_ty_if_present(&span) else {
+                return self.unsupported_expr(span, "actor delivery operation has no checked type");
+            };
+            return HirExpr {
+                node: self.ids.node(),
+                site,
+                value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                ty,
+                intent,
+                kind: HirExprKind::ActorDelivery {
+                    receiver: Box::new(receiver),
+                    args,
+                    operation,
+                },
+                span,
+            };
+        }
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => {
                 let (kind, default_ty) = Self::lower_literal(lit);
@@ -18741,7 +18873,18 @@ impl LowerCtx {
                     // Select the current source owner before looking up the
                     // generic layout entry; the bare registry key is only a
                     // compatibility alias and may name a same-leaf sibling.
-                    let record_identity = self.canonical_current_module_record_name(name);
+                    let record_identity = self
+                        .expr_types
+                        .get(&self.mk_key(&span))
+                        .and_then(|ty| match ty {
+                            Ty::Named {
+                                name,
+                                builtin: None,
+                                ..
+                            } if self.record_registry.contains_key(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| self.canonical_current_module_record_name(name));
                     let resolved_type_args = self
                         .record_record_layout(&record_identity, &span)
                         .unwrap_or_default();
@@ -18846,26 +18989,14 @@ impl LowerCtx {
                     let Ok(output_ty) = ResolvedTy::from_ty(output) else {
                         return self.unsupported_expr(span, "fork batch result type is unresolved");
                     };
-                    let task_ty = ResolvedTy::Task(Box::new(output_ty));
-                    let children = branches
-                        .iter()
-                        .map(|child| self.lower_spawned_call(child))
-                        .collect();
-                    (
-                        HirExprKind::ForkBatch {
-                            children,
-                            task_ty: task_ty.clone(),
-                        },
-                        task_ty,
-                    )
+                    let batch = self.lower_fork_batch(branches, output_ty, span.clone());
+                    (batch.kind, batch.ty)
                 } else {
-                    let spawned = self.lower_spawned_call(expr);
-                    if let Some(type_args) = self.call_site_type_args.remove(&spawned.site) {
-                        self.call_site_type_args.insert(site, type_args);
-                    }
-                    (spawned.kind, spawned.ty)
+                    let child = self.lower_fork_invocation(expr);
+                    (child.kind, child.ty)
                 }
             }
+
             Expr::ForkBlock { body } => {
                 let checker_key = self.mk_key(&span);
                 let Some(Ty::Task(output)) = self.expr_types.get(&checker_key) else {
@@ -19299,6 +19430,10 @@ impl LowerCtx {
             // `synthesize` `Expr::Clone`), so this routes through the same
             // copy-path selection and fail-closed `CloneNotYetSupported`
             // diagnostic as `<operand>.clone()`.
+            Expr::Send(_) => {
+                return self
+                    .unsupported_expr(span, "send has no checker-selected delivery operation")
+            }
             Expr::Clone(operand) => {
                 self.lower_method_call(operand, "clone", &[], span.clone(), site)
             }
@@ -20208,10 +20343,7 @@ impl LowerCtx {
                     // A `receive gen fn` dispatch never reaches a `select`
                     // ActorAsk arm — `for await` is its only consumer surface.
                     Some(
-                        ActorMethodKind::Fire(_)
-                        | ActorMethodKind::BlockingFire(_)
-                        | ActorMethodKind::CheckedFire(_)
-                        | ActorMethodKind::StreamProducer(_, _),
+                        ActorMethodKind::Message { .. } | ActorMethodKind::StreamProducer(_, _),
                     )
                     | None => {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -22621,16 +22753,20 @@ impl LowerCtx {
                 );
             }
         };
-        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-        let field_access = self.make_expr(
-            HirExprKind::FieldAccess {
-                object: Box::new(lowered_receiver),
-                field: method.to_string(),
-            },
-            field_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
+        let field_access = if let Some(callee) = self.fork_field_callee(&span) {
+            callee
+        } else {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            self.make_expr(
+                HirExprKind::FieldAccess {
+                    object: Box::new(lowered_receiver),
+                    field: method.to_string(),
+                },
+                field_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            )
+        };
         let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
         (
             HirExprKind::Call {
@@ -26685,45 +26821,29 @@ impl LowerCtx {
                 })
                 .collect();
             return match dispatch {
-                ActorMethodKind::Fire(method_id) => {
+                ActorMethodKind::Message {
+                    method_id,
+                    policy,
+                    argument_order,
+                } => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
+                    let Some(ty) = self.checker_expr_ty_if_present(&span) else {
+                        return (
+                            HirExprKind::Unsupported(
+                                "message description has no checked type".into(),
+                            ),
+                            ResolvedTy::Unit,
+                        );
+                    };
                     (
-                        HirExprKind::ActorSend {
+                        HirExprKind::ActorMessage {
                             receiver: Box::new(lowered_receiver),
                             method_id,
                             args: lowered_args,
-                            checked: false,
-                            blocking: false,
+                            policy,
+                            argument_order,
                         },
-                        ResolvedTy::Unit,
-                    )
-                }
-                ActorMethodKind::BlockingFire(method_id) => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
-                    (
-                        HirExprKind::ActorSend {
-                            receiver: Box::new(lowered_receiver),
-                            method_id,
-                            args: lowered_args,
-                            checked: false,
-                            blocking: true,
-                        },
-                        ResolvedTy::Unit,
-                    )
-                }
-                ActorMethodKind::CheckedFire(method_id) => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
-                    let result_ty = ResolvedTy::from_ty(&Ty::result(Ty::Unit, Ty::send_error()))
-                        .expect("checked actor send result type is compiler-owned");
-                    (
-                        HirExprKind::ActorSend {
-                            receiver: Box::new(lowered_receiver),
-                            method_id,
-                            args: lowered_args,
-                            checked: true,
-                            blocking: false,
-                        },
-                        result_ty,
+                        ty,
                     )
                 }
                 ActorMethodKind::Ask(method_id, reply_ty) => {
@@ -30478,55 +30598,6 @@ impl LowerCtx {
             nested,
         })
     }
-
-    /// Lower a checked call as a task-producing expression.
-    fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
-        let span = expr.1.clone();
-        let call_hir = self.lower_expr(expr, IntentKind::Consume);
-        let call_site = call_hir.site;
-
-        let explicit_type_args = match &expr.0 {
-            Expr::Call {
-                type_args: Some(type_args),
-                ..
-            } => Some(type_args.clone()),
-            _ => None,
-        };
-        let call_ret_ty = call_hir.ty.clone();
-
-        let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
-
-        let HirExprKind::Call { callee, args, .. } = call_hir.kind else {
-            // Should not happen: caller verified the expression is a Call.
-            return self.unsupported_expr(span, "lower_spawned_call on non-call");
-        };
-
-        let spawned_site = self.ids.site();
-        let type_args = self
-            .call_site_type_args
-            .get(&call_site)
-            .cloned()
-            .or_else(|| {
-                explicit_type_args.map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
-            });
-        if let Some(type_args) = type_args {
-            self.call_site_type_args.insert(spawned_site, type_args);
-        }
-
-        HirExpr {
-            node: self.ids.node(),
-            site: spawned_site,
-            value_class: ValueClass::Linear, // Task handles are linear (consume-once).
-            ty: task_ty.clone(),
-            intent: IntentKind::Consume,
-            kind: HirExprKind::SpawnedCall {
-                callee,
-                args,
-                task_ty,
-            },
-            span,
-        }
-    }
 }
 
 // ── Lambda-actor capture walker ─────────────────────────────────────────────
@@ -30634,10 +30705,7 @@ fn collect_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
             }
@@ -30646,7 +30714,7 @@ fn collect_captures_walk(
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(arg, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_captures_walk(callee, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -30657,7 +30725,8 @@ fn collect_captures_walk(
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -30957,10 +31026,7 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
             }
@@ -30969,7 +31035,7 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -30980,7 +31046,8 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -31779,15 +31846,12 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_hir_emitted_events_walk(elem, event_names, out);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
@@ -31803,7 +31867,8 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             }
         }
         // Additional expression forms whose sub-expressions can contain emits.
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -33739,10 +33804,7 @@ fn scan_expr_for_call_shape(
         | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 scan_expr_for_call_shape(elem, callable, diagnostics);
             }
@@ -33752,7 +33814,8 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(v, callable, diagnostics);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
@@ -33797,12 +33860,6 @@ fn scan_expr_for_call_shape(
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::GenBlock { body, .. } => {
             scan_block_for_call_shape(body, callable, diagnostics);
-        }
-        HirExprKind::SpawnedCall { callee, args, .. } => {
-            scan_expr_for_call_shape(callee, callable, diagnostics);
-            for a in args {
-                scan_expr_for_call_shape(a, callable, diagnostics);
-            }
         }
         HirExprKind::ScopeRecovery { scope, handler, .. } => {
             scan_expr_for_call_shape(scope, callable, diagnostics);

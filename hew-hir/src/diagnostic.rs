@@ -669,22 +669,6 @@ pub enum HirDiagnosticKind {
         /// Site identifier for error reporting.
         site: SiteId,
     },
-    /// Spawned closure has params, args, or non-unit result. The spawned
-    /// closure must be zero-arg and return unit because value/result task
-    /// propagation remains fail-closed. Fail-closed per FC-P1-A1 audit.
-    SpawnedClosureSignatureUnsupported {
-        /// Site identifier for error reporting.
-        site: SiteId,
-    },
-    /// Fork block body is not supported shape. The fork block must contain
-    /// exactly one statement that is a direct function call with zero args
-    /// and unit return. Fail-closed per FC-P1-A1 audit.
-    ForkBlockBodyUnsupported {
-        /// Site identifier for error reporting.
-        site: SiteId,
-        /// Human-readable reason for rejection (e.g. "empty", "multi-statement").
-        reason: String,
-    },
     /// Deadline has non-empty body. The `after(...)` deadline must have an
     /// empty body in v0.5; deadline body execution is not yet wired.
     /// Fail-closed per FC-P1-A1 audit.

@@ -657,6 +657,7 @@ pub struct PhysicalVariantArm {
 pub enum PhysicalRuntimeAction {
     StringConcat,
     StringEquals,
+    StringStartsWith,
     StringToBytesOwned,
     StringToUppercase,
     StringLen,
@@ -694,6 +695,7 @@ impl PhysicalRuntimeAction {
         match self {
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
+            Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::StringLen => RuntimeCallFamily::StringLen,
@@ -1676,6 +1678,7 @@ fn physical_runtime_action(
     Ok(match family {
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
+        RuntimeCallFamily::StringStartsWith => PhysicalRuntimeAction::StringStartsWith,
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
         RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
@@ -6234,6 +6237,7 @@ mod tests {
             fn main() -> i64 {
                 let upper = "core".to_upper();
                 if upper != "CORE" { return 1; }
+                if !upper.starts_with("CO") { return 2; }
                 println(upper);
                 0
             }
@@ -6254,6 +6258,7 @@ mod tests {
             actions,
             BTreeSet::from([
                 PhysicalRuntimeAction::StringEquals,
+                PhysicalRuntimeAction::StringStartsWith,
                 PhysicalRuntimeAction::StringToUppercase,
                 PhysicalRuntimeAction::PrintlnString,
             ])

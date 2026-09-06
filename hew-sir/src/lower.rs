@@ -11,6 +11,9 @@ mod binding;
 #[path = "lower_var_self.rs"]
 mod var_self;
 
+#[path = "lower_scalar_match.rs"]
+mod scalar_match;
+
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
     HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
@@ -4527,8 +4530,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         scrutinee_expr: &HirExpr,
         source_arms: &[HirMatchArm],
     ) -> Result<Option<ValueId>, String> {
-        if self.ty(&scrutinee_expr.ty) == ResolvedTy::Bool {
-            return self.lower_boolean_match(whole, scrutinee_expr, source_arms);
+        let scrutinee_ty = self.ty(&scrutinee_expr.ty);
+        if scrutinee_ty.is_integer() || matches!(scrutinee_ty, ResolvedTy::Bool | ResolvedTy::Char)
+        {
+            return self.lower_scalar_match(whole, scrutinee_expr, source_arms);
         }
         if source_arms.is_empty() {
             return Err("variant match has no source arms".to_string());
@@ -4712,109 +4717,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
 
-        self.merge_match_exits(exits, &result_ty)
-    }
-
-    fn lower_boolean_match(
-        &mut self,
-        whole: &HirExpr,
-        scrutinee: &HirExpr,
-        arms: &[HirMatchArm],
-    ) -> Result<Option<ValueId>, String> {
-        let selected = self.lower_read_operand(scrutinee, "boolean match scrutinee")?;
-        let result_ty = self.ty(&whole.ty);
-        let outer_bindings = self.bindings.keys().copied().collect();
-        let outer_live = self.owned_live.clone();
-        let mut exits = Vec::new();
-        let mut fallthrough = true;
-        for arm in arms {
-            if !arm.bindings.is_empty()
-                || !arm.payload_predicates.is_empty()
-                || !arm.payload_variant_predicates.is_empty()
-            {
-                return Err("boolean arm carries aggregate payload metadata".to_string());
-            }
-            let mut failures = Vec::new();
-            match &arm.predicate {
-                HirMatchArmPredicate::Literal {
-                    lit: HirLiteral::Bool(value),
-                    ty,
-                } if self.ty(ty) == ResolvedTy::Bool => {
-                    let condition = if *value {
-                        selected.clone()
-                    } else {
-                        Operand {
-                            value: self.emit_typed(
-                                Provenance::Synthesized,
-                                &ResolvedTy::Bool,
-                                SemOpKind::Unary {
-                                    op: hew_parser::ast::UnaryOp::Not,
-                                    value: selected.clone(),
-                                },
-                            )?,
-                        }
-                    };
-                    failures.push(self.branch_candidate_test(condition.value)?);
-                }
-                HirMatchArmPredicate::Wildcard => {}
-                HirMatchArmPredicate::Binding {
-                    binding_id,
-                    name,
-                    ty,
-                } if self.ty(ty) == ResolvedTy::Bool => {
-                    self.bind_source_value(
-                        &HirBinding {
-                            id: *binding_id,
-                            name: name.clone(),
-                            ty: ResolvedTy::Bool,
-                            mutable: false,
-                            span: arm.span.clone(),
-                            is_consume: false,
-                        },
-                        selected.value,
-                    )?;
-                }
-                _ => {
-                    return Err(
-                        "boolean match requires a boolean literal, binding or wildcard predicate"
-                            .to_string(),
-                    )
-                }
-            }
-            if let Some(guard) = &arm.guard {
-                let guard_bindings = self.bindings.keys().copied().collect();
-                let guard_live = self.owned_live.clone();
-                let condition = self.lower_read_operand(guard, "boolean match guard")?;
-                self.cleanup_match_candidate(&guard_live, &guard_bindings)?;
-                failures.push(self.branch_candidate_test(condition.value)?);
-            }
-            let result = self.lower_selected_match_body(arm, &result_ty)?;
-            if self.is_open() {
-                if let Some(result) = &result {
-                    self.owned_live.remove(&result.value);
-                }
-                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
-                exits.push(MatchExit {
-                    state: self.control_state(),
-                    result,
-                });
-            }
-            if failures.is_empty() {
-                fallthrough = false;
-                break;
-            }
-            let mut next = Vec::new();
-            for failure in failures {
-                self.restore_control_state(&failure);
-                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
-                next.push(self.control_state());
-            }
-            self.merge_control_states(next)?;
-        }
-        if fallthrough && self.is_open() {
-            self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::Unreachable)?;
-        }
         self.merge_match_exits(exits, &result_ty)
     }
 

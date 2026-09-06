@@ -27,6 +27,34 @@ fn simple_function_lowers_with_stable_sites() {
 }
 
 #[test]
+fn duration_scaling_and_ratio_preserve_checked_operand_types() {
+    let output = lower("fn ratio(value: i64) -> i64 { (value * 1ms) / 1ms }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(verify_hir(&output.module).is_empty());
+    let function = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "ratio" => Some(function),
+            _ => None,
+        })
+        .expect("ratio function");
+    let ratio = function.body.tail.as_deref().expect("ratio result");
+    assert_eq!(ratio.ty, hew_types::ResolvedTy::I64);
+    let HirExprKind::Binary { left, right, .. } = &ratio.kind else {
+        panic!("expected duration ratio, got {:?}", ratio.kind);
+    };
+    assert_eq!(left.ty, hew_types::ResolvedTy::Duration);
+    assert_eq!(right.ty, hew_types::ResolvedTy::Duration);
+    let HirExprKind::Binary { left, right, .. } = &left.kind else {
+        panic!("expected duration scaling");
+    };
+    assert_eq!(left.ty, hew_types::ResolvedTy::I64);
+    assert_eq!(right.ty, hew_types::ResolvedTy::Duration);
+}
+
+#[test]
 fn channel_result_sites_are_affine_in_hir() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
         r#"

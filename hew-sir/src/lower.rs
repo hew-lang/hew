@@ -2363,7 +2363,43 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             argument_receiver_loans: Vec::new(),
         };
         builder.bind_captures(source)?;
+        builder.bind_private_callable_parameters(source_params)?;
         Ok(builder)
+    }
+
+    /// A mutable value parameter may change its private callable environment,
+    /// while its declared borrowed ABI keeps the caller's environment intact.
+    fn bind_private_callable_parameters(
+        &mut self,
+        parameters: &[HirBinding],
+    ) -> Result<(), String> {
+        for parameter in parameters {
+            if !parameter.mutable || parameter.is_consume {
+                continue;
+            }
+            let ty = self.ty(&parameter.ty);
+            let Ok((_, _, capabilities)) = crate::callable_parts(&ty) else {
+                continue;
+            };
+            if capabilities.call != hew_types::CallableCallMode::Var || !capabilities.clone {
+                continue;
+            }
+            let source = self.bindings[&parameter.id];
+            if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
+                continue;
+            }
+            let copied = self.emit_typed(
+                Provenance::Synthesized,
+                &ty,
+                SemOpKind::CopyValue {
+                    source: Operand { value: source },
+                },
+            )?;
+            self.bindings.insert(parameter.id, copied);
+            let declaration = self.binding_declarations[&parameter.id];
+            self.source_bindings[declaration].target = crate::BindingTarget::Value(copied);
+        }
+        Ok(())
     }
 
     fn bind_captures(&mut self, source: &BodySource) -> Result<(), String> {

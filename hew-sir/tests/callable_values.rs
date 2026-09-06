@@ -367,3 +367,41 @@ fn captured_callable_transfers_into_a_declared_consuming_parameter() {
     ",
     );
 }
+
+#[test]
+fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows() {
+    let module = lower_source(
+        r"
+        fn advance(var callback: fn[var, clone]() -> i64) -> i64 { callback(); callback() }
+        fn consume_advance(consume var callback: fn[var]() -> i64) -> i64 { callback(); callback() }
+        fn main() -> i64 {
+            let count = 10;
+            var counter: fn[var, clone]() -> i64 = capture(var count) || { count += 1; count };
+            println(advance(counter));
+            println(counter());
+            consume_advance(counter)
+        }
+    ",
+    );
+    let advance = module
+        .functions
+        .iter()
+        .find(|function| function.name == "advance")
+        .unwrap();
+    assert_eq!(advance.params[0].own, hew_sir::OwnKind::Guaranteed);
+    let copied = advance.blocks.iter().flat_map(|block| &block.ops)
+        .find(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == advance.params[0].value)).unwrap();
+    for block in &advance.blocks {
+        if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
+            assert_eq!(callee.operand.value, copied.results[0].id);
+        }
+    }
+    let consuming = module
+        .functions
+        .iter()
+        .find(|function| function.name == "consume_advance")
+        .unwrap();
+    assert_eq!(consuming.params[0].own, hew_sir::OwnKind::Owned);
+    assert!(!consuming.blocks.iter().flat_map(|block| &block.ops)
+        .any(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == consuming.params[0].value)));
+}

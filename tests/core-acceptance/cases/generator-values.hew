@@ -1,0 +1,28 @@
+gen fn words(prefix: string, count: i64) -> string {
+    let label = prefix.to_upper();
+    defer println(label + " cleaned");
+    for index in 0..count {
+        yield f"{label}:{index}";
+    }
+}
+
+fn main() {
+    let prefix = "word".to_upper();
+    let producer = words(prefix, 3);
+    println(prefix);
+    for value in producer {
+        println(value);
+    }
+    {
+        let early = words("early", 3);
+        for value in early {
+            println(value);
+            break;
+        }
+    }
+    println("after early");
+    {
+        let _unused = words("unused", 3);
+    }
+    println("done");
+}

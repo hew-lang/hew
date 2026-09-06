@@ -13,6 +13,8 @@ use hew_types::{
 pub enum ResourceRelease {
     /// Affine reference to scope-owned task execution and its eventual result.
     Task,
+    /// Generator storage released only after checked cooperative close.
+    Generator,
     /// HIR has validated the consuming close body's forwarding to this release.
     Nominal {
         lifecycle: Box<hew_hir::OpaqueResourceLifecycle>,
@@ -41,6 +43,7 @@ impl ResourceRelease {
     pub fn runtime_family(&self) -> Result<RuntimeCallFamily, String> {
         match self {
             Self::Task => Ok(RuntimeCallFamily::TaskFree),
+            Self::Generator => Ok(RuntimeCallFamily::GeneratorFree),
             Self::Nominal { lifecycle, .. } => {
                 RuntimeCallFamily::from_c_symbol(&lifecycle.release_symbol)
                     .filter(|family| *family == RuntimeCallFamily::FileRead(FileReadOp::Close))
@@ -61,6 +64,9 @@ pub(crate) fn resource_release_from_hir(
     module: &hew_hir::HirModule,
     ty: &ResolvedTy,
 ) -> Option<ResourceRelease> {
+    if ty.is_builtin(hew_types::BuiltinType::Generator) {
+        return Some(ResourceRelease::Generator);
+    }
     if matches!(ty, ResolvedTy::Task(_)) {
         return Some(ResourceRelease::Task);
     }
@@ -115,6 +121,13 @@ pub fn verify_resource_release(
     if facts.class != ValueClass::AffineResource || facts.clone != CloneKind::None {
         return Err("resource release requires affine ownership without a copy recipe".into());
     }
+    if *release == ResourceRelease::Generator {
+        return if ty.is_builtin(hew_types::BuiltinType::Generator) {
+            Ok(())
+        } else {
+            Err("generator release requires an exact Generator type".into())
+        };
+    }
     if *release == ResourceRelease::Task {
         return if matches!(ty, ResolvedTy::Task(_)) {
             Ok(())
@@ -137,7 +150,9 @@ pub fn verify_resource_release(
         );
     }
     match release {
-        ResourceRelease::Task => unreachable!("handled exact task release above"),
+        ResourceRelease::Generator | ResourceRelease::Task => {
+            unreachable!("handled exact task release above")
+        }
         ResourceRelease::Builtin(RuntimeDropDescriptor::StreamClose)
             if FileReadHandleKind::Stream.matches(ty) =>
         {

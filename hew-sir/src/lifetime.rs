@@ -283,6 +283,13 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CheckedRaiseFault { .. } => boundaries.is_some(),
                 SemTerminator::Goto(edge) => suffixes.get(&edge.target) == Some(&0),
+                SemTerminator::Suspend {
+                    kind: crate::SuspendKind::GeneratorClose { .. },
+                    resumes,
+                    ..
+                } => resumes
+                    .iter()
+                    .all(|edge| suffixes.get(&edge.target) == Some(&0)),
                 SemTerminator::Branch {
                     then_target,
                     else_target,
@@ -846,6 +853,21 @@ impl<'a> Flow<'a> {
             SemTerminator::SwitchVariant {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
+            SemTerminator::Suspend {
+                kind: crate::SuspendKind::GeneratorClose { place },
+                resumes,
+                ..
+            } => {
+                if let Some(place) = place {
+                    self.require_active(id, *place, &state, emit);
+                    self.require_no_live_borrows(id, PlaceBase::Place(*place), &state, emit);
+                }
+                state.fault = combine_fault(state.fault, DEAD | LIVE);
+                state.exit |= TRAP;
+                for edge in resumes {
+                    successors.extend(self.edge(id, edge, state.clone(), emit));
+                }
+            }
             SemTerminator::Suspend {
                 kind: crate::SuspendKind::Join { cancel: true, .. },
                 resumes,
@@ -1491,7 +1513,10 @@ impl<'a> Flow<'a> {
                 // on every exit; it never transfers the borrowed task result.
                 let scoped_borrow = matches!(
                     terminator,
-                    SemTerminator::ActorCall { .. }
+                    SemTerminator::Suspend {
+                        kind: crate::SuspendKind::GeneratorNext,
+                        ..
+                    } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
@@ -1528,7 +1553,8 @@ impl<'a> Flow<'a> {
 fn operation_consumes_operands(kind: &SemOpKind) -> bool {
     matches!(
         kind,
-        SemOpKind::TaskSpawn { .. }
+        SemOpKind::GeneratorMake { .. }
+            | SemOpKind::TaskSpawn { .. }
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::TupleMake { .. }

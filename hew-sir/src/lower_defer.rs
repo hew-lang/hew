@@ -182,7 +182,8 @@ impl Builder<'_, '_> {
                 self.end_binding_scope(binding)?;
             }
         }
-        if ran {
+        if ran || self.cleanup_may_fail {
+            self.cleanup_may_fail = false;
             if !dispatch {
                 let next = self.new_block(Vec::new());
                 self.set_terminator(SemTerminator::CleanupDispatch {

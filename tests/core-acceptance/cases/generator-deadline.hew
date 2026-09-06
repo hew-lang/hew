@@ -1,0 +1,18 @@
+gen fn delayed() -> string {
+    let label = "producer".to_upper();
+    defer println(label + " cleaned");
+    yield label;
+    await sleep(10s);
+    yield "unreachable";
+}
+
+fn main() {
+    let label = "consumer".to_upper();
+    defer println(label + " cleaned");
+    scope within 20ms {
+        for value in delayed() {
+            println(value);
+        }
+    };
+    println("unreachable");
+}

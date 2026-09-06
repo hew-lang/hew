@@ -446,6 +446,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
 fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for key in module.type_facts.keys().filter(|key| {
         matches!(key.0, ResolvedTy::Task(_))
+            || crate::generator_parts(&key.0).is_some()
             || hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
     }) {
         if !module.resources.contains_key(&key.0) {
@@ -2063,6 +2064,7 @@ fn verify_callable_operation(
         operation.kind,
         SemOpKind::FunctionMake { .. }
             | SemOpKind::ClosureMake { .. }
+            | SemOpKind::GeneratorMake { .. }
             | SemOpKind::CallableCoerce { .. }
     ) {
         return;
@@ -2120,6 +2122,24 @@ fn verify_callable_operation(
                     }
                 }
             }
+            SemOpKind::GeneratorMake { closure, callable } => {
+                let descriptor = context
+                    .closures
+                    .get(closure.0 as usize)
+                    .filter(|descriptor| descriptor.id == *closure)
+                    .ok_or("generator has no exact producer environment")?;
+                let (yielded, returned) = crate::generator_parts(&result.ty)
+                    .ok_or("generator construction has no checked generator type")?;
+                let (params, output, capabilities) = crate::callable_parts(&descriptor.ty)?;
+                if types.get(&callable.value) != Some(&descriptor.ty)
+                    || descriptor.generator_yield.as_ref() != Some(yielded)
+                    || output != returned
+                    || !params.is_empty()
+                    || capabilities.call != hew_types::CallableCallMode::Once
+                {
+                    return Err("generator construction changes its producer contract".into());
+                }
+            }
             SemOpKind::CallableCoerce { source } => {
                 let source_ty = types
                     .get(&source.value)
@@ -2152,7 +2172,8 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some() {
         return true;
     }
-    is_initial_scalar(ty)
+    crate::generator_parts(ty).is_some()
+        || is_initial_scalar(ty)
         || matches!(
             ty,
             ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_)
@@ -2896,6 +2917,7 @@ fn verify_operation_shape(
         | SemOpKind::ConstBytes(_)
         | SemOpKind::FunctionMake { .. }
         | SemOpKind::ClosureMake { .. }
+        | SemOpKind::GeneratorMake { .. }
         | SemOpKind::CallableCoerce { .. } => {}
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
@@ -3499,7 +3521,9 @@ fn failure_cfg_matches_exit(
         }
         let valid = match &block.terminator {
             SemTerminator::Suspend {
-                kind: crate::SuspendKind::Join { cancel: true, .. },
+                kind:
+                    crate::SuspendKind::Join { cancel: true, .. }
+                    | crate::SuspendKind::GeneratorClose { .. },
                 resumes,
                 cancel,
                 unwind,
@@ -4022,7 +4046,8 @@ fn verify_terminator_shape(
             inputs,
             result,
             resumes,
-            ..
+            cancel,
+            unwind,
         } => {
             let valid = match kind {
                 crate::SuspendKind::Sleep => {
@@ -4043,6 +4068,49 @@ fn verify_terminator_shape(
                                 crate::CallResult::Value(value) => value.ty == **output
                                     && value.ty != ResolvedTy::Never,
                             }))
+                }
+                crate::SuspendKind::Yield => {
+                    let yielded = callable_context
+                        .and_then(|context| {
+                            context
+                                .closures
+                                .iter()
+                                .find(|closure| closure.body == function.callable)
+                        })
+                        .and_then(|closure| closure.generator_yield.as_ref());
+                    resumes.len() == 1
+                        && matches!(result, crate::CallResult::Unit)
+                        && matches!(inputs.as_slice(), [input]
+                            if input.decision == crate::BoundaryDecision::Move
+                            && types.get(&input.operand.value) == yielded)
+                        && yielded.is_some()
+                }
+                crate::SuspendKind::GeneratorNext => {
+                    resumes.len() == 1
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::BorrowMut
+                        && types.get(&input.operand.value).and_then(crate::generator_parts)
+                            .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
+                                if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
+                }
+                crate::SuspendKind::GeneratorClose { place } => {
+                    resumes.len() == 1
+                        && resumes.first() == Some(cancel)
+                        && resumes.first() == Some(unwind)
+                        && matches!(result, crate::CallResult::Unit)
+                        && match place {
+                            Some(place) => {
+                                inputs.is_empty()
+                                    && function.places.iter().any(|declaration| {
+                                        declaration.id == *place
+                                            && declaration.origin == crate::PlaceOrigin::Local
+                                            && crate::generator_parts(&declaration.ty).is_some()
+                                    })
+                            }
+                            None => matches!(inputs.as_slice(), [input]
+                                if input.decision == crate::BoundaryDecision::Borrow
+                                && types.get(&input.operand.value).and_then(crate::generator_parts).is_some()),
+                        }
                 }
                 crate::SuspendKind::Join { .. } => {
                     inputs.is_empty()

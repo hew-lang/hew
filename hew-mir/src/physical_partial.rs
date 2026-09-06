@@ -498,7 +498,9 @@ pub(super) fn verify_trap_cleanup_refinement(
                         PhysicalOp::EndBorrow { .. } | PhysicalOp::TaskScopeClose { .. }
                     )
             }) {
-                return Err(PhysicalError::new(format!("physical CFG no longer realizes its certified trap cleanup region at block {}: {operation:?}", site.0.0)));
+                return Err(PhysicalError::new(format!(
+                    "physical CFG no longer realizes its certified trap cleanup region: callable {:?} block {:?} contains {operation:?}", function.callable, site.0
+                )));
             }
             pending.push((site, true));
             match &block.terminator {
@@ -524,7 +526,8 @@ pub(super) fn verify_trap_cleanup_refinement(
                     pending.push(((normal.target, 0), false));
                     pending.push(((unwind.target, 0), false));
                 }
-                PhysicalTerminator::Goto(edge) => pending.push(((edge.target, 0), false)),
+                PhysicalTerminator::GeneratorClose { next: edge, .. }
+                | PhysicalTerminator::Goto(edge) => pending.push(((edge.target, 0), false)),
                 PhysicalTerminator::Branch {
                     then_target,
                     else_target,
@@ -533,7 +536,9 @@ pub(super) fn verify_trap_cleanup_refinement(
                     pending.push(((then_target.target, 0), false));
                     pending.push(((else_target.target, 0), false));
                 }
-                _ => return Err(invalid()),
+                terminator => return Err(PhysicalError::new(format!(
+                    "physical CFG no longer realizes its certified trap cleanup region: callable {:?} block {:?} ends with {terminator:?}", function.callable, site.0
+                ))),
             }
         }
     }

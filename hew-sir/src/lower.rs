@@ -3256,7 +3256,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                                 self,
                                 expr,
                                 "binding initializer",
-                                OwnedBindingUse::Copy,
+                                if binding.is_consume {
+                                    OwnedBindingUse::Move
+                                } else {
+                                    OwnedBindingUse::Copy
+                                },
                             )
                         })
                         .transpose()?

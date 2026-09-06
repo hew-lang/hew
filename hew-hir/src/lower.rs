@@ -28598,22 +28598,17 @@ impl LowerCtx {
             );
         }
 
-        let ret_ty = self
-            .expr_types
-            .get(&self.mk_key(&span))
-            .cloned()
-            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-            .unwrap_or_else(|| {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "Option/Result builtin method".to_string(),
-                        reason: "missing or poisoned checker result type".to_string(),
-                    },
-                    span.clone(),
-                    "builtin Option/Result method lowering requires the checker result type",
-                ));
-                ResolvedTy::Unit
-            });
+        let ret_ty = self.checker_expr_ty_if_present(&span).unwrap_or_else(|| {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Option/Result builtin method".to_string(),
+                    reason: "missing or poisoned checker result type".to_string(),
+                },
+                span.clone(),
+                "builtin Option/Result method lowering requires the checker result type",
+            ));
+            ResolvedTy::Unit
+        });
 
         let receiver_intent = match method {
             OptionResultMethod::OptionUnwrap
@@ -39289,7 +39284,11 @@ impl Widget {
     }
 
     #[test]
-    fn selected_encoding_import_keeps_checked_identity_through_try() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one canonical module graph exercises all payload extraction paths"
+    )]
+    fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() {
         use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
         for (format, builtin) in [
@@ -39313,6 +39312,26 @@ impl Widget {
                 fn option_probe(value: Option<Value>) -> Option<Value> {{
                     let child = value?;
                     Some(child)
+                }}
+                fn result_unwrap_probe(value: Result<Value, string>) -> Value {{
+                    let child = value.unwrap();
+                    child
+                }}
+                fn option_unwrap_probe(value: Option<Value>) -> Value {{
+                    let child = value.unwrap();
+                    child
+                }}
+                fn result_unwrap_or_probe(value: Result<Value, string>, fallback: Value) -> Value {{
+                    let child = value.unwrap_or(fallback);
+                    child
+                }}
+                fn option_unwrap_or_probe(value: Option<Value>, fallback: Value) -> Value {{
+                    let child = value.unwrap_or(fallback);
+                    child
+                }}
+                fn field_probe(value: Value) -> Value {{
+                    let child = value.get_field("key").unwrap().unwrap();
+                    child
                 }}
             "#
             ));
@@ -39365,14 +39384,38 @@ impl Widget {
             };
             let required = function_named(&lowered, "required_field");
             assert_eq!(required.params[0].ty, expected);
-            for name in ["result_probe", "option_probe"] {
+            for name in [
+                "result_probe",
+                "option_probe",
+                "result_unwrap_probe",
+                "option_unwrap_probe",
+                "result_unwrap_or_probe",
+                "option_unwrap_or_probe",
+                "field_probe",
+            ] {
                 let expression = first_let_value(function_named(&lowered, name));
-                let HirExprKind::Match { arms, .. } = &expression.kind else {
-                    panic!("`?` must lower to a success/error match: {expression:#?}")
+                let HirExprKind::Match { scrutinee, arms } = &expression.kind else {
+                    panic!("payload extraction must lower to a match: {expression:#?}")
                 };
                 assert_eq!(expression.ty, expected);
                 assert_eq!(arms[0].bindings[0].ty, expected);
                 assert_eq!(arms[0].body.ty, expected);
+                if name.ends_with("unwrap_or_probe") {
+                    assert_eq!(arms[1].body.ty, expected);
+                }
+                if name == "field_probe" {
+                    let option = ResolvedTy::named_builtin(
+                        "Option",
+                        BuiltinType::Option,
+                        vec![expected.clone()],
+                    );
+                    let HirExprKind::Match { arms, .. } = &scrutinee.kind else {
+                        panic!("expected the nested Result unwrap: {scrutinee:#?}")
+                    };
+                    assert_eq!(scrutinee.ty, option);
+                    assert_eq!(arms[0].bindings[0].ty, option);
+                    assert_eq!(arms[0].body.ty, option);
+                }
             }
         }
     }

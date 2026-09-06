@@ -3455,8 +3455,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
-        if let HirExprKind::Return { value } = &expr.kind {
-            return self.lower_function_return(value.as_deref());
+        match &expr.kind {
+            HirExprKind::Return { value } => {
+                return self.lower_function_return(value.as_deref());
+            }
+            HirExprKind::Call {
+                target: CallTarget::Builtin { endpoint },
+                args,
+                ..
+            } if endpoint == "panic" => return self.lower_panic(expr, args),
+            _ => {}
         }
         if self.ty(&expr.ty) != ResolvedTy::Unit || expr.intent != IntentKind::Consume {
             require_initial_scalar_read(expr.intent)
@@ -3546,6 +3554,34 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.emit_destroy(value)?;
         }
         Ok(())
+    }
+
+    /// Preserve the panic message before releasing its owner and propagating
+    /// the active fault through the ordinary function cleanup boundary.
+    fn lower_panic(&mut self, expr: &HirExpr, args: &[HirExpr]) -> Result<(), String> {
+        let [message] = args else {
+            return Err("panic requires exactly one string message".into());
+        };
+        if self.ty(&message.ty) != ResolvedTy::String || self.ty(&expr.ty) != ResolvedTy::Never {
+            return Err("panic requires a string message and a Never result".into());
+        }
+        let mut loans = Vec::new();
+        let operand = self.lower_call_read(message, &mut loans, true, true)?;
+        let cleanup = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Panic {
+            message: crate::BoundaryOperand {
+                operand,
+                decision: crate::BoundaryDecision::Borrow,
+            },
+            cleanup: Edge {
+                target: cleanup,
+                args: Vec::new(),
+            },
+        })?;
+        self.current = cleanup;
+        self.end_call_loans(&loans)?;
+        self.destroy_all_live()?;
+        self.set_terminator(SemTerminator::ResumeUnwind)
     }
 
     /// Seal the current block with the one function-return cleanup contract.
@@ -4918,6 +4954,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         elements: &[HirExpr],
     ) -> Result<ValueId, String> {
         let tuple_ty = self.ty(&expr.ty);
+        if tuple_ty == ResolvedTy::Unit && elements.is_empty() {
+            return self.emit(expr, SemOpKind::ConstUnit);
+        }
         let ResolvedTy::Tuple(expected_elements) = &tuple_ty else {
             return Err(format!(
                 "tuple literal has non-tuple resolved type `{}` in SIR lowering",

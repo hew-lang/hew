@@ -1864,3 +1864,17 @@ fixed that failure and its focused rerun passed. Generic value and projected
 field controls passed; native compilation and workspace lint are checked for
 this checkpoint. Native runtime behaviour remains an integration acceptance
 item in the SIR/backend owners' tree. Downstream grammar propagation follows.
+
+### Combined callable native acceptance
+
+The combined native run passes stored mutable callbacks, independent explicit
+clones, nested escaped closures, conditional Result/Option factories and callee
+loan cleanup at O0/O2. Two fixtures remain failing: lexical shadowing leaves a
+literal without its concrete closure descriptor, and a once-only callback
+parameter is still borrowed when invocation needs ownership. These are compiler
+gaps; the acceptance fixtures remain unchanged. Paired safety is running.
+
+Added generic indirect-only and generic returned-function acceptance cases after
+the checker value-site instantiation checkpoint. Their native execution follows
+the ongoing combined repairs. Ordinary once-field invocation also requires the
+partial aggregate ownership extension before callable completion is claimed.

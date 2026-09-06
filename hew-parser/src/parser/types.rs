@@ -847,12 +847,6 @@ impl Parser<'_> {
     }
 
     /// Returns true if the expression is a block-like construct that doesn't need a trailing semicolon.
-    ///
-    /// `Expr::Scope` is deliberately absent: `scope { .. }` is a statement, not
-    /// a `Primary` (HEW-SPEC-2026 §4.2), so it never reaches an expression
-    /// position this predicate gates — a block tail or a match-arm body are
-    /// both value positions. `parse_stmt` owns the statement spelling and its
-    /// optional trailing `;`.
     pub(crate) fn is_block_expr(expr: &Expr) -> bool {
         matches!(
             expr,
@@ -860,6 +854,7 @@ impl Parser<'_> {
                 | Expr::If { .. }
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
+                | Expr::Scope { .. }
                 | Expr::ForkBlock { .. }
                 | Expr::ScopeDeadline { .. }
                 | Expr::UnsafeBlock(_)
@@ -881,10 +876,8 @@ impl Parser<'_> {
             // `if` → Expr::If / Expr::IfLet, `match` → Expr::Match,
             // `unsafe` → Expr::UnsafeBlock, `select` → Expr::Select. Each of
             // these openers has exactly one expression form, so the token alone
-            // settles it. `scope` is absent for the reason `is_block_expr`
-            // gives: it opens a statement, and every caller of this predicate
-            // is asking about a value position.
-            Some(Token::If | Token::Match | Token::Unsafe | Token::Select) => true,
+            // settles it. Scope may optionally carry a deadline.
+            Some(Token::If | Token::Match | Token::Unsafe | Token::Select | Token::Scope) => true,
             // Expr::Block — but a `{` that opens a map literal is not a block,
             // and `parse_primary` splits the two on exactly this lookahead.
             Some(Token::LeftBrace) => {
@@ -893,8 +886,6 @@ impl Parser<'_> {
             }
             // Only a brace-delimited fork body is block-like.
             Some(Token::Fork) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
-            // Expr::ScopeDeadline
-            Some(Token::After) => self.looks_like_scope_deadline(),
             _ => false,
         }
     }

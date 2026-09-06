@@ -163,7 +163,7 @@ impl Parser<'_> {
                     stmts.push((Stmt::Expression(expr), span));
                 } else if Self::is_block_expr(&expr.0)
                     && (self.peek() != Some(&Token::RightBrace)
-                        || matches!(expr.0, Expr::ForkBlock { .. } | Expr::ScopeDeadline { .. }))
+                        || matches!(expr.0, Expr::ForkBlock { .. }))
                 {
                     // Block-like expressions (if, match, blocks, loops) don't need semicolons
                     let span = expr.1.clone();
@@ -613,39 +613,6 @@ impl Parser<'_> {
                     iterable,
                     body,
                 }
-            }
-            // `scope { .. }` is a statement, not a `Primary` (HEW-SPEC-2026
-            // §4.2): it brackets structured concurrency and produces no value,
-            // so it gets a dedicated arm here the way `if`/`while`/`for` do.
-            // `parse_primary` refuses the token outright, which is what closes
-            // every value position — a `let` initialiser, a call argument, a
-            // match-arm body, a block's trailing expression.
-            Some(Token::Scope) => {
-                self.advance();
-                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
-                if self.eat(&Token::Dot) {
-                    self.error(
-                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `let name = fork expr;` bindings instead"
-                            .to_string(),
-                    );
-                    return None;
-                }
-                if self.peek() == Some(&Token::Pipe) {
-                    self.error(
-                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { let name = fork call(...); }' instead"
-                            .to_string(),
-                    );
-                    return None;
-                }
-                self.scope_expr_depth += 1;
-                let body = self.parse_block()?;
-                self.scope_expr_depth -= 1;
-                let expr_span = start..self.peek_span().start;
-                // A trailing `;` after the closing brace is the idiomatic
-                // spelling and is absorbed here, so `parse_block`'s stray-semicolon
-                // warning stays about actually stray semicolons.
-                self.eat(&Token::Semicolon);
-                Stmt::Expression((Expr::Scope { body }, expr_span))
             }
             Some(Token::Break) => {
                 self.advance();

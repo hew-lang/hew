@@ -3263,9 +3263,9 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
             }
             Expr::ScopeDeadline { duration, body } => {
-                self.write("after(");
+                self.write("scope within ");
                 self.format_expr(&duration.0);
-                self.write(") ");
+                self.write(" ");
                 self.format_block(body, self.source.len());
             }
             Expr::InterpolatedString(parts) => {
@@ -4971,8 +4971,6 @@ extern \"C\" {
 
     #[test]
     fn scope_block_roundtrips() {
-        // `scope { .. }` is a statement, so the formatted form is a
-        // statement-expression, not a `let` initialiser (HEW-SPEC-2026 §4.2).
         let src = "\
 fn main() {
     scope {

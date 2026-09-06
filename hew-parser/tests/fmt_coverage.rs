@@ -2282,9 +2282,7 @@ fn fmt_channel_half_handle_roundtrip() {
 
 #[test]
 fn fmt_scope_fork_named_binding_roundtrip() {
-    // scope block with a named fork binding — the canonical
-    // structured-concurrency form. `scope` is a statement, not a `Primary`
-    // (HEW-SPEC-2026 §4.2), so the canonical spelling is a statement-expression.
+    // A scope can be used as an expression statement with named fork bindings.
     exact_roundtrip(
         "fn main() {\n    scope {\n        let worker = fork compute();\n        let auditor = fork audit();\n        worker\n    };\n}\n",
     );

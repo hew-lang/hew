@@ -438,6 +438,147 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
 }
 
 #[test]
+fn borrowed_callable_replacements_share_local_storage_across_branches() {
+    let module = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/callable-private-parameter-replacement.hew"
+    ));
+    for (name, replacements) in [("replace_both", 2), ("replace_or_return", 1)] {
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap();
+        assert_eq!(function.params[0].own, hew_sir::OwnKind::Guaranteed);
+        let hew_sir::BindingTarget::Place(local) = function
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "cb")
+            .unwrap()
+            .target
+        else {
+            panic!("private replacements must share one declaration's storage")
+        };
+        let entry = &function.blocks[0];
+        assert!(entry
+            .ops
+            .iter()
+            .any(|op| matches!(op.kind, SemOpKind::AllocPlace { place } if place == local)));
+        assert!(
+            !entry
+                .ops
+                .iter()
+                .any(|op| matches!(op.kind, SemOpKind::StoreInit { place, .. } if place == local)),
+            "a non-copyable input must not initialize an owned slot"
+        );
+        assert_eq!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .filter(
+                    |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == local)
+                )
+                .count(),
+            replacements
+        );
+        for block in &function.blocks {
+            if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
+                assert_eq!(callee.decision, BoundaryDecision::BorrowMut);
+                assert!(block.ops.iter().any(
+                    |op| matches!(op.kind, SemOpKind::LoadBorrow { place } if place == local)
+                        && op.results[0].id == callee.operand.value
+                ));
+            }
+            if matches!(
+                block.terminator,
+                SemTerminator::Return { .. } | SemTerminator::ResumeUnwind
+            ) {
+                assert_eq!(block.ops.iter().filter(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == local)).count(), 1, "every exit must end the declaration, including an empty early-return or acquisition-fault path");
+            }
+        }
+        hew_sir::place_lifetimes(&module, function)
+            .expect("all private replacement paths must have checked cleanup");
+    }
+}
+
+#[test]
+fn mixed_borrowed_and_replaced_parameters_are_not_silently_joined() {
+    for body in [
+        "if flag { cb = fresh(); } else {}",
+        "if flag {} else { cb = fresh(); }",
+    ] {
+        for use_value in ["cb()", "observe(cb)"] {
+            let source = format!(
+                r"
+                fn fresh() -> fn[var]() -> i64 {{ let count = 0; capture(var count) || {{ count += 1; count }} }}
+                fn observe(cb: fn[var]() -> i64) -> i64 {{ 0 }}
+                fn inspect(var cb: fn[var]() -> i64, flag: bool) -> i64 {{ {body} {use_value} }}
+                fn main() -> i64 {{ inspect(fresh(), true) }}
+            "
+            );
+            let parsed = hew_parser::parse(&source);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let facts =
+                Checker::new(ModuleRegistry::new(Vec::new())).check_program(&parsed.program);
+            if use_value == "cb()" {
+                assert!(facts
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == hew_types::error::TypeErrorKind::OwnMutateBorrowed));
+                continue;
+            }
+            assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+            let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+            assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+            let lowered = lower_module(&hir.module, &facts);
+            let status = &lowered
+                .statuses
+                .iter()
+                .find(|status| status.name == "inspect")
+                .unwrap()
+                .status;
+            assert!(
+                matches!(status, hew_sir::SirLoweringStatus::Unsupported { reason } if reason == "lexical place identity changed across a control-flow edge"),
+                "{body}: {status:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn private_replacement_keeps_pre_assignment_reads_borrowed() {
+    let module = lower_source(
+        r"
+        fn fresh() -> fn[var]() -> i64 { let count = 0; capture(var count) || { count += 1; count } }
+        fn observe(cb: fn[var]() -> i64) -> i64 { 0 }
+        fn replace(var cb: fn[var]() -> i64) -> i64 {
+            let before = observe(cb);
+            cb = fresh();
+            before + cb()
+        }
+        fn main() -> i64 { replace(fresh()) }
+    ",
+    );
+    let function = module
+        .functions
+        .iter()
+        .find(|function| function.name == "replace")
+        .unwrap();
+    let first_call = function
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::Call { args, .. } if !args.is_empty() => Some(args),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(first_call[0].decision, BoundaryDecision::Borrow);
+    assert_eq!(first_call[0].operand.value, function.params[0].value);
+    hew_sir::place_lifetimes(&module, function)
+        .expect("the empty slot must end on a pre-assignment call fault");
+}
+
+#[test]
 fn mutable_aggregate_parameters_keep_callable_fields_private_across_control_flow() {
     lower_source(
         r#"

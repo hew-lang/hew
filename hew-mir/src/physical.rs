@@ -5992,8 +5992,8 @@ mod tests {
             .all(|projection| { projection.path.len() == 1 && projection.path[0].field == 0 }));
         assert!(operations.iter().any(|operation| matches!(
             operation,
-            PhysicalOp::Destroy {
-                action: DestroyAction::Aggregate(_),
+            PhysicalOp::StorageDead {
+                destroy: Some(DestroyAction::Aggregate(_)),
                 ..
             }
         )));
@@ -6563,10 +6563,18 @@ mod tests {
             .blocks
             .iter_mut()
             .flat_map(|block| &mut block.ops)
-            .find(|operation| matches!(operation, PhysicalOp::Destroy { .. }))
-            .expect("physical string cleanup");
-        let PhysicalOp::Destroy { source: dest, .. } = *operation else {
-            unreachable!("matched destroy")
+            .find(|operation| {
+                matches!(
+                    operation,
+                    PhysicalOp::StorageDead {
+                        destroy: Some(DestroyAction::StringRelease),
+                        ..
+                    }
+                )
+            })
+            .expect("physical string Local cleanup");
+        let PhysicalOp::StorageDead { storage: dest, .. } = *operation else {
+            unreachable!("matched storage lifetime end")
         };
         *operation = PhysicalOp::Assign {
             dest,

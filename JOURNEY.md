@@ -2445,3 +2445,22 @@ payloads disagree in HIR despite identical printed JSON Value names; captured
 encoding values fail SIR type-fact lookup for `Value>::eq`; and the parse-result
 loop reaches the missing string `is_empty` runtime contract. Native execution,
 including fault and cancellation probes, remains unverified at this checkpoint.
+
+## Retain private parameter replacements in Local storage
+
+Replacing a non-copyable borrowed parameter now stores each fresh owner in
+one initially empty parameter-scope Local. Reads before replacement retain
+the incoming borrow; both-branch replacement and replacement opposite an
+early return converge on the same private storage. Every exit ends that
+declaration, including faults before initialization. Branch lowering restores
+the full lexical context so nested-match declarations cannot leak into sibling
+paths. Mixed borrowed and replaced paths remain explicitly unsupported by SIR;
+the checker still rejects mutations without definite private replacement.
+
+## Validate composed Local source execution
+
+The complete native and paired generated/runtime address and leak sanitizer
+suites pass at both optimization levels after the private-parameter repair.
+The combined pipeline exposed two physical tests that still searched for SSA
+destroy operations. They now inspect the corresponding Local lifetime ends,
+retaining recursive aggregate cleanup and invalid assignment-source checks.

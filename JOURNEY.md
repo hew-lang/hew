@@ -7,8 +7,12 @@
   the original receiver after the runtime's void mutation call.
 - Preserve the protocol's native scalar and string carriers. Add physical
   verifier negatives and LLVM declaration checks for Linux, Windows and macOS.
-- The initial implementation builds with workspace Clippy. Executable runtime
-  ownership checks remain pending composition of SIR callable admission.
+- Real JSON and YAML runtimes verify independent copies, consuming mutation,
+  null-owner Local cleanup and native scalar/string carriers at O0 and O2.
+  The composed SIR, physical and LLVM suites pass, including source admission.
+- Encoding diagnostics can use borrowed string emptiness checks through the
+  existing C-bool predicate lowering. Native acceptance distinguishes empty,
+  embedded-NUL and Unicode strings while preserving later reads at O0 and O2.
 
 ## Initial checkpoint
 

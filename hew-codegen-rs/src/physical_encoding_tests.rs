@@ -89,5 +89,62 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
                 ctx.ptr_type(AddressSpace::default()).fn_type(&[ptr], false)
             );
         }
+        let physical = physical_for_triple(
+            "fn main() -> i64 { if \"\".is_empty() { 0 } else { 1 } }",
+            triple,
+        );
+        let llvm = llvm(&ctx, &physical);
+        assert_eq!(
+            llvm.get_function("hew_string_is_empty").unwrap().get_type(),
+            ctx.bool_type().fn_type(&[ptr], false)
+        );
+    }
+}
+
+#[test]
+fn string_emptiness_borrows_managed_strings_and_preserves_later_reads_at_o0_o2() {
+    let physical = physical(
+        "fn probe(consume text: string) -> i64 { if text.is_empty() { text.byte_len() + 7 } else { text.byte_len() + 11 } } fn main() -> i64 { probe(\"\") }",
+    );
+    let name = emitted_symbol(
+        &physical,
+        physical
+            .callables
+            .iter()
+            .find(|callable| callable.symbol == "probe")
+            .unwrap(),
+    );
+    for optimized in [false, true] {
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        llvm.get_function(&name)
+            .unwrap()
+            .set_linkage(Linkage::External);
+        let engine = engine(&llvm, optimized);
+        for (text, expected) in [("", 7), ("\0", 12), ("é", 13)] {
+            let mut input = std::ptr::null_mut();
+            // SAFETY: the literal is valid UTF-8 with its complete byte length.
+            unsafe {
+                hew_runtime::string::hew_string_literal_new(
+                    text.as_ptr(),
+                    u32::try_from(text.len()).unwrap(),
+                    &raw mut input,
+                )
+            };
+            let mut result = 0;
+            let mut fault = std::ptr::null_mut();
+            type Probe = unsafe extern "C" fn(*mut c_void, *mut i64, *mut *mut c_void) -> i32;
+            // SAFETY: checked consuming string parameter and private scalar return ABI.
+            let status = unsafe {
+                engine.get_function::<Probe>(&name).unwrap().call(
+                    input.cast(),
+                    &raw mut result,
+                    &raw mut fault,
+                )
+            };
+            assert_eq!(status, 0);
+            assert!(fault.is_null());
+            assert_eq!(result, expected);
+        }
     }
 }

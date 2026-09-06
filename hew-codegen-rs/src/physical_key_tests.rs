@@ -165,6 +165,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
     bind!(
         string::hew_string_hash_fnv1a,
         string::hew_string_equals,
+        string::hew_string_is_empty,
         string::hew_string_literal_new,
         string::hew_string_clone,
         string::hew_string_drop,

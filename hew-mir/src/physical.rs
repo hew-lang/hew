@@ -682,6 +682,7 @@ pub enum PhysicalRuntimeAction {
     StringConcat,
     StringEquals,
     StringStartsWith,
+    StringIsEmpty,
     StringToBytesOwned,
     StringToUppercase,
     StringLen,
@@ -722,6 +723,7 @@ impl PhysicalRuntimeAction {
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
             Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
+            Self::StringIsEmpty => RuntimeCallFamily::StringIsEmpty,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::StringLen => RuntimeCallFamily::StringLen,
@@ -1732,6 +1734,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
         RuntimeCallFamily::StringStartsWith => PhysicalRuntimeAction::StringStartsWith,
+        RuntimeCallFamily::StringIsEmpty => PhysicalRuntimeAction::StringIsEmpty,
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
         RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
@@ -6356,6 +6359,7 @@ mod tests {
                 let upper = "core".to_upper();
                 if upper != "CORE" { return 1; }
                 if !upper.starts_with("CO") { return 2; }
+                if upper.is_empty() { return 3; }
                 println(upper);
                 0
             }
@@ -6377,6 +6381,7 @@ mod tests {
             std::collections::HashSet::from([
                 PhysicalRuntimeAction::StringEquals,
                 PhysicalRuntimeAction::StringStartsWith,
+                PhysicalRuntimeAction::StringIsEmpty,
                 PhysicalRuntimeAction::StringToUppercase,
                 PhysicalRuntimeAction::PrintlnString,
             ])

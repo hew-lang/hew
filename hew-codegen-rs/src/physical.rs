@@ -3005,7 +3005,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringEquals | PhysicalRuntimeAction::StringStartsWith => {
+            PhysicalRuntimeAction::StringEquals
+            | PhysicalRuntimeAction::StringStartsWith
+            | PhysicalRuntimeAction::StringIsEmpty => {
                 let (symbol, return_type) = match action {
                     PhysicalRuntimeAction::StringEquals => {
                         ("hew_string_equals", self.ctx.i32_type())
@@ -3013,22 +3015,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     PhysicalRuntimeAction::StringStartsWith => {
                         ("hew_string_starts_with", self.ctx.bool_type())
                     }
+                    PhysicalRuntimeAction::StringIsEmpty => {
+                        ("hew_string_is_empty", self.ctx.bool_type())
+                    }
                     _ => unreachable!("matched string predicate"),
                 };
                 let function = get_or_declare_external(
                     self.llvm,
                     symbol,
-                    return_type.fn_type(&[ptr.into(), ptr.into()], false),
+                    return_type.fn_type(&vec![ptr.into(); transfers.len()], false),
                 )?;
+                let arguments = (0..transfers.len())
+                    .map(|index| Ok(self.load(source(index)?, "predicate.argument")?.into()))
+                    .collect::<CodegenResult<Vec<_>>>()?;
                 let value = self
-                    .runtime_call_value(
-                        function,
-                        &[
-                            self.load(source(0)?, "predicate.left")?.into(),
-                            self.load(source(1)?, "predicate.right")?.into(),
-                        ],
-                        "string.predicate",
-                    )?
+                    .runtime_call_value(function, &arguments, "string.predicate")?
                     .into_int_value();
                 let truth = self
                     .builder

@@ -23,6 +23,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Weak;
 use std::sync::{Arc, Mutex};
 
+#[path = "task_scope_select.rs"]
+mod select;
+pub use select::{
+    hew_checked_task_select_free, hew_checked_task_select_new, hew_checked_task_select_poll,
+    HewCheckedTaskSelect,
+};
+
 const PENDING: i32 = 0;
 const READY: i32 = 1;
 const FAULT: i32 = 2;

@@ -1653,10 +1653,17 @@ fn wasm_trap_exit_code_mapping_join_branch_failed_is_allowlisted_as_211() {
 }
 
 #[test]
+fn wasm_trap_exit_code_mapping_user_panic_is_allowlisted_as_212() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_USER_PANIC,
+        crate::internal::types::ExitReason::UserPanic,
+    );
+}
+
+#[test]
 fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
-    // 211 (HEW_TRAP_JOIN_BRANCH_FAILED) is now a Hew-owned discriminator and is
-    // allowlisted; 212 takes its place as the first unused code.
-    for unknown in [-1, 1, 101, 199, 212, i32::MAX] {
+    // Keep unknown probes outside the assigned logical-fault discriminators.
+    for unknown in [-1, 1, 101, 199, i32::MAX] {
         assert_eq!(
             crate::internal::types::canonical_trap_wasi_exit_code(unknown),
             None,

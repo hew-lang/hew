@@ -121,7 +121,7 @@ fn every_fault_edge_must_end_its_local_loans() {
         let fault = function
             .blocks
             .iter_mut()
-            .find(|block| matches!(block.terminator, SemTerminator::Trap { .. }))
+            .find(|block| matches!(block.terminator, SemTerminator::CheckedRaiseFault { .. }))
             .unwrap();
         let before = fault.ops.len();
         fault.ops.retain(

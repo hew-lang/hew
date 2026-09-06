@@ -1,0 +1,12 @@
+fn fail() { panic("D2"); }
+
+fn main() {
+    var value = 4;
+    defer {
+        println(value);
+        defer { panic("nested"); }
+        panic("D1");
+    }
+    defer { value += 1; fail(); value += 100; }
+    panic("body");
+}

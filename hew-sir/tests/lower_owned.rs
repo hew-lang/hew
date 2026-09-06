@@ -242,16 +242,16 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
         })
         .expect("bytes index must have an explicit bounds-failure edge");
     let failure = &main.blocks[index_unwind.0 as usize];
+    let SemTerminator::CheckedRaiseFault { kind, cleanup } = &failure.terminator else {
+        panic!("bounds failure must create its fault before cleanup");
+    };
+    assert_eq!(*kind, TrapKind::IndexOutOfBounds);
+    let failure = &main.blocks[cleanup.target.0 as usize];
     assert!(failure
         .ops
         .iter()
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == copy)));
-    assert_eq!(
-        failure.terminator,
-        SemTerminator::Trap {
-            kind: TrapKind::IndexOutOfBounds
-        }
-    );
+    assert_eq!(failure.terminator, SemTerminator::ResumeUnwind);
 
     let mut wrong_push_boundary = lowered.module.clone();
     let push = wrong_push_boundary
@@ -747,7 +747,7 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
     );
     assert!(choose.blocks.iter().any(|block| matches!(
         &block.terminator,
-        SemTerminator::Goto(edge) if !edge.args.is_empty() && edge.target.0 <= block.id.0
+        SemTerminator::Goto(edge) if edge.target.0 <= block.id.0
     )));
     assert!(
         choose
@@ -760,7 +760,7 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
 }
 
 #[test]
-fn checked_arithmetic_failure_cleans_live_owner_before_exact_trap() {
+fn checked_arithmetic_failure_creates_exact_fault_before_owner_cleanup() {
     let lowered = lower_source(
         r#"
         fn increment(value: i64) -> i64 {
@@ -799,6 +799,11 @@ fn checked_arithmetic_failure_cleans_live_owner_before_exact_trap() {
         .iter()
         .find(|block| block.id == failures[0].edge.target)
         .expect("checked failure edge must target a block");
+    let SemTerminator::CheckedRaiseFault { kind, cleanup } = &failure_block.terminator else {
+        panic!("arithmetic failure must create its fault before cleanup");
+    };
+    assert_eq!(*kind, TrapKind::IntegerOverflow);
+    let failure_block = &increment.blocks[cleanup.target.0 as usize];
     let hew_sir::BindingTarget::Place(live) = increment
         .bindings
         .iter()
@@ -812,12 +817,7 @@ fn checked_arithmetic_failure_cleans_live_owner_before_exact_trap() {
         .ops
         .iter()
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == live)));
-    assert_eq!(
-        failure_block.terminator,
-        SemTerminator::Trap {
-            kind: TrapKind::IntegerOverflow
-        }
-    );
+    assert_eq!(failure_block.terminator, SemTerminator::ResumeUnwind);
     assert!(verify_module(&lowered.module).is_empty());
 
     let mut wrong_kind = lowered.module.clone();

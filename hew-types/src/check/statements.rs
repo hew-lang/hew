@@ -8,6 +8,25 @@ use crate::builtin_names::BuiltinNamedType;
 use crate::BuiltinType;
 
 impl Checker {
+    fn reject_deferred_loop_exit(&mut self, label: Option<&str>, span: &Span) -> bool {
+        let Some((depth, labels)) = self.deferred_body else {
+            return false;
+        };
+        let escapes = label.map_or(self.loop_depth <= depth, |label| {
+            !self.loop_labels[labels..]
+                .iter()
+                .any(|active| active == label)
+        });
+        if escapes {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "break or continue cannot escape a deferred body".to_string(),
+            );
+        }
+        escapes
+    }
+
     /// Re-synthesize deferred bodies at one materialization edge while keeping
     /// only move-state diagnostics. Registration already owns ordinary typing
     /// and lexical-resolution errors; replay exists solely to apply the edge's
@@ -15,7 +34,11 @@ impl Checker {
     fn recheck_materialized_defers(&mut self, defers: Vec<Spanned<Expr>>) {
         for (body, span) in defers {
             let error_mark = self.errors.len();
+            let previous = self
+                .deferred_body
+                .replace((self.loop_depth, self.loop_labels.len()));
             self.synthesize(&body, &span);
+            self.deferred_body = previous;
             let replay_errors = self.errors.split_off(error_mark);
             for error in replay_errors.into_iter().filter(|error| {
                 matches!(
@@ -561,6 +584,14 @@ impl Checker {
     /// The return *type* of the construct itself is always `Ty::Never` (a
     /// `return` diverges); callers assign that directly.
     pub(super) fn check_return_operand(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
+        if self.deferred_body.is_some() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "return cannot escape a deferred body".to_string(),
+            );
+            return;
+        }
         if self.inferred_lambda_returns.is_some() {
             let ty = value.map_or(Ty::Unit, |(expr, span)| self.synthesize(expr, span));
             self.inferred_lambda_returns
@@ -1681,6 +1712,14 @@ impl Checker {
                 body,
                 is_await,
             } => {
+                if *is_await && self.deferred_body.is_some() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "a deferred body cannot suspend in a for await loop".to_string(),
+                    );
+                    return;
+                }
                 let iter_ty = self.synthesize(&iterable.0, &iterable.1);
                 // Infer element type from iterable, and enforce `for await` restrictions.
                 let elem_ty = match &iter_ty {
@@ -2064,6 +2103,9 @@ impl Checker {
                 self.env.pop_scope();
             }
             Stmt::Break { label, value } => {
+                if self.reject_deferred_loop_exit(label.as_deref(), span) {
+                    return;
+                }
                 if self.loop_depth == 0 {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
@@ -2088,6 +2130,9 @@ impl Checker {
                 }
             }
             Stmt::Continue { label } => {
+                if self.reject_deferred_loop_exit(label.as_deref(), span) {
+                    return;
+                }
                 if self.loop_depth == 0 {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
@@ -2114,7 +2159,11 @@ impl Checker {
             }
             Stmt::Defer(expr) => {
                 let ownership = self.env.ownership_snapshot();
+                let previous = self
+                    .deferred_body
+                    .replace((self.loop_depth, self.loop_labels.len()));
                 self.synthesize(&expr.0, &expr.1);
+                self.deferred_body = previous;
                 self.env.restore_ownership(&ownership);
                 if !self.env.register_defer(*expr.clone()) {
                     self.errors.push(

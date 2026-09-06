@@ -56,26 +56,48 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
         .unwrap_or_else(|| panic!("HIR module must declare `{name}`"))
 }
 
-/// Deferred statements remain outside this executable SIR slice.
-const UNSUPPORTED_BODY: &str = "defer { println(value); } value";
+/// Deliberately break one body after checking. Demand tests must not depend on
+/// a valid language feature remaining unimplemented.
+fn invalid_bodies(source: &str, names: &[&str]) -> (HirModule, hew_types::TypeCheckOutput) {
+    let (mut hir, facts) = lower_hir(source);
+    for item in &mut hir.items {
+        let HirItem::Function(function) = item else {
+            continue;
+        };
+        if names.contains(&function.name.as_str()) {
+            let tail = function.body.tail.as_mut().expect("fixture tail");
+            tail.kind = hew_hir::HirExprKind::BindingRef {
+                name: "missing".into(),
+                resolved: hew_hir::ResolvedRef::Binding(hew_hir::BindingId(u32::MAX)),
+            };
+        }
+    }
+    (hir, facts)
+}
+
+fn lower_invalid_bodies(source: &str, names: &[&str]) -> LoweredModule {
+    let (hir, facts) = invalid_bodies(source, names);
+    lower_module(&hir, &facts)
+}
 
 #[test]
 fn an_unreachable_unsupported_function_does_not_block_the_reachable_component() {
-    let lowered = lower_source(&format!(
+    let lowered = lower_invalid_bodies(
         r"
-        fn reachable(value: i64) -> i64 {{
+        fn reachable(value: i64) -> i64 {
             value + 1
-        }}
+        }
 
-        fn stranded(value: i64) -> i64 {{
-            {UNSUPPORTED_BODY}
-        }}
+        fn stranded(value: i64) -> i64 {
+            value
+        }
 
-        fn main() -> i64 {{
+        fn main() -> i64 {
             reachable(41)
-        }}
-        "
-    ));
+        }
+        ",
+        &["stranded"],
+    );
 
     assert!(
         matches!(status_of(&lowered, "main"), SirLoweringStatus::Lowered),
@@ -118,17 +140,18 @@ fn an_unreachable_unsupported_function_does_not_block_the_reachable_component() 
 /// `NotReached` assertion could pass for a body that lowers perfectly well.
 #[test]
 fn the_same_body_reached_from_the_entry_is_reported_unsupported() {
-    let lowered = lower_source(&format!(
+    let lowered = lower_invalid_bodies(
         r"
-        fn stranded(value: i64) -> i64 {{
-            {UNSUPPORTED_BODY}
-        }}
+        fn stranded(value: i64) -> i64 {
+            value
+        }
 
-        fn main() -> i64 {{
+        fn main() -> i64 {
             stranded(41)
-        }}
-        "
-    ));
+        }
+        ",
+        &["stranded"],
+    );
 
     assert!(
         matches!(
@@ -148,7 +171,7 @@ fn the_dump_reports_every_unsupported_body_with_a_reason() {
     for index in 0..7 {
         write!(
             helpers,
-            "        fn helper{index}(value: i64) -> i64 {{\n            {UNSUPPORTED_BODY}\n        }}\n"
+            "        fn helper{index}(value: i64) -> i64 {{\n            value\n        }}\n"
         )
         .expect("write to String");
     }
@@ -156,9 +179,13 @@ fn the_dump_reports_every_unsupported_body_with_a_reason() {
         .map(|index| format!("helper{index}({index})"))
         .collect::<Vec<_>>()
         .join(" + ");
-    let lowered = lower_source(&format!(
-        "{helpers}\n        fn main() -> i64 {{\n            {calls}\n        }}\n"
-    ));
+    let names = (0..7)
+        .map(|index| format!("helper{index}"))
+        .collect::<Vec<_>>();
+    let lowered = lower_invalid_bodies(
+        &format!("{helpers}\n        fn main() -> i64 {{\n            {calls}\n        }}\n"),
+        &names.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
 
     let dump = dump_lowering(&lowered);
     for index in 0..7 {
@@ -236,21 +263,22 @@ fn a_module_without_an_entry_lowers_no_bodies_and_says_why() {
 
 #[test]
 fn an_explicit_root_lowers_only_its_resolved_library_call_closure() {
-    let (hir, type_facts) = lower_hir(&format!(
+    let (hir, type_facts) = invalid_bodies(
         r"
-        fn helper(value: i64) -> i64 {{
+        fn helper(value: i64) -> i64 {
             value + 1
-        }}
+        }
 
-        fn library_root() -> i64 {{
+        fn library_root() -> i64 {
             helper(41)
-        }}
+        }
 
-        fn stranded(value: i64) -> i64 {{
-            {UNSUPPORTED_BODY}
-        }}
-        "
-    ));
+        fn stranded(value: i64) -> i64 {
+            value
+        }
+        ",
+        &["stranded"],
+    );
     let root = declaration_of(&hir, "library_root");
 
     let lowered = lower_module_with_roots(&hir, &type_facts, std::slice::from_ref(&root))
@@ -368,26 +396,24 @@ fn explicit_root_refusals_name_each_requested_declaration() {
 /// moved.
 #[test]
 fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
-    let source = format!(
-        r"
-        fn stranded_ok(value: i64) -> i64 {{
+    let source = r"
+        fn stranded_ok(value: i64) -> i64 {
             value + 1
-        }}
+        }
 
-        fn stranded_bad(value: i64) -> i64 {{
-            {UNSUPPORTED_BODY}
-        }}
+        fn stranded_bad(value: i64) -> i64 {
+            value
+        }
 
-        fn refused_header(value: f32) -> i64 {{
+        fn refused_header(value: f32) -> i64 {
             0
-        }}
+        }
 
-        fn main() -> i64 {{
+        fn main() -> i64 {
             0
-        }}
-        "
-    );
-    let (hir, type_facts) = lower_hir(&source);
+        }
+        ";
+    let (hir, type_facts) = invalid_bodies(source, &["stranded_bad"]);
 
     let entry = lower_module(&hir, &type_facts);
     for name in ["stranded_ok", "stranded_bad", "refused_header"] {

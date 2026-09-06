@@ -1,0 +1,24 @@
+fn saved() -> i64 {
+    var value = 4;
+    defer { println(value); }
+    defer { value += 1; }
+    return value;
+}
+
+fn main() {
+    defer {
+        var value = 9;
+        defer { println(value); }
+        value += 1;
+    }
+    println(saved());
+    var iteration = 0;
+    while iteration < 4 {
+        defer { println(iteration); }
+        iteration += 1;
+        if iteration == 1 { continue; }
+        if iteration == 3 { break; }
+        { defer { println("inner"); } }
+    }
+    println(iteration);
+}

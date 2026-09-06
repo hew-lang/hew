@@ -6490,7 +6490,12 @@ mod tests {
         let fault = physical.functions[0]
             .blocks
             .iter_mut()
-            .find(|block| matches!(block.terminator, PhysicalTerminator::Trap(_)))
+            .find(|block| {
+                matches!(
+                    block.terminator,
+                    PhysicalTerminator::CheckedRaiseFault { .. }
+                )
+            })
             .unwrap();
         let before = fault.ops.len();
         fault

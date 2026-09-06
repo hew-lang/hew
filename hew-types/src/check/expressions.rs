@@ -135,6 +135,29 @@ impl Checker {
 
     /// Synthesize: infer the type of an expression (bottom-up).
     pub(super) fn synthesize(&mut self, expr: &Expr, span: &Span) -> Ty {
+        if self.deferred_body.is_some()
+            && matches!(
+                expr,
+                Expr::ReturnError(_)
+                    | Expr::PostfixTry(_)
+                    | Expr::Await(_)
+                    | Expr::AwaitRestart(_)
+                    | Expr::Yield(_)
+                    | Expr::Scope { .. }
+                    | Expr::ScopeDeadline { .. }
+                    | Expr::ForkChild { .. }
+                    | Expr::ForkBlock { .. }
+                    | Expr::Select { .. }
+                    | Expr::Join(_)
+            )
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a deferred body cannot suspend or propagate an error out of its scope".to_string(),
+            );
+            return Ty::Error;
+        }
         // Synthesis runs without an expected type, so no expression reached
         // through `synthesize` is in `check_against` tail position. Clear the
         // tail Ok-coercion flag for the duration so a nested expression (an
@@ -3267,6 +3290,7 @@ impl Checker {
 
                 let prev_in_generator = self.in_generator;
                 let prev_return_type = self.current_return_type.take();
+                let previous_defer = self.deferred_body.take();
                 let prev_fails = std::mem::replace(&mut self.current_fails, false);
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
@@ -3275,6 +3299,7 @@ impl Checker {
 
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;
+                self.deferred_body = previous_defer;
                 self.current_fails = prev_fails;
 
                 // Unify the tail-expression type with the Return type-variable.
@@ -7681,6 +7706,7 @@ impl Checker {
         // that PostfixTry (`?`) context checks see the lambda's return type,
         // not the outer function's.
         let prev_return_type = self.current_return_type.take();
+        let previous_defer = self.deferred_body.take();
         let prev_fails = std::mem::replace(&mut self.current_fails, false);
 
         let previous_inferred_returns = self.inferred_lambda_returns.take();
@@ -7715,6 +7741,7 @@ impl Checker {
         self.record_callable_value_transfer(&body.0, &body.1);
 
         self.current_return_type = prev_return_type;
+        self.deferred_body = previous_defer;
         self.current_fails = prev_fails;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.task_scope_depth = prev_task_scope_depth;

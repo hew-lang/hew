@@ -317,6 +317,13 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         })
         .unwrap();
     let (leaf, place) = taken_receiver(call, moved);
+    let cleanup = match &main.blocks[cleanup.0 as usize].terminator {
+        SemTerminator::CheckedRaiseFault { kind, cleanup } => {
+            assert_eq!(*kind, hew_sir::TrapKind::IndexOutOfBounds);
+            cleanup.target
+        }
+        _ => cleanup,
+    };
     let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let field = plan.projection(place).unwrap();
     assert_eq!(
@@ -372,19 +379,10 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         !destroyed.contains(&leaf) && !destroyed.contains(&moved),
         "runtime consumes the receiver on failure"
     );
-    if family.semantic_contract().unwrap().propagates_fault() {
-        assert!(matches!(
-            main.blocks[cleanup.0 as usize].terminator,
-            SemTerminator::ResumeUnwind
-        ));
-    } else {
-        assert!(matches!(
-            main.blocks[cleanup.0 as usize].terminator,
-            SemTerminator::Trap {
-                kind: hew_sir::TrapKind::IndexOutOfBounds
-            }
-        ));
-    }
+    assert!(matches!(
+        main.blocks[cleanup.0 as usize].terminator,
+        SemTerminator::ResumeUnwind
+    ));
 }
 
 #[test]

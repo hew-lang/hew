@@ -92,6 +92,10 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::CheckedBinary { .. }
                     | PhysicalTerminator::Call { .. }
                     | PhysicalTerminator::Panic { .. }
+                    | PhysicalTerminator::EnterDefer { .. }
+                    | PhysicalTerminator::FinishDefer { .. }
+                    | PhysicalTerminator::CleanupDispatch { .. }
+                    | PhysicalTerminator::CheckedRaiseFault { .. }
                     | PhysicalTerminator::Trap(_)
                     | PhysicalTerminator::PropagateFault
                     | PhysicalTerminator::Unreachable => {}

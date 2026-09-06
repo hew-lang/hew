@@ -121,6 +121,28 @@ pub unsafe extern "C" fn hew_async_file_read(
 }
 
 /// Start an overwrite of a whole file, owning copies of path and contents.
+///
+/// # Safety
+/// Both strings are borrowed managed handles (null content means empty), and
+/// `waker` is null or a live borrowed descriptor retained by submission.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_file_write_string(
+    path: *const HewString,
+    content: *const HewString,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the inputs are live borrowed strings for this call. Copy before
+    // submission, so the worker keeps no reference to caller-owned storage.
+    let request = unsafe { owned_path(path) }.map(|path| {
+        // SAFETY: the caller lends content through this immediate copy.
+        let bytes = unsafe { string_as_str(content) }.as_bytes().to_vec();
+        FileRequest::Write(path, bytes)
+    });
+    // SAFETY: the request owns its inputs and submission retains the waker.
+    unsafe { submit(shared_blocking_pool_opt(), waker, request) }
+}
+
+/// Start an overwrite of a whole file, owning copies of path and contents.
 /// The successful result is the byte count. Cancellation before the job starts
 /// prevents the write; cancellation during an OS write does not roll it back.
 ///

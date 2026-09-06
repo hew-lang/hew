@@ -863,7 +863,10 @@ impl Builder {
                 **left = self.rewrite(left, machine, state, event)?;
                 **right = self.rewrite(right, machine, state, event)?;
             }
-            Expr::Unary { operand, .. } | Expr::Clone(operand) | Expr::PostfixTry(operand) => {
+            Expr::Unary { operand, .. }
+            | Expr::Send(operand)
+            | Expr::Clone(operand)
+            | Expr::PostfixTry(operand) => {
                 **operand = self.rewrite(operand, machine, state, event)?;
             }
             Expr::FieldAccess { object, .. } => {

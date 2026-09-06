@@ -143,7 +143,6 @@ impl Checker {
                     | Expr::Await(_)
                     | Expr::AwaitRestart(_)
                     | Expr::Yield(_)
-                    | Expr::Scope { .. }
                     | Expr::ScopeDeadline { .. }
                     | Expr::ForkChild { .. }
                     | Expr::ForkBlock { .. }
@@ -443,6 +442,7 @@ impl Checker {
             // Types with no clone path fail closed downstream with the existing
             // clone diagnostic.
             Expr::Clone(operand) => self.check_method_call(operand, "clone", &[], span),
+            Expr::Send(operand) => self.check_actor_submission(operand, span),
 
             // Call
             Expr::Call {
@@ -569,10 +569,8 @@ impl Checker {
 
             // Await
             Expr::Await(inner) => {
-                // When the user writes `await { method_call }` the inner expression
-                // is an `Expr::Block` wrapping a single trailing method call, not a
-                // bare `Expr::MethodCall`.  Unwrap one level of block so the ask-
-                // dispatch guard and span-key lookup below can find the right node.
+                // Locate a directly awaited method through a transparent block
+                // so suspension permission belongs to the call's exact span.
                 let (effective_expr, effective_span) = match &inner.0 {
                     Expr::Block(block)
                         if block.stmts.is_empty()
@@ -591,7 +589,7 @@ impl Checker {
                     .insert(SpanKey::in_module(effective_span, self.current_module_idx));
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
 
-                // await Task<T> → T (simplified)
+                // Join one Task layer; calls already own their result contract.
                 match inner_ty {
                     Ty::Task(inner) => *inner,
                     // `await close(actor)` or bare actor handle → Unit (actor termination).
@@ -601,22 +599,6 @@ impl Checker {
                         && !matches!(effective_expr, Expr::MethodCall { .. }) =>
                     {
                         Ty::Unit
-                    }
-                    // Named-actor ask: `await ref.method(args)` (bare or block-wrapped)
-                    // where the method is an ask-shaped receive fn (non-unit return).
-                    // The checker recorded an `ActorMethodKind::Ask` entry for the
-                    // inner method-call span; unify with the lambda/remote paths by
-                    // returning `Result<R, AskError>`.
-                    _ if matches!(effective_expr, Expr::MethodCall { .. }) => {
-                        let dispatch_key =
-                            SpanKey::in_module(effective_span, self.current_module_idx);
-                        if let Some(ActorMethodKind::Ask(_, reply_ty)) =
-                            self.actor_method_dispatch.get(&dispatch_key).cloned()
-                        {
-                            Ty::result(reply_ty, Ty::ask_error())
-                        } else {
-                            inner_ty
-                        }
                     }
                     _ => inner_ty,
                 }
@@ -3155,14 +3137,17 @@ impl Checker {
                 // sequentially; the same goes for the timeout duration, which
                 // arms the deadline before any arm fires.
                 let mut source_tys = Vec::with_capacity(arms.len());
+                let mut sources = Vec::with_capacity(arms.len());
                 for arm in arms {
                     self.env.push_scope();
-                    source_tys.push(self.synthesize_actor_concurrency_source(
-                        &arm.source.0,
-                        &arm.source.1,
-                        "select arm source",
-                    ));
+                    let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
+                    source_tys.push(ty);
+                    sources.push(source);
                     self.env.pop_scope();
+                }
+                if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
+                    self.select_sources
+                        .insert(SpanKey::in_module(span, self.current_module_idx), checked);
                 }
                 if let Some(tc) = timeout {
                     self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
@@ -3171,9 +3156,16 @@ impl Checker {
                 // Dispatch happens here: from this state exactly one body runs.
                 let entry = self.env.ownership_snapshot();
                 let mut arm_exits = Vec::with_capacity(arms.len() + 1);
-                for (arm, source_ty) in arms.iter().zip(&source_tys) {
+                for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
                     self.env.push_scope();
                     self.env.restore_ownership(&entry);
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
+                        if let Expr::Await(task) = &arm.source.0 {
+                            if !self.reject_borrowed_consumption(&task.0, &task.1) {
+                                self.mark_expr_moved(&task.0, &task.1);
+                            }
+                        }
+                    }
                     self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {
                         self.check_against(&arm.body.0, &arm.body.1, expected)
@@ -3328,7 +3320,17 @@ impl Checker {
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
 
+                let effect_body = super::effects::EffectBody::GeneratorBlock(SpanKey::in_module(
+                    span,
+                    self.current_module_idx,
+                ));
+                self.effect_graph
+                    .bodies
+                    .entry(effect_body.clone())
+                    .or_default();
+                let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
                 let body_ty = self.check_block(body, None);
+                self.effect_graph.current_body = previous_effect_body;
 
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;
@@ -6819,6 +6821,7 @@ impl Checker {
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
+            | Expr::Send(_)
             | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Identifier(_)
@@ -7218,6 +7221,10 @@ impl Checker {
             }
         }
         let resolved = self.subst.resolve(&obj_ty);
+        if self.reject_sealed_delivery_access(&resolved, span) {
+            return Ty::Error;
+        }
+
         match &resolved {
             Ty::Named { name, args, .. } => {
                 // Actor children produce ChildRef<T>; nested supervisors remain LocalPid<S>.
@@ -8329,6 +8336,16 @@ impl Checker {
         let qualified_owned = self
             .published_bare_type_qualified(name)
             .or_else(|| self.flat_file_import_type_owner(name));
+        let delivery_owner = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
+        if self.reject_sealed_delivery_access(
+            &crate::actor_delivery::nominal(&delivery_owner, Vec::new()),
+            span,
+        ) {
+            return Ty::Error;
+        }
+
         if let Some(qualified) = qualified_owned.as_deref() {
             // `qualified` is the full owner-qualified source identity
             // (`owner.TypeName`), and `owner` itself may be a dotted module

@@ -335,7 +335,8 @@ impl NodeVisitor for EffectVisitor<'_> {
                 }
             }
             Expr::MethodCall { .. } | Expr::Clone(_) => self.method(&key, span),
-            Expr::Spawn { .. }
+            Expr::Send(_)
+            | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
             | Expr::ForkChild { .. }

@@ -1524,6 +1524,13 @@ impl Checker {
             &params,
             &result,
             &contract.consuming_params,
+        ) || family.matches_async_io_extern(
+            module,
+            declaration.full_path(),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
         ))
         .then_some(family)
     }
@@ -1539,6 +1546,9 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if self.is_actor_policy_builtin(&func.0) {
+            return self.check_actor_policy(args, span);
+        }
         if let Expr::ContextVariant(context) = &func.0 {
             for arg in args {
                 let (expr, arg_span) = arg.expr();
@@ -2568,6 +2578,63 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    pub(super) fn synthesize_select_source(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+    ) -> (Ty, Option<CheckedSelectSource>) {
+        let (operand, operand_span, awaited) = match expr {
+            Expr::Await(inner) => (&inner.0, &inner.1, true),
+            _ => (expr, span, false),
+        };
+        let key = SpanKey::in_module(operand_span, self.current_module_idx);
+        self.suspension_operands.insert(key.clone());
+        // Synthesize the operand without executing the ordinary await's
+        // ownership transition. Select prepares every handle before choosing.
+        let ty = self.synthesize(operand, operand_span);
+        let ty = self.subst.resolve(&ty);
+        if let Ty::Task(result) = &ty {
+            if awaited {
+                return (
+                    (**result).clone(),
+                    Some(CheckedSelectSource::TaskAwait { operand: key }),
+                );
+            }
+        }
+        if matches!(
+            self.actor_method_dispatch.get(&key),
+            Some(ActorMethodKind::Ask(..))
+        ) || matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RemoteActorAsk)
+        ) {
+            return (ty, Some(CheckedSelectSource::ActorAsk { call: key }));
+        }
+        let target = self
+            .direct_call_targets
+            .get(&key)
+            .or_else(|| self.resolved_calls.get(&key).map(|call| &call.target))
+            .or_else(|| match self.method_call_rewrites.get(&key) {
+                Some(MethodCallRewrite::RewriteToFunction { target, .. }) => Some(target),
+                _ => None,
+            });
+        if matches!(
+            target,
+            Some(CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout
+            ))
+        ) {
+            return (ty, Some(CheckedSelectSource::ChannelReceive { call: key }));
+        }
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            "select arm source must await a Task or invoke an actor ask or channel receive"
+                .to_string(),
+        );
+        (Ty::Error, None)
     }
 
     pub(super) fn synthesize_actor_concurrency_source(

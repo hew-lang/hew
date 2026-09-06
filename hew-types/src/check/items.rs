@@ -1025,7 +1025,15 @@ impl Checker {
             .declaration_by_path(fn_name)
             .cloned()
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).cloned())
-            .map(super::effects::EffectBody::Declaration);
+            .map(|id| {
+                let creator = super::effects::EffectBody::Declaration(id.clone());
+                if fd.is_generator {
+                    self.effect_graph.bodies.entry(creator).or_default();
+                    super::effects::EffectBody::Generator(id)
+                } else {
+                    creator
+                }
+            });
         let previous = std::mem::replace(&mut self.effect_graph.current_body, body.clone());
         if let Some(body) = body {
             self.effect_graph.parameter_names.insert(

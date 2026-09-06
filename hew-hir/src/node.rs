@@ -1262,9 +1262,10 @@ pub struct HirBinding {
     /// `consume` modifier (`fn sink(consume c: Conn)`). Pins the by-move
     /// ownership disposition for the param-ownership classifier: the param is
     /// owned by the callee (auto-dropped at callee scope-exit unless moved out)
-    /// and the call site consumes the caller's argument. Always `false` for
-    /// non-param bindings (`let`/match/loop binders) and for params without the
-    /// modifier — those take the inferred borrow/consume disposition.
+    /// and the call site consumes the caller's argument. Compiler-generated
+    /// transfer bindings also set this flag when the checker requires moving
+    /// their initializer. Ordinary source `let`/match/loop binders leave it
+    /// false and retain their normal value semantics.
     pub is_consume: bool,
 }
 
@@ -1514,20 +1515,19 @@ pub enum HirExprKind {
         actor_name: String,
         args: Vec<(String, HirExpr)>,
     },
-    /// Fire-and-forget actor receive dispatch, selected from the checker's
-    /// `actor_method_dispatch` side table. HIR does not reclassify receiver
-    /// types; absence of a checker discriminator for an actor receiver is a
-    /// boundary diagnostic.
-    ActorSend {
+    /// Owned message construction; this does not enqueue or suspend.
+    ActorMessage {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
-        /// `true` when the target actor declares a loss- or rejection-capable
-        /// mailbox policy and the call returns `Result<(), SendError>`.
-        checked: bool,
-        /// `true` when a bounded `block` mailbox send must cooperatively
-        /// suspend from an execution-context caller rather than park its worker.
-        blocking: bool,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
+    /// Checker-selected policy, destination change or submission operation.
+    ActorDelivery {
+        receiver: Box<HirExpr>,
+        args: Vec<HirExpr>,
+        operation: hew_types::actor_delivery::ActorDeliveryCall,
     },
     /// Request/reply actor receive dispatch, selected from the checker's
     /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and
@@ -1615,26 +1615,6 @@ pub enum HirExprKind {
     /// Normal exits join children before publishing the body's result.
     Scope {
         body: HirBlock,
-    },
-    /// A call expression that is recognised as a child-task spawn because it
-    /// appears as a statement-expression inside a `scope {}` body. The callee
-    /// and args are the same as `HirExprKind::Call`; the distinct kind routes
-    /// MIR lowering to the task-spawn ABI rather than a direct synchronous
-    /// call.
-    ///
-    /// `task_ty` is always `ResolvedTy::Task(call_return_ty)`. It duplicates
-    /// the `HirExpr::ty` field for convenience at codegen sites that pattern-
-    /// match on the kind without reaching back to the parent `HirExpr`.
-    SpawnedCall {
-        callee: Box<HirExpr>,
-        args: Vec<HirExpr>,
-        task_ty: ResolvedTy,
-    },
-    /// Start every child before waiting and collect one ordered aggregate result.
-    /// The task output type distinguishes vector and heterogeneous tuple batches.
-    ForkBatch {
-        children: Vec<HirExpr>,
-        task_ty: ResolvedTy,
     },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.

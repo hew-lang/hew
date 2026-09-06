@@ -38,38 +38,65 @@ pub extern "C" fn hew_actor_payload_alloc(size: usize) -> *mut std::ffi::c_void 
     allocation
 }
 
-/// Transfer an initialized generated message through the existing mailbox.
+/// Allocate an unpublished message wrapper, preserving the source on failure.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn hew_actor_payload_try_alloc(size: usize) -> *mut std::ffi::c_void {
+    // SAFETY: malloc accepts every size; zero-sized wrappers still need an address.
+    unsafe { libc::malloc(size.max(1)) }
+}
+
+/// Try to transfer a generated message wrapper into its exact destination.
+/// Returns 0 for acceptance, 1 for full, 2 for closed, 3 for allocation failure,
+/// and 4 for an explicitly selected newest-message discard.
 ///
 /// # Safety
-/// `payload` is a uniquely owned malloc allocation, initialized according to
-/// `drop_payload`. The caller relinquishes it on every outcome. `fault` is a
-/// writable, initially null fault slot.
+/// `payload` is an unpublished malloc wrapper containing shallowly transferred
+/// typed fields. Acceptance or discard consumes those fields; rejection frees
+/// only the wrapper bytes, leaving the original typed message with the caller.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_native(
+pub unsafe extern "C" fn hew_actor_submit_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     payload: *mut std::ffi::c_void,
     size: usize,
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
-    fault: *mut *mut HewFault,
+    policy: i32,
 ) -> i32 {
-    // SAFETY: ownership and the destructor pass unchanged to the envelope.
+    if payload.is_null() {
+        return 3;
+    }
+    // SAFETY: the wrapper is uniquely owned until the mailbox accepts it.
     let envelope =
         unsafe { crate::mailbox::hew_msg_envelope_new(payload, size, Some(drop_payload)) };
-    let status = if envelope.is_null() {
-        // SAFETY: failed envelope allocation leaves payload ownership here.
+    if envelope.is_null() {
+        // SAFETY: the source still owns all typed fields in the unpublished wrapper.
         unsafe {
-            drop_payload(payload);
             libc::free(payload);
         }
-        crate::internal::types::HewError::ErrOom as i32
-    } else {
-        // SAFETY: the newly allocated envelope transfers one reference.
-        unsafe { crate::actor::send_native_envelope(token, message, envelope) }
+        return 3;
+    }
+    // SAFETY: the envelope is unpublished and transfers only on admission.
+    let outcome = unsafe { crate::actor::try_submit_native_envelope(token, message, envelope) };
+    let status = match outcome {
+        crate::mailbox::SendOutcome::Enqueued => return 0,
+        crate::mailbox::SendOutcome::Failed if policy == 2 => {
+            // SAFETY: explicit DropNewest transfers the typed payload for destruction.
+            unsafe {
+                crate::mailbox::hew_msg_envelope_release(envelope);
+            }
+            return 4;
+        }
+        crate::mailbox::SendOutcome::Failed => 1,
+        crate::mailbox::SendOutcome::Closed => 2,
+        crate::mailbox::SendOutcome::Oom => 3,
+        _ => unreachable!("native admission cannot apply implicit eviction or discard"),
     };
-    if status != 0 {
-        // SAFETY: the generated caller supplies an empty writable fault slot.
-        unsafe { *fault = crate::fault::hew_fault_new(status) };
+    // SAFETY: admission failed without publishing or aliasing. The source retains
+    // the typed fields; these two allocations contain no other owning resources.
+    unsafe {
+        libc::free(payload);
+        libc::free(envelope.cast());
     }
     status
 }
@@ -252,6 +279,85 @@ mod tests {
             assert_eq!(state, 7);
             assert!(!actor.state_drop_consumed.load(Ordering::Acquire));
             assert_eq!(crate::reply_channel::ref_count_for_test(channel), 1);
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_await_status(channel),
+                crate::await_cancel::AwaitCancelStatus::Completed as i32
+            );
+            crate::reply_channel::hew_reply_channel_free(channel);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
+        assert!(crate::execution_context::current_context().is_null());
+    }
+
+    unsafe extern "C" fn checked_resume(frame: *mut c_void) {
+        // SAFETY: the scheduler owns this live scratch frame and installs the
+        // resumed actor's context before invoking its continuation.
+        unsafe {
+            let frame = &mut *frame.cast::<crate::coro_exec::test_support::ScratchFrame>();
+            frame.resumes.fetch_add(1, Ordering::AcqRel);
+            frame.resume = None;
+            let context = crate::execution_context::current_context();
+            *(*context).actor.as_ref().unwrap().state.cast::<i64>() = 7;
+            hew_actor_dispatch_set_fault(context, crate::fault::hew_fault_new(202));
+        }
+    }
+
+    #[test]
+    fn checked_resume_crashes_and_retires_reply_after_normal_frame_cleanup() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let baseline = crate::reply_channel::active_channel_count();
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
+        let mut state = 3_i64;
+        let mut actor = crate::test_actor::stub_actor();
+        let mut frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        frame.resume = Some(checked_resume);
+        actor.state = (&raw mut state).cast();
+        actor.state_size = std::mem::size_of::<i64>();
+        actor
+            .suspended_cont
+            .store(frame.handle(), Ordering::Release);
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        actor.actor_state.store(
+            crate::internal::types::HewActorState::Runnable as i32,
+            Ordering::Release,
+        );
+        // SAFETY: the fixture owns the frame and mailbox, and transfers one
+        // retained reply reference to the parked actor before resuming it.
+        unsafe {
+            let mailbox = crate::mailbox::hew_mailbox_new();
+            assert!(!mailbox.is_null());
+            actor.mailbox = mailbox.cast();
+            crate::reply_channel::hew_reply_channel_retain(channel);
+            actor
+                .suspended_reply_channel
+                .store(channel.cast(), Ordering::Release);
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Crashed as i32
+            );
+            assert_eq!(actor.error_code.load(Ordering::Acquire), 202);
+            assert_eq!(state, 7);
+            assert!(!actor.state_drop_consumed.load(Ordering::Acquire));
+            assert_eq!(frame.resumes.load(Ordering::Acquire), 1);
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert!(frame.heap_guard.load(Ordering::Acquire).is_null());
+            assert!(actor.suspended_cont.load(Ordering::Acquire).is_null());
+            assert!(actor
+                .suspended_reply_channel
+                .load(Ordering::Acquire)
+                .is_null());
+            assert_eq!(crate::reply_channel::ref_count_for_test(channel), 1);
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_failure_kind(channel),
+                crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED
+            );
             assert_eq!(
                 crate::reply_channel::hew_reply_channel_await_status(channel),
                 crate::await_cancel::AwaitCancelStatus::Completed as i32

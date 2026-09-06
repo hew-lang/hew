@@ -145,6 +145,13 @@ impl Builder<'_, '_> {
         body: &HirBlock,
         duration: Option<&HirExpr>,
     ) -> Result<Option<ValueId>, String> {
+        // Deferred bodies cannot create children or suspend. A plain scope
+        // there only supplies lexical cleanup; it needs no asynchronous drain.
+        if duration.is_none() && self.in_deferred_body() {
+            return self
+                .lower_block(body, OwnedBindingUse::Return)
+                .map(|result| result.map(|result| result.value));
+        }
         let duration = duration
             .map(|duration| self.lower_expr(duration).map(|value| Operand { value }))
             .transpose()?;

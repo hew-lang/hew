@@ -439,8 +439,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
-        let id = match operation {
-            ActorOperation::Spawn(id) | ActorOperation::Send { actor: id, .. } => id,
+        let id = match &operation {
+            ActorOperation::Spawn(id) | ActorOperation::Submit { actor: id, .. } => *id,
         };
         let actor =
             self.module.actors.get(id.0 as usize).ok_or_else(|| {
@@ -457,8 +457,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         let status = match operation {
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
-            ActorOperation::Send { message, .. } => {
-                self.emit_actor_send(actor, message, &sources)?
+            ActorOperation::Submit {
+                policy,
+                message_ty,
+                result_ty,
+                ..
+            } => {
+                let [source] = sources.as_slice() else {
+                    return Err(CodegenError::FailClosed(
+                        "submission requires one message owner".into(),
+                    ));
+                };
+                let result = result.ok_or_else(|| {
+                    CodegenError::FailClosed("submission requires its typed result".into())
+                })?;
+                self.emit_actor_submit(actor, policy, &message_ty, &result_ty, *source, result)?;
+                self.ctx.i32_type().const_zero()
             }
         };
         for source in sources {
@@ -659,45 +673,114 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
     }
 
-    fn emit_actor_send(
+    fn emit_actor_submit(
         &self,
         actor: &SemActor,
-        message: u32,
-        sources: &[StorageId],
-    ) -> CodegenResult<IntValue<'ctx>> {
+        policy: hew_types::actor_delivery::SendPolicy,
+        message_ty: &ResolvedTy,
+        result_ty: &ResolvedTy,
+        source: StorageId,
+        destination: StorageId,
+    ) -> CodegenResult<()> {
+        use hew_types::actor_delivery::SendPolicy;
+        if matches!(policy, SendPolicy::Wait | SendPolicy::ReplaceLatest) {
+            return Err(CodegenError::FailClosed(
+                "submission requires its checked readiness or coalescing contract".into(),
+            ));
+        }
+        let ResolvedTy::Named { args, .. } = message_ty else {
+            return Err(CodegenError::FailClosed(
+                "message has no typed payload".into(),
+            ));
+        };
+        let Some(ResolvedTy::Tuple(params)) = args.get(1) else {
+            return Err(CodegenError::FailClosed(
+                "message payload is not a protocol tuple".into(),
+            ));
+        };
         let handler = actor
             .handlers
             .iter()
-            .find(|handler| handler.message_id == message)
-            .ok_or_else(|| CodegenError::FailClosed("send lacks its protocol member".into()))?;
-        let message_ty = message_type(self.module, self.ctx, handler)?;
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let size = target.get_abi_size(&message_ty);
-        let payload = allocate(self.module, self.ctx, self.llvm, &self.builder, size)?;
+            .find(|handler| handler.return_ty == ResolvedTy::Unit && handler.params == *params)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "message payload has no exact actor protocol signature".into(),
+                )
+            })?;
+        let object = self.load(source, "submission.message")?.into_struct_value();
+        let target = self
+            .builder
+            .build_extract_value(object, 0, "submission.target")
+            .llvm_ctx("read message target")?;
+        let member = self
+            .builder
+            .build_extract_value(object, 1, "submission.member")
+            .llvm_ctx("read message member")?;
+        let fields = self
+            .builder
+            .build_extract_value(object, 2, "submission.payload")
+            .llvm_ctx("read message payload")?
+            .into_struct_value();
+        let wrapper_ty = message_type(self.module, self.ctx, handler)?;
+        let target_data = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let size = target_data.get_abi_size(&wrapper_ty);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let allocate = get_or_declare_external(
+            self.llvm,
+            "hew_actor_payload_try_alloc",
+            ptr.fn_type(&[size_ty.into()], false),
+        )?;
+        let wrapper = self
+            .builder
+            .build_call(
+                allocate,
+                &[size_ty.const_int(size, false).into()],
+                "submission.allocate",
+            )
+            .llvm_ctx("allocate unpublished message wrapper")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("message allocation returned void".into()))?
+            .into_pointer_value();
+        let allocated = self
+            .ctx
+            .append_basic_block(self.value, "submission.allocated");
+        let oom = self.ctx.append_basic_block(self.value, "submission.oom");
+        let submitted = self.ctx.append_basic_block(self.value, "submission.result");
+        let failed = self
+            .builder
+            .build_is_null(wrapper, "submission.no_memory")
+            .llvm_ctx("check message allocation")?;
         self.builder
-            .build_store(payload, self.ctx.i8_type().const_int(1, false))
+            .build_conditional_branch(failed, oom, allocated)
+            .llvm_ctx("branch on message allocation")?;
+        self.builder.position_at_end(oom);
+        self.builder
+            .build_unconditional_branch(submitted)
+            .llvm_ctx("return allocation failure")?;
+        self.builder.position_at_end(allocated);
+        self.builder
+            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
             .llvm_ctx("initialize message ownership")?;
-        for (index, source) in sources.iter().skip(1).enumerate() {
+        for index in 0..params.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::FailClosed("message index exceeds u32".into()))?;
             let slot = self
                 .builder
-                .build_struct_gep(
-                    message_ty,
-                    payload,
-                    u32::try_from(index + 1).map_err(|_| {
-                        CodegenError::FailClosed("message index exceeds u32".into())
-                    })?,
-                    "send.field",
-                )
-                .llvm_ctx("address transferred message field")?;
+                .build_struct_gep(wrapper_ty, wrapper, index + 1, "submission.field")
+                .llvm_ctx("address message field")?;
+            let field = self
+                .builder
+                .build_extract_value(fields, index, "submission.value")
+                .llvm_ctx("read message field")?;
             self.builder
-                .build_store(slot, self.load(*source, "send.value")?)
-                .llvm_ctx("initialize transferred message field")?;
+                .build_store(slot, field)
+                .llvm_ctx("transfer field into unpublished wrapper")?;
         }
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let send = get_or_declare_external(
+        let submit = get_or_declare_external(
             self.llvm,
-            "hew_actor_send_native",
+            "hew_actor_submit_native",
             self.ctx.i32_type().fn_type(
                 &[
                     size_ty.into(),
@@ -705,35 +788,228 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     size_ty.into(),
                     ptr.into(),
-                    ptr.into(),
+                    self.ctx.i32_type().into(),
                 ],
                 false,
             ),
         )?;
         let drop = self
             .llvm
-            .get_function(&message_symbol(actor.id, message))
-            .ok_or_else(|| CodegenError::FailClosed("message lacks its destructor".into()))?;
-        self.builder
+            .get_function(&message_symbol(actor.id, handler.message_id))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("message lacks its exact payload destructor".into())
+            })?;
+        let policy = if policy == SendPolicy::DropNewest {
+            2
+        } else {
+            0
+        };
+        let status = self
+            .builder
             .build_call(
-                send,
+                submit,
                 &[
-                    self.load(sources[0], "send.token")?.into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(u64::from(message), false)
-                        .into(),
-                    payload.into(),
+                    target.into(),
+                    member.into(),
+                    wrapper.into(),
                     size_ty.const_int(size, false).into(),
                     drop.as_global_value().as_pointer_value().into(),
-                    self.active_fault.into(),
+                    self.ctx.i32_type().const_int(policy, false).into(),
                 ],
-                "send.status",
+                "submission.status",
             )
-            .llvm_ctx("submit owned native message")?
+            .llvm_ctx("attempt message admission")?
             .try_as_basic_value()
             .basic()
-            .map(BasicValueEnum::into_int_value)
-            .ok_or_else(|| CodegenError::FailClosed("send returned void".into()))
+            .ok_or_else(|| CodegenError::FailClosed("submission returned void".into()))?
+            .into_int_value();
+        self.builder
+            .build_unconditional_branch(submitted)
+            .llvm_ctx("join admission outcome")?;
+        self.builder.position_at_end(submitted);
+        let outcome = self
+            .builder
+            .build_phi(self.ctx.i32_type(), "submission.outcome")
+            .llvm_ctx("join submission status")?;
+        outcome.add_incoming(&[
+            (&self.ctx.i32_type().const_int(3, false), oom),
+            (&status, allocated),
+        ]);
+        self.write_actor_delivery_result(
+            outcome.as_basic_value().into_int_value(),
+            object,
+            result_ty,
+            destination,
+        )
+    }
+
+    fn write_actor_delivery_result(
+        &self,
+        status: IntValue<'ctx>,
+        message: inkwell::values::StructValue<'ctx>,
+        result_ty: &ResolvedTy,
+        destination: StorageId,
+    ) -> CodegenResult<()> {
+        let result = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *result_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("submission result has no variant recipe".into())
+            })?;
+        let delivery_ty = &result.variants[0].fields[0].ty;
+        let failure_ty = &result.variants[1].fields[0].ty;
+        let failure = self
+            .module
+            .aggregate_glue
+            .iter()
+            .find(|glue| glue.ty == *failure_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("rejected message has no record recipe".into())
+            })?;
+        let error_ty = &failure.fields[0].ty;
+        let accepted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "submission.accepted",
+            )
+            .llvm_ctx("test acceptance")?;
+        let discarded = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_int(4, false),
+                "submission.discarded",
+            )
+            .llvm_ctx("test explicit discard")?;
+        let succeeded = self
+            .builder
+            .build_or(accepted, discarded, "submission.success")
+            .llvm_ctx("combine successful delivery outcomes")?;
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "submission.success");
+        let rejected = self
+            .ctx
+            .append_basic_block(self.value, "submission.rejected");
+        let done = self.ctx.append_basic_block(self.value, "submission.done");
+        self.builder
+            .build_conditional_branch(succeeded, success, rejected)
+            .llvm_ctx("preserve message on rejection")?;
+        self.builder.position_at_end(success);
+        let delivery_tag = self
+            .builder
+            .build_int_z_extend(discarded, self.ctx.i8_type(), "delivery.tag")
+            .llvm_ctx("select delivery variant")?;
+        let delivery = self.actor_unit_variant(delivery_ty, delivery_tag)?;
+        self.write_variant_value(
+            self.slots[destination.0 as usize],
+            0,
+            &[delivery],
+            result.id,
+        )?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish successful submission")?;
+        self.builder.position_at_end(rejected);
+        let closed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_int(2, false),
+                "submission.closed",
+            )
+            .llvm_ctx("classify closed destination")?;
+        let full = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_int(1, false),
+                "submission.full",
+            )
+            .llvm_ctx("classify full mailbox")?;
+        let reason = self
+            .builder
+            .build_select(
+                closed,
+                self.ctx.i8_type().const_int(1, false),
+                self.ctx.i8_type().const_int(9, false),
+                "submission.reason",
+            )
+            .llvm_ctx("classify admission failure")?;
+        let reason = self
+            .builder
+            .build_select(
+                full,
+                self.ctx.i8_type().const_zero(),
+                reason.into_int_value(),
+                "submission.full_reason",
+            )
+            .llvm_ctx("classify full rejection")?
+            .into_int_value();
+        let reason = self.actor_unit_variant(error_ty, reason)?;
+        let failure_layout = self.module.target.layout(failure_ty).ok_or_else(|| {
+            CodegenError::FailClosed("send failure lacks its target layout".into())
+        })?;
+        let failure_object = llvm_type(self.ctx, &failure_layout.repr)?
+            .into_struct_type()
+            .const_zero();
+        let failure_object = self
+            .builder
+            .build_insert_value(failure_object, reason, 0, "submission.failure_reason")
+            .llvm_ctx("store rejection reason")?;
+        let failure_object = self
+            .builder
+            .build_insert_value(failure_object, message, 1, "submission.returned_message")
+            .llvm_ctx("return complete rejected message")?
+            .into_struct_value();
+        self.write_variant_value(
+            self.slots[destination.0 as usize],
+            1,
+            &[failure_object.into()],
+            result.id,
+        )?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish rejected submission")?;
+        self.builder.position_at_end(done);
+        Ok(())
+    }
+
+    fn actor_unit_variant(
+        &self,
+        ty: &ResolvedTy,
+        tag: IntValue<'ctx>,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *ty)
+            .filter(|glue| {
+                glue.variants
+                    .iter()
+                    .all(|variant| variant.fields.is_empty())
+            })
+            .ok_or_else(|| {
+                CodegenError::FailClosed("delivery status requires a unit-only enum".into())
+            })?;
+        let layout = self.value_emitter().variant_layout(&glue.ty)?;
+        let object = llvm_type(self.ctx, &layout.object.repr)?
+            .into_struct_type()
+            .const_zero();
+        Ok(self
+            .builder
+            .build_insert_value(object, tag, 0, "submission.unit_variant")
+            .llvm_ctx("construct delivery status")?
+            .into_struct_value()
+            .into())
     }
 }

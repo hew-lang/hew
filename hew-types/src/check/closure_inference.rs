@@ -258,7 +258,7 @@ fn esc_visit_expr(
             }
         }
         // `clone <operand>` is read-only and recurses like other unary forms.
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::Send(operand) | Expr::Clone(operand) => {
             esc_visit_expr(&operand.0, name, in_fork, acc, false);
         }
         Expr::ReturnError(value) => esc_visit_arg(&value.0, name, in_fork, acc),

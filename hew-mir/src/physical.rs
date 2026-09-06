@@ -1408,7 +1408,7 @@ fn aggregate_shape_ref(
     ty: &ResolvedTy,
 ) -> Result<AggregateShapeRef, PhysicalError> {
     match ty {
-        ResolvedTy::Tuple(fields) if !fields.is_empty() => Ok(AggregateShapeRef::Tuple),
+        ResolvedTy::Tuple(_) => Ok(AggregateShapeRef::Tuple),
         _ => module
             .aggregate_shape_for_type(ty)
             .map(|shape| AggregateShapeRef::Record(shape.id))
@@ -1664,7 +1664,7 @@ fn collect_inventory_type(
         return;
     }
     let fields = match ty {
-        ResolvedTy::Tuple(fields) if !fields.is_empty() => Some(fields.clone()),
+        ResolvedTy::Tuple(fields) => Some(fields.clone()),
         _ => module
             .aggregate_shape_for_type(ty)
             .map(|shape| shape.fields.iter().map(|field| field.ty.clone()).collect()),
@@ -2459,7 +2459,7 @@ impl FunctionLowerer<'_> {
                 unwind,
                 ..
             } => Ok(PhysicalTerminator::ActorCall {
-                operation: *operation,
+                operation: operation.clone(),
                 args: self.argument_transfers(args)?,
                 result: match result {
                     CallResult::Unit => None,
@@ -5627,7 +5627,7 @@ fn verify_terminator(
             normal,
             unwind,
         } => {
-            let signature = actor_signature(module, *operation)?;
+            let signature = actor_signature(module, operation)?;
             if args.len() != signature.params.len() {
                 return Err(PhysicalError::new(
                     "actor boundary argument count differs from protocol",
@@ -6052,7 +6052,7 @@ fn callable_for(
 /// Refuses missing actor declarations, handlers or initializer callables.
 pub fn actor_signature(
     module: &PhysicalModule,
-    operation: hew_sir::ActorOperation,
+    operation: &hew_sir::ActorOperation,
 ) -> Result<hew_sir::SemSignature, PhysicalError> {
     operation
         .signature(&module.actors, |id| {

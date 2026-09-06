@@ -33,7 +33,7 @@ fn fail() -> i64 {
 }
 fn main() {
     let result = scope {
-        defer { println("scope cleanup"); panic("cleanup fault"); }
+        defer { scope { println("scope cleanup"); panic("cleanup fault"); }; }
         let child = fork { fail() };
         await child;
         "unreachable"

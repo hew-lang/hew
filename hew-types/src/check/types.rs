@@ -277,11 +277,27 @@ pub enum ResultReturnKind {
     Error,
 }
 
+/// Checked source for one select arm, stored in source-arm order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedSelectSource {
+    /// Preparation borrows this handle; only its winning edge consumes it.
+    TaskAwait {
+        operand: SpanKey,
+    },
+    ActorAsk {
+        call: SpanKey,
+    },
+    ChannelReceive {
+        call: SpanKey,
+    },
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
+    pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Checked local recovery semantics; HIR must consume this fact.
     pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub expr_types: HashMap<SpanKey, Ty>,
@@ -424,6 +440,7 @@ pub struct TypeCheckOutput {
     /// HIR lowering consumes this side table before the generic method-call
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -1372,6 +1389,7 @@ impl Default for TypeCheckOutput {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_delivery_calls: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
@@ -1380,6 +1398,7 @@ impl Default for TypeCheckOutput {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
@@ -2086,17 +2105,12 @@ pub struct TryWidthCastLowering {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorMethodKind {
-    /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
-    Fire(String),
-    /// Unit-returning dispatch whose bounded `block` mailbox may suspend the
-    /// caller until capacity is available.
-    BlockingFire(String),
-    /// Policy-sensitive dispatch to a unit-returning actor receive handler.
-    ///
-    /// A bounded mailbox that can lose or reject a message (`drop_new`,
-    /// `drop_old`, `coalesce`, or `fail`) reports `Result<(), SendError>` so
-    /// the call site can observe its policy outcome.
-    CheckedFire(String),
+    /// Construct an owned description without submitting it to the mailbox.
+    Message {
+        method_id: String,
+        policy: crate::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
@@ -2775,6 +2789,7 @@ pub struct Checker {
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
     /// Mailbox overflow policy keyed by the actor's canonical declaration
     /// identity. Absence means an unbounded mailbox. A bounded declaration
     /// with no explicit policy is recorded as `Block`.
@@ -3117,6 +3132,7 @@ pub struct Checker {
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    pub(super) select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
@@ -3820,6 +3836,7 @@ impl Checker {
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_delivery_calls: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
@@ -3904,6 +3921,7 @@ impl Checker {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,

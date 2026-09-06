@@ -4,6 +4,7 @@
 //! automatic marker trait derivation (Send, Frozen, Copy),
 //! and exhaustive pattern match checking.
 
+pub mod actor_delivery;
 pub mod actor_protocol;
 pub mod builtin_enums;
 pub mod builtin_names;

@@ -1210,7 +1210,7 @@ mod ast_surface {
             // `await_restart` suspends on the native supervisor restart observer
             // — a reserved_runtime_feature in the sandbox VM (see profile.rs); no
             // parity corpus entry.
-            Expr::AwaitRestart(_) => None,
+            Expr::AwaitRestart(_) | Expr::Send(_) => None,
             Expr::RegexLiteral(_) => Some("regex compile + is_match"),
             Expr::ByteStringLiteral(_) => Some("closure / lambda value"), // value form: reserved_runtime_feature.
             Expr::ByteArrayLiteral(_) => Some("closure / lambda value"), // value form: reserved_runtime_feature.
@@ -1810,6 +1810,7 @@ fn walk_expr(
             walk_expr(operand, owners);
         }
         Expr::Clone(operand)
+        | Expr::Send(operand)
         | Expr::ReturnError(operand)
         | Expr::PostfixTry(operand)
         | Expr::Await(operand)

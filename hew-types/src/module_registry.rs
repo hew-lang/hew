@@ -1487,10 +1487,10 @@ mod tests {
     #[test]
     fn drop_types_accumulated() {
         let mut reg = registry();
-        reg.load("std.encoding.json").unwrap();
+        reg.load("std.encoding.toml").unwrap();
         assert!(
-            reg.is_drop_type("json.Value"),
-            "json.Value is a `#[resource]` handle, so it is a drop type"
+            reg.is_drop_type("toml.Value"),
+            "toml.Value is a `#[resource]` handle, so it is a drop type"
         );
         reg.load("std.net.http").unwrap();
         assert!(
@@ -1511,16 +1511,22 @@ mod tests {
             reg.is_drop_type("regex.Pattern"),
             "regex.Pattern is a `#[resource]` handle, so it is a drop type"
         );
+        for resource in ["toml.Value", "http.Request", "http.Server", "process.Child"] {
+            assert!(
+                reg.is_drop_type(resource),
+                "{resource} must remain registered"
+            );
+        }
     }
 
     #[test]
     fn drop_funcs_accumulated() {
         let mut reg = registry();
-        reg.load("std.encoding.json").unwrap();
+        reg.load("std.encoding.toml").unwrap();
         assert_eq!(
-            reg.drop_func_for("json.Value"),
-            Some("hew_json_free"),
-            "json.Value.close directly forwards to its sole raw disposer"
+            reg.drop_func_for("toml.Value"),
+            Some("hew_toml_free"),
+            "toml.Value.close directly forwards to its sole raw disposer"
         );
         reg.load("std.net.http").unwrap();
         assert_eq!(
@@ -1566,7 +1572,7 @@ mod tests {
         );
         let all = reg.all_drop_funcs();
         for expected in [
-            ("json.Value".to_string(), "hew_json_free".to_string()),
+            ("toml.Value".to_string(), "hew_toml_free".to_string()),
             (
                 "http.Server".to_string(),
                 "hew_http_server_close".to_string(),

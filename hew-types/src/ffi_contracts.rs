@@ -601,7 +601,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "the exhaustive table intentionally keeps every value-tree ABI row visible"
     )]
-    fn value_tree_resource_parameters_are_complete_and_nominal() {
+    fn value_tree_parameter_effects_and_resource_identities_are_complete() {
         let families = [
             (
                 "std.encoding.json",
@@ -884,6 +884,21 @@ mod tests {
                     .contract()
                     .unwrap_or_else(|| panic!("{symbol} must have a complete contract"));
                 assert_eq!(contract.params, *expected_params, "{symbol}");
+                if module != "std.encoding.toml" {
+                    assert!(
+                        contract.resource_param_types.is_empty(),
+                        "{symbol} takes managed values without resource identities"
+                    );
+                    for index in 0..expected_params.len() {
+                        assert!(!extern_resource_param_is_audited_borrow(
+                            symbol,
+                            index,
+                            Some(module),
+                            nominal,
+                        ));
+                    }
+                    continue;
+                }
                 assert_eq!(
                     contract.resource_param_types.len(),
                     contract.params.len(),
@@ -915,10 +930,11 @@ mod tests {
 
     #[test]
     fn value_tree_producers_transfer_one_deep_owner() {
-        for (prefix, release, symbols) in [
+        for (prefix, release, retention, symbols) in [
             (
                 "json",
                 "hew_json_free",
+                ExternResultRetention::Transferred,
                 &[
                     "hew_json_array_get",
                     "hew_json_array_new",
@@ -936,6 +952,7 @@ mod tests {
             (
                 "toml",
                 "hew_toml_free",
+                ExternResultRetention::ResourceTransfer,
                 &[
                     "hew_toml_array_get",
                     "hew_toml_array_new",
@@ -951,6 +968,7 @@ mod tests {
             (
                 "yaml",
                 "hew_yaml_free",
+                ExternResultRetention::Transferred,
                 &[
                     "hew_yaml_array_get",
                     "hew_yaml_array_new",
@@ -976,11 +994,7 @@ mod tests {
                     ReleaseDischargeDepth::Deep,
                     "{symbol}"
                 );
-                assert_eq!(
-                    contract.result_retention,
-                    ExternResultRetention::ResourceTransfer,
-                    "{symbol}"
-                );
+                assert_eq!(contract.result_retention, retention, "{symbol}");
             }
         }
     }

@@ -1432,16 +1432,16 @@ mod tests {
             "json module should declare json.Value handle type"
         );
         assert!(
-            info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value is a `#[resource]` handle and must be a drop type"
+            !info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value uses managed value cleanup without resource registration"
         );
         assert_eq!(
             info.drop_funcs
                 .iter()
                 .find(|(ty, _)| ty == "json.Value")
                 .map(|(_, drop_fn)| drop_fn.as_str()),
-            Some("hew_json_free"),
-            "json.Value.close must register its sole raw disposer"
+            None,
+            "json.Value must not register a resource close disposer"
         );
 
         // Should have clean name mapping for "parse"
@@ -1951,25 +1951,6 @@ mod tests {
             )),
             "http.Server should register its exact raw disposer: {:?}",
             info.drop_funcs
-        );
-    }
-
-    #[test]
-    fn json_module_resource_registers_close_disposer() {
-        let info = load_module("std::encoding::json", &test_root()).unwrap();
-
-        assert!(
-            info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value should be a drop type, got: {:?}",
-            info.drop_types
-        );
-        assert_eq!(
-            info.drop_funcs
-                .iter()
-                .find(|(ty, _)| ty == "json.Value")
-                .map(|(_, drop_fn)| drop_fn.as_str()),
-            Some("hew_json_free"),
-            "json.Value should register its direct close disposer"
         );
     }
 

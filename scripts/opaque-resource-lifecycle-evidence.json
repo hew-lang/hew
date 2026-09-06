@@ -18,22 +18,6 @@
       "release_symbol": "hew_channel_pair_free"
     },
     {
-      "source_path": "std/encoding/json/json.hew",
-      "resource": "Value",
-      "runtime": {
-        "path": "hew-std/src/json.rs",
-        "test": "roundtrip_complex_builder_structure",
-        "valid_handle": true,
-        "execution_profile": "local"
-      },
-      "wasm": {
-        "profile": "wasm32-wasi",
-        "disposition": "accepted",
-        "proof_kind": "public-lifecycle"
-      },
-      "release_symbol": "hew_json_free"
-    },
-    {
       "source_path": "std/encoding/toml/toml.hew",
       "resource": "Value",
       "runtime": {
@@ -48,22 +32,6 @@
         "proof_kind": "public-lifecycle"
       },
       "release_symbol": "hew_toml_free"
-    },
-    {
-      "source_path": "std/encoding/yaml/yaml.hew",
-      "resource": "Value",
-      "runtime": {
-        "path": "hew-std/src/yaml.rs",
-        "test": "roundtrip_complex_builder_structure",
-        "valid_handle": true,
-        "execution_profile": "local"
-      },
-      "wasm": {
-        "profile": "wasm32-wasi",
-        "disposition": "accepted",
-        "proof_kind": "public-lifecycle"
-      },
-      "release_symbol": "hew_yaml_free"
     },
     {
       "source_path": "std/fs.hew",

@@ -2825,18 +2825,68 @@ impl Checker {
                 let ret_ty = self.synthesize(&child.0, &child.1);
                 for branch in children {
                     match &branch.0 {
-                        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
-                            for arg in args {
-                                let (arg_expr, arg_span) = arg.expr();
-                                if let Expr::Identifier(name) = arg_expr {
-                                    if let Some(ty) =
-                                        self.env.lookup_ref(name).map(|b| b.ty.clone())
-                                    {
-                                        let resolved = self.subst.resolve(&ty);
-                                        self.mark_expr_moved_if_non_copy(
-                                            arg_expr, arg_span, &resolved,
-                                        );
+                        Expr::Call { function, args, .. } => {
+                            if let Some(ty) = self
+                                .expr_types
+                                .get(&SpanKey::in_module(&function.1, self.current_module_idx))
+                                .cloned()
+                                .or_else(|| match &function.0 {
+                                    Expr::Identifier(name) => {
+                                        self.env.lookup_ref(name).map(|binding| binding.ty.clone())
                                     }
+                                    _ => None,
+                                })
+                            {
+                                self.check_fork_transfer(&function.0, &function.1, &ty);
+                            }
+                            for arg in args {
+                                let (expr, span) = arg.expr();
+                                if let Some(ty) = self
+                                    .expr_types
+                                    .get(&SpanKey::in_module(span, self.current_module_idx))
+                                    .cloned()
+                                {
+                                    self.check_fork_transfer(expr, span, &ty);
+                                }
+                            }
+                        }
+                        Expr::MethodCall {
+                            receiver,
+                            method,
+                            args,
+                        } => {
+                            let key = SpanKey::in_module(&branch.1, self.current_module_idx);
+                            if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
+                                self.method_call_rewrites.get(&key).cloned()
+                            {
+                                let field = Expr::FieldAccess {
+                                    object: receiver.clone(),
+                                    field: method.clone(),
+                                };
+                                self.check_fork_transfer(&field, &branch.1, &field_ty.to_ty());
+                            } else if !matches!(
+                                self.method_call_receiver_kinds.get(&key),
+                                Some(
+                                    super::MethodCallReceiverKind::ModuleBinding { .. }
+                                        | super::MethodCallReceiverKind::EnumConstructorPath { .. }
+                                )
+                            ) {
+                                if let Some(ty) = self
+                                    .expr_types
+                                    .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
+                                    .cloned()
+                                {
+                                    self.check_fork_transfer(&receiver.0, &receiver.1, &ty);
+                                }
+                            }
+                            for arg in args {
+                                let (expr, span) = arg.expr();
+                                if let Some(ty) = self
+                                    .expr_types
+                                    .get(&SpanKey::in_module(span, self.current_module_idx))
+                                    .cloned()
+                                {
+                                    self.check_fork_transfer(expr, span, &ty);
                                 }
                             }
                         }
@@ -2859,6 +2909,8 @@ impl Checker {
                     span,
                     false,
                 );
+
+                self.check_fork_transfer(expr, span, &lambda_ty);
 
                 // Ordinary parameters are borrowed at Hew call boundaries.
                 // Moving one into a child would let the child outlive the
@@ -7588,6 +7640,10 @@ impl Checker {
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let owner = super::effects::EffectBody::Closure(key.clone());
+        self.effect_graph.parameter_names.insert(
+            owner.clone(),
+            params.iter().map(|param| param.name.clone()).collect(),
+        );
         self.effect_graph.bodies.entry(owner.clone()).or_default();
         let previous = self.effect_graph.current_body.replace(owner);
         let result = self.check_lambda_body(
@@ -9001,12 +9057,12 @@ impl Checker {
     /// Publish a checked expression type without overwriting a more precise
     /// source type recorded during contextual checking.
     fn publish_checked_expression(&mut self, expr: &Expr, span: &Span, result: Ty) -> Ty {
-        self.record_expression_effect(expr, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .entry(key.clone())
             .or_insert_with(|| self.current_module.clone());
         self.expr_types.entry(key).or_insert_with(|| result.clone());
+        self.record_expression_effect(expr, span);
         result
     }
 

@@ -1028,6 +1028,10 @@ impl Checker {
             .map(super::effects::EffectBody::Declaration);
         let previous = std::mem::replace(&mut self.effect_graph.current_body, body.clone());
         if let Some(body) = body {
+            self.effect_graph.parameter_names.insert(
+                body.clone(),
+                fd.params.iter().map(|param| param.name.clone()).collect(),
+            );
             self.effect_graph.bodies.entry(body).or_default();
         }
         self.check_function_body_as(fd, fn_name);
@@ -2230,6 +2234,10 @@ impl Checker {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "receive body checking establishes actor and callable contexts"
+    )]
     pub(super) fn check_receive_fn(
         &mut self,
         actor_name: &str,
@@ -2261,6 +2269,20 @@ impl Checker {
         let qualified_name = format!("{}::{}", actor_name, rf.name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
+        let effect_body = self
+            .identity
+            .declaration_by_path(&qualified_name)
+            .cloned()
+            .map(super::effects::EffectBody::Declaration);
+        let previous_effect_body =
+            std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());
+        if let Some(body) = effect_body {
+            self.effect_graph.parameter_names.insert(
+                body.clone(),
+                rf.params.iter().map(|param| param.name.clone()).collect(),
+            );
+            self.effect_graph.bodies.entry(body).or_default();
+        }
 
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
@@ -2286,12 +2308,13 @@ impl Checker {
         // detect collisions with actor field names in the outer scope.
         self.env.push_scope();
 
-        for p in &rf.params {
+        for (index, p) in rf.params.iter().enumerate() {
             self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
                 .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            self.record_callable_parameter(&p.name, index);
         }
 
         let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {
@@ -2357,6 +2380,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_return_type = None;
         self.current_function = prev_function;
+        self.effect_graph.current_body = previous_effect_body;
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }

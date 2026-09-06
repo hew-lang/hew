@@ -348,6 +348,7 @@ impl Parser<'_> {
         });
 
         Some(TypeDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             visibility,
             kind: TypeDeclKind::Struct,
             name,

@@ -492,6 +492,7 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         for i in 0..n {
             let td = hew_parser::ast::TypeDecl {
+                origin: hew_parser::ast::DeclarationOrigin::Authored,
                 visibility: hew_parser::ast::Visibility::Private,
                 kind: hew_parser::ast::TypeDeclKind::Struct,
                 name: format!("S{i}"),

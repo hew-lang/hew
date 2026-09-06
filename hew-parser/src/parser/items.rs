@@ -684,6 +684,7 @@ impl Parser<'_> {
         };
 
         Some(FnDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             attributes,
             is_async,
             is_generator: is_gen,
@@ -729,6 +730,7 @@ impl Parser<'_> {
         let fn_end = self.peek_span().start;
 
         let decl = FnDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             attributes,
             is_async: false,
             is_generator: false,
@@ -913,6 +915,7 @@ impl Parser<'_> {
         }
 
         Some(TypeDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             visibility,
             kind,
             name,

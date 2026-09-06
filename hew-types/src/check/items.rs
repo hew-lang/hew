@@ -1192,6 +1192,7 @@ impl Checker {
             if let TraitItem::Method(method) = trait_item {
                 if let Some(body) = &method.body {
                     let fn_decl = FnDecl {
+                        origin: hew_parser::ast::DeclarationOrigin::Authored,
                         attributes: vec![],
                         is_async: false,
                         is_generator: false,

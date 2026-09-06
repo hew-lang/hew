@@ -1237,10 +1237,11 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write("emits {\n");
             self.indent += 1;
-            for name in &decl.emits {
+            for output in &decl.emits {
                 self.write_indent();
-                self.write(name);
-                self.write(",\n");
+                self.write(&output.name);
+                self.format_machine_field_list(&output.fields);
+                self.write("\n");
             }
             self.indent -= 1;
             self.write_indent();

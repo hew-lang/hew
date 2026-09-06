@@ -1972,6 +1972,7 @@ fn collect_opaque_type_short_names(
 /// handles substituting `Self` for the concrete type.
 fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -2806,6 +2807,10 @@ pub fn lower_program_with_mono_cap(
     mono_cap: usize,
     target_arch: TargetArch,
 ) -> LowerOutput {
+    let program = type_check_output
+        .normalized_machines
+        .as_ref()
+        .map_or(program, |normalized| &normalized.program);
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
     let entry_exit_plan = type_check_output.entry_exit_plan.clone();
     let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
@@ -10178,6 +10183,16 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
                 scan_expr_for_private_refs(&v.0, pf, out);
             }
         }
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    scan_expr_for_private_refs(&value.0, pf, out);
+                }
+                if let Some(base) = &record.base {
+                    scan_expr_for_private_refs(&base.0, pf, out);
+                }
+            }
+        }
         Expr::InterpolatedString(parts) => {
             for part in parts {
                 if let hew_parser::ast::StringPart::Expr(e)
@@ -14053,6 +14068,10 @@ impl LowerCtx {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lower fields and variants while retaining authored declaration provenance"
+    )]
     fn lower_type_decl(
         &mut self,
         decl: &TypeDecl,
@@ -14176,7 +14195,15 @@ impl LowerCtx {
             },
             id,
             node: self.ids.node(),
-            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Type, 0)?,
+            declaration: self.source_declaration(
+                &span,
+                if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                    hew_types::DeclarationKind::Machine
+                } else {
+                    hew_types::DeclarationKind::Type
+                },
+                0,
+            )?,
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -14887,7 +14914,7 @@ impl LowerCtx {
         if !decl.emits.is_empty() {
             for tr in &hir_transitions {
                 for emitted in &tr.body_emits {
-                    if !decl.emits.contains(emitted) {
+                    if !decl.emits.iter().any(|output| &output.name == emitted) {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::MachineEmitNotInManifest {
                                 machine_name: decl.name.clone(),
@@ -26186,6 +26213,7 @@ impl LowerCtx {
 
                     let next = self.make_expr(
                         HirExprKind::VarSelfMethodCall {
+                            receiver_update: hew_types::ReceiverUpdate::Replace,
                             receiver: Box::new(lowered_receiver),
                             call_target,
                             target,
@@ -27433,6 +27461,7 @@ impl LowerCtx {
                 descriptor,
                 consumes_receiver,
                 requires_mutable_receiver,
+                receiver_update,
                 returns_receiver_identity,
                 elem_ty,
                 ..
@@ -27517,6 +27546,7 @@ impl LowerCtx {
                     let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::VarSelfMethodCall {
+                            receiver_update,
                             receiver: Box::new(lowered_receiver),
                             call_target: target,
                             target: HirVarSelfMethodTarget::Direct,
@@ -27888,6 +27918,7 @@ impl LowerCtx {
                     let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::VarSelfMethodCall {
+                            receiver_update: hew_types::ReceiverUpdate::Replace,
                             receiver: Box::new(lowered_receiver),
                             call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {

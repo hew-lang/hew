@@ -358,15 +358,17 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightBrace)?;
             } else if self.peek_machine_kw("emits") {
-                // `emits { Name, … }` — optional Mealy-output manifest. Each
-                // entry names a declared event the machine may `emit`. Stored
-                // as a bare name list; HIR cross-checks emit sites against it.
+                // Outputs have their own typed vocabulary, separate from inputs.
                 self.advance();
                 self.expect(&Token::LeftBrace)?;
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let emitted = self.expect_ident()?;
+                    let fields = self.parse_machine_event_fields()?;
                     self.expect_structural_separator();
-                    emits.push(emitted);
+                    emits.push(MachineEvent {
+                        name: emitted,
+                        fields,
+                    });
                 }
                 self.expect(&Token::RightBrace)?;
             } else if self.peek() == Some(&Token::State) {
@@ -392,21 +394,13 @@ impl Parser<'_> {
             } else if self.peek() == Some(&Token::Default) {
                 // `default { state }` — unhandled events stay in current state.
                 self.advance();
-                if self.eat(&Token::LeftBrace) {
-                    let mut depth = 1;
-                    while depth > 0 && !self.at_end() {
-                        if self.peek() == Some(&Token::LeftBrace) {
-                            depth += 1;
-                        }
-                        if self.peek() == Some(&Token::RightBrace) {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        self.advance();
+                if self.peek() == Some(&Token::LeftBrace) {
+                    let block = self.parse_block()?;
+                    if !block.stmts.is_empty()
+                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Identifier(name), _)) if name == "state")
+                    {
+                        self.error("machine default must be `default { state }`; use an explicit rule for computation".to_string());
                     }
-                    self.expect(&Token::RightBrace)?;
                 } else {
                     self.eat(&Token::Semicolon);
                 }

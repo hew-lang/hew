@@ -317,6 +317,7 @@ fn expected_constructor_args_do_not_cross_same_leaf_nominal_owners() {
 fn module_graph_body_type_error_is_reported() {
     // fn bad() -> i64 { true }  — body returns bool, declared i64
     let bad_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -372,6 +373,7 @@ fn module_graph_body_type_error_is_reported() {
 fn module_graph_body_infer_return_resolves_without_error() {
     // fn inferred() -> _ { 42 }  — `_` must resolve to i64 from the body
     let inferred_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -408,6 +410,7 @@ fn module_graph_body_infer_return_resolves_without_error() {
 #[test]
 fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
     let ok_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -521,6 +524,7 @@ fn module_qualified_call_accepts_exported_signature() {
 #[test]
 fn module_graph_body_private_local_type_is_available() {
     let local_type = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         name: "Local".to_string(),
         type_params: None,
@@ -549,6 +553,7 @@ fn module_graph_body_private_local_type_is_available() {
     };
 
     let ok_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -627,6 +632,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     };
 
     let helper_i64 = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -648,6 +654,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     };
 
     let ok_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -677,6 +684,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     };
 
     let helper_string = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -949,6 +957,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         }],
     };
     let ok_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -1151,6 +1160,7 @@ mod module_body_diagnostic_envelope {
     /// Build a minimal fn declaration that returns `bool` but is declared `-> i64`.
     fn make_mistyped_fn(name: &str) -> Spanned<Item> {
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -1210,6 +1220,7 @@ mod module_body_diagnostic_envelope {
     fn root_module_error_has_no_source_module_tag() {
         // fn bad() -> i64 { true }  in root items
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -1264,6 +1275,7 @@ mod module_body_diagnostic_envelope {
 
         let make_bad_fn = |fn_name: &str| -> Spanned<Item> {
             let fd = FnDecl {
+                origin: hew_parser::ast::DeclarationOrigin::Authored,
                 attributes: vec![],
                 is_async: false,
                 is_generator: false,
@@ -1374,6 +1386,7 @@ mod module_body_diagnostic_envelope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -1438,6 +1451,7 @@ mod module_body_diagnostic_envelope {
     fn signature_inference_hole_tagged_with_source_module() {
         // fn helper(_ : _) {}  — unresolved param type
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -1636,6 +1650,7 @@ mod warning_source_attribution {
 
     fn make_trivial_fn(name: &str) -> FnDecl {
         FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -1663,6 +1678,7 @@ mod warning_source_attribution {
         stmts: Vec<Spanned<Stmt>>,
     ) -> Program {
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -2024,6 +2040,7 @@ mod warning_source_attribution {
         // Register a pub fn "helper" in fakemod so module_fn_exports and fn_sigs
         // contain "fakemod.helper" — that is what the method-dispatch path checks.
         let helper_fn = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -2057,6 +2074,7 @@ mod warning_source_attribution {
             Span::from(200..215),
         ));
         let caller_fn = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,
@@ -2776,8 +2794,13 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
 /// import registered `oracle_mod.shared_helper` — the same declaration had
 /// two identities depending on how the file was handed to the compiler.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compare declaration and signature identity across root and imported sources"
+)]
 fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let shared_helper = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,

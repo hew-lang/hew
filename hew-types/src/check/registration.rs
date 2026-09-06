@@ -3632,6 +3632,18 @@ impl Checker {
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn register_type_decl(&mut self, td: &TypeDecl) {
+        if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
+            let qualified = self
+                .current_declaration_module()
+                .map(|module| format!("{}.{}", self.identity.module_path(module), td.name));
+            if let Some(declaration) = qualified
+                .as_deref()
+                .and_then(|name| self.identity.declaration_by_path(name))
+                .or_else(|| self.identity.declaration_by_path(&td.name))
+            {
+                self.must_use_types.insert(declaration.clone());
+            }
+        }
         // #1295: record `#[resource]` types so their inherent `close(self)`
         // dispatch can mark the receiver moved + consume it (suppressing the
         // duplicate scope-exit implicit drop). HIR owns the close-discipline
@@ -7029,6 +7041,7 @@ impl Checker {
             attributes.retain(|attribute| attribute.name != "returns_receiver");
         }
         let decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes,
             is_async: false,
             is_generator: false,
@@ -7482,6 +7495,11 @@ impl Checker {
                     .params
                     .first()
                     .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+            receiver_update: if fd.origin == hew_parser::ast::DeclarationOrigin::MachineStep {
+                super::ReceiverUpdate::Staged
+            } else {
+                super::ReceiverUpdate::Replace
+            },
             consumes_receiver: fd.consumes_self,
             returns_receiver_identity: fd
                 .attributes
@@ -8111,6 +8129,11 @@ impl Checker {
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+            receiver_update: if method.origin == hew_parser::ast::DeclarationOrigin::MachineStep {
+                super::ReceiverUpdate::Staged
+            } else {
+                super::ReceiverUpdate::Replace
+            },
             consumes_receiver: method.consumes_self,
             ..FnSig::default()
         };
@@ -12408,6 +12431,13 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
+                    // File imports publish into this lexical namespace. A
+                    // qualified package exporting the same leaf must not hide
+                    // that binding at the ordinary bare-type scope gate.
+                    if let Some(declaration) = self.identity.declaration_by_path(&td.name) {
+                        let source_identity = declaration.full_path().to_string();
+                        self.record_published_bare_type(&td.name, &source_identity);
+                    }
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {

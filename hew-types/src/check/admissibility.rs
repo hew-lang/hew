@@ -2720,6 +2720,7 @@ mod tests {
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 param_ownership: vec![],
                 consumes_receiver: false,
                 returns_receiver_identity: false,

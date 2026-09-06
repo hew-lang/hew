@@ -184,6 +184,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             elem_ty: None,
             consumes_receiver: false,
             requires_mutable_receiver: false,
+            receiver_update: crate::ReceiverUpdate::Replace,
             returns_receiver_identity: false,
         },
     );
@@ -451,4 +452,13 @@ fn empty_select_and_match_preserve_source_diagnostics() {
             output.errors
         );
     }
+}
+
+#[test]
+fn expected_variant_type_reaches_nested_binding_blocks() {
+    let parsed = hew_parser::parse("enum Value { Text { text: string } } fn main() { let value: Value = { { .Text { text: \"retained\" } } }; match value { .Text { text } => println(text), } }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

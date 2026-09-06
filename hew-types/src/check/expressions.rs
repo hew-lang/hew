@@ -3723,6 +3723,11 @@ impl Checker {
                 expected.clone()
             }
 
+            (Expr::Block(_), _) => {
+                self.tail_ok_armed = tail_ok_armed;
+                self.check_expr_with_expected(expr, span, expected)
+            }
+
             // Array repeat coercion to Array<T, N> type. The declared length
             // `N` is part of the fixed-array type, so — like the plain array
             // literal arm above — the repeat count must agree with it. A

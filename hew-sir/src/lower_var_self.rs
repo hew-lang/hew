@@ -16,6 +16,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_var_self_call(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
         let HirExprKind::VarSelfMethodCall {
             receiver,
+            receiver_update,
             call_target,
             args,
             ret_ty,
@@ -56,11 +57,22 @@ impl Builder<'_, '_> {
             || signature.params.len() != args.len() + 1
             || signature.params[0].ty != receiver_ty
         {
-            return Err(
-                "mutable method differs from its checked receiver and dual-return signature".into(),
-            );
+            return Err(format!(
+                "mutable method `{}` differs from its checked receiver and dual-return signature: receiver {receiver_ty:?}, result {return_ty:?}, signature {signature:?}",
+                declaration.full_path()
+            ));
         }
         self.service.require_type_facts(&receiver_ty)?;
+        if *receiver_update == hew_types::ReceiverUpdate::Staged
+            && self
+                .service
+                .checked_facts
+                .rows()
+                .get(&hew_types::TypeInstanceKey(receiver_ty.clone()))
+                .is_none_or(|facts| facts.clone == hew_types::CloneKind::None)
+        {
+            return Err("staged mutable receiver requires an independent value copy".into());
+        }
         let owns_receiver =
             OwnKind::of_ty(&receiver_ty, self.service.checked_facts.rows())? == OwnKind::Owned;
         let passing = if owns_receiver {
@@ -87,7 +99,7 @@ impl Builder<'_, '_> {
             let value = self.emit_typed(
                 provenance.clone(),
                 &receiver_ty,
-                if owns_receiver {
+                if owns_receiver && *receiver_update == hew_types::ReceiverUpdate::Replace {
                     SemOpKind::LoadTake { place: selected }
                 } else {
                     SemOpKind::LoadCopy { place: selected }

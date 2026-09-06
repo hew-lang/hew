@@ -1394,6 +1394,7 @@ mod tests {
         let var_self = executable_expr(
             &mut ids,
             HirExprKind::VarSelfMethodCall {
+                receiver_update: hew_types::ReceiverUpdate::Replace,
                 receiver: Box::new(var_self_receiver),
                 call_target: unsupported("var-self method call"),
                 target: HirVarSelfMethodTarget::Direct,

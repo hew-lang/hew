@@ -10,6 +10,7 @@ mod cross_module_same_name {
 
     fn make_record(name: &str, fields: &[(&str, &str)]) -> TypeDecl {
         TypeDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Pub,
             kind: TypeDeclKind::Struct,
             name: name.to_string(),
@@ -43,6 +44,7 @@ mod cross_module_same_name {
 
     fn make_constructor_body(record_name: &str, field_name: &str) -> FnDecl {
         FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
             is_async: false,
             is_generator: false,

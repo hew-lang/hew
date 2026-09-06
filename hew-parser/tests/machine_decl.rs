@@ -509,7 +509,9 @@ machine Signal {
     );
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.emits, vec!["Ready".to_string()]);
+        assert_eq!(m.emits.len(), 1);
+        assert_eq!(m.emits[0].name, "Ready");
+        assert!(m.emits[0].fields.is_empty());
     } else {
         panic!("expected Machine item");
     }
@@ -1376,5 +1378,49 @@ fn machine_const_param_round_trips_through_formatter() {
     assert!(
         hew_parser::ast_eq::program_eq_ignoring_spans(&r.program, &r2.program),
         "round-trip AST mismatch:\n{formatted}"
+    );
+}
+
+#[test]
+fn typed_machine_outputs_round_trip_separately_from_inputs() {
+    let source = r#"machine M {
+        events { Input { number: i64 } }
+        emits { Output { text: string, items: Vec<string> }, Finished }
+        state Idle, state Done,
+        on Input: Idle => Done {
+            emit Output { text: "retained", items: ["value"] };
+            .Done
+        }
+        default { state }
+    }"#;
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let hew_parser::ast::Item::Machine(machine) = &parsed.program.items[0].0 else {
+        panic!("expected machine");
+    };
+    assert_eq!(machine.events[0].name, "Input");
+    assert_eq!(machine.emits[0].name, "Output");
+    assert_eq!(machine.emits[0].fields.len(), 2);
+    assert!(machine.emits[1].fields.is_empty());
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "{formatted}"
+    );
+}
+#[test]
+fn machine_default_does_not_silently_discard_computation() {
+    let parsed = hew_parser::parse(
+        "machine Gate { events { Open, } state Closed, default { println(\"lost\"); state } }",
+    );
+    assert!(
+        parsed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("machine default must be")),
+        "{:?}",
+        parsed.errors
     );
 }

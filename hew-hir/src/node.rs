@@ -1991,6 +1991,8 @@ pub enum HirExprKind {
     /// closed `ResolvedImplCall` arm.
     VarSelfMethodCall {
         receiver: Box<HirExpr>,
+        /// Checked receiver acquisition; staging requires an independent copy.
+        receiver_update: hew_types::ReceiverUpdate,
         /// Structured direct or static-trait target carried from checking.
         call_target: hew_types::CallTarget,
         target: HirVarSelfMethodTarget,

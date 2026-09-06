@@ -280,6 +280,8 @@ pub enum ResultReturnKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
+    /// Ordinary checked program produced by machine normalization, when present.
+    pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
@@ -1317,6 +1319,7 @@ impl Default for TypeCheckOutput {
     /// calls and therefore need no `method_call_rewrites` entries).
     fn default() -> Self {
         Self {
+            normalized_machines: None,
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
@@ -1691,6 +1694,7 @@ pub enum MethodCallRewrite {
         /// Checked source receiver contract. HIR carries writeback explicitly;
         /// an emitted body symbol is not a key for rediscovering this fact.
         requires_mutable_receiver: bool,
+        receiver_update: ReceiverUpdate,
         /// Exact receiver-in/result-out ownership identity, derived from the
         /// validated method signature rather than the symbol spelling.
         returns_receiver_identity: bool,
@@ -2376,6 +2380,16 @@ pub enum TypeDefKind {
     Record,
 }
 
+/// How a mutable method acquires the caller's receiver before evaluation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReceiverUpdate {
+    /// Transfer the receiver to the method and replace it on normal return.
+    #[default]
+    Replace,
+    /// Evaluate an independent copy; retain the original until normal return.
+    Staged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -2425,6 +2439,7 @@ pub struct FnSig {
     /// signatures whose receiver was declared by-value, and for free
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
+    pub receiver_update: ReceiverUpdate,
     /// `true` iff this signature was declared with a `consuming self` receiver
     /// (the terminal single-consume surface: `fn build(consuming self) -> T`, a
     /// `#[linear]` type's consuming method).
@@ -2477,6 +2492,7 @@ impl Default for FnSig {
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+            receiver_update: ReceiverUpdate::Replace,
             consumes_receiver: false,
             returns_receiver_identity: false,
             is_builtin_variant: false,
@@ -2583,6 +2599,8 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    /// Exact declarations whose values require an explicit disposition.
+    pub(super) must_use_types: HashSet<crate::DefId>,
     pub(super) env: TypeEnv,
     pub(super) subst: Substitution,
     pub(super) registry: TraitRegistry,
@@ -3929,6 +3947,7 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            must_use_types: HashSet::new(),
             has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),

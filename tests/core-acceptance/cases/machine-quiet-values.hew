@@ -1,0 +1,32 @@
+machine Quiet {
+    events { Begin, Finish }
+    state Idle,
+    state Active { label: string },
+    on Begin: Idle => Active { .Active { label: "quiet".to_upper() } }
+    on Finish: Active => Idle { .Idle }
+    default { state }
+}
+
+fn impossible(output: QuietOutput) -> i64 {
+    match output {}
+}
+
+fn main() -> i64 {
+    var quiet: Quiet = .Idle;
+    let opened = quiet.step(.Begin);
+    let retained = opened;
+    let finished = quiet.step(.Finish);
+    var visits = 0;
+    for output in retained.outputs {
+        visits = visits + impossible(output);
+    }
+    if visits != 0 || opened.outputs.len() != 0 || finished.outputs.len() != 0 {
+        return 1;
+    }
+    match retained.disposition {
+        .Taken => {},
+        .Ignored => { return 2; },
+    }
+    println(quiet.state_name());
+    0
+}

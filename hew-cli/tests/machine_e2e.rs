@@ -4,6 +4,33 @@ use std::process::Command;
 
 use support::hew_binary;
 
+#[test]
+fn ordinary_machine_diagram_retains_typed_outputs_and_dynamic_targets() {
+    let dir = support::tempdir();
+    let input = dir.path().join("gate.hew");
+    std::fs::write(
+        &input,
+        include_str!("../../tests/core-acceptance/cases/machine-wildcard-hooks.hew"),
+    )
+    .unwrap();
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(input)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagram: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(diagram["outputs"][0]["name"], "Trace");
+    assert_eq!(diagram["outputs"][0]["fields"][0], "text");
+    assert_eq!(diagram["transitions"][0]["to"], "_");
+    assert_eq!(diagram["transitions"][0]["external"], true);
+}
+
 fn machine_fixture() -> &'static str {
     "machine Light {\n    events {\n        Toggle,\n    }\n    state Off,\n    state On,\n    on Toggle: Off => On { .On }\n    on Toggle: On => Off { .Off }\n}\n"
 }

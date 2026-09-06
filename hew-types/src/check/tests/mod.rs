@@ -34,6 +34,7 @@ mod indexing;
 mod infer;
 mod intrinsics;
 mod lints;
+mod machines;
 mod modules;
 mod mut_receiver;
 mod opaque_resources;
@@ -180,6 +181,7 @@ pub(super) fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<
 /// Helper: build a simple pub function declaration.
 pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,
@@ -204,6 +206,7 @@ pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>)
 /// Helper: build a private (non-pub) function declaration.
 pub(super) fn make_priv_fn(name: &str) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
         is_async: false,
         is_generator: false,

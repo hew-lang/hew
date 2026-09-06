@@ -50,14 +50,8 @@ pub(super) fn check(ctx: &LintCtx, levels: &LintLevels, body: &Block, out: &mut 
             levels,
             LintId::MustUse,
             &hit.span,
-            format!(
-                "discarded `{}` value; an ignored {} error fails open",
-                hit.error.name, hit.error.class
-            ),
-            format!(
-                "handle it (`?`, `match`) or discard explicitly with `let _ = …` — `{}` reports {}",
-                hit.error.name, hit.error.reports
-            ),
+            hit.message,
+            hit.suggestion,
             out,
         );
     }
@@ -65,8 +59,8 @@ pub(super) fn check(ctx: &LintCtx, levels: &LintLevels, body: &Block, out: &mut 
 
 struct Hit {
     span: Span,
-    /// The must-use error the discarded value carries.
-    error: MustUseError,
+    message: String,
+    suggestion: String,
 }
 
 struct MustUse<'a> {
@@ -84,16 +78,29 @@ impl NodeVisitor for MustUse<'_> {
             let Stmt::Expression((_expr, expr_span)) = stmt else {
                 continue;
             };
-            if let Some(error) = self
-                .ctx
-                .resolved_type_at(expr_span)
-                .as_ref()
-                .and_then(must_use_error)
-            {
+            let ty = self.ctx.resolved_type_at(expr_span);
+            if let Some(error) = ty.as_ref().and_then(must_use_error) {
                 self.hits.push(Hit {
                     span: expr_span.clone(),
-                    error,
+                    message: format!("discarded `{}` value; an ignored {} error fails open", error.name, error.class),
+                    suggestion: format!("handle it (`?`, `match`) or discard explicitly with `let _ = …` — `{}` reports {}", error.name, error.reports),
                 });
+            } else if let Some(Ty::Named { name, .. }) = ty {
+                if self
+                    .ctx
+                    .checker
+                    .identity
+                    .declaration_by_path(&name)
+                    .is_some_and(|declaration| {
+                        self.ctx.checker.must_use_types.contains(declaration)
+                    })
+                {
+                    self.hits.push(Hit {
+                        span: expr_span.clone(),
+                        message: format!("discarded `{name}` machine step report"),
+                        suggestion: "handle its typed outputs and disposition, or discard explicitly with `let _ = …`".to_string(),
+                    });
+                }
             }
         }
     }

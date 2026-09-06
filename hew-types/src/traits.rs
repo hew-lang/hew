@@ -1354,6 +1354,7 @@ mod tests {
     fn test_function_is_send() {
         let registry = TraitRegistry::new();
         let fn_ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         };
@@ -1388,6 +1389,7 @@ mod tests {
         assert!(!registry.is_serializable(&plain));
 
         let fn_ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
         };
@@ -1404,6 +1406,7 @@ mod tests {
         registry.register_serializable_type(
             "Bad".to_string(),
             vec![Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: vec![Ty::I64],
                 ret: Box::new(Ty::I64),
             }],
@@ -1564,6 +1567,7 @@ mod tests {
     fn test_closure_with_send_captures_is_send() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32, Ty::String],
@@ -1580,6 +1584,7 @@ mod tests {
             is_mutable: false,
         };
         let closure = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32, ptr],
@@ -1591,6 +1596,7 @@ mod tests {
     fn test_closure_not_copy() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(Ty::Unit),
             captures: vec![Ty::I32],

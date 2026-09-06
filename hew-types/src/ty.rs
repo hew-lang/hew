@@ -206,6 +206,8 @@ pub enum Ty {
 
     /// Function type: `fn(T1, T2) -> R`
     Function {
+        /// Invocation and duplication guarantees of this callable value.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<Ty>,
         /// Return type
@@ -214,6 +216,8 @@ pub enum Ty {
 
     /// Closure type: like Function but with captured variable types for Send checking
     Closure {
+        /// Invocation and duplication guarantees of this concrete closure.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<Ty>,
         /// Return type
@@ -638,8 +642,18 @@ impl Ty {
                 }
                 Ok(())
             }
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
-                write!(f, "fn(")?;
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            }
+            | Ty::Closure {
+                capabilities,
+                params,
+                ret,
+                ..
+            } => {
+                write!(f, "fn{capabilities}(")?;
                 for (i, param) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -829,13 +843,14 @@ impl Ty {
             Ty::Tuple(elems) => elems.iter().any(Ty::has_inference_var),
             Ty::Array(elem, _) | Ty::Slice(elem) => elem.has_inference_var(),
             Ty::Named { args, .. } => args.iter().any(Ty::has_inference_var),
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 params.iter().any(Ty::has_inference_var) || ret.has_inference_var()
             }
             Ty::Closure {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 params.iter().any(Ty::has_inference_var)
                     || ret.has_inference_var()
@@ -1370,7 +1385,7 @@ impl Ty {
         match self {
             Ty::IntLiteral => Ty::I64,
             Ty::FloatLiteral => Ty::F64,
-            _ => self.map_children(&|child| child.materialize_literal_defaults()),
+            _ => self.map_children(&mut |child| child.materialize_literal_defaults()),
         }
     }
 
@@ -1464,7 +1479,7 @@ impl Ty {
                 return replacement.clone();
             }
         }
-        self.map_children(&|child| child.substitute(var, replacement))
+        self.map_children(&mut |child| child.substitute(var, replacement))
     }
 
     /// Apply a full substitution to this type.
@@ -1477,99 +1492,18 @@ impl Ty {
         if subst.mappings().is_empty() {
             return self.clone();
         }
-        match self {
-            Ty::Var(v) => match subst.lookup(*v) {
-                Some(resolved) => {
-                    if !visited.insert(*v) {
-                        return Ty::Error;
-                    }
-                    let resolved = resolved.apply_subst_inner(subst, visited);
-                    visited.remove(v);
-                    resolved
-                }
-                None => self.clone(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|elem| elem.apply_subst_inner(subst, visited))
-                    .collect(),
-            ),
-            Ty::Array(elem, size) => {
-                Ty::Array(Box::new(elem.apply_subst_inner(subst, visited)), *size)
+        if let Ty::Var(var) = self {
+            let Some(resolved) = subst.lookup(*var) else {
+                return self.clone();
+            };
+            if !visited.insert(*var) {
+                return Ty::Error;
             }
-            Ty::Slice(elem) => Ty::Slice(Box::new(elem.apply_subst_inner(subst, visited))),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|arg| arg.apply_subst_inner(subst, visited))
-                    .collect(),
-            },
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|param| param.apply_subst_inner(subst, visited))
-                    .collect(),
-                ret: Box::new(ret.apply_subst_inner(subst, visited)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|param| param.apply_subst_inner(subst, visited))
-                    .collect(),
-                ret: Box::new(ret.apply_subst_inner(subst, visited)),
-                captures: captures
-                    .iter()
-                    .map(|capture| capture.apply_subst_inner(subst, visited))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.apply_subst_inner(subst, visited)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| arg.apply_subst_inner(subst, visited))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), ty.apply_subst_inner(subst, visited)))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            Ty::Task(inner) => Ty::Task(Box::new(inner.apply_subst_inner(subst, visited))),
-            Ty::AssocType {
-                base,
-                trait_name,
-                assoc_name,
-            } => Ty::AssocType {
-                base: Box::new(base.apply_subst_inner(subst, visited)),
-                trait_name: trait_name.clone(),
-                assoc_name: assoc_name.clone(),
-            },
-            _ => self.clone(),
+            let result = resolved.apply_subst_inner(subst, visited);
+            visited.remove(var);
+            return result;
         }
+        self.map_children(&mut |child| child.apply_subst_inner(subst, visited))
     }
 
     /// Public counterpart to `map_children`: apply `f` to each child type
@@ -1578,14 +1512,14 @@ impl Ty {
     /// recursion without re-implementing every variant.
     #[must_use]
     pub fn map_children_pub(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
-        self.map_children(f)
+        self.map_children(&mut |child| f(child))
     }
 
     /// Apply a function to each child type, reconstructing the composite.
     /// Leaf types (primitives, Var, Error) return `self.clone()`.
-    fn map_children(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
+    fn map_children(&self, f: &mut impl FnMut(&Ty) -> Ty) -> Ty {
         match self {
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(f).collect()),
+            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut *f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
             Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
             Ty::Named {
@@ -1595,20 +1529,27 @@ impl Ty {
             } => Ty::Named {
                 name: name.clone(),
                 builtin: *builtin,
-                args: args.iter().map(f).collect(),
+                args: args.iter().map(&mut *f).collect(),
             },
-            Ty::Function { params, ret } => Ty::Function {
-                params: params.iter().map(f).collect(),
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
+                params: params.iter().map(&mut *f).collect(),
                 ret: Box::new(f(ret)),
             },
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
             } => Ty::Closure {
-                params: params.iter().map(f).collect(),
+                capabilities: *capabilities,
+                params: params.iter().map(&mut *f).collect(),
                 ret: Box::new(f(ret)),
-                captures: captures.iter().map(f).collect(),
+                captures: captures.iter().map(&mut *f).collect(),
             },
             Ty::Pointer {
                 is_mutable,
@@ -1625,7 +1566,7 @@ impl Ty {
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
-                        args: bound.args.iter().map(f).collect(),
+                        args: bound.args.iter().map(&mut *f).collect(),
                         assoc_bindings: bound
                             .assoc_bindings
                             .iter()
@@ -1654,11 +1595,12 @@ impl Ty {
             Ty::Tuple(elems) => elems.iter().any(f),
             Ty::Array(elem, _) | Ty::Slice(elem) => f(elem),
             Ty::Named { args, .. } => args.iter().any(f),
-            Ty::Function { params, ret } => params.iter().any(f) || f(ret),
+            Ty::Function { params, ret, .. } => params.iter().any(f) || f(ret),
             Ty::Closure {
                 params,
                 ret,
                 captures,
+                ..
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
             Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => f(pointee),
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
@@ -1674,110 +1616,10 @@ impl Ty {
     /// Used to resolve generic fields/methods on instantiated types.
     #[must_use]
     pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
-        match self {
-            Ty::Named { name, args, .. } if args.is_empty() && name == param_name => {
-                replacement.clone()
-            }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|a| a.substitute_named_param(param_name, replacement))
-                    .collect(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| e.substitute_named_param(param_name, replacement))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => Ty::Array(
-                Box::new(inner.substitute_named_param(param_name, replacement)),
-                *n,
-            ),
-            Ty::Slice(inner) => Ty::Slice(Box::new(
-                inner.substitute_named_param(param_name, replacement),
-            )),
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_param(param_name, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_param(param_name, replacement)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_param(param_name, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_param(param_name, replacement)),
-                captures: captures
-                    .iter()
-                    .map(|c| c.substitute_named_param(param_name, replacement))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
-            },
-            Ty::Borrow { pointee } => Ty::Borrow {
-                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| arg.substitute_named_param(param_name, replacement))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| {
-                                (
-                                    name.clone(),
-                                    ty.substitute_named_param(param_name, replacement),
-                                )
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            // Task<T> is compiler-internal; T itself may reference a named param
-            // in a generic context (e.g. inside a function body that is generic
-            // over T), so we recurse into the inner type.
-            Ty::Task(inner) => Ty::Task(Box::new(
-                inner.substitute_named_param(param_name, replacement),
-            )),
-            // AssocType { base: T, trait, name }: when `T` is the type param
-            // being substituted, recurse into `base` so a later projection-
-            // collapse pass can resolve the assoc binding from the impl.
-            Ty::AssocType {
-                base,
-                trait_name,
-                assoc_name,
-            } => Ty::AssocType {
-                base: Box::new(base.substitute_named_param(param_name, replacement)),
-                trait_name: trait_name.clone(),
-                assoc_name: assoc_name.clone(),
-            },
-            _ => self.clone(),
+        if matches!(self, Ty::Named { name, args, .. } if args.is_empty() && name == param_name) {
+            return replacement.clone();
         }
+        self.map_children(&mut |child| child.substitute_named_param(param_name, replacement))
     }
 
     /// Substitute all named type parameters simultaneously in a single structural
@@ -1791,100 +1633,15 @@ impl Ty {
     /// the replacement). Composites recurse structurally.
     #[must_use]
     pub fn substitute_named_params_parallel(&self, map: &HashMap<String, Ty>) -> Ty {
-        match self {
-            Ty::Named { name, args, .. } if args.is_empty() => {
-                if let Some(replacement) = map.get(name.as_str()) {
-                    replacement.clone()
-                } else {
-                    self.clone()
-                }
+        if let Ty::Named { name, args, .. } = self {
+            if args.is_empty() {
+                return map
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| self.clone());
             }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|a| a.substitute_named_params_parallel(map))
-                    .collect(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| e.substitute_named_params_parallel(map))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => {
-                Ty::Array(Box::new(inner.substitute_named_params_parallel(map)), *n)
-            }
-            Ty::Slice(inner) => Ty::Slice(Box::new(inner.substitute_named_params_parallel(map))),
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_params_parallel(map))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_params_parallel(map)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_params_parallel(map))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_params_parallel(map)),
-                captures: captures
-                    .iter()
-                    .map(|c| c.substitute_named_params_parallel(map))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
-            },
-            Ty::Borrow { pointee } => Ty::Borrow {
-                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| arg.substitute_named_params_parallel(map))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| {
-                                (name.clone(), ty.substitute_named_params_parallel(map))
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            Ty::Task(inner) => Ty::Task(Box::new(inner.substitute_named_params_parallel(map))),
-            Ty::AssocType {
-                base,
-                trait_name,
-                assoc_name,
-            } => Ty::AssocType {
-                base: Box::new(base.substitute_named_params_parallel(map)),
-                trait_name: trait_name.clone(),
-                assoc_name: assoc_name.clone(),
-            },
-            _ => self.clone(),
         }
+        self.map_children(&mut |child| child.substitute_named_params_parallel(map))
     }
 }
 
@@ -1986,6 +1743,7 @@ mod tests {
     #[test]
     fn test_substitute_named_param() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Named {
                 builtin: None,
                 name: "T".to_string(),
@@ -2006,6 +1764,7 @@ mod tests {
         assert_eq!(
             substituted,
             Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: vec![Ty::String],
                 ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::I32])),
             }
@@ -2080,6 +1839,7 @@ mod tests {
     fn test_has_inference_var() {
         let inferred = Ty::Var(TypeVar::fresh());
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Tuple(vec![Ty::String, inferred.clone()])),
         };
@@ -2096,6 +1856,7 @@ mod tests {
             format!(
                 "{}",
                 Ty::Function {
+                    capabilities: crate::CallableCapabilities::default(),
                     params: vec![Ty::I32, Ty::Bool],
                     ret: Box::new(Ty::String),
                 }
@@ -2136,6 +1897,7 @@ mod tests {
     #[test]
     fn test_user_facing_display_formats_nested_types() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![
                 Ty::Named {
                     builtin: None,
@@ -2305,6 +2067,7 @@ mod tests {
     fn test_contains_var_in_function() {
         let v = TypeVar::fresh();
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Var(v)),
         };

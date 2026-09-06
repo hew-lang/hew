@@ -102,13 +102,14 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         Ty::Tuple(elems) => elems.iter().any(ty_contains_unresolved_var),
         Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_unresolved_var(elem),
         Ty::Named { args, .. } => args.iter().any(ty_contains_unresolved_var),
-        Ty::Function { params, ret } => {
+        Ty::Function { params, ret, .. } => {
             params.iter().any(ty_contains_unresolved_var) || ty_contains_unresolved_var(ret)
         }
         Ty::Closure {
             params,
             ret,
             captures,
+            ..
         } => {
             params.iter().any(ty_contains_unresolved_var)
                 || ty_contains_unresolved_var(ret)

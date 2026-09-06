@@ -140,6 +140,7 @@ fn record_measurement_float_field_derives_send_clone_copy() {
 fn record_cb_function_field_not_eq_not_hash() {
     let mut reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I64),
     };
@@ -159,6 +160,7 @@ fn record_cb_function_field_not_eq_not_hash() {
 fn record_cb_function_field_derives_send_copy() {
     let mut reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I64),
     };
@@ -274,6 +276,7 @@ fn tuple_record_duplex_field_not_copy_not_resource() {
 fn record_closure_field_not_eq_not_hash_not_copy() {
     let mut reg = TraitRegistry::new();
     let closure = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::Unit),
         captures: vec![Ty::I64],

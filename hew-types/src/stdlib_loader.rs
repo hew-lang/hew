@@ -584,6 +584,7 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             params
                 .iter()
@@ -867,9 +868,11 @@ fn type_expr_to_ty_with_params_and_context(
         ),
         TypeExpr::Infer => Ty::Error,
         TypeExpr::Function {
+            capabilities,
             params,
             return_type,
         } => Ty::Function {
+            capabilities: *capabilities,
             params: params
                 .iter()
                 .map(|(te, _)| {

@@ -852,7 +852,7 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
             out.push((**element).clone());
         }
         ResolvedTy::Named { args, .. } => out.extend(args.iter().cloned()),
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             out.extend(params.iter().cloned());
             out.push((**ret).clone());
         }
@@ -860,6 +860,7 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
             params,
             ret,
             captures,
+            ..
         } => {
             out.extend(params.iter().cloned());
             out.push((**ret).clone());
@@ -1004,6 +1005,7 @@ mod tests {
 
     fn closure_over(captures: Vec<ResolvedTy>) -> ResolvedTy {
         ResolvedTy::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(ResolvedTy::Unit),
             captures,
@@ -1065,6 +1067,7 @@ mod tests {
             ),
             (
                 ResolvedTy::Function {
+                    capabilities: crate::CallableCapabilities::default(),
                     params: vec![],
                     ret: Box::new(ResolvedTy::Unit),
                 },

@@ -1573,3 +1573,23 @@ cleanup obligations after borrowing. Exclusive loans also cannot escape by retur
 This is a contract checkpoint. Source receiver selection and physical receiver
 storage remain explicit refusals until the closure environment implementation
 connects them; no executable closure acceptance is claimed here.
+
+## Callable surface and type boundary
+
+Pipe closures now parse explicit private capture prefixes such as
+`[var count] || { count = count + 1; count }`, including the ownership
+acquisition prefix `move`. Written function types carry invocation and Clone
+qualifiers, and formatting preserves both additions. The same capability
+structure travels through source types, checker types and resolved HIR types.
+
+This is a compiling boundary checkpoint. Parser acceptance and rejection tests,
+including formatting round trips, pass. Capture ownership, callable coercion
+and invocation checking remain the next checker layer; native closure execution
+is not implemented by this checkpoint.
+
+Validation of the callable field checkpoint: the full parser and type-checker
+Make suite passed, and workspace Rust Clippy passed with tests enabled. Shared
+structural substitution now uses the existing child mapper so callable
+capabilities cannot diverge between duplicated substitution walkers. This is a
+compiling syntax and field checkpoint; capture enforcement, directional
+coercions, capability-derived ownership and native execution remain unfinished.

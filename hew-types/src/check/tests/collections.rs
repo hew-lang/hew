@@ -3323,6 +3323,7 @@ fn free_call_len_on_hashset_records_lowering_fact() {
 fn concrete_vec_validation_reaches_function_wrapped_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Function {
+        capabilities: crate::CallableCapabilities::default(),
         params: vec![Ty::Named {
             builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),

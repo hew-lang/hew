@@ -2440,7 +2440,7 @@ fn visit_ty(
                 }
             }
             ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => worklist.push(*elem),
-            ResolvedTy::Function { params, ret } => {
+            ResolvedTy::Function { params, ret, .. } => {
                 for p in params {
                     worklist.push(p);
                 }
@@ -2450,6 +2450,7 @@ fn visit_ty(
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 for p in params {
                     worklist.push(p);
@@ -2508,7 +2509,7 @@ fn residual_param_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> O
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             residual_param_in_ty(elem, residual_domain)
         }
-        ResolvedTy::Function { params, ret } => params
+        ResolvedTy::Function { params, ret, .. } => params
             .iter()
             .find_map(|p| residual_param_in_ty(p, residual_domain))
             .or_else(|| residual_param_in_ty(ret, residual_domain)),
@@ -2516,6 +2517,7 @@ fn residual_param_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> O
             params,
             ret,
             captures,
+            ..
         } => params
             .iter()
             .find_map(|p| residual_param_in_ty(p, residual_domain))

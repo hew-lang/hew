@@ -1016,6 +1016,10 @@ impl Parser<'_> {
                     Expr::Tuple(exprs)
                 }
             }
+            Token::LeftBracket if self.peek_at(self.pos + 1) == Some(&Token::Var) => {
+                let captures = self.parse_private_capture_prefix()?;
+                self.parse_pipe_lambda(false, start, captures)?
+            }
             Token::LeftBracket => {
                 self.advance();
                 // Inside `[...]` the enclosing `{` is no longer the condition's
@@ -1049,7 +1053,7 @@ impl Parser<'_> {
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
-            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start)?,
+            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start, Vec::new())?,
             Token::LeftBrace => {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
@@ -1266,8 +1270,11 @@ impl Parser<'_> {
             }
             Token::Move => {
                 self.advance();
-                if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
-                    self.parse_pipe_lambda(true, start)?
+                if self.peek() == Some(&Token::LeftBracket) {
+                    let captures = self.parse_private_capture_prefix()?;
+                    self.parse_pipe_lambda(true, start, captures)?
+                } else if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
+                    self.parse_pipe_lambda(true, start, Vec::new())?
                 } else if self.peek() == Some(&Token::LeftParen) {
                     // Old `move (params) => body` form — detect and diagnose.
                     // Consume through the form for recovery, then emit a typed error.
@@ -1601,7 +1608,32 @@ impl Parser<'_> {
         Some((expr, start..end))
     }
 
-    pub(crate) fn parse_pipe_lambda(&mut self, is_move: bool, start: usize) -> Option<Expr> {
+    fn parse_private_capture_prefix(&mut self) -> Option<Vec<Spanned<String>>> {
+        self.expect(&Token::LeftBracket)?;
+        let mut captures: Vec<Spanned<String>> = Vec::new();
+        loop {
+            self.expect(&Token::Var)?;
+            let span = self.peek_span();
+            let name = self.expect_ident()?;
+            if captures.iter().any(|(previous, _)| *previous == name) {
+                self.error_at(format!("duplicate private capture `{name}`"), span);
+                return None;
+            }
+            captures.push((name, span));
+            if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBracket) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBracket)?;
+        Some(captures)
+    }
+
+    pub(crate) fn parse_pipe_lambda(
+        &mut self,
+        is_move: bool,
+        start: usize,
+        private_captures: Vec<Spanned<String>>,
+    ) -> Option<Expr> {
         let params = if self.eat(&Token::PipePipe) {
             Vec::new()
         } else {
@@ -1625,6 +1657,15 @@ impl Parser<'_> {
             params
         };
 
+        for (name, span) in &private_captures {
+            if params.iter().any(|parameter| parameter.name == *name) {
+                self.error_at(
+                    format!("private capture `{name}` conflicts with a closure parameter"),
+                    span.clone(),
+                );
+                return None;
+            }
+        }
         let return_type = self.parse_opt_return_type()?;
         let body = if return_type.is_some() {
             if self.peek() != Some(&Token::LeftBrace) {
@@ -1656,6 +1697,7 @@ impl Parser<'_> {
 
         Some(Expr::Lambda {
             is_move,
+            private_captures,
             type_params: None,
             params,
             return_type,

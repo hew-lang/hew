@@ -726,6 +726,14 @@ mod tests {
                 block(2, cleanup, SemTerminator::ResumeUnwind),
             ]);
             f.params[0].ty = ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities {
+                    call: match decision {
+                        BoundaryDecision::BorrowMut => hew_types::CallableCallMode::Var,
+                        BoundaryDecision::Move => hew_types::CallableCallMode::Once,
+                        _ => hew_types::CallableCallMode::Read,
+                    },
+                    clone: false,
+                },
                 params: vec![],
                 ret: Box::new(ResolvedTy::Unit),
             };

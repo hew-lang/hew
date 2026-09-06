@@ -79,6 +79,7 @@ fn display_named_multiple_args() {
 #[test]
 fn display_function_no_params() {
     let ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::Unit),
     };
@@ -88,6 +89,7 @@ fn display_function_no_params() {
 #[test]
 fn display_function_multiple_params() {
     let ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::Bool, Ty::String],
         ret: Box::new(Ty::F64),
     };
@@ -98,6 +100,7 @@ fn display_function_multiple_params() {
 fn display_closure() {
     // Closure display is identical to Function display (captures are hidden)
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
@@ -568,6 +571,7 @@ fn contains_var_in_closure() {
 
     // In params
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::I32),
         captures: vec![],
@@ -576,6 +580,7 @@ fn contains_var_in_closure() {
 
     // In ret
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Var(v)),
         captures: vec![],
@@ -584,6 +589,7 @@ fn contains_var_in_closure() {
 
     // In captures
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I32),
         captures: vec![Ty::Var(v)],
@@ -592,6 +598,7 @@ fn contains_var_in_closure() {
 
     // Not present
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
@@ -672,6 +679,7 @@ fn substitute_in_array() {
 fn substitute_in_closure() {
     let v = TypeVar(6020);
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Var(v)),
         captures: vec![Ty::Var(v)],
@@ -680,6 +688,7 @@ fn substitute_in_closure() {
     assert_eq!(
         result,
         Ty::Closure {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::Bool],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::Bool],
@@ -745,6 +754,7 @@ fn substitute_in_trait_object() {
 fn substitute_in_function() {
     let v = TypeVar(6050);
     let ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v), Ty::I32],
         ret: Box::new(Ty::Var(v)),
     };
@@ -752,6 +762,7 @@ fn substitute_in_function() {
     assert_eq!(
         result,
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::Bool, Ty::I32],
             ret: Box::new(Ty::Bool),
         }
@@ -926,20 +937,24 @@ fn ty_equality_composites() {
 
     assert_eq!(
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         },
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         }
     );
     assert_ne!(
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         },
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::Bool),
         }
@@ -957,6 +972,7 @@ fn apply_subst_through_closure() {
     subst.insert(v, &Ty::F32).unwrap();
 
     let ty = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Var(v)),
         captures: vec![Ty::Var(v)],
@@ -964,6 +980,7 @@ fn apply_subst_through_closure() {
     assert_eq!(
         ty.apply_subst(&subst),
         Ty::Closure {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::F32],
             ret: Box::new(Ty::F32),
             captures: vec![Ty::F32],

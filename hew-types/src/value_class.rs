@@ -312,12 +312,13 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
             params: p,
             ret,
             captures,
+            ..
         } => {
             p.iter().any(|t| mentions_type_param(t, params))
                 || mentions_type_param(ret, params)
                 || captures.iter().any(|t| mentions_type_param(t, params))
         }
-        ResolvedTy::Function { params: p, ret } => {
+        ResolvedTy::Function { params: p, ret, .. } => {
             p.iter().any(|t| mentions_type_param(t, params)) || mentions_type_param(ret, params)
         }
         _ => false,

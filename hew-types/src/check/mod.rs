@@ -355,6 +355,7 @@ pub(crate) fn canonicalize_member_ty(
             name
         }
     };
+    let canonicalize = |ty| canonicalize_member_ty(ty, prefix, type_defs);
     match ty {
         ResolvedTy::Named {
             name,
@@ -362,10 +363,7 @@ pub(crate) fn canonicalize_member_ty(
             builtin,
             is_opaque,
         } => {
-            let args = args
-                .into_iter()
-                .map(|a| canonicalize_member_ty(a, prefix, type_defs))
-                .collect();
+            let args = args.into_iter().map(canonicalize).collect();
             // A builtin already carries its identity in `builtin`; the name
             // string is display-only there and rewriting it would be a
             // second, redundant identity authority.
@@ -381,12 +379,9 @@ pub(crate) fn canonicalize_member_ty(
                 is_opaque,
             }
         }
-        ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
-            elements
-                .into_iter()
-                .map(|e| canonicalize_member_ty(e, prefix, type_defs))
-                .collect(),
-        ),
+        ResolvedTy::Tuple(elements) => {
+            ResolvedTy::Tuple(elements.into_iter().map(canonicalize).collect())
+        }
         ResolvedTy::Array(element, len) => ResolvedTy::Array(
             Box::new(canonicalize_member_ty(*element, prefix, type_defs)),
             len,
@@ -394,27 +389,25 @@ pub(crate) fn canonicalize_member_ty(
         ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(canonicalize_member_ty(
             *element, prefix, type_defs,
         ))),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
-            params: params
-                .into_iter()
-                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
-                .collect(),
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities,
+            params: params.into_iter().map(canonicalize).collect(),
             ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
         },
         ResolvedTy::Closure {
+            capabilities,
             params,
             ret,
             captures,
         } => ResolvedTy::Closure {
-            params: params
-                .into_iter()
-                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
-                .collect(),
+            capabilities,
+            params: params.into_iter().map(canonicalize).collect(),
             ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
-            captures: captures
-                .into_iter()
-                .map(|c| canonicalize_member_ty(c, prefix, type_defs))
-                .collect(),
+            captures: captures.into_iter().map(canonicalize).collect(),
         },
         ResolvedTy::Pointer {
             is_mutable,
@@ -431,11 +424,7 @@ pub(crate) fn canonicalize_member_ty(
                 .into_iter()
                 .map(|bound| crate::resolved_ty::ResolvedTraitBound {
                     trait_name: bound.trait_name,
-                    args: bound
-                        .args
-                        .into_iter()
-                        .map(|a| canonicalize_member_ty(a, prefix, type_defs))
-                        .collect(),
+                    args: bound.args.into_iter().map(canonicalize).collect(),
                     assoc_bindings: bound.assoc_bindings,
                 })
                 .collect(),
@@ -523,7 +512,7 @@ pub(crate) fn declaration_walk_terminates(
             | Ty::Task(inner)
             | Ty::Pointer { pointee: inner, .. }
             | Ty::Borrow { pointee: inner } => member_names(inner, out),
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 for param in params {
                     member_names(param, out);
                 }
@@ -533,6 +522,7 @@ pub(crate) fn declaration_walk_terminates(
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 for param in params.iter().chain(captures) {
                     member_names(param, out);

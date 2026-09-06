@@ -1262,6 +1262,7 @@ impl<'a> ProfileChecker<'a> {
             TypeExpr::Function {
                 params,
                 return_type,
+                ..
             } => {
                 for (param, param_span) in params {
                     self.check_type_expr(param, param_span);

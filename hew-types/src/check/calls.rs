@@ -2406,7 +2406,7 @@ impl Checker {
         self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
         let resolved = self.subst.resolve(func_ty);
         match resolved {
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+            Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 self.check_arity(args, params.len(), "this function", span);
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param) = params.get(i) {

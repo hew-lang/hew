@@ -387,6 +387,7 @@ fn mutable_pointer_is_copy_not_send() {
 fn function_type_traits() {
     let reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::String],
         ret: Box::new(Ty::Bool),
     };
@@ -407,6 +408,7 @@ fn function_type_traits() {
 fn closure_is_clone_but_not_copy() {
     let reg = TraitRegistry::new();
     let closure = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::I32],
@@ -711,6 +713,7 @@ fn vec_of_non_eq_is_not_eq() {
     // `normalize_named` tags the builtin so the collection element-derivation
     // arm runs (a `builtin: None` "Vec" would be an unknown user type).
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };

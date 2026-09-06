@@ -146,6 +146,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             let param_strs: Vec<String> = params.iter().map(|(t, _)| format_type(t)).collect();
             format!(

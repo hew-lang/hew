@@ -2130,6 +2130,7 @@ mod tests {
     #[test]
     fn test_mismatch_with_complex_types() {
         let expected = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32, Ty::Bool],
             ret: Box::new(Ty::String),
         };

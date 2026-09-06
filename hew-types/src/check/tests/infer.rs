@@ -819,6 +819,7 @@ mod non_root_module_inference_scope {
 
         // |x: _| x  — lambda with infer-typed parameter, no call site to resolve it
         let lambda_expr = Expr::Lambda {
+            private_captures: Vec::new(),
             is_move: false,
             type_params: None,
             params: vec![LambdaParam {

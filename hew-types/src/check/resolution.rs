@@ -868,6 +868,7 @@ impl Checker {
                 Ty::Function {
                     params: left_params,
                     ret: left_ret,
+                    ..
                 }
                 | Ty::Closure {
                     params: left_params,
@@ -877,6 +878,7 @@ impl Checker {
                 Ty::Function {
                     params: right_params,
                     ret: right_ret,
+                    ..
                 }
                 | Ty::Closure {
                     params: right_params,
@@ -2732,7 +2734,7 @@ impl Checker {
             Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => {
                 self.enforce_type_def_bounds_recursive(pointee, span);
             }
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 for param in params {
                     self.enforce_type_def_bounds_recursive(param, span);
                 }
@@ -2742,6 +2744,7 @@ impl Checker {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 for param in params {
                     self.enforce_type_def_bounds_recursive(param, span);
@@ -3626,9 +3629,11 @@ impl Checker {
                 ],
             ),
             TypeExpr::Function {
+                capabilities,
                 params,
                 return_type,
             } => Ty::Function {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|te| {

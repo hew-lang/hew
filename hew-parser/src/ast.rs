@@ -291,6 +291,8 @@ pub enum Expr {
     },
     Lambda {
         is_move: bool,
+        /// Existing outer names made privately mutable in this environment.
+        private_captures: Vec<Spanned<String>>,
         type_params: Option<Vec<TypeParam>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
@@ -580,6 +582,7 @@ pub enum TypeExpr {
     },
     Slice(Box<Spanned<TypeExpr>>),
     Function {
+        capabilities: CallableCapabilities,
         params: Vec<Spanned<TypeExpr>>,
         return_type: Box<Spanned<TypeExpr>>,
     },

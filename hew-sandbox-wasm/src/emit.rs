@@ -903,7 +903,7 @@ impl<'a> PackageEmitter<'a> {
                     vec![element_id],
                 )
             }
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+            Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 let mut ids: Vec<_> = params
                     .iter()
                     .map(|param| self.type_id_for_ty(param))
@@ -5225,9 +5225,11 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
         }
         hew_parser::ast::TypeExpr::Slice(inner) => Ty::Slice(Box::new(ty_from_type_expr(&inner.0))),
         hew_parser::ast::TypeExpr::Function {
+            capabilities,
             params,
             return_type,
         } => Ty::Function {
+            capabilities: *capabilities,
             params: params.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect(),
             ret: Box::new(ty_from_type_expr(&return_type.0)),
         },

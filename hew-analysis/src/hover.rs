@@ -126,7 +126,7 @@ fn append_hover_fallback_notes(contents: &mut String, notes: impl IntoIterator<I
 }
 
 fn render_expr_hover(snippet: &str, ty: &Ty) -> String {
-    if let Ty::Function { params, ret } = ty {
+    if let Ty::Function { params, ret, .. } = ty {
         let param_displays: Vec<HoverTypeDisplay> =
             params.iter().map(fn_component_display).collect();
         let param_list: Vec<String> = param_displays
@@ -1077,8 +1077,9 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
         TypeExpr::Function {
             params,
             return_type,
+            capabilities,
         } => format!(
-            "fn({}) -> {}",
+            "fn{capabilities}({}) -> {}",
             params
                 .iter()
                 .map(|(param, _)| format_type_expr_hover(param))

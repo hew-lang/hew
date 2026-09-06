@@ -1238,7 +1238,7 @@ fn collect_named_children(ty: &ResolvedTy, worklist: &mut Vec<ResolvedTy>) {
             }
         }
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => worklist.push((**elem).clone()),
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             for p in params {
                 worklist.push(p.clone());
             }
@@ -1248,6 +1248,7 @@ fn collect_named_children(ty: &ResolvedTy, worklist: &mut Vec<ResolvedTy>) {
             params,
             ret,
             captures,
+            ..
         } => {
             for p in params {
                 worklist.push(p.clone());
@@ -1311,7 +1312,7 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             residual_in_ty(elem, residual_domain)
         }
-        ResolvedTy::Function { params, ret } => params
+        ResolvedTy::Function { params, ret, .. } => params
             .iter()
             .find_map(|p| residual_in_ty(p, residual_domain))
             .or_else(|| residual_in_ty(ret, residual_domain)),
@@ -1319,6 +1320,7 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
             params,
             ret,
             captures,
+            ..
         } => params
             .iter()
             .find_map(|p| residual_in_ty(p, residual_domain))

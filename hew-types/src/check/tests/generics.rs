@@ -115,6 +115,7 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
     assert_eq!(
         output.expr_types.get(&SpanKey::from(&lambda_span)),
         Some(&Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
         })

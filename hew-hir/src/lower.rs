@@ -2041,6 +2041,7 @@ fn render_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             let ps: Vec<String> = params.iter().map(|p| render_type_expr(&p.0)).collect();
             format!(
@@ -2271,6 +2272,7 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             for param in params {
                 canonicalize_injected_cursor_type_expr(&mut param.0);
@@ -7327,15 +7329,22 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
         }
         ResolvedTy::Array(elem, n) => ResolvedTy::Array(Box::new(substitute_ty(elem, subst)), *n),
         ResolvedTy::Slice(elem) => ResolvedTy::Slice(Box::new(substitute_ty(elem, subst))),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities: *capabilities,
             params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
             ret: Box::new(substitute_ty(ret, subst)),
         },
         ResolvedTy::Closure {
+            capabilities,
             params,
             ret,
             captures,
         } => ResolvedTy::Closure {
+            capabilities: *capabilities,
             params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
             ret: Box::new(substitute_ty(ret, subst)),
             captures: captures.iter().map(|c| substitute_ty(c, subst)).collect(),
@@ -7399,7 +7408,7 @@ fn contains_abstract_symbol(
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             contains_abstract_symbol(elem, fn_info)
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             params.iter().any(|p| contains_abstract_symbol(p, fn_info))
                 || contains_abstract_symbol(ret, fn_info)
         }
@@ -7407,6 +7416,7 @@ fn contains_abstract_symbol(
             params,
             ret,
             captures,
+            ..
         } => {
             params.iter().any(|p| contains_abstract_symbol(p, fn_info))
                 || contains_abstract_symbol(ret, fn_info)
@@ -9016,7 +9026,7 @@ impl LowerCtx {
             ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
                 self.contains_abstract_type_param(elem)
             }
-            ResolvedTy::Function { params, ret } => {
+            ResolvedTy::Function { params, ret, .. } => {
                 params.iter().any(|p| self.contains_abstract_type_param(p))
                     || self.contains_abstract_type_param(ret)
             }
@@ -9024,6 +9034,7 @@ impl LowerCtx {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 params.iter().any(|p| self.contains_abstract_type_param(p))
                     || self.contains_abstract_type_param(ret)
@@ -9685,6 +9696,7 @@ fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             for param in params {
                 collect_type_expr_named_leaves(&param.0, out);
@@ -9846,6 +9858,7 @@ fn imported_impl_signature_type_is_safe(
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             params.iter().all(|p| {
                 imported_impl_signature_type_is_safe(
@@ -11434,6 +11447,7 @@ impl LowerCtx {
             )
         };
         let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: param_tys,
             ret: Box::new(return_ty),
         };
@@ -11545,6 +11559,7 @@ impl LowerCtx {
             (entry.id, entry.param_tys.clone(), entry.return_ty.clone())
         };
         let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: param_tys,
             ret: Box::new(return_ty.clone()),
         };
@@ -11966,6 +11981,7 @@ impl LowerCtx {
 
     fn build_structural_format_call(&mut self, value: HirExpr, span: Span) -> HirExpr {
         let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: vec![value.ty.clone()],
             ret: Box::new(ResolvedTy::String),
         };
@@ -12283,6 +12299,7 @@ impl LowerCtx {
                 }),
         };
         let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
         };
@@ -19618,6 +19635,7 @@ impl LowerCtx {
                         {
                             let target = self.registered_symbol_target(&callee_name);
                             let callee_ty = ResolvedTy::Function {
+                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                                 params: vec![container.ty.clone(), index_expr.ty.clone()],
                                 ret: Box::new(result_ty.clone()),
                             };
@@ -20926,7 +20944,7 @@ impl LowerCtx {
 
     fn closure_signature_from_ty(ty: &ResolvedTy) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
         match ty {
-            ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
+            ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
                 Some((params.clone(), ret.as_ref().clone()))
             }
             _ => None,
@@ -21104,6 +21122,7 @@ impl LowerCtx {
                         "closure literal type failed checker-boundary conversion",
                     ));
                     ResolvedTy::Function {
+                        capabilities: hew_parser::ast::CallableCapabilities::default(),
                         params: vec![],
                         ret: Box::new(ResolvedTy::Unit),
                     }
@@ -21121,6 +21140,7 @@ impl LowerCtx {
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
             ResolvedTy::Function {
+                capabilities: hew_parser::ast::CallableCapabilities::default(),
                 params: param_tys,
                 ret: Box::new(ret_ty),
             }
@@ -22108,6 +22128,7 @@ impl LowerCtx {
 
     fn make_vec_new_expr(&mut self, vec_ty: ResolvedTy, span: Span) -> HirExpr {
         let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(vec_ty.clone()),
         };
@@ -22188,6 +22209,7 @@ impl LowerCtx {
                 resolved: ResolvedRef::Builtin(family),
             },
             ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                 params: args.iter().map(|arg| arg.ty.clone()).collect(),
                 ret: Box::new(result_ty.clone()),
             },
@@ -23206,6 +23228,7 @@ impl LowerCtx {
         if let Some(symbol) = self.imported_rewrite_symbol(name).map(str::to_string) {
             if let Some(entry) = self.fn_registry.get(&symbol) {
                 let fn_ty = ResolvedTy::Function {
+                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                     params: entry.param_tys.clone(),
                     ret: Box::new(entry.return_ty.clone()),
                 };
@@ -23273,6 +23296,7 @@ impl LowerCtx {
             // Known function item — expose as a function-typed reference so
             // callers can extract the return type from the call expression.
             let fn_ty = ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                 params: entry.param_tys.clone(),
                 ret: Box::new(entry.return_ty.clone()),
             };
@@ -23671,8 +23695,13 @@ impl LowerCtx {
                     self.qualify_current_module_record_ty(*element),
                 ));
             }
-            ResolvedTy::Function { params, ret } => {
+            ResolvedTy::Function {
+                capabilities,
+                params,
+                ret,
+            } => {
                 return ResolvedTy::Function {
+                    capabilities,
                     params: params
                         .into_iter()
                         .map(|param| self.qualify_current_module_record_ty(param))
@@ -23684,8 +23713,10 @@ impl LowerCtx {
                 params,
                 ret,
                 captures,
+                capabilities,
             } => {
                 return ResolvedTy::Closure {
+                    capabilities,
                     params: params
                         .into_iter()
                         .map(|param| self.qualify_current_module_record_ty(param))
@@ -24678,9 +24709,11 @@ impl LowerCtx {
                 ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![self.lower_type(elem)])
             }
             TypeExpr::Function {
+                capabilities,
                 params,
                 return_type,
             } => ResolvedTy::Function {
+                capabilities: *capabilities,
                 params: params.iter().map(|param| self.lower_type(param)).collect(),
                 ret: Box::new(self.lower_type(return_type)),
             },
@@ -25187,6 +25220,7 @@ impl LowerCtx {
                         .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
                 });
         let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
         };
@@ -27852,6 +27886,7 @@ impl LowerCtx {
                     lowered_args.push(self.lower_expr(arg.expr(), intent));
                 }
                 let callee_ty = ResolvedTy::Function {
+                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
                 };
@@ -27952,6 +27987,7 @@ impl LowerCtx {
                                 .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
                         });
                 let callee_ty = ResolvedTy::Function {
+                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
                 };
@@ -28116,6 +28152,7 @@ impl LowerCtx {
                                 lowered_args.push(self.lower_expr(arg.expr(), intent));
                             }
                             let callee_ty = ResolvedTy::Function {
+                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                                 params: Vec::new(),
                                 ret: Box::new(ret_ty.clone()),
                             };
@@ -35995,7 +36032,7 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Bytes => "bytes".to_string(),
         ResolvedTy::Duration => "duration".to_string(),
         ResolvedTy::Unit => "()".to_string(),
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             let params = params
                 .iter()
                 .map(render_elem_ty)

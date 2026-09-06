@@ -151,6 +151,8 @@ pub enum ResolvedTy {
     },
     /// Function type: `fn(T1, T2) -> R`.
     Function {
+        /// Invocation and duplication guarantees of this callable value.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<ResolvedTy>,
         /// Return type
@@ -158,6 +160,8 @@ pub enum ResolvedTy {
     },
     /// Closure type: like `Function` with captured variable types tracked.
     Closure {
+        /// Invocation and duplication guarantees of this concrete closure.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<ResolvedTy>,
         /// Return type
@@ -537,10 +541,12 @@ impl ResolvedTy {
                 Self::Function {
                     params: left_params,
                     ret: left_ret,
+                    ..
                 },
                 Self::Function {
                     params: right_params,
                     ret: right_ret,
+                    ..
                 },
             ) => {
                 left_params.len() == right_params.len()
@@ -693,15 +699,22 @@ impl ResolvedTy {
                 // `false` here is correct and behaviour-preserving.
                 is_opaque: false,
             }),
-            Ty::Function { params, ret } => Ok(ResolvedTy::Function {
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ok(ResolvedTy::Function {
+                capabilities: *capabilities,
                 params: Self::convert_vec(params, type_params)?,
                 ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
             }),
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
             } => Ok(ResolvedTy::Closure {
+                capabilities: *capabilities,
                 params: Self::convert_vec(params, type_params)?,
                 ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
                 captures: Self::convert_vec(captures, type_params)?,
@@ -804,15 +817,22 @@ impl ResolvedTy {
                 builtin: *builtin,
                 args: args.iter().map(Self::to_ty).collect(),
             },
-            ResolvedTy::Function { params, ret } => Ty::Function {
+            ResolvedTy::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
                 params: params.iter().map(Self::to_ty).collect(),
                 ret: Box::new(ret.to_ty()),
             },
             ResolvedTy::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
             } => Ty::Closure {
+                capabilities: *capabilities,
                 params: params.iter().map(Self::to_ty).collect(),
                 ret: Box::new(ret.to_ty()),
                 captures: captures.iter().map(Self::to_ty).collect(),
@@ -1017,7 +1037,7 @@ pub fn mangle_resolved_ty_segment(
             Some(format!("slice$x{elem_seg}$g"))
         }
         ResolvedTy::Named { name, args, .. } => mangle_named_segment(name, args, type_param_mode),
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             mangle_function_like_segment("fn", params, ret, type_param_mode)
         }
         // Captures are not part of the call-type identity — mirrors
@@ -1324,6 +1344,7 @@ mod tests {
     #[test]
     fn from_ty_rejects_nested_error_in_function_return() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Error),
         };
@@ -1374,6 +1395,7 @@ mod tests {
     #[test]
     fn from_ty_accepts_nested_composites() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![
                 Ty::Array(Box::new(Ty::I32), 4),
                 Ty::Slice(Box::new(Ty::Bool)),
@@ -1381,6 +1403,7 @@ mod tests {
             ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::Unit])),
         };
         let expected = ResolvedTy::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![
                 ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
                 ResolvedTy::Slice(Box::new(ResolvedTy::Bool)),
@@ -1396,6 +1419,7 @@ mod tests {
     #[test]
     fn from_ty_accepts_pointer_and_closure() {
         let ty = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Pointer {
                 is_mutable: true,
                 pointee: Box::new(Ty::I32),
@@ -1404,6 +1428,7 @@ mod tests {
             captures: vec![Ty::Bool],
         };
         let expected = ResolvedTy::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::I32),
@@ -1523,6 +1548,7 @@ mod tests {
                 args: vec![Ty::I32],
             },
             Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: vec![Ty::I32],
                 ret: Box::new(Ty::String),
             },

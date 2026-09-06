@@ -603,6 +603,7 @@ mod tests {
         let lambda_body = block_with_stmts(vec![bare_break()]);
         let lambda_expr = sp(Expr::Lambda {
             is_move: false,
+            private_captures: Vec::new(),
             type_params: None,
             params: vec![],
             return_type: None,

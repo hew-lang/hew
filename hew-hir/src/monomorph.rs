@@ -295,14 +295,25 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
         ),
         ResolvedTy::Array(elem, n) => ResolvedTy::Array(shorten_boxed(*elem), n),
         ResolvedTy::Slice(elem) => ResolvedTy::Slice(shorten_boxed(*elem)),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities,
             params: params
                 .into_iter()
                 .map(shorten_named_arg_qualifiers)
                 .collect(),
             ret: shorten_boxed(*ret),
         },
-        ResolvedTy::Closure { params, ret, .. } => ResolvedTy::Closure {
+        ResolvedTy::Closure {
+            capabilities,
+            params,
+            ret,
+            ..
+        } => ResolvedTy::Closure {
+            capabilities,
             params: params
                 .into_iter()
                 .map(shorten_named_arg_qualifiers)
@@ -616,9 +627,11 @@ pub fn substitute_type_params(
             ResolvedTy::Slice(Box::new(substitute_type_params(elem, params, args)))
         }
         ResolvedTy::Function {
+            capabilities,
             params: fn_params,
             ret,
         } => ResolvedTy::Function {
+            capabilities: *capabilities,
             params: fn_params
                 .iter()
                 .map(|p| substitute_type_params(p, params, args))
@@ -626,10 +639,12 @@ pub fn substitute_type_params(
             ret: Box::new(substitute_type_params(ret, params, args)),
         },
         ResolvedTy::Closure {
+            capabilities,
             params: fn_params,
             ret,
             captures,
         } => ResolvedTy::Closure {
+            capabilities: *capabilities,
             params: fn_params
                 .iter()
                 .map(|p| substitute_type_params(p, params, args))
@@ -825,7 +840,7 @@ fn is_nested_subterm(needle: &ResolvedTy, haystack: &ResolvedTy) -> bool {
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             elem.as_ref() == needle || is_nested_subterm(needle, elem)
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             params
                 .iter()
                 .any(|p| p == needle || is_nested_subterm(needle, p))
@@ -836,6 +851,7 @@ fn is_nested_subterm(needle: &ResolvedTy, haystack: &ResolvedTy) -> bool {
             params,
             ret,
             captures,
+            ..
         } => {
             params
                 .iter()
@@ -905,7 +921,7 @@ pub(crate) fn contains_recursive_polymorphic_self(
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             contains_recursive_polymorphic_self(elem, origin_name, current_args)
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             params
                 .iter()
                 .any(|p| contains_recursive_polymorphic_self(p, origin_name, current_args))
@@ -915,6 +931,7 @@ pub(crate) fn contains_recursive_polymorphic_self(
             params,
             ret,
             captures,
+            ..
         } => {
             params
                 .iter()

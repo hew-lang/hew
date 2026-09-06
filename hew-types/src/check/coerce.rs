@@ -819,6 +819,7 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             params.iter().any(|p| type_expr_mentions_self(&p.0))
                 || type_expr_mentions_self(&return_type.0)

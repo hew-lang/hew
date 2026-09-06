@@ -145,10 +145,6 @@ fn literal_promotion_root(subst: &Substitution, start: TypeVar) -> Option<TypeVa
     clippy::too_many_lines,
     reason = "unification covers many Ty variant combinations"
 )]
-#[expect(
-    clippy::unnested_or_patterns,
-    reason = "keeping function/closure patterns visually distinct"
-)]
 #[allow(
     clippy::result_large_err,
     reason = "UnifyError intentionally carries concrete Ty values for diagnostics"
@@ -219,19 +215,9 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             Ty::Function {
                 params: ap,
                 ret: ar,
-            },
-            Ty::Function {
-                params: bp,
-                ret: br,
-            },
-        )
-        | (
-            Ty::Closure {
-                params: ap,
-                ret: ar,
                 ..
             },
-            Ty::Closure {
+            Ty::Function {
                 params: bp,
                 ret: br,
                 ..
@@ -243,15 +229,29 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 ret: ar,
                 ..
             },
+            Ty::Closure {
+                params: bp,
+                ret: br,
+                ..
+            },
+        )
+        | (
+            Ty::Closure {
+                params: ap,
+                ret: ar,
+                ..
+            },
             Ty::Function {
                 params: bp,
                 ret: br,
+                ..
             },
         )
         | (
             Ty::Function {
                 params: ap,
                 ret: ar,
+                ..
             },
             Ty::Closure {
                 params: bp,
@@ -457,10 +457,12 @@ mod tests {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32, Ty::Var(v)],
             ret: Box::new(Ty::Bool),
         };
         let b = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32, Ty::String],
             ret: Box::new(Ty::Bool),
         };
@@ -593,11 +595,13 @@ mod tests {
     fn test_unify_closure_with_function() {
         let mut subst = Substitution::new();
         let closure = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::String],
         };
         let function = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         };
@@ -609,11 +613,13 @@ mod tests {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Var(v)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32],
         };
         let b = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::String],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::F64],
@@ -626,11 +632,13 @@ mod tests {
     fn test_unify_closure_arity_mismatch() {
         let mut subst = Substitution::new();
         let closure = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32, Ty::Bool],
             ret: Box::new(Ty::Unit),
             captures: vec![],
         };
         let function = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Unit),
         };

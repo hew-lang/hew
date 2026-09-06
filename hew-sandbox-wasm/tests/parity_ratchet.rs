@@ -1420,6 +1420,7 @@ fn every_classified_owner_names_a_construct() {
             },
             TypeExpr::Slice(boxed(named())),
             TypeExpr::Function {
+                capabilities: hew_parser::ast::CallableCapabilities::default(),
                 params: vec![(named(), 0..0)],
                 return_type: boxed(named()),
             },
@@ -1768,6 +1769,7 @@ fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'stat
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             for (ty, _) in params {
                 walk_type_expr(ty, owners);

@@ -77,7 +77,12 @@ impl Checker {
                 is_mutable: *is_mutable,
                 pointee: Box::new(Self::lambda_generic_schema_ty(pointee, generic_param_names)),
             },
-            Ty::Function { params, ret } => Ty::Function {
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
@@ -85,10 +90,12 @@ impl Checker {
                 ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
             },
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
             } => Ty::Closure {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
@@ -500,6 +507,7 @@ impl Checker {
                 params,
                 return_type,
                 body,
+                ..
             } => self.check_lambda(
                 *is_move,
                 type_params.as_deref(),
@@ -1834,6 +1842,7 @@ impl Checker {
                 sig.return_type
             } else {
                 Ty::Function {
+                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                     params: sig.params,
                     ret: Box::new(sig.return_type),
                 }
@@ -2079,6 +2088,7 @@ impl Checker {
                         })
                         .collect();
                     Ty::Function {
+                        capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                         params,
                         ret: Box::new(return_type),
                     }
@@ -3321,10 +3331,12 @@ impl Checker {
                     params,
                     return_type,
                     body,
+                    ..
                 },
                 Ty::Function {
                     params: expected_params,
                     ret,
+                    ..
                 },
             ) => {
                 let result = self.check_lambda(
@@ -4394,6 +4406,7 @@ impl Checker {
                     self.instantiate_fn_sig_for_call(&sig, None, span);
 
                 let fresh_fn_ty = Ty::Function {
+                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                     params: freshened_params.clone(),
                     ret: Box::new(freshened_ret.clone()),
                 };
@@ -7045,6 +7058,7 @@ impl Checker {
                         if let Some(sig) = self.fn_sigs.get(&qualified_key) {
                             if sig.type_params.is_empty() {
                                 let ty = Ty::Function {
+                                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                                     params: sig.params.clone(),
                                     ret: Box::new(sig.return_type.clone()),
                                 };
@@ -7832,11 +7846,13 @@ impl Checker {
 
         if captures.is_empty() {
             Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: param_tys,
                 ret: Box::new(ret_ty),
             }
         } else {
             Ty::Closure {
+                capabilities: crate::CallableCapabilities::default(),
                 params: param_tys,
                 ret: Box::new(ret_ty),
                 captures,
@@ -7954,6 +7970,7 @@ impl Checker {
                     .collect();
                 let ret = Ty::normalize_named(qualified_type, args);
                 Ty::Function {
+                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                     params: subst_params,
                     ret: Box::new(ret),
                 }

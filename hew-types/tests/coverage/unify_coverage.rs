@@ -418,10 +418,12 @@ fn unify_named_type_arity_mismatch() {
 fn unify_functions_arity_mismatch() {
     let mut subst = fresh_subst();
     let a = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::Bool],
         ret: Box::new(Ty::Unit),
     };
     let b = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Unit),
     };
@@ -435,10 +437,12 @@ fn unify_functions_arity_mismatch() {
 fn unify_functions_return_type_mismatch() {
     let mut subst = fresh_subst();
     let a = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };
     let b = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::String),
     };
@@ -454,10 +458,12 @@ fn unify_function_with_closure_resolves_var() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let func = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Bool),
     };
     let closure = Ty::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::F32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
@@ -582,6 +588,7 @@ fn unify_option_with_type_var_inner() {
 fn unify_function_with_tuple_fails() {
     let mut subst = fresh_subst();
     let func = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };
@@ -642,10 +649,12 @@ fn multiple_vars_resolved_by_successive_unifications() {
 
     // Unify a function with vars in params and return type.
     let a = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v1), Ty::Var(v2)],
         ret: Box::new(Ty::Var(v3)),
     };
     let b = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::String],
         ret: Box::new(Ty::Bool),
     };

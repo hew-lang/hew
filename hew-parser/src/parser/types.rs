@@ -6,8 +6,58 @@
     reason = "grammar-area submodules share the parent parser namespace via the split"
 )]
 use super::*;
+use crate::ast::{CallableCallMode, CallableCapabilities};
 
 impl Parser<'_> {
+    fn parse_callable_capabilities(&mut self) -> Option<CallableCapabilities> {
+        let mut capabilities = CallableCapabilities::default();
+        if !self.eat(&Token::LeftBracket) {
+            return Some(capabilities);
+        }
+        let mut call_seen = false;
+        loop {
+            let span = self.peek_span();
+            match self.peek() {
+                Some(Token::Var | Token::Identifier("once")) => {
+                    if call_seen {
+                        self.error_at(
+                            "callable type permits only one of `var` and `once`".into(),
+                            span,
+                        );
+                        return None;
+                    }
+                    call_seen = true;
+                    capabilities.call = if self.eat(&Token::Var) {
+                        CallableCallMode::Var
+                    } else {
+                        self.advance();
+                        CallableCallMode::Once
+                    };
+                }
+                Some(Token::Identifier("Clone")) => {
+                    if capabilities.clone {
+                        self.error_at("duplicate callable `Clone` qualifier".into(), span);
+                        return None;
+                    }
+                    self.advance();
+                    capabilities.clone = true;
+                }
+                _ => {
+                    self.error_at(
+                        "expected callable qualifier `var`, `once` or `Clone`".into(),
+                        span,
+                    );
+                    return None;
+                }
+            }
+            if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBracket) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBracket)?;
+        Some(capabilities)
+    }
+
     // ── Types ──
     pub(crate) fn parse_syntactic_path(&mut self) -> Option<Path> {
         let mut segments = vec![self.expect_ident()?];
@@ -221,6 +271,7 @@ impl Parser<'_> {
             }
             Some(Token::Fn) => {
                 self.advance();
+                let capabilities = self.parse_callable_capabilities()?;
                 self.expect(&Token::LeftParen)?;
 
                 let mut params = Vec::new();
@@ -240,6 +291,7 @@ impl Parser<'_> {
                 };
 
                 TypeExpr::Function {
+                    capabilities,
                     params,
                     return_type,
                 }

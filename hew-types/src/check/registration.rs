@@ -9156,15 +9156,22 @@ impl Checker {
                     }
                     Ty::normalize_named(canonical, canonical_args)
                 }
-                Ty::Function { params, ret } => Ty::Function {
+                Ty::Function {
+                    capabilities,
+                    params,
+                    ret,
+                } => Ty::Function {
+                    capabilities: *capabilities,
                     params: params.iter().map(rec).collect(),
                     ret: Box::new(rec(ret)),
                 },
                 Ty::Closure {
+                    capabilities,
                     params,
                     ret,
                     captures,
                 } => Ty::Closure {
+                    capabilities: *capabilities,
                     params: params.iter().map(rec).collect(),
                     ret: Box::new(rec(ret)),
                     captures: captures.iter().map(rec).collect(),

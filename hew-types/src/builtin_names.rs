@@ -445,10 +445,12 @@ impl BuiltinMethodSigTemplate {
     fn instantiate(self, owner: BuiltinNamedType) -> FnSig {
         let item_ty = type_param_ty();
         let item_fn = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![item_ty.clone()],
             ret: Box::new(item_ty.clone()),
         };
         let item_predicate = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![item_ty.clone()],
             ret: Box::new(Ty::Bool),
         };

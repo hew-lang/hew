@@ -1978,10 +1978,11 @@ impl<'a> Formatter<'a> {
                 self.write("]");
             }
             TypeExpr::Function {
+                capabilities,
                 params,
                 return_type,
             } => {
-                self.write("fn(");
+                self.write(&format!("fn{capabilities}("));
                 self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
                 self.write(")");
                 if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
@@ -3156,6 +3157,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Lambda {
                 is_move,
+                private_captures,
                 type_params,
                 params,
                 return_type,
@@ -3163,6 +3165,14 @@ impl<'a> Formatter<'a> {
             } => {
                 if *is_move {
                     self.write("move ");
+                }
+                if !private_captures.is_empty() {
+                    self.write("[");
+                    self.comma_sep(private_captures, |f, (name, _)| {
+                        f.write("var ");
+                        f.write(name);
+                    });
+                    self.write("] ");
                 }
                 if type_params.is_some() {
                     self.format_opt_type_params(type_params.as_ref());

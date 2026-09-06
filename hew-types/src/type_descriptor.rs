@@ -87,7 +87,7 @@ impl ResolvedTy {
                 let arg_strs: Vec<String> = args.iter().map(Self::canonical_string).collect();
                 format!("{}<{}>", name, arg_strs.join(","))
             }
-            ResolvedTy::Function { params, ret } => {
+            ResolvedTy::Function { params, ret, .. } => {
                 let param_strs: Vec<String> = params.iter().map(Self::canonical_string).collect();
                 format!("fn({})->{}", param_strs.join(","), ret.canonical_string())
             }
@@ -95,6 +95,7 @@ impl ResolvedTy {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 let param_strs: Vec<String> = params.iter().map(Self::canonical_string).collect();
                 let cap_strs: Vec<String> = captures.iter().map(Self::canonical_string).collect();

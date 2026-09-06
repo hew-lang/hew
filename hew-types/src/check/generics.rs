@@ -101,7 +101,12 @@ impl Checker {
                     })
                     .collect(),
             },
-            Ty::Function { params, ret } => Ty::Function {
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|p| self.freshen_inner(p, mapping))
@@ -109,10 +114,12 @@ impl Checker {
                 ret: Box::new(self.freshen_inner(ret, mapping)),
             },
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
             } => Ty::Closure {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|p| self.freshen_inner(p, mapping))

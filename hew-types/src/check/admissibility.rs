@@ -329,7 +329,12 @@ fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
             *size,
         ),
         Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_type(elem))),
-        Ty::Function { params, ret } => Ty::Function {
+        Ty::Function {
+            capabilities,
+            params,
+            ret,
+        } => Ty::Function {
+            capabilities: *capabilities,
             params: params
                 .iter()
                 .map(normalize_synthetic_channel_handle_type)
@@ -337,10 +342,12 @@ fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
             ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
         },
         Ty::Closure {
+            capabilities,
             params,
             ret,
             captures,
         } => Ty::Closure {
+            capabilities: *capabilities,
             params: params
                 .iter()
                 .map(normalize_synthetic_channel_handle_type)
@@ -1881,7 +1888,7 @@ impl Checker {
             Ty::Array(elem, _) | Ty::Slice(elem) => {
                 self.validate_concrete_collection_type(elem, span, collection)
             }
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 params
                     .iter()
                     .all(|param| self.validate_concrete_collection_type(param, span, collection))
@@ -1891,6 +1898,7 @@ impl Checker {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 params
                     .iter()
@@ -2110,6 +2118,7 @@ mod tests {
     #[test]
     fn ty_contains_error_recurses_through_named_and_closure_types() {
         let ty = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::normalize_named(
                 "Result".to_string(),
                 vec![Ty::I32, Ty::Tuple(vec![Ty::Error])],
@@ -2125,6 +2134,7 @@ mod tests {
     fn signature_contains_error_type_flags_error_anywhere_in_signature() {
         let params = vec![Ty::I32];
         let ret = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Tuple(vec![Ty::Error])],
             ret: Box::new(Ty::Bool),
         };

@@ -606,10 +606,12 @@ mod tests {
         // boundary as a heap-boxed pair handle, riding the pointer
         // convention (no 16-byte width class, no `_layout` witness entry).
         let fn_ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
         };
         let closure_ty = Ty::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(Ty::Unit),
             captures: vec![],

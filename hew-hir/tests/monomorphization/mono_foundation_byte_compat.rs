@@ -53,6 +53,7 @@ fn sample_resolved_tys() -> Vec<Vec<ResolvedTy>> {
             pointee: Box::new(ResolvedTy::F64),
         }],
         vec![ResolvedTy::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![ResolvedTy::I32, ResolvedTy::I32],
             ret: Box::new(ResolvedTy::Bool),
         }],

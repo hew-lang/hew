@@ -275,6 +275,7 @@ fn value_capabilities_refuse_unresolved_method_binders_independently() {
     );
     assert!(service.require(&key).is_err());
     let abstract_fn = ResolvedTy::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![ResolvedTy::TypeParam { name: "U".into() }],
         ret: Box::new(ResolvedTy::Unit),
     };
@@ -471,6 +472,7 @@ fn selected_value_methods_require_impl_and_method_where_obligations() {
     ",
     );
     let non_hash = ResolvedTy::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(ResolvedTy::I64),
     };

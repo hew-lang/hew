@@ -11,33 +11,33 @@ fn open(path: string) -> Stream<string> {
 }
 
 fn early_return() -> i64 {
-    let input = open("resource-return.txt");
+    let input = open("resource-return.bin");
     if true { return 7; }
     input.close();
     0
 }
 
 fn main() -> i64 {
-    match fs.read("resource-read.txt") {
+    match fs.read("resource-read.bin") {
         .Ok(contents) => println(contents),
         .Err(_) => return 1,
     }
-    let collected = open("resource-collect.txt");
+    let collected = open("resource-collect.bin");
     println(collected.collect());
-    let closed = open("resource-close.txt");
+    let closed = open("resource-close.bin");
     closed.close();
     {
-        let _scoped = open("resource-scope.txt");
+        let _scoped = open("resource-scope.bin");
     }
     println(early_return());
     {
-        let _record = Reader { input: open("resource-record.txt"), label: "record".to_upper() };
+        let _record = Reader { input: open("resource-record.bin"), label: "record".to_upper() };
     }
     {
-        let input = open("resource-capture-drop.txt");
+        let input = open("resource-capture-drop.bin");
         let _uncalled: fn[once]() -> string = move || input.collect();
     }
-    let input = open("resource-capture-call.txt");
+    let input = open("resource-capture-call.bin");
     let once: fn[once]() -> string = move || input.collect();
     println(once());
     println("released");

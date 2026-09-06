@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ownership::TypeFactTable;
-use crate::OpId;
 use crate::{
     AggregateShapeId, AggregateShapeRef, BindingTarget, BlockId, CallableId, CallableInstance,
     GenericTemplateId, SemAggregateShape, SemCallConv, SemCallable, SemCallableKind, SemFunction,
     SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
     SemVariantShape, SirInstanceKey, UseSite, ValueId, VariantShapeId,
 };
+use crate::{OpId, OwnKind};
 use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
 
@@ -698,6 +698,15 @@ pub(crate) fn verify_function_with_context(
 ) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
+    if let Err(reason) = verify_capture_places(function, callable_context) {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidCallable {
+                callable: function.callable,
+                reason,
+            },
+        ));
+    }
     let mut blocks = BTreeMap::new();
     for (index, block) in function.blocks.iter().enumerate() {
         let expected = BlockId(
@@ -862,6 +871,14 @@ pub(crate) fn verify_function_with_context(
                 callable_context,
                 &mut diagnostics,
             );
+            if let Some(result) =
+                verify_capture_operation(function, op, &types, facts, callable_context)
+            {
+                if let Err(reason) = result {
+                    invalid_operation(function, op.id, reason, &mut diagnostics);
+                }
+                continue;
+            }
             verify_operation_shape(
                 function,
                 op,
@@ -1468,6 +1485,280 @@ fn verify_function_callable_identity(
                     .to_string(),
             },
         ));
+    }
+}
+
+fn closure_for_body<'a>(
+    function: &SemFunction,
+    context: Option<&CallableContext<'a>>,
+) -> Result<&'a crate::SemClosure, String> {
+    context
+        .and_then(|context| {
+            context
+                .closures
+                .iter()
+                .find(|closure| closure.body == function.callable)
+        })
+        .ok_or_else(|| "capture access has no concrete closure body descriptor".to_string())
+}
+
+fn verify_capture_places(
+    function: &SemFunction,
+    context: Option<&CallableContext<'_>>,
+) -> Result<(), String> {
+    let closure = closure_for_body(function, context);
+    if function.places.is_empty()
+        && closure
+            .as_ref()
+            .map_or(true, |closure| closure.fields.is_empty())
+    {
+        return Ok(());
+    }
+    let closure = closure?;
+    let receiver = function
+        .params
+        .first()
+        .ok_or_else(|| "capture places have no environment receiver".to_string())?;
+    if receiver.ty != closure.ty || function.places.len() != closure.fields.len() {
+        return Err("capture places differ from the complete environment descriptor".to_string());
+    }
+    for (index, (place, field)) in function.places.iter().zip(&closure.fields).enumerate() {
+        let index = u32::try_from(index).map_err(|_| "capture index exceeds u32".to_string())?;
+        if place.id != crate::PlaceId(index)
+            || place.ty != field.ty
+            || place.origin
+                != (crate::PlaceOrigin::Capture {
+                    environment: receiver.value,
+                    field: index,
+                })
+        {
+            return Err(
+                "capture place identity, type or receiver differs from its descriptor".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn verify_capture_operation(
+    function: &SemFunction,
+    operation: &SemOp,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    context: Option<&CallableContext<'_>>,
+) -> Option<Result<(), String>> {
+    let (place, stored, borrowed, takes) = match &operation.kind {
+        SemOpKind::LoadCopy { place } => (*place, None, None, false),
+        SemOpKind::LoadTake { place } => (*place, None, None, true),
+        SemOpKind::LoadBorrow { place, environment } => (*place, None, Some(environment), false),
+        SemOpKind::StoreAssign { place, value } => (*place, Some(value), None, false),
+        _ => return None,
+    };
+    Some((|| {
+        let closure = closure_for_body(function, context)?;
+        let decl = function
+            .places
+            .iter()
+            .find(|decl| decl.id == place)
+            .ok_or_else(|| "capture operation names an unknown place".to_string())?;
+        let crate::PlaceOrigin::Capture { environment, field } = decl.origin else {
+            return Err("capture operation requires an environment-owned place".to_string());
+        };
+        let field = closure
+            .fields
+            .get(field as usize)
+            .ok_or_else(|| "capture operation names an unknown environment field".to_string())?;
+        let (_, _, capabilities) = crate::callable_parts(&closure.ty)?;
+        if let Some(value) = stored {
+            if field.access != hew_types::ClosureCaptureAccess::Var
+                || capabilities.call == hew_types::CallableCallMode::Read
+            {
+                return Err("capture assignment requires private mutable access".to_string());
+            }
+            if !operation.results.is_empty() || types.get(&value.value) != Some(&decl.ty) {
+                return Err(
+                    "capture assignment must consume one exact field value with no result"
+                        .to_string(),
+                );
+            }
+            return Ok(());
+        }
+        let [result] = operation.results.as_slice() else {
+            return Err("capture load must produce exactly one field value".to_string());
+        };
+        if result.ty != decl.ty {
+            return Err("capture load changes its field type".to_string());
+        }
+        if let Some(parent) = borrowed {
+            if parent.value != environment || OwnKind::of_ty(&decl.ty, facts) != Ok(OwnKind::Owned)
+            {
+                return Err(
+                    "capture loan requires its exact environment and an owning field".to_string(),
+                );
+            }
+        } else if takes {
+            if capabilities.call != hew_types::CallableCallMode::Once
+                || field.consumption != hew_types::ClosureCaptureConsumption::Consumed
+            {
+                return Err(
+                    "taking a capture requires a consuming field in a call-once body".to_string(),
+                );
+            }
+        } else if facts
+            .get(&hew_types::TypeInstanceKey(decl.ty.clone()))
+            .is_none_or(|row| row.clone == hew_types::CloneKind::None)
+        {
+            return Err("capture field has no copy operation".to_string());
+        }
+        Ok(())
+    })())
+}
+
+fn callable_mutation_permitted(
+    function: &SemFunction,
+    value: ValueId,
+    context: Option<&CallableContext<'_>>,
+) -> bool {
+    if let Some((index, _)) = function
+        .params
+        .iter()
+        .enumerate()
+        .find(|(_, param)| param.value == value)
+    {
+        return context
+            .and_then(|context| context.param_passing(function.callable, index))
+            .is_some_and(|passing| {
+                matches!(
+                    passing,
+                    SemParamPassing::BorrowMut | SemParamPassing::Consume
+                )
+            });
+    }
+    if function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.args)
+        .any(|arg| arg.value == value)
+    {
+        return true;
+    }
+    let Some(operation) = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find(|operation| operation.results.iter().any(|result| result.id == value))
+    else {
+        // Call results are fresh owned values on their normal continuation.
+        return function.blocks.iter().any(|block| {
+            let mut found = false;
+            block.terminator.visit_results(|result| {
+                found |= result.id == value && result.own == OwnKind::Owned;
+            });
+            found
+        });
+    };
+    if let SemOpKind::LoadBorrow { place, .. } = operation.kind {
+        return closure_for_body(function, context)
+            .ok()
+            .is_some_and(|closure| {
+                function
+                    .places
+                    .iter()
+                    .find(|decl| decl.id == place)
+                    .is_some_and(|decl| {
+                        let crate::PlaceOrigin::Capture { field, .. } = decl.origin else {
+                            return false;
+                        };
+                        closure.fields.get(field as usize).is_some_and(|field| {
+                            field.access == hew_types::ClosureCaptureAccess::Var
+                        }) && crate::callable_parts(&closure.ty).is_ok_and(|(_, _, caps)| {
+                            caps.call != hew_types::CallableCallMode::Read
+                        })
+                    })
+            });
+    }
+    operation
+        .results
+        .iter()
+        .any(|result| result.id == value && result.own == OwnKind::Owned)
+}
+
+fn verify_indirect_call(
+    function: &SemFunction,
+    terminator: &SemTerminator,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    context: Option<&CallableContext<'_>>,
+) -> Result<(), String> {
+    let SemTerminator::IndirectCall {
+        callee,
+        signature,
+        args,
+        result,
+        unwind,
+        ..
+    } = terminator
+    else {
+        unreachable!()
+    };
+    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+    {
+        return Err(
+            "indirect call requires cleanup that propagates the original fault".to_string(),
+        );
+    }
+    let ty = types
+        .get(&callee.operand.value)
+        .ok_or_else(|| "indirect call has no typed receiver".to_string())?;
+    let (_, _, capabilities) = crate::callable_parts(ty)?;
+    if OwnKind::of_ty(ty, facts) != Ok(OwnKind::Owned)
+        || signature != &crate::callable_value_signature(ty, facts)?
+    {
+        return Err("indirect call differs from its exact callable type and signature".to_string());
+    }
+    let decision = match capabilities.call {
+        hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,
+        hew_types::CallableCallMode::Var => crate::BoundaryDecision::BorrowMut,
+        hew_types::CallableCallMode::Once => crate::BoundaryDecision::Move,
+    };
+    if callee.decision != decision {
+        return Err(
+            "indirect receiver transfer differs from its invocation capability".to_string(),
+        );
+    }
+    if capabilities.call == hew_types::CallableCallMode::Var
+        && !callable_mutation_permitted(function, callee.operand.value, context)
+    {
+        return Err(
+            "mutable invocation requires an owned receiver or a proved private mutable loan"
+                .to_string(),
+        );
+    }
+    if args.len() != signature.params.len() {
+        return Err("indirect call argument count differs from its signature".to_string());
+    }
+    for (arg, param) in args.iter().zip(&signature.params) {
+        let expected = match param.passing {
+            SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
+            SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            SemParamPassing::Consume => crate::BoundaryDecision::Move,
+        };
+        if arg.decision != expected || types.get(&arg.operand.value) != Some(&param.ty) {
+            return Err(
+                "indirect call argument type or transfer differs from its signature".to_string(),
+            );
+        }
+    }
+    match result {
+        crate::CallResult::Value(value)
+            if value.ty == signature.return_ty && value.ty != ResolvedTy::Unit =>
+        {
+            Ok(())
+        }
+        crate::CallResult::Unit if signature.return_ty == ResolvedTy::Unit => Ok(()),
+        _ => Err("indirect call result differs from its signature".to_string()),
     }
 }
 
@@ -3048,12 +3339,18 @@ fn verify_terminator_shape(
             blocks,
             diagnostics,
         ),
-        SemTerminator::IndirectCall { id, .. } => invalid_operation(
-            function,
-            *id,
-            "indirect calls require verified callable capability and receiver contracts".into(),
-            diagnostics,
-        ),
+        call @ SemTerminator::IndirectCall { id, .. } => {
+            if let Err(reason) = verify_indirect_call(
+                function,
+                call,
+                types,
+                variants.facts,
+                blocks,
+                callable_context,
+            ) {
+                invalid_operation(function, *id, reason, diagnostics);
+            }
+        }
         call @ SemTerminator::ValueCall { .. } => {
             verify_value_call_terminator(function, call, types, blocks, diagnostics);
         }

@@ -390,4 +390,249 @@ mod tests {
         }
         assert!(verify_callable_coercion(&source, &wrong_result, service.rows()).is_err());
     }
+    fn counter_body(module: &SemModule) -> crate::SemFunction {
+        use crate::{
+            BlockArg, BlockId, BoundaryDecision, BoundaryOperand, Operand, PlaceDecl, PlaceId,
+            PlaceOrigin, SemBlock, SemOp, SemOpKind, SemTerminator, ValueDef, ValueId,
+        };
+        let callable = &module.callables[1];
+        let operation = |id, kind, results| SemOp {
+            id: crate::OpId(id),
+            kind,
+            results,
+            provenance: crate::Provenance::Synthesized,
+        };
+        crate::SemFunction {
+            id: callable.function,
+            callable: callable.id,
+            declaration: callable.declaration.clone(),
+            name: callable.symbol.clone(),
+            source_origin: callable.source_origin.clone(),
+            span: 0..0,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty: module.closures[0].ty.clone(),
+                own: OwnKind::Guaranteed,
+            }],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            bindings: vec![],
+            places: vec![PlaceDecl {
+                id: PlaceId(0),
+                ty: ResolvedTy::I64,
+                origin: PlaceOrigin::Capture {
+                    environment: ValueId(0),
+                    field: 0,
+                },
+            }],
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: vec![],
+                ops: vec![
+                    operation(
+                        0,
+                        SemOpKind::LoadCopy { place: PlaceId(0) },
+                        vec![ValueDef {
+                            id: ValueId(1),
+                            ty: ResolvedTy::I64,
+                            own: OwnKind::None,
+                        }],
+                    ),
+                    operation(
+                        1,
+                        SemOpKind::StoreAssign {
+                            place: PlaceId(0),
+                            value: Operand { value: ValueId(1) },
+                        },
+                        vec![],
+                    ),
+                ],
+                terminator: SemTerminator::Return {
+                    value: Some(BoundaryOperand {
+                        operand: Operand { value: ValueId(1) },
+                        decision: BoundaryDecision::Copy,
+                    }),
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn private_capture_body_verifies_and_refuses_forged_access() {
+        let mut module = private_counter();
+        module.functions.push(counter_body(&module));
+        assert!(
+            crate::verify_module(&module).is_empty(),
+            "{:?}",
+            crate::verify_module(&module)
+        );
+        let mut wrong_owner = module.clone();
+        wrong_owner.functions[0].places[0].origin = crate::PlaceOrigin::Capture {
+            environment: crate::ValueId(1),
+            field: 0,
+        };
+        assert!(!crate::verify_module(&wrong_owner).is_empty());
+        let mut immutable = module.clone();
+        immutable.closures[0].fields[0].access = ClosureCaptureAccess::Read;
+        assert!(crate::verify_module(&immutable)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}").contains("private mutable access")));
+        let mut taken = module;
+        taken.functions[0].blocks[0].ops[0].kind = crate::SemOpKind::LoadTake {
+            place: crate::PlaceId(0),
+        };
+        assert!(crate::verify_module(&taken)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}").contains("call-once body")));
+    }
+
+    fn drop_callable(id: u32, value: u32) -> crate::SemOp {
+        crate::SemOp {
+            id: crate::OpId(id),
+            kind: crate::SemOpKind::DestroyValue {
+                value: crate::Operand {
+                    value: crate::ValueId(value),
+                },
+            },
+            results: vec![],
+            provenance: crate::Provenance::Synthesized,
+        }
+    }
+
+    fn indirect_counter_module() -> SemModule {
+        use crate::{
+            BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, Edge,
+            Operand, SemBlock, SemFunction, SemTerminator, ValueDef, ValueId,
+        };
+        let mut module = private_counter();
+        let callee_ty = module.closures[0].ty.clone();
+        let signature = callable_value_signature(&callee_ty, &module.type_facts).unwrap();
+        module.callables[0].signature.return_ty = ResolvedTy::I64;
+        module.functions.push(SemFunction {
+            id: module.callables[0].function,
+            callable: CallableId(0),
+            declaration: module.callables[0].declaration.clone(),
+            name: "counter".into(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            places: vec![],
+            bindings: vec![],
+            blocks: vec![
+                SemBlock {
+                    id: BlockId(0),
+                    args: vec![],
+                    ops: vec![
+                        crate::SemOp {
+                            id: crate::OpId(0),
+                            kind: crate::SemOpKind::ConstI64(10),
+                            results: vec![ValueDef {
+                                id: ValueId(0),
+                                ty: ResolvedTy::I64,
+                                own: OwnKind::None,
+                            }],
+                            provenance: crate::Provenance::Synthesized,
+                        },
+                        crate::SemOp {
+                            id: crate::OpId(1),
+                            kind: crate::SemOpKind::ClosureMake {
+                                closure: ClosureId(0),
+                                fields: vec![Operand { value: ValueId(0) }],
+                            },
+                            results: vec![ValueDef {
+                                id: ValueId(1),
+                                ty: callee_ty,
+                                own: OwnKind::Owned,
+                            }],
+                            provenance: crate::Provenance::Synthesized,
+                        },
+                    ],
+                    terminator: SemTerminator::IndirectCall {
+                        id: crate::OpId(2),
+                        callee: BoundaryOperand {
+                            operand: Operand { value: ValueId(1) },
+                            decision: BoundaryDecision::BorrowMut,
+                        },
+                        signature,
+                        args: vec![],
+                        result: CallResult::Value(ValueDef {
+                            id: ValueId(2),
+                            ty: ResolvedTy::I64,
+                            own: OwnKind::None,
+                        }),
+                        normal: Edge {
+                            target: BlockId(1),
+                            args: vec![Operand { value: ValueId(2) }],
+                        },
+                        unwind: CallUnwind::Cleanup(Edge {
+                            target: BlockId(2),
+                            args: vec![],
+                        }),
+                    },
+                },
+                SemBlock {
+                    id: BlockId(1),
+                    args: vec![BlockArg {
+                        value: ValueId(3),
+                        ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                    }],
+                    ops: vec![drop_callable(3, 1)],
+                    terminator: SemTerminator::Return {
+                        value: Some(BoundaryOperand {
+                            operand: Operand { value: ValueId(3) },
+                            decision: BoundaryDecision::Copy,
+                        }),
+                    },
+                },
+                SemBlock {
+                    id: BlockId(2),
+                    args: vec![],
+                    ops: vec![drop_callable(4, 1)],
+                    terminator: SemTerminator::ResumeUnwind,
+                },
+            ],
+        });
+        module
+    }
+
+    #[test]
+    fn indirect_call_checks_signature_and_receiver_permission() {
+        use crate::{BoundaryDecision, CallUnwind, SemTerminator};
+        let mut module = indirect_counter_module();
+        assert!(
+            crate::verify_module(&module).is_empty(),
+            "{:?}",
+            crate::verify_module(&module)
+        );
+        let mut missing_fault = module.clone();
+        if let SemTerminator::IndirectCall { unwind, .. } =
+            &mut missing_fault.functions[0].blocks[0].terminator
+        {
+            *unwind = CallUnwind::NotApplicable;
+        }
+        assert!(crate::verify_module(&missing_fault)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}").contains("propagates the original fault")));
+        let mut wrong_receiver = module.clone();
+        if let SemTerminator::IndirectCall { callee, .. } =
+            &mut wrong_receiver.functions[0].blocks[0].terminator
+        {
+            callee.decision = BoundaryDecision::Borrow;
+        }
+        assert!(crate::verify_module(&wrong_receiver)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}").contains("invocation capability")));
+        if let SemTerminator::IndirectCall { signature, .. } =
+            &mut module.functions[0].blocks[0].terminator
+        {
+            signature.return_ty = ResolvedTy::Bool;
+        }
+        assert!(crate::verify_module(&module)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}")
+                .contains("exact callable type and signature")));
+    }
 }

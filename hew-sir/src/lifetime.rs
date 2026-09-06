@@ -2,7 +2,7 @@
 //!
 //! Guaranteed inputs can be read or explicitly copied, never consumed or
 //! escaped. Local loans keep their immediate owner or parent loan live until
-//! they end. Place initialization remains outside this value-based relation.
+//! they end. Capture initialization follows the same paths as its environment.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -28,6 +28,7 @@ const LIVE: u8 = 2;
 struct State {
     values: Vec<u8>,
     fault: u8,
+    places: Vec<u8>,
 }
 
 pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
@@ -38,6 +39,7 @@ pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
     let mut initial = State {
         values: vec![DEAD; flow.values.len()],
         fault: DEAD,
+        places: vec![LIVE; flow.places.len()],
     };
     for param in &function.params {
         if let Some(&index) = flow.indices.get(&param.value) {
@@ -55,6 +57,11 @@ pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
                 let mut changed = joined_fault != previous.fault;
                 previous.fault = joined_fault;
                 for (before, after) in previous.values.iter_mut().zip(state.values) {
+                    let joined = *before | after;
+                    changed |= joined != *before;
+                    *before = joined;
+                }
+                for (before, after) in previous.places.iter_mut().zip(state.places) {
                     let joined = *before | after;
                     changed |= joined != *before;
                     *before = joined;
@@ -84,6 +91,8 @@ struct Flow<'a> {
     guaranteed: BTreeSet<ValueId>,
     local_borrows: BTreeSet<ValueId>,
     borrowers: BTreeMap<ValueId, Vec<ValueId>>,
+    parents: BTreeMap<ValueId, ValueId>,
+    places: Vec<(crate::PlaceId, ValueId)>,
 }
 
 impl<'a> Flow<'a> {
@@ -113,11 +122,13 @@ impl<'a> Flow<'a> {
                 .terminator
                 .visit_results(|value| record(value.id, value.own));
         }
+        let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
         let mut borrowers = BTreeMap::<_, Vec<_>>::new();
         for op in function.blocks.iter().flat_map(|block| &block.ops) {
             if let Some(parent) = op.kind.borrow_parent() {
                 for result in &op.results {
+                    parents.insert(result.id, parent.value);
                     local_borrows.insert(result.id);
                     borrowers.entry(parent.value).or_default().push(result.id);
                 }
@@ -141,6 +152,18 @@ impl<'a> Flow<'a> {
             guaranteed,
             local_borrows,
             borrowers,
+            parents,
+            places: function
+                .places
+                .iter()
+                .filter_map(|place| {
+                    if let crate::PlaceOrigin::Capture { environment, .. } = place.origin {
+                        Some((place.id, environment))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -177,6 +200,11 @@ impl<'a> Flow<'a> {
         if consume {
             self.require_no_live_borrows(block, value, state, emit);
             state.values[index] = DEAD;
+            for (index, (_, owner)) in self.places.iter().enumerate() {
+                if *owner == value {
+                    state.places[index] = DEAD;
+                }
+            }
         }
     }
 
@@ -255,6 +283,7 @@ impl<'a> Flow<'a> {
         // All sources transfer first: a loop edge can pass its own block
         // argument back to itself or permute several owning arguments.
         for argument in &edge.args {
+            self.require_complete_environment(from, argument.value, &state, emit);
             self.access(from, argument.value, true, &mut state, emit);
         }
         for argument in &target.args {
@@ -270,19 +299,7 @@ impl<'a> Flow<'a> {
         emit: &mut impl FnMut(Violation),
     ) -> Vec<(BlockId, State)> {
         let block = self.blocks[&id];
-        for op in &block.ops {
-            if let SemOpKind::EndBorrow { borrow } = &op.kind {
-                self.end_borrow(id, borrow.value, &mut state, emit);
-                continue;
-            }
-            let consumes = operation_consumes_operands(&op.kind);
-            op.visit_operands(|_, operand| {
-                self.access(id, operand.value, consumes, &mut state, emit);
-            });
-            for result in &op.results {
-                self.define(id, result.id, &mut state, emit);
-            }
-        }
+        self.operations(id, &block.ops, &mut state, emit);
         self.boundary_inputs(id, &block.terminator, &mut state, emit);
         let mut successors = Vec::new();
         match &block.terminator {
@@ -369,6 +386,128 @@ impl<'a> Flow<'a> {
         successors
     }
 
+    fn operations(
+        &self,
+        id: BlockId,
+        operations: &[crate::SemOp],
+        state: &mut State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        for op in operations {
+            if let SemOpKind::EndBorrow { borrow } = &op.kind {
+                self.end_borrow(id, borrow.value, state, emit);
+                continue;
+            }
+            self.capture_operation(id, &op.kind, state, emit);
+            let consumes = operation_consumes_operands(&op.kind);
+            op.visit_operands(|_, operand| {
+                if !matches!(op.kind, SemOpKind::DestroyValue { .. }) {
+                    self.require_complete_environment(id, operand.value, state, emit);
+                }
+                self.access(id, operand.value, consumes, state, emit);
+            });
+            for result in &op.results {
+                self.define(id, result.id, state, emit);
+            }
+        }
+    }
+
+    fn require_complete_environment(
+        &self,
+        block: BlockId,
+        value: ValueId,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if self
+            .places
+            .iter()
+            .enumerate()
+            .any(|(index, (_, owner))| *owner == value && state.places[index] != LIVE)
+        {
+            emit(Violation {
+                block,
+                value: Some(value),
+                reason: "partially consumed environment cannot be copied, invoked or transferred",
+            });
+        }
+    }
+
+    fn capture_operation(
+        &self,
+        block: BlockId,
+        kind: &SemOpKind,
+        state: &mut State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        let (place, changes) = match kind {
+            SemOpKind::LoadCopy { place } | SemOpKind::LoadBorrow { place, .. } => (*place, false),
+            SemOpKind::LoadTake { place } | SemOpKind::StoreAssign { place, .. } => (*place, true),
+            _ => return,
+        };
+        let Some((index, (_, owner))) = self
+            .places
+            .iter()
+            .enumerate()
+            .find(|(_, (id, _))| *id == place)
+        else {
+            return;
+        };
+        self.access(block, *owner, false, state, emit);
+        if state.places[index] != LIVE {
+            emit(Violation {
+                block,
+                value: Some(*owner),
+                reason: "capture field is not initialized on every incoming path",
+            });
+        }
+        if changes {
+            self.require_no_live_borrows(block, *owner, state, emit);
+        }
+        if matches!(kind, SemOpKind::LoadTake { .. }) {
+            state.places[index] = DEAD;
+        }
+    }
+
+    fn borrow_root(&self, mut value: ValueId) -> ValueId {
+        let mut seen = BTreeSet::new();
+        while seen.insert(value) {
+            let Some(parent) = self.parents.get(&value) else {
+                break;
+            };
+            value = *parent;
+        }
+        value
+    }
+
+    fn require_exclusive(
+        &self,
+        block: BlockId,
+        mut value: ValueId,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        self.require_no_live_borrows(block, value, state, emit);
+        let mut seen = BTreeSet::new();
+        while seen.insert(value) {
+            let Some(&parent) = self.parents.get(&value) else {
+                break;
+            };
+            if self.borrowers.get(&parent).is_some_and(|borrows| {
+                borrows.iter().any(|borrow| {
+                    *borrow != value && state.values[self.indices[borrow]] & LIVE != 0
+                })
+            }) {
+                emit(Violation {
+                    block,
+                    value: Some(value),
+                    reason: "exclusive receiver has another live loan of its owner",
+                });
+            }
+            value = parent;
+        }
+    }
+
     fn require_fault(
         block: BlockId,
         expected: u8,
@@ -442,8 +581,29 @@ impl<'a> Flow<'a> {
         state: &mut State,
         emit: &mut impl FnMut(Violation),
     ) {
+        let mut roots = BTreeMap::<_, bool>::new();
         terminator.visit_boundary_operands(|_, operand| {
             let value = operand.operand.value;
+            self.require_complete_environment(id, value, state, emit);
+            let exclusive = operand.decision == BoundaryDecision::BorrowMut;
+            if exclusive {
+                self.require_exclusive(id, value, state, emit);
+            }
+            let root = self.borrow_root(value);
+            if roots
+                .get(&root)
+                .is_some_and(|previous| *previous || exclusive)
+            {
+                emit(Violation {
+                    block: id,
+                    value: Some(value),
+                    reason: "exclusive receiver aliases another call operand",
+                });
+            }
+            roots
+                .entry(root)
+                .and_modify(|previous| *previous |= exclusive)
+                .or_insert(exclusive);
             if self.guaranteed.contains(&value) {
                 // The call contract must separately prove a synchronous,
                 // non-retaining borrow. Other boundaries require an explicit
@@ -1133,5 +1293,144 @@ mod tests {
         f.blocks[1].terminator = SemTerminator::Goto(edge(2, &[]));
         assert!(verify(&f).iter().any(|v| v.block == BlockId(2)
             && v.reason == "fault propagation requires an active fault on every incoming path"));
+    }
+    fn captured_field(function: &mut SemFunction) {
+        function.places.push(crate::PlaceDecl {
+            id: crate::PlaceId(0),
+            ty: ResolvedTy::String,
+            origin: crate::PlaceOrigin::Capture {
+                environment: ValueId(0),
+                field: 0,
+            },
+        });
+    }
+
+    fn take_capture(id: u32, value: u32) -> SemOp {
+        op(
+            id,
+            SemOpKind::LoadTake {
+                place: crate::PlaceId(0),
+            },
+            vec![owned(value)],
+        )
+    }
+
+    #[test]
+    fn consuming_a_capture_on_one_branch_still_allows_environment_cleanup() {
+        let mut f = function(vec![
+            block(
+                0,
+                vec![],
+                SemTerminator::Branch {
+                    condition: operand(99),
+                    then_target: edge(1, &[]),
+                    else_target: edge(2, &[]),
+                },
+            ),
+            block(
+                1,
+                vec![take_capture(0, 1), destroy(1, 1)],
+                SemTerminator::Goto(edge(3, &[])),
+            ),
+            block(2, vec![], SemTerminator::Goto(edge(3, &[]))),
+            block(3, vec![destroy(2, 0)], done()),
+        ]);
+        captured_field(&mut f);
+        assert!(verify(&f).is_empty(), "{:?}", verify(&f));
+        let mut read_after_join = f.clone();
+        read_after_join.blocks[3].ops.insert(0, take_capture(3, 2));
+        read_after_join.blocks[3].ops.push(destroy(4, 2));
+        assert!(verify(&read_after_join)
+            .iter()
+            .any(|v| v.reason == "capture field is not initialized on every incoming path"));
+        let mut copy_after_join = f;
+        copy_after_join.blocks[3].ops.insert(
+            0,
+            op(
+                3,
+                SemOpKind::CopyValue { source: operand(0) },
+                vec![owned(2)],
+            ),
+        );
+        copy_after_join.blocks[3].ops.push(destroy(4, 2));
+        assert!(verify(&copy_after_join).iter().any(|v| v.reason
+            == "partially consumed environment cannot be copied, invoked or transferred"));
+    }
+
+    #[test]
+    fn captured_loan_protects_its_field_until_it_ends() {
+        let loan = op(
+            0,
+            SemOpKind::LoadBorrow {
+                place: crate::PlaceId(0),
+                environment: operand(0),
+            },
+            vec![ValueDef {
+                own: OwnKind::Guaranteed,
+                ..owned(1)
+            }],
+        );
+        let mut f = function(vec![block(
+            0,
+            vec![
+                loan,
+                end_borrow(1, 1),
+                take_capture(2, 2),
+                destroy(3, 2),
+                destroy(4, 0),
+            ],
+            done(),
+        )]);
+        captured_field(&mut f);
+        assert!(verify(&f).is_empty(), "{:?}", verify(&f));
+        f.blocks[0].ops.swap(1, 2);
+        assert!(verify(&f)
+            .iter()
+            .any(|v| v.reason
+                == "value cannot be consumed or ended while a dependent borrow is live"));
+    }
+
+    #[test]
+    fn exclusive_indirect_receiver_cannot_overlap_a_second_loan_or_argument() {
+        let call = SemTerminator::IndirectCall {
+            id: OpId(2),
+            callee: BoundaryOperand {
+                operand: operand(1),
+                decision: BoundaryDecision::BorrowMut,
+            },
+            signature: crate::SemSignature {
+                params: vec![],
+                return_ty: ResolvedTy::Unit,
+            },
+            args: vec![],
+            result: CallResult::Unit,
+            normal: edge(1, &[]),
+            unwind: CallUnwind::Cleanup(edge(2, &[])),
+        };
+        let cleanup = vec![end_borrow(3, 1), destroy(4, 0)];
+        let f = function(vec![
+            block(0, vec![begin_borrow(0, 0, 1)], call),
+            block(1, cleanup.clone(), done()),
+            block(2, cleanup, SemTerminator::ResumeUnwind),
+        ]);
+        assert!(verify(&f).is_empty(), "{:?}", verify(&f));
+        let mut second_loan = f.clone();
+        second_loan.blocks[0].ops.push(begin_borrow(1, 0, 2));
+        for index in [1, 2] {
+            second_loan.blocks[index].ops.insert(0, end_borrow(5, 2));
+        }
+        assert!(verify(&second_loan)
+            .iter()
+            .any(|v| v.reason == "exclusive receiver has another live loan of its owner"));
+        let mut argument_alias = f;
+        if let SemTerminator::IndirectCall { args, .. } = &mut argument_alias.blocks[0].terminator {
+            args.push(BoundaryOperand {
+                operand: operand(0),
+                decision: BoundaryDecision::Borrow,
+            });
+        }
+        assert!(verify(&argument_alias)
+            .iter()
+            .any(|v| v.reason == "exclusive receiver aliases another call operand"));
     }
 }

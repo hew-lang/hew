@@ -1643,3 +1643,18 @@ The full type unit suite and native compiler build passed through Make, as did
 focused HIR key collision controls. Native closure execution and lifetime
 acceptance remain integration work. Value-transfer consumption inference and
 generic function values remain the next source component work.
+
+## Capture access and indirect-call verification
+
+Capture places now join the exact closure receiver and ordered field descriptor.
+SIR admits checked field copies, field loans, private mutable assignment and
+call-once extraction. Its path-sensitive lifetime relation tracks initialized
+fields across branches, protects live field loans and permits destruction of a
+partially consumed environment while refusing its copy, invocation or transfer.
+Indirect calls verify exact signatures, receiver permissions, argument transfers
+and fault propagation; exclusive calls reject overlapping loans and arguments.
+
+The complete SIR Make suite passes with capture mutation, malformed receiver and
+signature, branch-dependent extraction, cleanup and exclusive-loan controls.
+This connects semantic verification; source production and physical invocation
+remain under implementation, so it is not native closure acceptance.

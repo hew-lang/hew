@@ -174,6 +174,38 @@ def test_validate_rejects_missing_stable_stdlib_export() -> None:
     ) in stderr.getvalue()
 
 
+def test_public_host_tiers_require_their_exporting_crate_and_do_not_overlap() -> None:
+    runtime = verify_ffi_symbols.extract_runtime_exports()
+    stdlib = verify_ffi_symbols.extract_stdlib_exports()
+    original = verify_ffi_symbols.load_jit_symbol_classification()
+    runtime_symbol = min(original["internal"])
+    stdlib_symbol = min(original["stable-stdlib"])
+    for old, new, symbol in [
+        ("internal", "public-host", runtime_symbol),
+        ("stable-stdlib", "public-host-stdlib", stdlib_symbol),
+    ]:
+        classification = {tier: set(symbols) for tier, symbols in original.items()}
+        classification[old].remove(symbol)
+        classification[new].add(symbol)
+        assert not verify_ffi_symbols.validate_jit_symbol_classification(
+            runtime, stdlib, classification
+        )
+        classification[old].add(symbol)
+        errors = verify_ffi_symbols.validate_jit_symbol_classification(
+            runtime, stdlib, classification
+        )
+        assert any(
+            "classified in both" in error and symbol in error for error in errors
+        ), errors
+        classification[old].remove(symbol)
+        errors = verify_ffi_symbols.validate_jit_symbol_classification(
+            runtime - {symbol}, stdlib - {symbol}, classification
+        )
+        assert any(
+            "not exported by" in error and symbol in error for error in errors
+        ), errors
+
+
 def test_io_runtime_exports_are_jit_stable() -> None:
     classification = verify_ffi_symbols.load_jit_symbol_classification()
     pattern = re.compile(
@@ -464,6 +496,7 @@ _TESTS = [
     test_validate_covers_every_runtime_export_exactly_once,
     test_validate_reports_missing_symbol_with_classification_file_path,
     test_validate_rejects_missing_stable_stdlib_export,
+    test_public_host_tiers_require_their_exporting_crate_and_do_not_overlap,
     test_io_runtime_exports_are_jit_stable,
     test_c_unwind_machine_emit_exports_are_classified,
     test_local_pid_runtime_surface_is_jit_stable,

@@ -5,12 +5,14 @@ Scans hew-runtime and hew-std Rust source files for #[no_mangle] extern "C"
 and extern "C-unwind" fn exports and validates the classifications in
 scripts/jit-symbol-classification.toml.
 
-Three-tier model:
+ABI classifications:
   stable         -- user-visible runtime surface; user `extern "rt"` blocks
                     and JIT hosts.
   codegen-stable -- compiler-emitted; JIT hosts must provide these alongside
                     stable, but users cannot name them in `extern "rt"`.
   internal       -- lifecycle/bootstrap; AOT-only, never JIT-reachable.
+  public-host    -- public C host API; excluded from source extern rt and JIT.
+  public-host-stdlib -- the corresponding C host API exported by hew-std.
 
 The codegen-coverage mode (--strict) is retained as a no-op for backward
 compatibility now that the C++ codegen subtree has been retired; the
@@ -28,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from itertools import combinations
 import re
 import sys
 import tomllib
@@ -43,6 +46,15 @@ STDLIB_SRC = ROOT / "hew-std" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
 FFI_OWNERSHIP_RATCHET = ROOT / "scripts" / "ffi-ownership-ratchet.toml"
 SOURCE_ENCODING = "utf-8"
+CLASSIFICATION_CRATES = {
+    "stable": "runtime",
+    "stable-stdlib": "stdlib",
+    "codegen-stable": "runtime",
+    "internal": "runtime",
+    "public-host": "runtime",
+    "public-host-stdlib": "stdlib",
+}
+PUBLIC_HOST_TIERS = {"public-host", "public-host-stdlib"}
 OWNERSHIP_RESULTS = {"fresh", "retained", "owned", "borrowed", "none"}
 PARAM_OWNERSHIP = {"borrow", "consume", "retain"}
 DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
@@ -89,8 +101,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--classify",
-        choices=("stable", "codegen-stable", "internal"),
-        help="print the sorted JIT host ABI symbols for the requested class",
+        choices=tuple(CLASSIFICATION_CRATES),
+        help="print the sorted ABI symbols for the requested class",
     )
     parser.add_argument(
         "--validate",
@@ -331,13 +343,20 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 
 
 def load_jit_symbol_classification() -> dict[str, set[str]]:
-    text = JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    document = tomllib.loads(
+        JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    )
     classification: dict[str, set[str]] = {}
-    for key in ("stable", "stable-stdlib", "codegen-stable", "internal"):
-        match = re.search(rf"(?ms)^{re.escape(key)}\s*=\s*\[(.*?)^\]", text)
-        if match is None:
+    for key in CLASSIFICATION_CRATES:
+        if key not in document and key not in PUBLIC_HOST_TIERS:
             raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: missing {key} list")
-        symbols = re.findall(r'"([^"\n]+)"', match.group(1))
+        symbols = document.get(key, [])
+        if not isinstance(symbols, list) or any(
+            not isinstance(symbol, str) for symbol in symbols
+        ):
+            raise ValueError(
+                f"{JIT_SYMBOL_CLASSIFICATION}: {key} must be a list of symbols"
+            )
         if len(symbols) != len(set(symbols)):
             raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: duplicate entries in {key}")
         classification[key] = set(symbols)
@@ -644,19 +663,8 @@ def validate_jit_symbol_classification(
     write_ratchet: bool = False,
 ) -> list[str]:
     errors: list[str] = []
-    stable = classification["stable"]
-    stable_stdlib = classification["stable-stdlib"]
-    codegen_stable = classification["codegen-stable"]
-    internal = classification["internal"]
-    # Pairwise overlap checks across all tiers.
-    for tier_a, set_a, tier_b, set_b in [
-        ("stable", stable, "stable-stdlib", stable_stdlib),
-        ("stable", stable, "codegen-stable", codegen_stable),
-        ("stable", stable, "internal", internal),
-        ("stable-stdlib", stable_stdlib, "codegen-stable", codegen_stable),
-        ("stable-stdlib", stable_stdlib, "internal", internal),
-        ("codegen-stable", codegen_stable, "internal", internal),
-    ]:
+    # Every ABI tier is disjoint, including the separately exposed C host API.
+    for (tier_a, set_a), (tier_b, set_b) in combinations(classification.items(), 2):
         overlap = sorted(set_a & set_b)
         if overlap:
             errors.append(
@@ -664,9 +672,14 @@ def validate_jit_symbol_classification(
                 + ", ".join(overlap)
                 + f" (update {JIT_SYMBOL_CLASSIFICATION})"
             )
-    # `stable-stdlib` is intentionally NOT unioned into the runtime completeness
-    # check because those symbols come from hew-std rather than hew-runtime.
-    classified = stable | codegen_stable | internal
+    # Each classified symbol must exist in its declared exporting crate.
+    classified = set().union(
+        *(
+            classification[tier]
+            for tier, crate in CLASSIFICATION_CRATES.items()
+            if crate == "runtime"
+        )
+    )
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)
     if missing:
@@ -681,14 +694,17 @@ def validate_jit_symbol_classification(
             + ", ".join(extra)
             + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
         )
-    missing_stdlib_exports = sorted(stable_stdlib - stdlib_exports)
-    if missing_stdlib_exports:
-        errors.append(
-            "stable-stdlib classification names not exported by hew-std "
-            f"({len(missing_stdlib_exports)}): "
-            + ", ".join(missing_stdlib_exports)
-            + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
-        )
+    for tier, crate in CLASSIFICATION_CRATES.items():
+        if crate != "stdlib":
+            continue
+        missing_stdlib_exports = sorted(classification[tier] - stdlib_exports)
+        if missing_stdlib_exports:
+            errors.append(
+                f"{tier} classification names not exported by hew-std "
+                f"({len(missing_stdlib_exports)}): "
+                + ", ".join(missing_stdlib_exports)
+                + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
+            )
     errors.extend(
         validate_ownership_contracts(
             classification,

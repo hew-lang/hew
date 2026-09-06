@@ -959,6 +959,7 @@ pub enum SemOpKind {
     TaskScopeEnter {
         scope: crate::TaskScopeId,
         parent: Option<crate::TaskScopeId>,
+        duration: Option<Operand>,
     },
     /// Release a scope after its checked drain has completed.
     TaskScopeClose {
@@ -1159,8 +1160,12 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::TaskScopeEnter { .. }
-            | Self::TaskScopeClose { .. }
+            Self::TaskScopeEnter { duration, .. } => {
+                if let Some(duration) = duration {
+                    visit(OperandSlot(0), duration);
+                }
+            }
+            Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::ConstI64(_)
@@ -1236,8 +1241,12 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::TaskScopeEnter { .. }
-            | Self::TaskScopeClose { .. }
+            Self::TaskScopeEnter { duration, .. } => {
+                if let Some(duration) = duration {
+                    visit(OperandSlot(0), duration);
+                }
+            }
+            Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::ConstI64(_)

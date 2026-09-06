@@ -185,8 +185,55 @@ pub unsafe extern "C" fn hew_checked_scope_new(
         cancelled: AtomicBool::new(false),
         cancel_token,
         deadlines: ptr::null_mut(),
+        checked_deadline: ptr::null_mut(),
         parent: ptr::null_mut(),
     }))
+}
+
+unsafe extern "C" fn deadline_wake(token: *mut c_void) {
+    // SAFETY: the timer retains this token independently of the scope frame.
+    unsafe { hew_cancel_token_cancel(token.cast(), crate::fault::HEW_FAULT_DEADLINE) };
+}
+
+unsafe extern "C" fn deadline_retain(token: *mut c_void) {
+    // SAFETY: retaining a live token is thread-safe.
+    unsafe { super::hew_cancel_token_retain(token.cast()) };
+}
+
+unsafe extern "C" fn deadline_release(token: *mut c_void) {
+    // SAFETY: callback ownership transfers exactly one retained reference.
+    unsafe { super::hew_cancel_token_release(token.cast()) };
+}
+
+/// Arm this lexical scope's deadline on the shared timer wheel.
+///
+/// # Safety
+/// Scope is live, exclusively accessed and has no existing checked deadline.
+/// Its close path must drain all child frames before releasing the scope.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, duration_ns: i64) {
+    // SAFETY: scope owns its token and receives sole ownership of the timer.
+    unsafe {
+        let scope = &mut *scope;
+        if !scope.checked_deadline.is_null() {
+            std::process::abort();
+        }
+        let waker = HewWaker {
+            context: scope.cancel_token.cast(),
+            wake: deadline_wake,
+            retain: deadline_retain,
+            release: deadline_release,
+        };
+        scope.checked_deadline =
+            crate::coro_sleep::hew_coro_sleep_new(duration_ns, &raw const waker);
+        if crate::coro_sleep::hew_coro_sleep_status(scope.checked_deadline)
+            != crate::coro_state::CoroStatus::Pending as i32
+        {
+            // An already expired deadline or unavailable timer must prevent
+            // the body from running without its promised cancellation bound.
+            deadline_wake(waker.context);
+        }
+    }
 }
 
 /// Transfer a checked nullary once callable into a scope and return one handle.

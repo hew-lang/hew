@@ -566,6 +566,7 @@ pub enum PhysicalOp {
     TaskScopeEnter {
         scope: hew_sir::TaskScopeId,
         parent: Option<hew_sir::TaskScopeId>,
+        duration: Option<StorageId>,
     },
     TaskScopeClose {
         scope: hew_sir::TaskScopeId,
@@ -2184,9 +2185,17 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 callee: *callable,
             }),
-            SemOpKind::TaskScopeEnter { scope, parent } => one(PhysicalOp::TaskScopeEnter {
+            SemOpKind::TaskScopeEnter {
+                scope,
+                parent,
+                duration,
+            } => one(PhysicalOp::TaskScopeEnter {
                 scope: *scope,
                 parent: *parent,
+                duration: duration
+                    .as_ref()
+                    .map(|duration| self.value(duration.value))
+                    .transpose()?,
             }),
             SemOpKind::TaskScopeClose { scope } => {
                 one(PhysicalOp::TaskScopeClose { scope: *scope })
@@ -3986,7 +3995,16 @@ fn verify_operation_storage(
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
     match operation {
-        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskScopeEnter { duration, .. } => {
+            if let Some(duration) = duration {
+                if storage(function, *duration)?.ty != ResolvedTy::Duration {
+                    return Err(PhysicalError::new(
+                        "scope deadline requires Duration storage",
+                    ));
+                }
+            }
+        }
+        PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::TaskSpawn {
             callable,
             dest,
@@ -4528,7 +4546,12 @@ fn apply_operation(
             }
             state.defers.register(*defer, *scope, dependencies)?;
         }
-        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskScopeEnter { duration, .. } => {
+            if let Some(duration) = duration {
+                initialized(function, state, *duration, block, "scope deadline")?;
+            }
+        }
+        PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;
             consume_if_owned(function, state, *callable)?;

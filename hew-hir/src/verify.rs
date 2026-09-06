@@ -690,6 +690,15 @@ impl Verifier {
             HirExprKind::Scope { body }
             | HirExprKind::ForkBlock { body, .. }
             | HirExprKind::Loop { body, .. } => self.block(body),
+            HirExprKind::ScopeRecovery {
+                scope,
+                error,
+                handler,
+            } => {
+                self.expr(scope);
+                self.binding(error.id, error.span.clone());
+                self.expr(handler);
+            }
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);
                 self.block(body);

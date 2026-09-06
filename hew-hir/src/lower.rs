@@ -4745,6 +4745,55 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
+    let scope_failure = if ctx
+        .recovery_kinds
+        .values()
+        .any(|kind| matches!(kind, hew_types::check::RecoveryKind::Scope { .. }))
+    {
+        builtin_callable_impl_program.as_ref().and_then(|builtins| {
+            let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
+                Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+                _ => None,
+            })?;
+            let canonical_name = "std.builtins.ScopeFailure";
+            let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned()
+            else {
+                ctx.unsupported(
+                    span.clone(),
+                    "scope failure declaration identity",
+                    "checker-boundary",
+                );
+                return None;
+            };
+            let mut source = source.clone();
+            source.name = canonical_name.to_string();
+            let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+            ctx.type_classes
+                .insert(canonical_name.to_string(), (decl.marker, None));
+            ctx.type_member_tys.insert(
+                canonical_name.to_string(),
+                decl.variants
+                    .iter()
+                    .flat_map(hew_hir_variant_field_tys)
+                    .collect(),
+            );
+            ctx.enum_variants_by_name
+                .insert(canonical_name.to_string(), decl.variants.clone());
+            ctx.enum_type_params
+                .insert(canonical_name.to_string(), decl.type_params.clone());
+            ctx.enum_item_ids
+                .insert(canonical_name.to_string(), decl.id);
+            for (index, variant) in decl.variants.iter().enumerate() {
+                ctx.machine_ctor_registry.insert(
+                    format!("{canonical_name}::{}", variant.name),
+                    (canonical_name.to_string(), index),
+                );
+            }
+            Some(decl)
+        })
+    } else {
+        None
+    };
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
@@ -5780,6 +5829,10 @@ pub fn lower_program_with_mono_cap(
             "std.builtins",
             &mut diagnostic_source_modules,
         );
+    }
+
+    if let Some(decl) = scope_failure {
+        items.push(HirItem::TypeDecl(decl));
     }
 
     // Monomorphic builtin enums (e.g. `LookupError`) intentionally do NOT
@@ -7146,6 +7199,10 @@ fn collect_call_sites_in_expr(
         | HirExprKind::Loop { body, .. } => {
             collect_call_sites_in_block(body, out, trait_out);
         }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            collect_call_sites_in_expr(scope, out, trait_out);
+            collect_call_sites_in_expr(handler, out, trait_out);
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_call_sites_in_expr(duration, out, trait_out);
             collect_call_sites_in_block(body, out, trait_out);
@@ -7625,6 +7682,7 @@ struct LowerCtx {
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
+    recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -8430,6 +8488,7 @@ impl LowerCtx {
             listener_await_accepts: tc_output.listener_await_accepts.clone(),
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
             result_return_coercions: tc_output.result_return_coercions.clone(),
+            recovery_kinds: tc_output.recovery_kinds.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -8602,6 +8661,7 @@ impl LowerCtx {
                 &mut self.resolved_expr_types,
                 tc_output.resolved_expr_types.clone(),
             ),
+            std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
             std::mem::replace(
                 &mut self.record_init_type_args,
                 tc_output.record_init_type_args.clone(),
@@ -8623,6 +8683,7 @@ impl LowerCtx {
             self.resolved_calls,
             self.expr_types,
             self.resolved_expr_types,
+            self.recovery_kinds,
             self.record_init_type_args,
         ) = saved;
 
@@ -11127,6 +11188,10 @@ impl LowerCtx {
             } => {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(event, receiver, abi_return_ty);
+            }
+            HirExprKind::ScopeRecovery { scope, handler, .. } => {
+                self.wrap_var_self_explicit_expr_returns(scope, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_expr_returns(handler, receiver, abi_return_ty);
             }
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.wrap_var_self_explicit_expr_returns(duration, receiver, abi_return_ty);
@@ -14068,15 +14133,25 @@ impl LowerCtx {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "lower fields and variants while retaining authored declaration provenance"
-    )]
-    fn lower_type_decl(
+    fn lower_type_decl(&mut self, decl: &TypeDecl, span: Span) -> Option<HirTypeDecl> {
+        let declaration = self.source_declaration(
+            &span,
+            if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                hew_types::DeclarationKind::Machine
+            } else {
+                hew_types::DeclarationKind::Type
+            },
+            0,
+        )?;
+        Some(self.lower_type_decl_with_identity(decl, span, declaration))
+    }
+
+    fn lower_type_decl_with_identity(
         &mut self,
         decl: &TypeDecl,
-        span: std::ops::Range<usize>,
-    ) -> Option<HirTypeDecl> {
+        span: Span,
+        declaration: hew_types::DefId,
+    ) -> HirTypeDecl {
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
@@ -14188,22 +14263,14 @@ impl LowerCtx {
         } else {
             ResourceMarker::from(decl.resource_marker)
         };
-        Some(HirTypeDecl {
+        HirTypeDecl {
             kind: match decl.kind {
                 TypeDeclKind::Struct => HirTypeDeclKind::Struct,
                 TypeDeclKind::Enum => HirTypeDeclKind::Enum,
             },
             id,
             node: self.ids.node(),
-            declaration: self.source_declaration(
-                &span,
-                if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
-                    hew_types::DeclarationKind::Machine
-                } else {
-                    hew_types::DeclarationKind::Type
-                },
-                0,
-            )?,
+            declaration,
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -14217,7 +14284,7 @@ impl LowerCtx {
             fields,
             variants,
             span,
-        })
+        }
     }
 
     /// Lower a `record` declaration into `HirRecordDecl`.
@@ -28859,6 +28926,41 @@ impl LowerCtx {
         }
     }
 
+    fn lower_scope_recovery(
+        &mut self,
+        operand: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        name: &str,
+        binding_span: &Span,
+        failure_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let scope = self.lower_expr(operand, IntentKind::Read);
+        if !matches!(
+            scope.kind,
+            HirExprKind::Scope { .. } | HirExprKind::ScopeDeadline { .. }
+        ) {
+            return self
+                .unsupported_postfix_try(span, "checked scope recovery lacks a scope operand");
+        }
+        let Some(result_ty) = self.checker_expr_resolved_ty(span, "scope recovery") else {
+            return self.unsupported_postfix_try(span, "missing checked scope recovery result");
+        };
+        self.try_register_enum_instantiation_ty(&failure_ty, binding_span);
+        self.push_scope();
+        let error = self.bind(name.to_string(), failure_ty, false, binding_span.clone());
+        let handler = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+        (
+            HirExprKind::ScopeRecovery {
+                scope: Box::new(scope),
+                error,
+                handler: Box::new(handler),
+            },
+            result_ty,
+        )
+    }
+
     /// Normalize source-local recovery into the same typed variant branch as
     /// match. SIR decides payload transfers and cleanup; HIR supplies only
     /// the resolved types, variant identity, bindings and lexical bodies.
@@ -28869,6 +28971,16 @@ impl LowerCtx {
         error: Option<&Spanned<String>>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
+        let Some(recovery) = self.recovery_kinds.get(&self.mk_key(span)).cloned() else {
+            return self.unsupported_postfix_try(span, "missing checked recovery semantics");
+        };
+        if let hew_types::check::RecoveryKind::Scope { failure_ty } = recovery {
+            let Some((name, binding_span)) = error else {
+                return self
+                    .unsupported_postfix_try(span, "scope recovery requires an error binder");
+            };
+            return self.lower_scope_recovery(operand, body, name, binding_span, failure_ty, span);
+        }
         let scrutinee = self.lower_expr(operand, IntentKind::Read);
         self.try_register_enum_instantiation_ty(&scrutinee.ty, &operand.1);
         let (builtin, success, failure, payload, error_ty) = if error.is_some() {
@@ -30916,6 +31028,16 @@ fn collect_captures_walk(
                 collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
         }
+        HirExprKind::ScopeRecovery {
+            scope,
+            error,
+            handler,
+        } => {
+            collect_captures_walk(scope, param_ids, seen, captures, self_id);
+            let mut handler_locals = param_ids.clone();
+            handler_locals.insert(error.id);
+            collect_captures_walk(handler, &handler_locals, seen, captures, self_id);
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_captures_walk(duration, param_ids, seen, captures, self_id);
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
@@ -31228,6 +31350,10 @@ fn collect_general_closure_captures_walk(
             if let Some(value) = value {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
+        }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            collect_general_closure_captures_walk(scope, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(handler, outer_bindings, seen, captures);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
@@ -32053,6 +32179,10 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         }
         HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
             collect_hir_emitted_events_in_block(body, event_names, out);
+        }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            collect_hir_emitted_events_walk(scope, event_names, out);
+            collect_hir_emitted_events_walk(handler, event_names, out);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_hir_emitted_events_walk(duration, event_names, out);
@@ -34469,6 +34599,10 @@ fn scan_expr_for_call_shape(
             for a in args {
                 scan_expr_for_call_shape(a, callable, diagnostics);
             }
+        }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            scan_expr_for_call_shape(scope, callable, diagnostics);
+            scan_expr_for_call_shape(handler, callable, diagnostics);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             scan_expr_for_call_shape(duration, callable, diagnostics);

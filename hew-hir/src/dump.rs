@@ -775,6 +775,22 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 }
             }
         }
+        HirExprKind::ScopeRecovery {
+            scope,
+            error,
+            handler,
+        } => {
+            writeln!(
+                out,
+                "{pad}  scope-recovery {} {}: {}",
+                error.id,
+                error.name,
+                error.ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, scope, indent + 4);
+            dump_expr(out, handler, indent + 4);
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             writeln!(out, "{pad}  scope-deadline").expect("write to string");
             dump_expr(out, duration, indent + 4);

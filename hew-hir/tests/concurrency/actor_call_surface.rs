@@ -141,6 +141,10 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             }
         }
         HirExprKind::FieldAccess { object, .. } => visit_expr(object, out),
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            visit_expr(scope, out);
+            visit_expr(handler, out);
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             visit_expr(duration, out);
             visit_block(body, out);

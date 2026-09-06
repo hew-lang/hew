@@ -1645,6 +1645,13 @@ pub enum HirExprKind {
         duration: Box<HirExpr>,
         body: HirBlock,
     },
+    /// Recover this scope's own deadline or logical fault after child drain and
+    /// lexical cleanup. Parent cancellation bypasses the handler.
+    ScopeRecovery {
+        scope: Box<HirExpr>,
+        error: HirBinding,
+        handler: Box<HirExpr>,
+    },
     /// Consume a task expression and produce its child result.
     AwaitTask {
         operand: Box<HirExpr>,

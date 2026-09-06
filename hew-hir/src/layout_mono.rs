@@ -686,6 +686,15 @@ fn walk_expr(
         | HirExprKind::Loop { body, .. } => {
             walk_block(body, subst, residual_domain, disc);
         }
+        HirExprKind::ScopeRecovery {
+            scope,
+            error,
+            handler,
+        } => {
+            walk_expr(scope, subst, residual_domain, disc);
+            disc.visit_ty(&error.ty, &error.span, subst, residual_domain);
+            walk_expr(handler, subst, residual_domain, disc);
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             walk_expr(duration, subst, residual_domain, disc);
             walk_block(body, subst, residual_domain, disc);

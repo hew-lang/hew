@@ -75,3 +75,6 @@ mod vec_index_lowering;
 mod vec_slice_lowering;
 #[path = "lowering_core/vertical.rs"]
 mod vertical;
+
+#[path = "lowering_core/scope_recovery.rs"]
+mod scope_recovery;

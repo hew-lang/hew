@@ -192,6 +192,8 @@ impl<'a> ClassContext<'a> {
 /// Every variant is a fail-closed refusal. There is no fallback class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassError {
+    /// A callable claims independent duplication over an owning resource field.
+    CallableCloneConflict,
     /// §1.1 `TypeParam` row: the instance service substitutes first, so an
     /// abstract parameter never reaches SIR.
     TypeParam { name: String },
@@ -216,6 +218,7 @@ pub enum ClassError {
 impl std::fmt::Display for ClassError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CallableCloneConflict => f.write_str("callable Clone capability conflicts with captured ownership"),
             Self::TypeParam { name } => {
                 write!(f, "abstract type parameter `{name}` has no value class")
             }
@@ -626,26 +629,45 @@ fn classify(
         ResolvedTy::String | ResolvedTy::Bytes => cow_retain,
         ResolvedTy::CancellationToken => affine_none,
         ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => view,
-        ResolvedTy::Function { .. } | ResolvedTy::TraitObject { .. } => share_retain,
-        // §1.1 Closure row: PersistentShare joined with the capture classes;
-        // `clone` stays `Retain` in every case, because retaining a closure is
-        // an env refcount bump that duplicates no capture.
-        ResolvedTy::Closure { captures, .. } => {
+        ResolvedTy::TraitObject { .. } => share_retain,
+        ResolvedTy::Function { capabilities, .. } => {
+            if capabilities.clone {
+                (ValueClass::CowValue, CloneKind::FieldWise)
+            } else {
+                affine_none
+            }
+        }
+        ResolvedTy::Closure {
+            capabilities,
+            captures,
+            ..
+        } => {
             let capture_facts = classify_all(captures, decls, walk)?;
             let class = if capture_facts
                 .iter()
                 .any(|(class, _)| *class == ValueClass::Linear)
             {
                 ValueClass::Linear
-            } else if capture_facts
-                .iter()
-                .any(|(class, _)| *class == ValueClass::AffineResource)
-            {
+            } else if !capabilities.clone {
                 ValueClass::AffineResource
+            } else if capture_facts.iter().any(|(class, clone)| {
+                *class == ValueClass::AffineResource || *clone == CloneKind::None
+            }) {
+                return Err(ClassError::CallableCloneConflict);
             } else {
-                ValueClass::PersistentShare
+                ValueClass::CowValue
             };
-            (class, CloneKind::Retain)
+            if capabilities.clone && class == ValueClass::Linear {
+                return Err(ClassError::CallableCloneConflict);
+            }
+            (
+                class,
+                if capabilities.clone {
+                    CloneKind::FieldWise
+                } else {
+                    CloneKind::None
+                },
+            )
         }
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
         ResolvedTy::Array(element, _) => aggregate_facts(&[classify(element, decls, walk)?]),

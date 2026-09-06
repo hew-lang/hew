@@ -1031,18 +1031,28 @@ impl TraitRegistry {
             )]
             Ty::Borrow { .. } => marker == MarkerTrait::Copy,
 
-            // Function types: always Send, Sync, Clone, Copy (function pointers)
-            Ty::Function { .. } => matches!(
-                marker,
-                MarkerTrait::Send | MarkerTrait::Sync | MarkerTrait::Clone | MarkerTrait::Copy
-            ),
-
-            // Closures: Send/Sync only if all captured types are Send/Sync
-            Ty::Closure { captures, .. } => match marker {
+            // An erased callable guarantees only its written capabilities.
+            // Cross-actor admission requires concrete capture evidence.
+            Ty::Function { capabilities, .. } => marker == MarkerTrait::Clone && capabilities.clone,
+            Ty::Closure {
+                capabilities,
+                captures,
+                ..
+            } => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => captures
                     .iter()
-                    .all(|c| self.implements_marker_guarded(c, marker, visiting)),
-                MarkerTrait::Clone => true,
+                    .all(|capture| self.implements_marker_guarded(capture, marker, visiting)),
+                MarkerTrait::Clone => {
+                    capabilities.clone
+                        && captures.iter().all(|capture| {
+                            self.implements_marker_guarded(capture, MarkerTrait::Copy, visiting)
+                                || self.implements_marker_guarded(
+                                    capture,
+                                    MarkerTrait::Clone,
+                                    visiting,
+                                )
+                        })
+                }
                 _ => false,
             },
 
@@ -1351,14 +1361,14 @@ mod tests {
     }
 
     #[test]
-    fn test_function_is_send() {
+    fn test_erased_function_does_not_guarantee_send() {
         let registry = TraitRegistry::new();
         let fn_ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         };
-        assert!(registry.is_send(&fn_ty));
+        assert!(!registry.is_send(&fn_ty));
     }
 
     #[test]
@@ -1393,7 +1403,7 @@ mod tests {
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
         };
-        assert!(registry.is_send(&fn_ty));
+        assert!(!registry.is_send(&fn_ty));
         assert!(!registry.is_serializable(&fn_ty));
 
         let bad = Ty::Named {
@@ -1596,7 +1606,7 @@ mod tests {
     fn test_closure_not_copy() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
-            capabilities: crate::CallableCapabilities::default(),
+            capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
             params: vec![],
             ret: Box::new(Ty::Unit),
             captures: vec![Ty::I32],

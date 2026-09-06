@@ -1602,3 +1602,25 @@ capability weakening are semantic operations. Descriptor checks reject mismatche
 capture types, receiver permissions and ownership-erasing coercions. Capture
 places retain their environment identity; their execution and source production
 are the next connected layer.
+
+## Callable captures and receiver capabilities
+
+Replaced the legacy Copy/Move/Borrow/BorrowMut capture modes and syntactic
+mutation scan with binding-resolved acquisition, private access and invocation
+consumption facts. Ordinary closure bodies now check independent environment
+bindings. Private mutation requires the capture prefix and a mutable callee;
+consuming a captured owner requires call-once invocation, including consuming
+uses in diverging arms. Nested captures preserve lexical identity and source
+parameters retain definition spans through HIR.
+
+Callable duplication follows explicit Clone evidence and copies private state;
+erased fn types no longer imply Copy or Send. Resource-bearing closures cannot
+claim Clone. HIR rejects missing callable, capture and escape facts and no
+longer selects capture metadata by name alone. Removed the replaced scanner and
+its consumers while retaining malformed-boundary controls.
+
+Validation: the complete parser/types/HIR Make suite passed, including resource
+acquisition/consumption, private mutation, shadowing, nested captures, call-once
+reuse and forged Clone controls. Workspace Rust Clippy passed. Directional
+coercions, capability joins and canonical callable identity keys remain for the
+next checkpoint; native/runtime acceptance belongs to integration.

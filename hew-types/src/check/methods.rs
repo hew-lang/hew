@@ -7423,8 +7423,14 @@ impl Checker {
                 .and_then(|name| self.env.lookup_ref(name))
                 .is_some_and(|binding| binding.is_mutable)
             {
-                self.report_error(TypeErrorKind::MutabilityError, span,
-                    format!("collection method `{method}` requires a mutable binding receiver declared with `var`"));
+                if let Some(error) =
+                    name.and_then(|name| self.private_capture_mutation_error(name, span))
+                {
+                    self.errors.push(error);
+                } else {
+                    self.report_error(TypeErrorKind::MutabilityError, span,
+                        format!("collection method `{method}` requires a mutable binding receiver declared with `var`"));
+                }
             } else if let Some(name) = name {
                 self.env.mark_written(name);
                 self.reject_private_param_mutable_receiver_call(

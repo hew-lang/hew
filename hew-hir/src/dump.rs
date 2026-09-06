@@ -953,11 +953,13 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             for capture in captures {
                 writeln!(
                     out,
-                    "{pad}    capture {} ({}) ty={} mode={:?} send={} sync={}",
+                    "{pad}    capture {} ({}) ty={} acquisition={:?} access={:?} consumption={:?} send={} sync={}",
                     capture.name,
                     capture.binding,
                     capture.ty.user_facing(),
-                    capture.mode,
+                    capture.acquisition,
+                    capture.access,
+                    capture.consumption,
                     capture.is_send,
                     capture.is_sync
                 )

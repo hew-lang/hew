@@ -845,49 +845,6 @@ pub struct WireLayoutEntry {
 /// All wire types registered during type-checking, keyed by canonical type name.
 pub type WireLayoutTable = HashMap<String, WireLayoutEntry>;
 
-/// Capture mode selected by the checker for one closure environment field.
-///
-/// `Copy` and `Move` are the historical v0.5 variants — `Copy` is an implicit
-/// by-value capture of a `Copy`-typed binding, and `Move` is the explicit
-/// `move |...|` form that consumes the source binding. `Borrow` and
-/// `BorrowMut` are inferred from body usage when the source binding is
-/// neither `Copy`-typed nor consumed by `move`: read-only references infer
-/// `Borrow`, mutating projections infer `BorrowMut`. There is no surface
-/// syntax for `Borrow`/`BorrowMut`; they are checker-substrate output only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ClosureCaptureMode {
-    /// The source value implements `Copy`, so an implicit by-value copy is legal.
-    Copy,
-    /// The closure was written `move |...|`; the source binding is consumed.
-    Move,
-    /// The body only reads the captured binding (read-only deref / field
-    /// project); the checker classifies this capture as a shared reference
-    /// for downstream lowering.
-    Borrow,
-    /// The body mutates the captured binding (assignment, mutating method
-    /// call, or assignment through a projection); the checker classifies
-    /// this capture as an exclusive reference for downstream lowering.
-    BorrowMut,
-}
-
-/// Provenance of a [`ClosureCaptureMode`] decision.
-///
-/// Records which inference rule produced the mode so that downstream
-/// diagnostics (suspend-crossing, escape advisory, future auto-lock
-/// wrappers) can explain the choice without re-running inference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CaptureModeOrigin {
-    /// `Move`: the closure literal carried the `move` keyword.
-    ExplicitMove,
-    /// `Copy`: the captured binding's resolved type implements `Copy`.
-    ImplicitCopy,
-    /// `Borrow`: the body uses the binding only in read-only positions.
-    InferredBorrow,
-    /// `BorrowMut`: the body mutates the binding (assignment or mutating
-    /// method call).
-    InferredBorrowMut,
-}
-
 /// Checker-owned capture record for one binding referenced by a closure body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosureCaptureFact {
@@ -897,16 +854,16 @@ pub struct ClosureCaptureFact {
     pub name: String,
     /// Fully resolved captured type at checker-output time.
     pub ty: Ty,
-    /// Capture mode selected by the checker.
-    pub mode: ClosureCaptureMode,
-    /// Inference-rule provenance for `mode`.
-    pub mode_origin: CaptureModeOrigin,
+    /// How construction acquires this environment field.
+    pub acquisition: crate::ClosureCaptureAcquisition,
+    /// Whether this private field is writable during invocation.
+    pub access: crate::ClosureCaptureAccess,
+    /// Whether invocation can consume an owner from this field.
+    pub consumption: crate::ClosureCaptureConsumption,
     /// Whether the captured type satisfies the actor/task boundary marker.
     pub is_send: bool,
     /// Whether the captured type satisfies the `Sync` marker. Populated by
-    /// the same `TraitRegistry::is_sync` query that the rest of the checker
-    /// uses; consumed by the non-Sync-mut-capture-crosses-suspend
-    /// diagnostic and by future auto-lock injection.
+    /// the same `TraitRegistry::is_sync` query that the rest of the checker uses.
     pub is_sync: bool,
     /// Source span of this use inside the closure body.
     pub use_span: Span,

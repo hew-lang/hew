@@ -19,6 +19,7 @@ mod actor_fields;
 mod basic;
 mod branch_join;
 mod builtins;
+mod callables;
 mod collections;
 mod control_flow;
 mod entry_exit;

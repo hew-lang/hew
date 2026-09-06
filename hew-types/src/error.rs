@@ -941,7 +941,7 @@ pub enum TypeErrorKind {
     },
     /// A closure implicitly captured a non-`Copy` binding by value.
     ///
-    /// v0.5 closure captures are by value only; non-copy values must be captured
+    /// Closure captures are independent values; non-clone values must be captured
     /// with an explicit `move |...|` closure so the source binding is consumed
     /// at a visible source span.
     ClosureExplicitMoveRequired {
@@ -950,24 +950,11 @@ pub enum TypeErrorKind {
         /// User-facing type of the captured binding.
         ty: String,
     },
-    /// A closure capture's body-usage inference produced no resolved
-    /// `ClosureCaptureMode`. This is a structural bug, not a user-code
-    /// shape — the checker→MIR contract requires every fact's `mode` to
-    /// be one of `Copy`/`Move`/`Borrow`/`BorrowMut` before lowering.
-    /// Fail-closed defense.
+    /// Checker output is missing the binding-resolved capture contract.
+    /// This is a structural checker-to-HIR boundary violation.
     ClosureCaptureModeUnresolved {
         /// Captured binding name whose mode the checker could not classify.
         name: String,
-    },
-    /// A closure captures a non-`Sync` binding by mutable reference, and
-    /// the closure body contains a suspend point (`await`, channel recv,
-    /// fork-handle await). Hard error until a future auto-lock pass
-    /// subscribes to this kind and rewrites the closure.
-    NonSyncMutCaptureCrossesSuspend {
-        /// Captured binding name being mutated across the suspend point.
-        capture_name: String,
-        /// Surface-facing label for the suspend point form ("await", "for await", …).
-        suspend_kind: String,
     },
     /// The escape classifier produced no `ClosureEscapeKind` at all
     /// (distinct from returning `Escapes` conservatively). Structural
@@ -1572,7 +1559,6 @@ impl TypeErrorKind {
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
             Self::ClosureCaptureModeUnresolved { .. } => "ClosureCaptureModeUnresolved",
-            Self::NonSyncMutCaptureCrossesSuspend { .. } => "NonSyncMutCaptureCrossesSuspend",
             Self::ClosureEscapeKindUnresolved => "ClosureEscapeKindUnresolved",
             Self::ClosureEscapeAdvisory { .. } => "ClosureEscapeAdvisory",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",

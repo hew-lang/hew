@@ -13,7 +13,7 @@
 
 use hew_hir::{lower_program, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
 use hew_types::Checker;
-use hew_types::{module_registry::ModuleRegistry, ClosureCaptureMode, ResolvedTy};
+use hew_types::{module_registry::ModuleRegistry, ClosureCaptureAcquisition, ResolvedTy};
 
 /// Run the full source → typecheck → HIR pipeline.  Panics on parse or type
 /// errors so individual tests can assert on the resulting HIR structure.
@@ -146,10 +146,10 @@ fn copy_capture_produces_one_hir_capture_entry() {
         cap.ty
     );
     assert_eq!(
-        cap.mode,
-        ClosureCaptureMode::Copy,
+        cap.acquisition,
+        ClosureCaptureAcquisition::Snapshot,
         "i64 is Copy; capture mode must be Copy; got {:?}",
-        cap.mode
+        cap.acquisition
     );
 
     // Params and return type are sanity-checked as a secondary invariant.

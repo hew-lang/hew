@@ -503,6 +503,7 @@ impl Checker {
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {
                 is_move,
+                private_captures,
                 type_params,
                 params,
                 return_type,
@@ -510,6 +511,7 @@ impl Checker {
                 ..
             } => self.check_lambda(
                 *is_move,
+                private_captures,
                 type_params.as_deref(),
                 params,
                 return_type.as_ref(),
@@ -1321,7 +1323,7 @@ impl Checker {
     /// also SYNTHESISES it first, and the read paths ([`Self::check_field_access`]
     /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
     /// Reporting here as well would double-diagnose one consuming use.
-    fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
+    pub(super) fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
@@ -1723,7 +1725,10 @@ impl Checker {
             let is_moved = binding.is_moved;
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
-            let def_span = binding.def_span.clone();
+            let def_span = binding
+                .def_span
+                .clone()
+                .or_else(|| binding.shadow_span.clone());
             // The outermost place of an assignment target is written, not read:
             // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
             // that plugs the hole, not a use of the value that left.
@@ -1795,8 +1800,9 @@ impl Checker {
                         binding_id,
                         name: name.to_string(),
                         ty: ty.clone(),
-                        mode: ClosureCaptureMode::Copy,
-                        mode_origin: CaptureModeOrigin::ImplicitCopy,
+                        acquisition: crate::ClosureCaptureAcquisition::Snapshot,
+                        access: crate::ClosureCaptureAccess::Read,
+                        consumption: crate::ClosureCaptureConsumption::Retained,
                         is_send: false,
                         is_sync: false,
                         use_span: span.clone(),
@@ -1838,7 +1844,7 @@ impl Checker {
                     return user_ty;
                 }
             }
-            if sig.params.is_empty() {
+            if sig.params.is_empty() && self.let_identifier_is_unit_variant(name) {
                 sig.return_type
             } else {
                 Ty::Function {
@@ -2752,6 +2758,7 @@ impl Checker {
                 let expected_params: &[Ty] = &[];
                 let _ = self.check_lambda(
                     true,
+                    &[],
                     None,
                     &[],
                     None,
@@ -2813,7 +2820,7 @@ impl Checker {
                 // actor body). Nested fn-closures inside the body pass is_actor_body=false,
                 // so they correctly see in_lambda_actor_body=false.
                 let lambda_ty =
-                    self.check_lambda(*is_move, None, params, None, body, None, span, true);
+                    self.check_lambda(*is_move, &[], None, params, None, body, None, span, true);
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -3327,6 +3334,7 @@ impl Checker {
             (
                 Expr::Lambda {
                     is_move,
+                    private_captures,
                     type_params,
                     params,
                     return_type,
@@ -3341,6 +3349,7 @@ impl Checker {
             ) => {
                 let result = self.check_lambda(
                     *is_move,
+                    private_captures,
                     type_params.as_deref(),
                     params,
                     return_type.as_ref(),
@@ -7553,6 +7562,7 @@ impl Checker {
     pub(super) fn check_lambda(
         &mut self,
         is_move: bool,
+        private_captures: &[Spanned<String>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -7561,6 +7571,11 @@ impl Checker {
         span: &Span,
         is_actor_body: bool,
     ) -> Ty {
+        let private_bindings = self.resolve_private_captures(private_captures);
+        let body_environment = self
+            .env
+            .closure_environment(&private_bindings, is_actor_body);
+        let outer_environment = std::mem::replace(&mut self.env, body_environment);
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
         let prev_captures = std::mem::take(&mut self.lambda_captures);
@@ -7737,122 +7752,52 @@ impl Checker {
             }
         }
 
-        // Collect binding-accurate captures, preserving first-use order.
+        let body_environment = std::mem::replace(&mut self.env, outer_environment);
+        self.env.merge_closure_reads(&body_environment);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
-        // Scan the lambda body once syntactically to determine which
-        // capture names are mutated (`BorrowMut` over `Borrow`) and
-        // whether the body contains a suspend point
-        // (`NonSyncMutCaptureCrossesSuspend` gate).
-        let body_facts = super::closure_inference::scan_lambda_body(body);
-        let mut seen_capture_bindings = HashSet::new();
-        let mut capture_facts = Vec::new();
-        for mut fact in raw_capture_facts {
-            if !seen_capture_bindings.insert(fact.binding_id) {
-                continue;
-            }
-            let resolved_ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
-            let is_copy = self
-                .registry
-                .implements_marker(&resolved_ty, MarkerTrait::Copy);
-            fact.is_send = self
-                .registry
-                .implements_marker(&resolved_ty, MarkerTrait::Send);
-            fact.is_sync = self.registry.is_sync(&resolved_ty);
-            let mutates = body_facts.mutated_names.contains(&fact.name);
-            // Capture-mode inference rule:
-            //   `move`     → Move  / ExplicitMove
-            //   Copy type  → Copy  / ImplicitCopy
-            //   mut use    → BorrowMut / InferredBorrowMut
-            //   read-only  → Borrow    / InferredBorrow
-            let (selected_mode, selected_origin) = if is_move {
-                (ClosureCaptureMode::Move, CaptureModeOrigin::ExplicitMove)
-            } else if is_copy {
-                (ClosureCaptureMode::Copy, CaptureModeOrigin::ImplicitCopy)
-            } else if mutates {
-                (
-                    ClosureCaptureMode::BorrowMut,
-                    CaptureModeOrigin::InferredBorrowMut,
-                )
-            } else {
-                (
-                    ClosureCaptureMode::Borrow,
-                    CaptureModeOrigin::InferredBorrow,
-                )
-            };
-            fact.mode = selected_mode;
-            fact.mode_origin = selected_origin;
-            fact.ty = resolved_ty.clone();
-            // Substrate gain: inferred `Borrow` / `BorrowMut`
-            // captures are ACCEPTED. Previously, non-Copy non-`move`
-            // captures emitted `ClosureExplicitMoveRequired`; the
-            // checker now records the inferred mode and lets the
-            // lowerer materialise the reference. The legacy diagnostic
-            // is dead for this site (still declared for the source
-            // span on `move` keyword misuse, if a future caller needs
-            // it).
-            // An inferred `BorrowMut` capture of a non-`Sync` binding
-            // crossing a suspend point is rejected until a future
-            // auto-lock pass subscribes to this kind and rewrites the
-            // closure. Diagnostic kind name is the public seam; do not
-            // rename.
-            if matches!(fact.mode, ClosureCaptureMode::BorrowMut)
-                && !fact.is_sync
-                && body_facts.has_suspend
-                && !matches!(resolved_ty, Ty::Error | Ty::Var(_))
-            {
-                let suspend_label = if body_facts.suspend_kind.is_empty() {
-                    "await".to_string()
-                } else {
-                    body_facts.suspend_kind.clone()
-                };
-                let origin_label = match fact.mode_origin {
-                    CaptureModeOrigin::InferredBorrowMut => "inferred from a mutating use",
-                    CaptureModeOrigin::InferredBorrow => "inferred read-only borrow",
-                    CaptureModeOrigin::ExplicitMove => "explicit `move`",
-                    CaptureModeOrigin::ImplicitCopy => "implicit copy",
-                };
-                self.report_error(
-                    TypeErrorKind::NonSyncMutCaptureCrossesSuspend {
-                        capture_name: fact.name.clone(),
-                        suspend_kind: suspend_label.clone(),
-                    },
-                    &fact.use_span,
-                    format!(
-                        "non-Sync capture `{}` is mutated across a `{}` point \
-                         (mode = BorrowMut, {}); this is unsound until \
-                         automatic locking lands",
-                        fact.name, suspend_label, origin_label
-                    ),
-                );
-            }
-            if is_move && !is_copy {
-                self.env.mark_moved(&fact.name, span.clone());
-            }
-            capture_facts.push(fact);
-        }
+        let capture_facts = self.finish_closure_captures(
+            raw_capture_facts,
+            &private_bindings,
+            &body_environment,
+            is_move,
+            span,
+        );
+        let capabilities = self.closure_capabilities(&capture_facts);
         self.closure_capture_facts.insert(
             SpanKey::in_module(span, self.current_module_idx),
             capture_facts.clone(),
         );
 
-        // Keep the public callable type shape unchanged while deriving its
-        // capture payload from the binding-accurate ledger.
+        // The callable payload and its guarantees come from the same resolved captures.
         let captures: Vec<Ty> = capture_facts.iter().map(|fact| fact.ty.clone()).collect();
 
         // Restore outer capture tracking state
         self.lambda_capture_depth = prev_capture_depth;
         self.lambda_captures = prev_captures;
         self.lambda_capture_facts = prev_capture_facts;
+        if let Some(depth) = prev_capture_depth {
+            for fact in &capture_facts {
+                if self
+                    .env
+                    .lookup_with_depth(&fact.name)
+                    .is_some_and(|(binding_depth, binding)| {
+                        binding_depth < depth && binding.id == fact.binding_id
+                    })
+                {
+                    self.lambda_capture_facts.push(fact.clone());
+                }
+            }
+        }
 
         if captures.is_empty() {
             Ty::Function {
-                capabilities: crate::CallableCapabilities::default(),
+                capabilities,
                 params: param_tys,
                 ret: Box::new(ret_ty),
             }
         } else {
             Ty::Closure {
-                capabilities: crate::CallableCapabilities::default(),
+                capabilities,
                 params: param_tys,
                 ret: Box::new(ret_ty),
                 captures,

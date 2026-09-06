@@ -2750,15 +2750,16 @@ pub struct HirClosureCapture {
     pub name: String,
     /// Fully-resolved field type stored in the generated environment record.
     pub ty: ResolvedTy,
-    /// Checker-selected by-value capture mode.
-    pub mode: hew_types::ClosureCaptureMode,
+    /// Checker-selected acquisition at environment construction.
+    pub acquisition: hew_types::ClosureCaptureAcquisition,
+    /// Permission to mutate this private environment field.
+    pub access: hew_types::ClosureCaptureAccess,
+    /// Invocation-time consumption of ownership from this field.
+    pub consumption: hew_types::ClosureCaptureConsumption,
     /// Whether the captured type satisfies the checker-owned Send contract.
     pub is_send: bool,
     /// Whether the captured type satisfies the checker-owned `Sync` contract.
-    /// Plumbed from `ClosureCaptureFact::is_sync`; consumed by
-    /// `ClosureEnvLayout::lock_slot_for` in MIR to decide whether a
-    /// non-`Sync` `BorrowMut` capture needs an auto-lock slot when the
-    /// follow-on auto-lock consumer enables lock injection.
+    /// Preserved from `ClosureCaptureFact::is_sync`.
     pub is_sync: bool,
 }
 

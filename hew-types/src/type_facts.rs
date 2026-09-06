@@ -1005,11 +1005,47 @@ mod tests {
 
     fn closure_over(captures: Vec<ResolvedTy>) -> ResolvedTy {
         ResolvedTy::Closure {
-            capabilities: crate::CallableCapabilities::default(),
+            capabilities: crate::CallableCapabilities {
+                clone: captures.iter().all(|capture| {
+                    matches!(
+                        facts(capture).0,
+                        ValueClass::BitCopy
+                            | ValueClass::CowValue
+                            | ValueClass::PersistentShare
+                            | ValueClass::View
+                    )
+                }),
+                ..crate::CallableCapabilities::default()
+            },
             params: vec![],
             ret: Box::new(ResolvedTy::Unit),
             captures,
         }
+    }
+
+    #[test]
+    fn callable_clone_cannot_be_forged_over_resource_captures() {
+        let declarations = declarations();
+        let context = ClassContext::new(&declarations);
+        let forged = ResolvedTy::Closure {
+            capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![conn()],
+        };
+        assert_eq!(
+            crate::value_class::classify_ty(&forged, &context),
+            Err(ClassError::CallableCloneConflict)
+        );
+        let cloneable = ResolvedTy::Function {
+            capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+        };
+        assert_eq!(
+            facts(&cloneable),
+            (ValueClass::CowValue, CloneKind::FieldWise)
+        );
     }
 
     /// §1.1's own test sentence: every `ResolvedTy` arm, asserting
@@ -1071,8 +1107,8 @@ mod tests {
                     params: vec![],
                     ret: Box::new(ResolvedTy::Unit),
                 },
-                ValueClass::PersistentShare,
-                CloneKind::Retain,
+                ValueClass::AffineResource,
+                CloneKind::None,
             ),
             (
                 ResolvedTy::TraitObject {
@@ -1087,8 +1123,8 @@ mod tests {
             ),
             (
                 closure_over(vec![ResolvedTy::I64]),
-                ValueClass::PersistentShare,
-                CloneKind::Retain,
+                ValueClass::CowValue,
+                CloneKind::FieldWise,
             ),
             (
                 ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
@@ -1374,12 +1410,12 @@ mod tests {
             "Vec<Rc<i64>>"
         );
         assert_eq!(
-            (ValueClass::PersistentShare, CloneKind::Retain),
+            (ValueClass::CowValue, CloneKind::FieldWise),
             facts(&closure_over(vec![ResolvedTy::I64])),
             "closure capturing an i64"
         );
         assert_eq!(
-            (ValueClass::AffineResource, CloneKind::Retain),
+            (ValueClass::AffineResource, CloneKind::None),
             facts(&closure_over(vec![conn()])),
             "closure capturing a Conn"
         );

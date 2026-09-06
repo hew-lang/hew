@@ -82,6 +82,9 @@ pub struct Binding {
     pub read_count: u32,
     /// Whether the variable has been reassigned after initial definition
     pub is_written: bool,
+    /// Any-path consuming use while checking the current closure body.
+    /// This is a body capability fact, independent of the current path's moves.
+    pub(crate) capture_consumption: crate::ClosureCaptureConsumption,
     /// Source span of the definition, for diagnostics. None for synthetic bindings.
     pub def_span: Option<Span>,
     /// Source span used **only** for outer-scope shadowing classification
@@ -354,6 +357,7 @@ impl TypeEnv {
                     released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
                     is_written: false,
+                    capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: None,
                     origin: BindingOrigin::Synthetic,
@@ -378,6 +382,7 @@ impl TypeEnv {
                     released_at: None,
                     read_count: 0,
                     is_written: false,
+                    capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
                     origin: BindingOrigin::Local,
@@ -446,6 +451,7 @@ impl TypeEnv {
                     released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     is_written: false,
+                    capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: Some(span),
                     origin,
@@ -454,10 +460,50 @@ impl TypeEnv {
         }
     }
 
+    /// Check a closure against independent environment fields while retaining
+    /// lexical binding identities for the checker-to-HIR capture contract.
+    pub(crate) fn closure_environment(
+        &self,
+        private: &std::collections::HashSet<TypeBindingId>,
+        actor_body: bool,
+    ) -> Self {
+        let mut environment = self.clone();
+        environment.loop_scope_floors.clear();
+        for scope in &mut environment.deferred_scopes {
+            scope.clear();
+        }
+        for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if !actor_body {
+                binding.is_mutable = private.contains(&binding.id);
+            }
+            binding.capture_consumption = crate::ClosureCaptureConsumption::Retained;
+        }
+        environment
+    }
+
+    /// Preserve reads and fresh identities from a checked body without applying
+    /// its private mutations or invocation-time moves to the enclosing scope.
+    pub(crate) fn merge_closure_reads(&mut self, body: &Self) {
+        self.next_binding_id = body.next_binding_id;
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if let Some(checked) = body.binding_by_id(binding.id) {
+                binding.read_count = binding.read_count.max(checked.read_count);
+            }
+        }
+    }
+
+    pub(crate) fn binding_by_id(&self, id: TypeBindingId) -> Option<&Binding> {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::values)
+            .find(|binding| binding.id == id)
+    }
+
     /// Mark a variable as moved, returning `true` if found.
     pub fn mark_moved(&mut self, name: &str, span: Span) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 binding.is_moved = true;
                 binding.moved_at = Some(span);
                 return true;
@@ -476,6 +522,7 @@ impl TypeEnv {
         debug_assert!(!path.is_empty(), "empty place path is `mark_moved`");
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 if !binding.moved_places.iter().any(|m| m.path == path) {
                     binding.moved_places.push(MovedPlace {
                         path,
@@ -543,6 +590,7 @@ impl TypeEnv {
     pub fn mark_released(&mut self, name: &str, span: Span) -> Option<Option<Span>> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 let prior = binding.released_at.clone();
                 binding.released_at = Some(span);
                 return Some(prior);

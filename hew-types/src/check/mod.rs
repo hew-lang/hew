@@ -22,6 +22,7 @@ use std::sync::OnceLock;
 
 pub(crate) mod admissibility;
 mod branch_join;
+mod callables;
 mod calls;
 mod closure_inference;
 mod coerce;
@@ -63,20 +64,20 @@ use self::types::{
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
-    ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
-    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
-    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
-    RcIntrinsicOp, ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering,
-    TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
-    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    AssignTargetShape, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
+    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
+    DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget, EntryExitAction,
+    EntryExitPlan, EntryIntegerType, ExecutionContextReader, ExternMethodCallIdentity, FnSig,
+    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
+    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
+    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
+    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
+    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ResultReturnKind, SpanKey, StackHint,
+    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
+    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
+    WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

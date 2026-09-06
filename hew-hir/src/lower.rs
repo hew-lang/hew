@@ -28,7 +28,7 @@ use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, LoweringFact,
+    ClosureCaptureFact, ClosureEscapeFact, ExecutionContextReader, LoweringFact,
     MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
     OptionResultMethod, PatternKind, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty,
     TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
@@ -19379,12 +19379,7 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
-            Expr::Lambda {
-                params,
-                return_type,
-                body,
-                ..
-            } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
+            Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),
             Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
             Expr::Yield(value) => {
                 let value = value
@@ -21101,115 +21096,79 @@ impl LowerCtx {
         (args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
     }
 
+    fn reject_closure_boundary(
+        &mut self,
+        span: std::ops::Range<usize>,
+        reason: impl Into<String>,
+    ) -> (HirExprKind, ResolvedTy) {
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "closure literal".to_string(),
+                reason: reason.into(),
+            },
+            span,
+            "closure literal reached HIR without valid checker-owned facts",
+        ));
+        (HirExprKind::Literal(HirLiteral::Unit), ResolvedTy::Unit)
+    }
+
     fn lower_closure(
         &mut self,
         params: &[LambdaParam],
-        return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let checker_key = self.mk_key(&span);
-        let closure_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-            match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => resolved,
-                Err(err) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "closure literal".to_string(),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "closure literal type failed checker-boundary conversion",
-                    ));
-                    ResolvedTy::Function {
-                        capabilities: hew_parser::ast::CallableCapabilities::default(),
-                        params: vec![],
-                        ret: Box::new(ResolvedTy::Unit),
-                    }
-                }
-            }
-        } else {
-            let param_tys: Vec<ResolvedTy> = params
-                .iter()
-                .map(|p| {
-                    p.ty.as_ref()
-                        .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
-                })
-                .collect();
-            let ret_ty = return_type
-                .as_ref()
-                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-            ResolvedTy::Function {
-                capabilities: hew_parser::ast::CallableCapabilities::default(),
-                params: param_tys,
-                ret: Box::new(ret_ty),
-            }
+        let Some(ty) = self.expr_types.get(&checker_key) else {
+            return self.reject_closure_boundary(
+                span,
+                "expr_types has no callable type for closure literal span",
+            );
         };
-
-        let (signature_params, ret_ty) = Self::closure_signature_from_ty(&closure_ty)
-            .unwrap_or_else(|| {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "closure literal".to_string(),
-                        reason: format!("expected Function/Closure type, got {closure_ty:?}"),
-                    },
-                    span.clone(),
-                    "closure literal did not type as a callable value",
-                ));
-                (vec![], ResolvedTy::Unit)
-            });
-
+        let closure_ty = match ResolvedTy::from_ty(ty) {
+            Ok(ty) => ty,
+            Err(error) => return self.reject_closure_boundary(span, error.to_string()),
+        };
+        let Some((signature_params, ret_ty)) = Self::closure_signature_from_ty(&closure_ty) else {
+            return self.reject_closure_boundary(
+                span,
+                format!("expected Function/Closure type, got {closure_ty:?}"),
+            );
+        };
+        if signature_params.len() != params.len() {
+            return self.reject_closure_boundary(
+                span,
+                "checker callable signature does not match closure parameter count",
+            );
+        }
+        let Some(checker_facts) = self.closure_capture_facts.get(&checker_key).cloned() else {
+            return self.reject_closure_boundary(
+                span,
+                "closure_capture_facts has no record for closure literal span",
+            );
+        };
+        let Some(escape_kind) = self
+            .closure_escape_facts
+            .get(&checker_key)
+            .map(|fact| fact.kind)
+        else {
+            return self.reject_closure_boundary(
+                span,
+                "closure_escape_facts has no record for closure literal span",
+            );
+        };
         let outer_bindings = self.visible_outer_bindings();
         self.push_scope();
-        let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
-        for (idx, param) in params.iter().enumerate() {
-            let ty = signature_params
-                .get(idx)
-                .cloned()
-                .or_else(|| {
-                    param
-                        .ty
-                        .as_ref()
-                        .map(|annotation| self.lower_type(annotation))
-                })
-                .unwrap_or(ResolvedTy::Unit);
-            let binding = self.bind(param.name.clone(), ty, false, 0..0);
-            hir_params.push(binding);
-        }
+        let hir_params = params
+            .iter()
+            .zip(signature_params)
+            .map(|(param, ty)| self.bind(param.name.clone(), ty, false, param.name_span.clone()))
+            .collect();
         let lowered_body = self
             .with_current_return_type(ret_ty.clone(), |ctx| ctx.lower_expr(body, IntentKind::Read));
         self.pop_scope();
-
-        let checker_facts = if let Some(facts) = self.closure_capture_facts.get(&checker_key) {
-            facts.clone()
-        } else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "closure literal".to_string(),
-                    reason: "closure_capture_facts has no record for closure literal span"
-                        .to_string(),
-                },
-                span.clone(),
-                "closure literal reached HIR without checker capture metadata",
-            ));
-            Vec::new()
-        };
-
         let captures =
             self.materialize_closure_captures(&lowered_body, &outer_bindings, checker_facts, span);
-
-        // Conservative escape classification: when the checker did not emit
-        // a `closure_escape_facts` entry for this literal (which would be a
-        // boundary-fail-closed violation if it ever happened in steady
-        // state), treat the closure as `Escapes` per R242=B. We do not
-        // synthesize a `CheckerBoundaryViolation` here because the
-        // boundary-pin runs in `into_result()` and the conservative
-        // fall-through keeps the MIR path well-formed.
-        let escape_kind = self
-            .closure_escape_facts
-            .get(&checker_key)
-            .map_or(ClosureEscapeKind::Escapes, |fact| fact.kind);
-
         (
             HirExprKind::Closure {
                 params: hir_params,
@@ -21265,18 +21224,6 @@ impl LowerCtx {
                         .as_ref()
                         .is_some_and(|fact_def_span| *fact_def_span == def_span)
             });
-            let fact_idx = fact_idx.or_else(|| {
-                let mut matches = remaining_facts
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, fact)| fact.name == name);
-                let first = matches.next()?;
-                if matches.next().is_none() {
-                    Some(first.0)
-                } else {
-                    None
-                }
-            });
             let Some(fact_idx) = fact_idx else {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -21309,7 +21256,9 @@ impl LowerCtx {
                 binding,
                 name,
                 ty,
-                mode: fact.mode,
+                acquisition: fact.acquisition,
+                access: fact.access,
+                consumption: fact.consumption,
                 is_send: fact.is_send,
                 is_sync: fact.is_sync,
             });
@@ -21479,7 +21428,7 @@ impl LowerCtx {
                 .ty
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-            let binding = self.bind(param.name.clone(), ty, false, 0..0);
+            let binding = self.bind(param.name.clone(), ty, false, param.name_span.clone());
             param_ids.insert(binding.id);
             hir_params.push(binding);
         }
@@ -38115,7 +38064,9 @@ impl Widget {
             .unwrap_or_else(|| panic!("expected HIR capture named k: {captures:#?}"));
 
         assert_eq!(hir_capture.binding, k_binding.id);
-        assert_eq!(hir_capture.mode, checker_fact.mode);
+        assert_eq!(hir_capture.acquisition, checker_fact.acquisition);
+        assert_eq!(hir_capture.access, checker_fact.access);
+        assert_eq!(hir_capture.consumption, checker_fact.consumption);
         assert_eq!(hir_capture.is_send, checker_fact.is_send);
     }
 
@@ -38664,6 +38615,30 @@ impl Widget {
             user_vec_diagnostics.is_empty(),
             "a user Vec<Unit> must not enter the builtin Vec ABI gate"
         );
+    }
+
+    #[test]
+    fn missing_closure_type_or_escape_facts_fail_closed() {
+        for remove_type in [true, false] {
+            let (program, mut tco, _) =
+                parse_typecheck_and_lower("fn main() { let value: i64 = 1; let f = || value; }");
+            if remove_type {
+                tco.expr_types
+                    .retain(|key, _| !tco.closure_capture_facts.contains_key(key));
+            } else {
+                tco.closure_escape_facts.clear();
+            }
+            let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+            assert!(
+                lowered.diagnostics.iter().any(|diagnostic| matches!(
+                    &diagnostic.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                        if name == "closure literal"
+                )),
+                "{:#?}",
+                lowered.diagnostics
+            );
+            assert!(lowered.into_result().is_err());
+        }
     }
 
     #[test]
@@ -39718,7 +39693,7 @@ impl Widget {
             ret_ty: ResolvedTy::Unit,
             body: Box::new(emit_expr),
             captures: vec![],
-            escape_kind: ClosureEscapeKind::Local,
+            escape_kind: hew_types::ClosureEscapeKind::Local,
         });
         let event_names = vec!["Beep".to_string()];
 

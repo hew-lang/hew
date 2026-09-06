@@ -878,15 +878,15 @@ mod for_loop_iterable_fail_closed {
             "capture facts should deduplicate by binding id"
         );
         assert_eq!(facts[0].ty, Ty::I32);
-        assert_eq!(facts[0].mode, ClosureCaptureMode::Copy);
-        assert_eq!(facts[0].mode_origin, CaptureModeOrigin::ImplicitCopy);
+        assert_eq!(
+            facts[0].acquisition,
+            crate::ClosureCaptureAcquisition::Snapshot
+        );
     }
 
     #[test]
-    fn closure_non_copy_capture_inferred_as_borrow_accepted() {
-        // A non-Copy, read-only capture without `move` type-checks
-        // cleanly and records `Borrow` / `InferredBorrow` on the
-        // capture fact.
+    fn closure_non_copy_capture_owns_an_independent_snapshot() {
+        // A non-Copy value with independent cloning becomes an owned snapshot.
         let output = check_source(
             r#"
             fn main() {
@@ -898,7 +898,7 @@ mod for_loop_iterable_fail_closed {
         );
         assert!(
             output.errors.is_empty(),
-            "non-Copy read-only capture should type-check via inferred Borrow: {:?}",
+            "non-Copy read-only capture should snapshot: {:?}",
             output.errors
         );
         let s_fact = output
@@ -908,11 +908,10 @@ mod for_loop_iterable_fail_closed {
             .find(|fact| fact.name == "s")
             .expect("capture fact for `s` must exist");
         assert_eq!(
-            s_fact.mode,
-            ClosureCaptureMode::Borrow,
-            "read-only non-Copy capture should infer Borrow",
+            s_fact.acquisition,
+            crate::ClosureCaptureAcquisition::Snapshot,
+            "read-only capture should own a snapshot",
         );
-        assert_eq!(s_fact.mode_origin, CaptureModeOrigin::InferredBorrow);
     }
 
     #[test]
@@ -936,14 +935,11 @@ mod for_loop_iterable_fail_closed {
         );
     }
 
-    // ── inferred Borrow / BorrowMut capture modes ────────────────────────
+    // ── owned snapshots and explicit private access ─────────────────────
 
     #[test]
-    fn closure_capture_inferred_borrow_for_println_use() {
-        // Acceptance witness: `let s = "hello"; let f = |x| s; f(0)`.
-        // The capture is non-Copy, read-only, no `move` keyword. The
-        // checker must record `Borrow` / `InferredBorrow` AND accept
-        // the program.
+    fn closure_snapshot_is_retained_for_read_only_use() {
+        // Read-only use keeps the independent snapshot available for repeated calls.
         let output = check_source(
             r#"
             fn main() {
@@ -958,7 +954,7 @@ mod for_loop_iterable_fail_closed {
         );
         assert!(
             output.errors.is_empty(),
-            "inferred-borrow capture must be accepted: {:?}",
+            "snapshot capture must be accepted: {:?}",
             output.errors
         );
         let s_fact = output
@@ -967,22 +963,20 @@ mod for_loop_iterable_fail_closed {
             .flat_map(|facts| facts.iter())
             .find(|fact| fact.name == "s")
             .expect("expected a capture fact for `s`");
-        assert_eq!(s_fact.mode, ClosureCaptureMode::Borrow);
-        assert_eq!(s_fact.mode_origin, CaptureModeOrigin::InferredBorrow);
+        assert_eq!(
+            s_fact.acquisition,
+            crate::ClosureCaptureAcquisition::Snapshot
+        );
     }
 
     #[test]
-    fn closure_capture_inferred_borrowmut_via_mutating_method_call() {
-        // Mutating method (`push`) on a captured binding promotes the
-        // inferred mode to `BorrowMut` / `InferredBorrowMut`. The
-        // assertion REQUIRES the fact to exist — a missing fact fails
-        // the test (previous version used `if let Some(..)` which
-        // passed silently when the fact was absent).
+    fn closure_private_capture_allows_mutating_method_call() {
+        // Explicit private access allows collection mutation.
         let output = check_source(
             r"
             fn main() {
                 var xs: Vec<i32> = Vec.new();
-                let f = || xs.push(1);
+                let f = [var xs] || xs.push(1);
                 let _ = f;
             }
             ",
@@ -994,22 +988,20 @@ mod for_loop_iterable_fail_closed {
             .find(|fact| fact.name == "xs")
             .expect("capture fact for `xs` must exist (mutating method call)");
         assert_eq!(
-            xs_fact.mode,
-            ClosureCaptureMode::BorrowMut,
-            "mutating method call should infer BorrowMut: {xs_fact:?}",
+            xs_fact.access,
+            crate::ClosureCaptureAccess::Var,
+            "explicit capture must permit private mutation: {xs_fact:?}",
         );
-        assert_eq!(xs_fact.mode_origin, CaptureModeOrigin::InferredBorrowMut);
     }
 
     #[test]
-    fn closure_capture_inferred_borrowmut_via_assignment_projection() {
-        // Assignment-projection path: `xs[0] = 1` mutates the
-        // root binding `xs`, so the capture promotes to BorrowMut.
+    fn closure_private_capture_allows_assignment_projection() {
+        // Projection assignment changes only the private environment field.
         let output = check_source(
             r"
             fn main() {
                 var xs: Vec<i32> = Vec.new();
-                let f = || { xs[0] = 1; };
+                let f = [var xs] || { xs[0] = 1; };
                 let _ = f;
             }
             ",
@@ -1020,12 +1012,11 @@ mod for_loop_iterable_fail_closed {
             .flat_map(|facts| facts.iter())
             .find(|fact| fact.name == "xs")
             .expect("capture fact for `xs` must exist (assignment projection)");
-        assert_eq!(xs_fact.mode, ClosureCaptureMode::BorrowMut);
-        assert_eq!(xs_fact.mode_origin, CaptureModeOrigin::InferredBorrowMut);
+        assert_eq!(xs_fact.access, crate::ClosureCaptureAccess::Var);
     }
 
     #[test]
-    fn closure_capture_explicit_move_records_move_origin() {
+    fn closure_capture_explicit_move_records_acquisition() {
         let output = check_source(
             r#"
             fn main() {
@@ -1041,8 +1032,7 @@ mod for_loop_iterable_fail_closed {
             .flat_map(|facts| facts.iter())
             .find(|fact| fact.name == "s")
             .expect("capture fact for `s` must exist (explicit move)");
-        assert_eq!(s_fact.mode, ClosureCaptureMode::Move);
-        assert_eq!(s_fact.mode_origin, CaptureModeOrigin::ExplicitMove);
+        assert_eq!(s_fact.acquisition, crate::ClosureCaptureAcquisition::Move);
     }
 
     // ── ClosureCapturesDuplexHandle gate tests ───────────────────────────
@@ -1171,111 +1161,6 @@ mod for_loop_iterable_fail_closed {
                 .iter()
                 .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { .. })),
             "LocalPid captures must NOT trip ClosureCapturesDuplexHandle; got: {:#?}",
-            output.errors
-        );
-    }
-
-    // ── NonSyncMutCaptureCrossesSuspend gate — direct body-scanner tests ─
-    //
-    // The end-to-end diagnostic depends on three independent conditions:
-    //   1. The capture mode resolves to `BorrowMut` (already covered by
-    //      the borrow/borrow-mut tests above).
-    //   2. The capture's resolved type is non-`Sync` (a separate
-    //      `TraitRegistry::is_sync` query — covered by the marker-trait
-    //      tests in `crate::traits`).
-    //   3. The closure body contains a suspend point (`await`, channel
-    //      `recv`, `yield`), as observed by `scan_lambda_body`.
-    //
-    // The three tests below are focused tests of condition (3) for each
-    // suspend source, including the new `Yield = suspend` classification.
-    // They build synthetic lambda bodies directly so the body-scanner
-    // is exercised without depending on user-constructible non-`Sync`
-    // types.
-    //
-    // The end-to-end diagnostic emission path (conditions 1+2+3 plus
-    // the BorrowMut mode-origin message threading) is covered by
-    // `non_sync_mut_capture_crosses_suspend_end_to_end` below.
-
-    fn lit(value: i64) -> Spanned<Expr> {
-        (
-            Expr::Literal(Literal::Integer {
-                value,
-                radix: IntRadix::Decimal,
-            }),
-            0..0,
-        )
-    }
-
-    #[test]
-    fn scan_lambda_body_marks_await_as_suspend() {
-        let body: Spanned<Expr> = (Expr::Await(Box::new(lit(0))), 0..0);
-        let facts = super::closure_inference::scan_lambda_body(&body);
-        assert!(facts.has_suspend, "await must mark has_suspend=true");
-        assert_eq!(facts.suspend_kind, "await");
-    }
-
-    #[test]
-    fn scan_lambda_body_marks_channel_recv_as_suspend() {
-        use hew_parser::ast::SelectArm;
-        let arm = SelectArm {
-            binding: (hew_parser::ast::Pattern::Identifier("v".to_string()), 0..0),
-            source: lit(0),
-            body: lit(0),
-        };
-        let body: Spanned<Expr> = (
-            Expr::Select {
-                arms: vec![arm],
-                timeout: None,
-            },
-            0..0,
-        );
-        let facts = super::closure_inference::scan_lambda_body(&body);
-        assert!(facts.has_suspend, "select recv must mark has_suspend=true");
-        assert_eq!(facts.suspend_kind, "channel recv");
-    }
-
-    #[test]
-    fn scan_lambda_body_marks_yield_as_suspend() {
-        let body: Spanned<Expr> = (Expr::Yield(Some(Box::new(lit(1)))), 0..0);
-        let facts = super::closure_inference::scan_lambda_body(&body);
-        assert!(facts.has_suspend, "yield must mark has_suspend=true");
-        assert_eq!(facts.suspend_kind, "yield");
-    }
-
-    #[test]
-    fn non_sync_mut_capture_crosses_suspend_end_to_end() {
-        // End-to-end witness: a closure that mutates a captured
-        // non-`Sync` non-`Copy` binding across a suspend point must
-        // emit `NonSyncMutCaptureCrossesSuspend` and surface the
-        // BorrowMut mode-origin label in the human-readable message.
-        //
-        // The capture type is a user-defined struct wrapping a raw
-        // pointer: raw pointers are the canonical non-Sync primitive,
-        // and a struct wrapping one is non-Copy (default for user
-        // records) and non-Sync (inherits from its non-Send field).
-        // The suspend point is `yield`, which the body scanner
-        // accepts uniformly with `await` and channel `recv`.
-        let output = check_source(
-            r#"
-            extern "C" { fn make_ptr() -> *const i64; }
-            type Wrap { p: *const i64, xs: Vec<i64> }
-            fn host() {
-                var w: Wrap = Wrap { p: unsafe { make_ptr() }, xs: Vec.new() };
-                let f = || { w = w; let _g = gen { yield 0; }; };
-                let _ = f;
-            }
-            "#,
-        );
-        let found = output.errors.iter().any(|err| {
-            matches!(
-                &err.kind,
-                TypeErrorKind::NonSyncMutCaptureCrossesSuspend { capture_name, .. }
-                    if capture_name == "w"
-            ) && err.message.contains("inferred from a mutating use")
-        });
-        assert!(
-            found,
-            "expected NonSyncMutCaptureCrossesSuspend(w) with mode-origin label in message; got: {:#?}",
             output.errors
         );
     }

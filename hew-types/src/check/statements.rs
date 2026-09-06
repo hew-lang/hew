@@ -1535,7 +1535,9 @@ impl Checker {
                             // In `init { }` fields are bound writable, so
                             // this arm only fires in handler/method/hook
                             // bodies.
-                            if let Some(field) =
+                            if let Some(error) = self.private_capture_mutation_error(name, span) {
+                                self.errors.push(error);
+                            } else if let Some(field) =
                                 self.current_actor_fields.iter().find(|f| f.name == *name)
                             {
                                 self.errors.push(TypeError::immutable_field_assignment(

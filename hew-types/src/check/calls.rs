@@ -1497,17 +1497,17 @@ impl Checker {
                     if self.env.lookup_ref(obj_name).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
-                        return self.check_call_with_type(&resolved, args, span);
+                        return self.check_call_with_type(&resolved, func, args, span);
                     }
                     format!("{obj_name}::{field}")
                 } else {
                     let func_ty = self.synthesize(&func.0, &func.1);
-                    return self.check_call_with_type(&func_ty, args, span);
+                    return self.check_call_with_type(&func_ty, func, args, span);
                 }
             }
             _ => {
                 let func_ty = self.synthesize(&func.0, &func.1);
-                return self.check_call_with_type(&func_ty, args, span);
+                return self.check_call_with_type(&func_ty, func, args, span);
             }
         };
 
@@ -2149,7 +2149,17 @@ impl Checker {
         }
 
         // Then check if it's a variable with a function type (e.g., lambda parameters)
-        if let Some((binding_depth, binding)) = self.env.lookup_with_depth(&func_name) {
+        if let Some((binding_depth, binding)) = self
+            .env
+            .lookup_with_depth(&func_name)
+            .map(|(depth, binding)| (depth, binding.clone()))
+        {
+            if matches!(
+                self.subst.resolve(&binding.ty),
+                Ty::Function { .. } | Ty::Closure { .. }
+            ) {
+                self.synthesize(&func.0, &func.1);
+            }
             if let Some(sig) = binding
                 .def_span
                 .as_ref()
@@ -2159,7 +2169,7 @@ impl Checker {
                 })
                 .cloned()
             {
-                return self
+                let result = self
                     .apply_instantiated_call_signature(
                         &sig.call_sig,
                         type_args,
@@ -2181,15 +2191,11 @@ impl Checker {
                         None,
                     )
                     .return_type;
+                self.check_callable_receiver(&binding.ty, func);
+                return result;
             }
 
             let func_ty = binding.ty.clone();
-            // Captured-closure-as-callee identity, snapshotted while `binding`
-            // is still borrowable (the mutable `self` operations below end its
-            // borrow). Used by the capture-fact push after the LambdaPid gate.
-            let callee_binding_id = binding.id;
-            let callee_def_span = binding.def_span.clone();
-
             // Explicit fail-closed gate: a regular fn-closure must not capture a
             // lambda-actor handle (`LambdaPid<M,R>`) and call it with call syntax.
             //
@@ -2235,43 +2241,7 @@ impl Checker {
                 }
             }
 
-            // A captured CLOSURE used as a call callee (`|y| base(y)` where
-            // `base` is a closure binding from an enclosing scope) is a capture
-            // exactly as reading its identifier would be — but the call
-            // dispatch resolves the bare callee HERE rather than through
-            // `check_identifier`, so without this push the capture fact is never
-            // recorded and HIR's `materialize_closure_captures` later finds the
-            // binding with no metadata (E_HIR CheckerBoundaryViolation). Record
-            // it now, mirroring the identifier path; `check_lambda` refines the
-            // placeholder mode from a body scan. LambdaPid handles are excluded:
-            // their capture is rejected (above) or routed through the dedicated
-            // lambda-actor protocol, never the closure-env protocol.
-            if let Some(capture_depth) = self.lambda_capture_depth {
-                if binding_depth < capture_depth
-                    && !matches!(
-                        &resolved_func_ty,
-                        Ty::Named {
-                            builtin: Some(crate::BuiltinType::LambdaPid),
-                            ..
-                        }
-                    )
-                {
-                    self.lambda_captures.push(func_ty.clone());
-                    self.lambda_capture_facts.push(ClosureCaptureFact {
-                        binding_id: callee_binding_id,
-                        name: func_name.clone(),
-                        ty: func_ty.clone(),
-                        mode: ClosureCaptureMode::Borrow,
-                        mode_origin: CaptureModeOrigin::InferredBorrow,
-                        is_send: false,
-                        is_sync: false,
-                        use_span: span.clone(),
-                        def_span: callee_def_span.clone(),
-                    });
-                }
-            }
-
-            let ret = self.check_call_with_type(&func_ty, args, span);
+            let ret = self.check_call_with_type(&func_ty, func, args, span);
             return ret;
         }
 
@@ -2400,6 +2370,7 @@ impl Checker {
     pub(super) fn check_call_with_type(
         &mut self,
         func_ty: &Ty,
+        func: &Spanned<Expr>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
@@ -2414,6 +2385,7 @@ impl Checker {
                         self.check_against(expr, sp, param);
                     }
                 }
+                self.check_callable_receiver(func_ty, func);
                 *ret
             }
             Ty::Unit => {

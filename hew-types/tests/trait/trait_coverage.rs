@@ -391,10 +391,10 @@ fn function_type_traits() {
         params: vec![Ty::I32, Ty::String],
         ret: Box::new(Ty::Bool),
     };
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Send));
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Sync));
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Clone));
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Copy));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Send));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Sync));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Clone));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Copy));
     // Functions shouldn't have Eq, Hash, etc.
     assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Eq));
     assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Debug));
@@ -408,7 +408,7 @@ fn function_type_traits() {
 fn closure_is_clone_but_not_copy() {
     let reg = TraitRegistry::new();
     let closure = Ty::Closure {
-        capabilities: hew_parser::ast::CallableCapabilities::default(),
+        capabilities: hew_parser::ast::CallableCapabilities::FUNCTION_ITEM,
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::I32],

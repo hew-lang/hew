@@ -318,3 +318,23 @@ fn main() {
         "",
     );
 }
+
+#[test]
+fn a_handler_can_submit_an_owned_message_to_its_own_actor() {
+    run_actor(
+        r"actor Gate {
+    receive fn observe() { println(42); }
+    receive fn relay(me: LocalPid<Gate>) {
+        let _ = send me.observe();
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let _ = send gate.relay(gate);
+}
+",
+        "42\n",
+        0,
+        "",
+    );
+}

@@ -2135,3 +2135,12 @@ The previous controls required hardware-signal wording and synthesized JSON
 diagnostics. Both failed against the checked-fault output before their assertions
 were migrated. The separate controls for silent workers, hardware signals and
 Windows fault statuses remain unchanged, as does the product output.
+
+## Admit the canonical string-prefix predicate
+
+String prefix checks now have an exact stdlib declaration and typed runtime
+contract: both strings are borrowed, the result is a boolean and the operation
+has no logical failure edge. This fills the native contract missing from the
+MIR benchmark's quoting helper. The existing runtime retains its length-aware
+Unicode and embedded-NUL behaviour. Runtime-contract tests pass; physical
+realization and source execution follow as separate validation steps.

@@ -2122,3 +2122,16 @@ identical compiler, runtime, test and specification tree to the validated partia
 ownership checkpoint. A whole callable consumed before a loop exit still needs
 function-owned local storage with lexical cleanup. Cross-platform execution of
 this partial-ownership checkpoint and the revised AOT timeout control is pending.
+
+## Checked-fault eval diagnostics
+
+The divide-by-zero eval controls now verify the checked language fault: raw
+evaluation returns the child's exit code 202 and names `DivideByZero (202)`,
+with no program stdout. JSON evaluation returns CLI status 1 and records the
+child's status 202, cause and empty program stdout in the result. Its compiler
+diagnostics remain empty because the runtime already supplied the fault message.
+
+The previous controls required hardware-signal wording and synthesized JSON
+diagnostics. Both failed against the checked-fault output before their assertions
+were migrated. The separate controls for silent workers, hardware signals and
+Windows fault statuses remain unchanged, as does the product output.

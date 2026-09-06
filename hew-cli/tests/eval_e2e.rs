@@ -3505,50 +3505,59 @@ fn repl_no_side_effect_duplication() {
 #[test]
 fn eval_divide_by_zero_surfaces_cause() {
     require_codegen();
-    // Was exit 1 with empty stderr; now the terminating signal is named.
+    // Checked language faults report their cause and exit code directly.
     let output = Command::new(hew_binary())
         .args(["eval", "1 / 0"])
         .current_dir(repo_root())
         .output()
         .unwrap();
+    assert_eq!(output.status.code(), Some(202));
     assert!(
-        !output.status.success(),
-        "divide-by-zero must exit non-zero; stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+        output.stdout.is_empty(),
+        "division must produce no program output"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.trim().is_empty(), "stderr must not be empty");
     assert!(
-        stderr.contains("runtime error")
-            && (stderr.contains("divide-by-zero")
-                || stderr.contains("arithmetic")
-                || stderr.contains("signal")),
-        "stderr must name the arithmetic/divide-by-zero/signal cause; stderr:\n{stderr}"
+        stderr.contains("DivideByZero (202)"),
+        "stderr must name the checked failure and its code: {stderr}"
     );
 }
 
 #[test]
 fn eval_divide_by_zero_json_surfaces_cause() {
     require_codegen();
-    // `--json` must report a runtime_failure with a non-empty stderr AND
-    // diagnostics, even though the child produced no stderr of its own.
+    // The child supplies the checked-fault message. JSON preserves it as
+    // runtime stderr without synthesizing a compiler diagnostic.
     let output = Command::new(hew_binary())
         .args(["eval", "--json", "1 / 0"])
         .current_dir(repo_root())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stderr.is_empty(),
+        "JSON runtime stderr must stay inside the result: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
     assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
-    assert!(
-        !v["stderr"].as_str().unwrap_or("").is_empty(),
-        "JSON stderr must be non-empty: {v}"
+    assert_eq!(v["exit_code"], 202, "checked child exit code missing: {v}");
+    assert_eq!(
+        v["stdout"], "",
+        "division must produce no program output: {v}"
     );
     assert!(
-        !v["diagnostics"].as_str().unwrap_or("").is_empty(),
-        "JSON diagnostics must be non-empty for an empty-stderr runtime failure: {v}"
+        v["stderr"]
+            .as_str()
+            .expect("JSON stderr must be a string")
+            .contains("DivideByZero (202)"),
+        "JSON stderr must name the checked failure and its code: {v}"
+    );
+    assert_eq!(
+        v["diagnostics"], "",
+        "the child's checked-fault message needs no compiler diagnostic: {v}"
     );
 }
 

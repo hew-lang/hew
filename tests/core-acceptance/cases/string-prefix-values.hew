@@ -1,0 +1,27 @@
+import std.string;
+
+fn main() -> i64 {
+    let text = "é\0value".to_upper();
+    let prefix = "é\0".to_upper();
+    println(text.starts_with(prefix));
+    println(text.starts_with("É\0wrong"));
+    println(text.starts_with("É\0VALUE extra"));
+    println(text.starts_with(""));
+    println("".starts_with(""));
+    println("".starts_with(prefix));
+    println(text.len());
+    println(prefix.len());
+
+    var changing = "alphabet".to_upper();
+    println(changing.starts_with({
+        changing = "changed".to_upper();
+        "ALP"
+    }));
+    println(changing);
+    println(changing.starts_with({
+        changing = "";
+        "CHANGED"
+    }));
+    println(changing.len());
+    0
+}

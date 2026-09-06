@@ -2155,3 +2155,11 @@ the common predicate emitter preserves that difference explicitly.
 The physical MIR and codegen library suites pass. Targeted LLVM verification
 checks the boolean result and pointer parameters on Linux x64, Windows x64 and
 macOS arm64. Source execution and sanitizer checks remain pending.
+
+## Preserve prefix inputs across argument evaluation
+
+The native prefix fixture passes at O0 and O2 with allocated Unicode strings,
+embedded NULs, empty strings and mismatching or longer prefixes. Both input
+values remain usable. When a later argument replaces the receiver variable,
+the comparison still uses the value evaluated first, including replacement by
+an empty string. Paired generated/runtime sanitizer validation is next.

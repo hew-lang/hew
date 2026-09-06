@@ -1128,3 +1128,14 @@ timeout_seconds = 15
 [case.expected]
 stdout = "CONSUMED:8\nyes\n0\nCONSUMED:8\nno\n0\nSELECTED:8\n8\nSELECTED:8\n8\n"
 exit = 0
+
+[[case]]
+id = "string-prefix-values"
+intent = "Prefix comparison borrows length-aware Unicode and embedded-NUL strings, preserves both inputs, handles empty strings, and snapshots a receiver before later argument mutation."
+source = "cases/string-prefix-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\nfalse\ntrue\ntrue\nfalse\n7\n2\ntrue\nCHANGED\ntrue\n0\n"
+exit = 0

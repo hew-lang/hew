@@ -16,7 +16,15 @@ use hew_parser::ast::{BinaryOp, UnaryOp};
 mod callable;
 #[path = "physical_partial.rs"]
 mod partial;
-pub use partial::{PhysicalAggregateLeaf, PhysicalAggregateStep, PhysicalAggregateStorage};
+pub use partial::{
+    PhysicalAggregateStep, PhysicalCleanup, PhysicalPlaceLeaf, PhysicalPlaceStorage,
+};
+#[cfg(test)]
+#[path = "physical_local_fixture.rs"]
+mod local_fixture;
+#[cfg(test)]
+#[path = "physical_local_tests.rs"]
+mod local_tests;
 #[cfg(test)]
 #[path = "physical_partial_fixture.rs"]
 mod partial_fixture;
@@ -236,12 +244,12 @@ pub enum StorageOrigin {
         environment: StorageId,
         field: u32,
     },
-    /// Aliases the root and path in `PhysicalFunction::aggregate_storage`.
+    /// Aliases the root and path in `PhysicalFunction::place_storage`.
     Aggregate(hew_sir::PlaceId),
     Parameter(ValueId),
     BlockArgument(ValueId),
     Value(ValueId),
-    Place(hew_sir::PlaceId),
+    Local(hew_sir::PlaceId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,6 +591,7 @@ pub enum PhysicalOp {
     Destroy {
         source: StorageId,
         action: DestroyAction,
+        cleanup: PhysicalCleanup,
     },
     Borrow {
         dest: StorageId,
@@ -597,11 +606,12 @@ pub enum PhysicalOp {
     Assign {
         dest: StorageId,
         source: StorageId,
-        destroy_old: DestroyAction,
+        destroy_old: Option<DestroyAction>,
     },
     StorageDead {
         storage: StorageId,
-        destroy: DestroyAction,
+        destroy: Option<DestroyAction>,
+        cleanup: PhysicalCleanup,
     },
 }
 
@@ -800,7 +810,7 @@ pub struct PhysicalFunction {
     pub parameters: Vec<StorageId>,
     pub storage: Vec<PhysicalStorage>,
     /// Verified root partitions and their target-realized projection paths.
-    pub aggregate_storage: BTreeMap<StorageId, PhysicalAggregateStorage>,
+    pub place_storage: BTreeMap<StorageId, PhysicalPlaceStorage>,
     pub blocks: Vec<PhysicalBlock>,
 }
 
@@ -879,12 +889,12 @@ pub fn lower_physical_module(
     module: &SemModule,
     target: PhysicalTarget,
 ) -> Result<VerifiedPhysicalModule, PhysicalError> {
-    if let Some(diagnostic) = hew_sir::verify_module(module).into_iter().next() {
-        return Err(PhysicalError::new(format!(
+    let checked = hew_sir::check_module(module).map_err(|diagnostics| {
+        PhysicalError::new(format!(
             "SIR verification failed before physical lowering: {:?}",
-            diagnostic.kind
-        )));
-    }
+            diagnostics[0].kind
+        ))
+    })?;
 
     let PhysicalGlue {
         environment_glue,
@@ -941,7 +951,12 @@ pub fn lower_physical_module(
     let functions = module
         .functions
         .iter()
-        .map(|function| lower_function(module, &target, function, &ids))
+        .map(|function| {
+            let certificate = checked
+                .function(function.callable)
+                .ok_or_else(|| PhysicalError::new("physical function lacks its SIR certificate"))?;
+            lower_function(module, &target, function, &ids, certificate)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
@@ -1492,7 +1507,8 @@ struct FunctionLowerer<'a> {
     values: BTreeMap<ValueId, StorageId>,
     places: BTreeMap<hew_sir::PlaceId, StorageId>,
     storage: Vec<PhysicalStorage>,
-    projections: hew_sir::PlacePlan,
+    projections: &'a hew_sir::PlacePlan,
+    lifetimes: &'a hew_sir::PlaceLifetimes,
 }
 
 #[allow(
@@ -1504,6 +1520,7 @@ fn lower_function(
     target: &PhysicalTarget,
     function: &SemFunction,
     glue_ids: &PhysicalGlueIds,
+    certificate: &hew_sir::CheckedFunction,
 ) -> Result<PhysicalFunction, PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
@@ -1513,8 +1530,8 @@ fn lower_function(
         values: BTreeMap::new(),
         places: BTreeMap::new(),
         storage: Vec::new(),
-        projections: hew_sir::place_plan(function, &module.aggregate_shapes, &module.type_facts)
-            .map_err(PhysicalError::new)?,
+        projections: certificate.place_plan(),
+        lifetimes: certificate.place_lifetimes(),
     };
     let mut parameters = Vec::with_capacity(function.params.len());
     for parameter in &function.params {
@@ -1589,9 +1606,10 @@ fn lower_function(
                     field,
                 },
                 hew_sir::PlaceOrigin::Aggregate { .. } => StorageOrigin::Aggregate(place.id),
-                hew_sir::PlaceOrigin::Local | hew_sir::PlaceOrigin::Runtime => {
+                hew_sir::PlaceOrigin::Local => StorageOrigin::Local(place.id),
+                hew_sir::PlaceOrigin::Runtime => {
                     return Err(PhysicalError::new(
-                        "function-local storage realization is not implemented",
+                        "runtime place lacks a physical storage contract",
                     ));
                 }
             },
@@ -1610,9 +1628,11 @@ fn lower_function(
         }
     }
 
+    let cfg = hew_sir::build_cfg_index(function);
     let blocks = function
         .blocks
         .iter()
+        .filter(|block| cfg.reachable().contains(&block.id))
         .map(|block| {
             let arguments = block
                 .args
@@ -1622,11 +1642,10 @@ fn lower_function(
             let ops = block
                 .ops
                 .iter()
-                .map(|operation| lowerer.lower_op(operation))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
+                .try_fold(Vec::new(), |mut ops, operation| {
+                    ops.extend(lowerer.lower_op(operation, (block.id, ops.len()))?);
+                    Ok::<_, PhysicalError>(ops)
+                })?;
             let terminator = lowerer.lower_terminator(&block.terminator)?;
             Ok(PhysicalBlock {
                 id: block.id,
@@ -1641,7 +1660,7 @@ fn lower_function(
         callable: function.callable,
         entry: function.entry,
         parameters,
-        aggregate_storage: lowerer.lower_aggregate_storage()?,
+        place_storage: lowerer.lower_place_storage()?,
         storage: lowerer.storage,
         blocks,
     })
@@ -1774,7 +1793,11 @@ impl FunctionLowerer<'_> {
         clippy::too_many_lines,
         reason = "the exhaustive SIR operation match is the auditable ownership-to-physical boundary"
     )]
-    fn lower_op(&self, operation: &SemOp) -> Result<Vec<PhysicalOp>, PhysicalError> {
+    fn lower_op(
+        &self,
+        operation: &SemOp,
+        site: (BlockId, usize),
+    ) -> Result<Vec<PhysicalOp>, PhysicalError> {
         if matches!(
             operation.kind,
             SemOpKind::Unary {
@@ -1899,6 +1922,7 @@ impl FunctionLowerer<'_> {
                 one(PhysicalOp::Destroy {
                     source,
                     action: self.destroy_action(&self.storage[source.0 as usize].ty)?,
+                    cleanup: self.cleanup_recipe(operation.id, site, source)?,
                 })
             }
             SemOpKind::Move { source } | SemOpKind::Fork { source } => one(PhysicalOp::Transfer {
@@ -1965,22 +1989,19 @@ impl FunctionLowerer<'_> {
                 Self::no_results(operation)?;
                 let dest = self.place(*place)?;
                 let source = self.value(value.value)?;
-                if self.storage[dest.0 as usize].own == OwnKind::None {
-                    one(PhysicalOp::Transfer { dest, source })
-                } else {
-                    one(PhysicalOp::Assign {
-                        dest,
-                        source,
-                        destroy_old: self.destroy_action(&self.storage[dest.0 as usize].ty)?,
-                    })
-                }
+                one(PhysicalOp::Assign {
+                    dest,
+                    source,
+                    destroy_old: self.optional_destroy(dest)?,
+                })
             }
             SemOpKind::EndLifetime { place } => {
                 Self::no_results(operation)?;
                 let storage = self.place(*place)?;
                 one(PhysicalOp::StorageDead {
                     storage,
-                    destroy: self.destroy_action(&self.storage[storage.0 as usize].ty)?,
+                    destroy: self.optional_destroy(storage)?,
+                    cleanup: self.cleanup_recipe(operation.id, site, storage)?,
                 })
             }
             SemOpKind::Destructure { aggregate, .. } => {
@@ -3048,7 +3069,12 @@ fn verify_physical_function(
         }
         verify_terminator(module, function, &block_ids, &block.terminator)?;
     }
-    verify_initialization(function)?;
+    verify_initialization(module, function)?;
+    for block in &function.blocks {
+        for (index, operation) in block.ops.iter().enumerate() {
+            partial::verify_cleanup_site(function, operation, (block.id, index))?;
+        }
+    }
     Ok(())
 }
 
@@ -3549,6 +3575,10 @@ fn verify_tuple_get(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the exhaustive physical operation contract together"
+)]
 fn verify_operation_storage(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -3564,7 +3594,7 @@ fn verify_operation_storage(
             verify_constant(module, function, *dest, value)?;
         }
         PhysicalOp::StorageLive { storage: dest } => {
-            storage(function, *dest)?;
+            partial::require_local(function, *dest)?;
         }
         PhysicalOp::Unary { dest, source, .. } => {
             require_same_storage_type(function, *dest, *source, "physical operation")?;
@@ -3615,7 +3645,7 @@ fn verify_operation_storage(
         PhysicalOp::Binary { dest, op, lhs, rhs } => {
             verify_binary(function, *dest, *op, *lhs, *rhs)?;
         }
-        PhysicalOp::Destroy { source, action } => {
+        PhysicalOp::Destroy { source, action, .. } => {
             let source = storage(function, *source)?;
             verify_destroy_action(module, &source.ty, source.own, *action)?;
         }
@@ -3643,14 +3673,15 @@ fn verify_operation_storage(
         } => {
             require_same_storage_type(function, *dest, *source, "physical assignment")?;
             let destination = storage(function, *dest)?;
-            verify_destroy_action(module, &destination.ty, destination.own, *destroy_old)?;
+            partial::verify_optional_destroy(module, destination, *destroy_old)?;
         }
         PhysicalOp::StorageDead {
             storage: id,
             destroy,
+            ..
         } => {
-            let source = storage(function, *id)?;
-            verify_destroy_action(module, &source.ty, source.own, *destroy)?;
+            partial::require_local(function, *id)?;
+            partial::verify_optional_destroy(module, storage(function, *id)?, *destroy)?;
         }
     }
     Ok(())
@@ -3796,6 +3827,7 @@ enum InitState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FlowState {
     slots: Vec<InitState>,
+    active: Vec<InitState>,
     fault: FaultState,
 }
 
@@ -3806,7 +3838,10 @@ enum FaultState {
     MaybeActive,
 }
 
-fn verify_initialization(function: &PhysicalFunction) -> Result<(), PhysicalError> {
+fn verify_initialization(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+) -> Result<(), PhysicalError> {
     let blocks = function
         .blocks
         .iter()
@@ -3814,6 +3849,7 @@ fn verify_initialization(function: &PhysicalFunction) -> Result<(), PhysicalErro
         .collect::<BTreeMap<_, _>>();
     let mut entry = FlowState {
         slots: vec![InitState::Uninitialized; function.storage.len()],
+        active: vec![InitState::Uninitialized; function.storage.len()],
         fault: FaultState::None,
     };
     for parameter in &function.parameters {
@@ -3839,7 +3875,7 @@ fn verify_initialization(function: &PhysicalFunction) -> Result<(), PhysicalErro
             .cloned()
             .expect("pending physical block always has an incoming state");
         for operation in &block.ops {
-            apply_operation(function, operation, &mut state, block_id)?;
+            apply_operation(module, function, operation, &mut state, block_id)?;
         }
         for (target, successor) in
             terminator_successors(function, &block.terminator, state, block_id)?
@@ -3865,7 +3901,7 @@ fn initialized(
     block: BlockId,
     context: &str,
 ) -> Result<(), PhysicalError> {
-    if let Some(entry) = function.aggregate_storage.get(&id) {
+    if let Some(entry) = function.place_storage.get(&id) {
         partial::require_root(function, state, id, block, context)?;
         for leaf in &entry.leaves {
             initialized_slot(state, leaf.storage, block, context)?;
@@ -3908,17 +3944,18 @@ fn define(
 ) -> Result<(), PhysicalError> {
     require_no_live_borrows(function, state, id)?;
     let own = storage(function, id)?.own;
-    if let Some(entry) = function
-        .aggregate_storage
-        .get(&id)
-        .filter(|entry| entry.root != id)
-    {
+    if let Some(entry) = function.place_storage.get(&id).filter(|entry| {
+        entry.root != id
+            || matches!(
+                function.storage[id.0 as usize].origin,
+                StorageOrigin::Local(_)
+            )
+    }) {
         partial::require_root(function, state, id, block, context)?;
-        if own != OwnKind::None
-            && entry
-                .leaves
-                .iter()
-                .any(|leaf| state.slots[leaf.storage.0 as usize] != InitState::Uninitialized)
+        if entry
+            .leaves
+            .iter()
+            .any(|leaf| state.slots[leaf.storage.0 as usize] != InitState::Uninitialized)
         {
             return Err(PhysicalError::new(format!(
                 "physical bb{} {context} overwrites initialized aggregate contents {}",
@@ -3958,7 +3995,7 @@ fn require_no_live_borrows(
     source: StorageId,
 ) -> Result<(), PhysicalError> {
     let source = function
-        .aggregate_storage
+        .place_storage
         .get(&source)
         .map_or(source, |entry| entry.root);
     if function.storage.iter().any(|slot| {
@@ -3979,7 +4016,7 @@ fn consume_if_owned(
     state: &mut FlowState,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
-    if let Some(entry) = function.aggregate_storage.get(&id) {
+    if let Some(entry) = function.place_storage.get(&id) {
         require_no_live_borrows(function, state, id)?;
         if entry.root == id {
             state.slots[id.0 as usize] = InitState::Uninitialized;
@@ -4001,24 +4038,23 @@ fn consume_if_owned(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep physical content and storage transitions in one exhaustive match"
+)]
 fn apply_operation(
+    module: &PhysicalModule,
     function: &PhysicalFunction,
     operation: &PhysicalOp,
     state: &mut FlowState,
     block: BlockId,
 ) -> Result<(), PhysicalError> {
     match operation {
-        PhysicalOp::FunctionMake { dest, .. }
-        | PhysicalOp::Const { dest, .. }
-        | PhysicalOp::StorageLive { storage: dest } => {
-            if !matches!(operation, PhysicalOp::StorageLive { .. }) {
-                define(function, state, *dest, block, "constant")?;
-            } else if state.slots[dest.0 as usize] != InitState::Uninitialized {
-                return Err(PhysicalError::new(format!(
-                    "physical bb{} starts the lifetime of initialized storage {}",
-                    block.0, dest.0
-                )));
-            }
+        PhysicalOp::FunctionMake { dest, .. } | PhysicalOp::Const { dest, .. } => {
+            define(function, state, *dest, block, "constant")?;
+        }
+        PhysicalOp::StorageLive { storage: dest } => {
+            partial::activate(function, state, *dest, block)?;
         }
         PhysicalOp::Unary { dest, source, .. } | PhysicalOp::Cast { dest, source, .. } => {
             initialized(function, state, *source, block, "operation")?;
@@ -4087,22 +4123,43 @@ fn apply_operation(
             initialized(function, state, *source, block, "copy or borrow")?;
             define(function, state, *dest, block, "copy or borrow")?;
         }
-        PhysicalOp::Destroy { source, .. } | PhysicalOp::EndBorrow { source } => {
-            partial::require_root(function, state, *source, block, "destroy or end-borrow")?;
+        PhysicalOp::Destroy {
+            source, cleanup, ..
+        } => {
+            partial::require_root(function, state, *source, block, "destroy")?;
+            partial::require_droppable(module, function, state, *source, cleanup.mode())?;
+            require_no_live_borrows(function, state, *source)?;
+            invalidate_storage(function, state, *source);
+        }
+        PhysicalOp::EndBorrow { source } => {
+            initialized(function, state, *source, block, "end-borrow")?;
             require_no_live_borrows(function, state, *source)?;
             invalidate_storage(function, state, *source);
         }
         PhysicalOp::Assign { dest, source, .. } => {
             partial::require_root(function, state, *dest, block, "assignment destination")?;
             initialized(function, state, *source, block, "assignment source")?;
+            partial::require_droppable(
+                module,
+                function,
+                state,
+                *dest,
+                hew_sir::CleanupMode::Ordinary,
+            )?;
             require_no_live_borrows(function, state, *dest)?;
             consume_if_owned(function, state, *source)?;
             partial::set_leaves(function, state, *dest, InitState::Initialized);
         }
-        PhysicalOp::StorageDead { storage: id, .. } => {
-            initialized(function, state, *id, block, "end-lifetime")?;
+        PhysicalOp::StorageDead {
+            storage: id,
+            cleanup,
+            ..
+        } => {
+            partial::require_root(function, state, *id, block, "end-lifetime")?;
+            partial::require_droppable(module, function, state, *id, cleanup.mode())?;
             require_no_live_borrows(function, state, *id)?;
-            invalidate_storage(function, state, *id);
+            partial::set_leaves(function, state, *id, InitState::Uninitialized);
+            state.active[id.0 as usize] = InitState::Uninitialized;
         }
     }
     Ok(())
@@ -4220,6 +4277,21 @@ fn terminator_successors(
     }) {
         return Err(PhysicalError::new(
             "physical function exit leaves a local loan live",
+        ));
+    }
+    if matches!(
+        terminator,
+        PhysicalTerminator::Return { .. }
+            | PhysicalTerminator::Trap(_)
+            | PhysicalTerminator::Unreachable
+            | PhysicalTerminator::PropagateFault
+    ) && state
+        .active
+        .iter()
+        .any(|active| *active != InitState::Uninitialized)
+    {
+        return Err(PhysicalError::new(
+            "physical function exit leaves local storage active",
         ));
     }
     match terminator {
@@ -4439,7 +4511,12 @@ fn terminator_successors(
 
 fn merge_flow(existing: &mut FlowState, incoming: &FlowState) -> bool {
     let mut changed = false;
-    for (left, right) in existing.slots.iter_mut().zip(&incoming.slots) {
+    for (left, right) in existing
+        .slots
+        .iter_mut()
+        .zip(&incoming.slots)
+        .chain(existing.active.iter_mut().zip(&incoming.active))
+    {
         let merged = if *left == *right {
             *left
         } else {
@@ -5905,7 +5982,7 @@ mod tests {
                         else {
                             return None;
                         };
-                        function.aggregate_storage.get(source)
+                        function.place_storage.get(source)
                     })
             })
             .collect::<Vec<_>>();
@@ -6139,7 +6216,7 @@ mod tests {
         let mut bad_path = physical.clone();
         let function = &mut physical.functions[0];
         let projected_sources = function
-            .aggregate_storage
+            .place_storage
             .keys()
             .copied()
             .collect::<BTreeSet<_>>();
@@ -6155,14 +6232,14 @@ mod tests {
             })
             .expect("clone from an aggregate field alias");
         assert_eq!(*action, CloneAction::StringRetain);
-        assert_eq!(function.aggregate_storage[&source].path[0].field, 0);
+        assert_eq!(function.place_storage[&source].path[0].field, 0);
         *action = CloneAction::BytesRetain;
         let error = verify_physical_module(&physical)
             .expect_err("projected clone must use its exact field recipe");
         assert!(error.message.contains("physical clone action"), "{error:?}");
 
         bad_path.functions[0]
-            .aggregate_storage
+            .place_storage
             .get_mut(&source)
             .unwrap()
             .path[0]
@@ -6494,7 +6571,7 @@ mod tests {
         *operation = PhysicalOp::Assign {
             dest,
             source: StorageId(u32::MAX),
-            destroy_old: DestroyAction::StringRelease,
+            destroy_old: Some(DestroyAction::StringRelease),
         };
         let error = verify_physical_module(&physical)
             .expect_err("invalid assignment storage must fail without indexing it");
@@ -6698,7 +6775,7 @@ mod tests {
             callable: CallableId(0),
             entry: BlockId(0),
             parameters: vec![],
-            aggregate_storage: BTreeMap::new(),
+            place_storage: BTreeMap::new(),
             storage: vec![
                 PhysicalStorage {
                     id: StorageId(0),
@@ -7566,6 +7643,7 @@ mod tests {
         // A failed read initializes no result of the current invocation.
         let state = FlowState {
             slots: vec![InitState::Initialized; function.storage.len()],
+            active: vec![InitState::Uninitialized; function.storage.len()],
             fault: FaultState::None,
         };
         let successors =
@@ -7671,6 +7749,7 @@ mod tests {
             };
             let mut state = FlowState {
                 slots: vec![InitState::Initialized; function.storage.len()],
+                active: vec![InitState::Uninitialized; function.storage.len()],
                 fault: FaultState::None,
             };
             state.slots[result.0 as usize] = InitState::Uninitialized;

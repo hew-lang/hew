@@ -30,7 +30,7 @@ fn partial_roots_lower_through_replacement_permutation_fault_and_zero_sized_path
 fn aggregate_alias_paths_preserve_zero_sized_leaf_identity() {
     let physical = fixture(Case::ZeroSized);
     let function = &physical.functions[0];
-    let root = &function.aggregate_storage[&function.parameters[0]];
+    let root = &function.place_storage[&function.parameters[0]];
     assert_eq!(root.leaves.len(), 5);
     let zero = root
         .leaves
@@ -39,7 +39,7 @@ fn aggregate_alias_paths_preserve_zero_sized_leaf_identity() {
         .unwrap();
     assert_eq!(function.storage[zero.storage.0 as usize].layout.size, 0);
     assert!(zero.destroy.is_none());
-    let alias = &function.aggregate_storage[&zero.storage];
+    let alias = &function.place_storage[&zero.storage];
     assert_eq!(alias.root, function.parameters[0]);
     assert_eq!(alias.path[0].field, 2);
     assert_eq!(alias.leaves, vec![zero.clone()]);
@@ -51,20 +51,15 @@ fn verifier_rejects_changed_paths_partitions_and_leaf_cleanup() {
         let mut physical = fixture(Case::MixedReplacement);
         let function = &mut physical.functions[0];
         let root = function.parameters[0];
-        let leaf = function.aggregate_storage[&root].leaves[0].storage;
+        let leaf = function.place_storage[&root].leaves[0].storage;
         match mutation {
-            0 => function.aggregate_storage.get_mut(&leaf).unwrap().path[0].field = 99,
+            0 => function.place_storage.get_mut(&leaf).unwrap().path[0].field = 99,
             1 => {
-                function
-                    .aggregate_storage
-                    .get_mut(&root)
-                    .unwrap()
-                    .leaves
-                    .pop();
+                function.place_storage.get_mut(&root).unwrap().leaves.pop();
             }
-            2 => function.aggregate_storage.get_mut(&root).unwrap().leaves[0].destroy = None,
+            2 => function.place_storage.get_mut(&root).unwrap().leaves[0].destroy = None,
             3 => {
-                function.aggregate_storage.remove(&leaf);
+                function.place_storage.remove(&leaf);
             }
             4 => function.storage[leaf.0 as usize].own = OwnKind::None,
             _ => unreachable!(),

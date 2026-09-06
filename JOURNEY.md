@@ -2240,3 +2240,28 @@ The SIR suite passes with source assertions following Local loads, writeback
 and lexical lifetime ends. Malformed-IR cases still reject missing loop and
 fault cleanup, premature owner ends and invalid field loans. Native Local
 execution remains a separate physical integration step.
+
+## Execute Local storage through physical MIR and LLVM
+
+Physical lowering now consumes the checked module's retained place plans and
+cleanup dispositions. A Local has its own allocation and active lifetime;
+initialization belongs only to its canonical terminal cells. Expanded roots
+and intermediate fields add no owner bit, while unexpanded and zero-sized
+locals each retain one content cell. Copy, take, borrow, replacement and end
+operate on this same partition. Runtime results still initialize their cells
+only on the normal return edge.
+
+LLVM uses conditional leaf cleanup for replacement and lifetime end, including
+joins where only one predecessor consumed the old contents. Trap-certified
+Linear cleanup reclaims the live representation without invoking a consuming
+method. Ordinary cleanup and assignment retain their Linear restrictions.
+Physical verification checks storage activity separately from content state
+and binds cleanup dispositions to their originating function, source and site.
+
+Constructed SIR fixtures execute with the real runtime at O0 and O2. An allocated
+closure capture survives a zero-iteration loop until after observable work,
+and the consuming iteration releases it before that work. Additional execution
+and malformed-IR tests cover conditional assignment, nested loans, repeated
+empty lifetimes, zero-sized cells, partial aggregates and trap reclamation.
+These tests establish the physical storage contract independently of lexical
+source production; combined source acceptance remains a separate check.

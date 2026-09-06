@@ -7,6 +7,24 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A reachable cleanup disposition certified by SIR for this exact physical site.
+/// Its private fields prevent a physical producer from inventing a trap waiver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalCleanup {
+    operation: hew_sir::OpId,
+    function: hew_sir::CallableId,
+    site: (BlockId, usize),
+    source: StorageId,
+    mode: hew_sir::CleanupMode,
+}
+
+impl PhysicalCleanup {
+    #[must_use]
+    pub fn mode(&self) -> hew_sir::CleanupMode {
+        self.mode
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysicalAggregateStep {
     pub glue: PhysicalAggregateId,
@@ -14,7 +32,7 @@ pub struct PhysicalAggregateStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhysicalAggregateLeaf {
+pub struct PhysicalPlaceLeaf {
     pub storage: StorageId,
     pub destroy: Option<DestroyAction>,
 }
@@ -22,16 +40,56 @@ pub struct PhysicalAggregateLeaf {
 /// A root has an empty path; every other entry aliases that root allocation.
 /// Only canonical leaves have initialization bits, including no-drop leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhysicalAggregateStorage {
+pub struct PhysicalPlaceStorage {
     pub root: StorageId,
     pub path: Vec<PhysicalAggregateStep>,
-    pub leaves: Vec<PhysicalAggregateLeaf>,
+    pub leaves: Vec<PhysicalPlaceLeaf>,
 }
 
 impl FunctionLowerer<'_> {
-    pub(super) fn lower_aggregate_storage(
+    pub(super) fn cleanup_recipe(
         &self,
-    ) -> Result<BTreeMap<StorageId, PhysicalAggregateStorage>, PhysicalError> {
+        operation: hew_sir::OpId,
+        site: (BlockId, usize),
+        source: StorageId,
+    ) -> Result<PhysicalCleanup, PhysicalError> {
+        let mode = self.lifetimes.cleanup(operation).ok_or_else(|| {
+            PhysicalError::new(format!(
+                "cleanup {} has no reachable SIR disposition",
+                operation.0
+            ))
+        })?;
+        Ok(PhysicalCleanup {
+            operation,
+            function: self.function.callable,
+            site,
+            source,
+            mode,
+        })
+    }
+
+    pub(super) fn optional_destroy(
+        &self,
+        id: StorageId,
+    ) -> Result<Option<DestroyAction>, PhysicalError> {
+        let slot = &self.storage[id.0 as usize];
+        if slot.own == OwnKind::None {
+            Ok(None)
+        } else {
+            self.destroy_action(&slot.ty).map(Some)
+        }
+    }
+
+    fn owner_storage(&self, owner: hew_sir::OwnerRoot) -> Result<StorageId, PhysicalError> {
+        match owner {
+            hew_sir::OwnerRoot::Value(value) => self.value(value),
+            hew_sir::OwnerRoot::Local(place) => self.place(place),
+        }
+    }
+
+    pub(super) fn lower_place_storage(
+        &self,
+    ) -> Result<BTreeMap<StorageId, PhysicalPlaceStorage>, PhysicalError> {
         let leaves = |places: &[hew_sir::PlaceId]| {
             places
                 .iter()
@@ -39,7 +97,7 @@ impl FunctionLowerer<'_> {
                     let projection = self.projections.projection(*place).ok_or_else(|| {
                         PhysicalError::new("aggregate leaf lacks its SIR projection recipe")
                     })?;
-                    Ok(PhysicalAggregateLeaf {
+                    Ok(PhysicalPlaceLeaf {
                         storage: self.place(*place)?,
                         destroy: if projection.recipe.own == OwnKind::Owned {
                             Some(self.destroy_action(&projection.recipe.ty)?)
@@ -52,15 +110,10 @@ impl FunctionLowerer<'_> {
         };
         let mut result = BTreeMap::new();
         for (root, partition) in self.projections.roots() {
-            let hew_sir::OwnerRoot::Value(root) = root else {
-                return Err(PhysicalError::new(
-                    "function-local storage realization is not implemented",
-                ));
-            };
-            let root = self.value(root)?;
+            let root = self.owner_storage(root)?;
             result.insert(
                 root,
-                PhysicalAggregateStorage {
+                PhysicalPlaceStorage {
                     root,
                     path: Vec::new(),
                     leaves: leaves(partition)?,
@@ -71,12 +124,10 @@ impl FunctionLowerer<'_> {
             let Some(projection) = self.projections.projection(place.id) else {
                 continue;
             };
-            let hew_sir::OwnerRoot::Value(root) = projection.root else {
-                return Err(PhysicalError::new(
-                    "function-local storage realization is not implemented",
-                ));
-            };
-            let root = self.value(root)?;
+            if projection.path.is_empty() {
+                continue;
+            }
+            let root = self.owner_storage(projection.root)?;
             let mut ty = self.storage[root.0 as usize].ty.clone();
             let mut path = Vec::with_capacity(projection.path.len());
             for step in &projection.path {
@@ -92,7 +143,7 @@ impl FunctionLowerer<'_> {
             }
             result.insert(
                 self.place(place.id)?,
-                PhysicalAggregateStorage {
+                PhysicalPlaceStorage {
                     root,
                     path,
                     leaves: leaves(&projection.leaves)?,
@@ -107,17 +158,15 @@ pub(super) fn verify_storage(
     module: &PhysicalModule,
     function: &PhysicalFunction,
 ) -> Result<(), PhysicalError> {
-    let entries = &function.aggregate_storage;
+    let entries = &function.place_storage;
     let mut paths = BTreeMap::new();
     for (&id, entry) in entries {
         let slot = storage(function, id)?;
         let root = storage(function, entry.root)?;
-        if root.own != OwnKind::Owned
+        if (!matches!(root.origin, StorageOrigin::Local(_)) && root.own != OwnKind::Owned)
             || matches!(
                 root.origin,
-                StorageOrigin::Aggregate(_)
-                    | StorageOrigin::Capture { .. }
-                    | StorageOrigin::Place(_)
+                StorageOrigin::Aggregate(_) | StorageOrigin::Capture { .. }
             )
             || entries
                 .get(&entry.root)
@@ -156,7 +205,11 @@ pub(super) fn verify_storage(
         }
     }
     for slot in &function.storage {
-        if matches!(slot.origin, StorageOrigin::Aggregate(_)) && !entries.contains_key(&slot.id) {
+        if matches!(
+            slot.origin,
+            StorageOrigin::Aggregate(_) | StorageOrigin::Local(_)
+        ) && !entries.contains_key(&slot.id)
+        {
             return Err(PhysicalError::new(
                 "aggregate alias has no verified storage path",
             ));
@@ -192,7 +245,7 @@ fn verify_partitions(
     module: &PhysicalModule,
     function: &PhysicalFunction,
 ) -> Result<(), PhysicalError> {
-    let entries = &function.aggregate_storage;
+    let entries = &function.place_storage;
     // Revalidate the supplied physical partition against the checked paths.
     // This verifies storage coverage; it does not choose field lifetimes.
     for entry in entries.values() {
@@ -221,9 +274,12 @@ fn verify_partitions(
         }
         for leaf in &entry.leaves {
             let slot = storage(function, leaf.storage)?;
-            if !matches!(slot.origin, StorageOrigin::Aggregate(_)) {
+            if !matches!(
+                slot.origin,
+                StorageOrigin::Aggregate(_) | StorageOrigin::Local(_)
+            ) {
                 return Err(PhysicalError::new(
-                    "aggregate partition leaf must be a root projection",
+                    "place partition leaf must be a local or projection",
                 ));
             }
             match (slot.own, leaf.destroy) {
@@ -255,9 +311,19 @@ pub(super) fn verify_edge(
     let mut expected = Vec::new();
     let mut roots = BTreeSet::new();
     for (source, dest) in &edge.transfers {
+        if [source, dest].into_iter().any(|id| {
+            matches!(
+                function.storage[id.0 as usize].origin,
+                StorageOrigin::Local(_) | StorageOrigin::Aggregate(_)
+            )
+        }) {
+            return Err(PhysicalError::new(
+                "physical CFG transfers require SSA values, not local places",
+            ));
+        }
         match (
-            function.aggregate_storage.get(source),
-            function.aggregate_storage.get(dest),
+            function.place_storage.get(source),
+            function.place_storage.get(dest),
         ) {
             (None, None) => {}
             (Some(before), Some(after)) if before.root == *source && after.root == *dest => {
@@ -272,8 +338,8 @@ pub(super) fn verify_edge(
                     ));
                 }
                 for (source, dest) in before.leaves.iter().zip(&after.leaves) {
-                    if function.aggregate_storage[&source.storage].path
-                        != function.aggregate_storage[&dest.storage].path
+                    if function.place_storage[&source.storage].path
+                        != function.place_storage[&dest.storage].path
                         || source.destroy != dest.destroy
                     {
                         return Err(PhysicalError::new(
@@ -304,7 +370,7 @@ pub(super) fn set_leaves(
     id: StorageId,
     value: InitState,
 ) {
-    if let Some(entry) = function.aggregate_storage.get(&id) {
+    if let Some(entry) = function.place_storage.get(&id) {
         for leaf in &entry.leaves {
             state.slots[leaf.storage.0 as usize] = value;
         }
@@ -319,8 +385,117 @@ pub(super) fn require_root(
     context: &str,
 ) -> Result<(), PhysicalError> {
     let root = function
-        .aggregate_storage
+        .place_storage
         .get(&id)
         .map_or(id, |entry| entry.root);
-    initialized_slot(state, root, block, context)
+    if matches!(storage(function, root)?.origin, StorageOrigin::Local(_)) {
+        if state.active[root.0 as usize] != InitState::Initialized {
+            return Err(PhysicalError::new(format!(
+                "physical bb{} {context} accesses inactive local storage {}",
+                block.0, root.0
+            )));
+        }
+        Ok(())
+    } else {
+        initialized_slot(state, root, block, context)
+    }
+}
+
+pub(super) fn verify_cleanup_site(
+    function: &PhysicalFunction,
+    operation: &super::PhysicalOp,
+    site: (BlockId, usize),
+) -> Result<(), PhysicalError> {
+    let (source, cleanup) = match operation {
+        super::PhysicalOp::Destroy {
+            source, cleanup, ..
+        } => (*source, cleanup),
+        super::PhysicalOp::StorageDead {
+            storage, cleanup, ..
+        } => (*storage, cleanup),
+        _ => return Ok(()),
+    };
+    if cleanup.function != function.callable || cleanup.source != source || cleanup.site != site {
+        return Err(PhysicalError::new(format!(
+            "physical cleanup {} differs from its certified source or site",
+            cleanup.operation.0
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn require_local(
+    function: &PhysicalFunction,
+    id: StorageId,
+) -> Result<(), PhysicalError> {
+    if !matches!(storage(function, id)?.origin, StorageOrigin::Local(_)) {
+        return Err(PhysicalError::new(
+            "physical storage lifetime requires a function-owned local",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn verify_optional_destroy(
+    module: &PhysicalModule,
+    slot: &super::PhysicalStorage,
+    destroy: Option<DestroyAction>,
+) -> Result<(), PhysicalError> {
+    match (slot.own, destroy) {
+        (OwnKind::None, None) => Ok(()),
+        (OwnKind::Owned, Some(action)) => verify_destroy_action(module, &slot.ty, slot.own, action),
+        _ => Err(PhysicalError::new(
+            "physical conditional destruction differs from its content ownership",
+        )),
+    }
+}
+
+pub(super) fn activate(
+    function: &PhysicalFunction,
+    state: &mut FlowState,
+    id: StorageId,
+    block: BlockId,
+) -> Result<(), PhysicalError> {
+    require_local(function, id)?;
+    if state.active[id.0 as usize] != InitState::Uninitialized {
+        return Err(PhysicalError::new(format!(
+            "physical bb{} starts an already active local {}",
+            block.0, id.0
+        )));
+    }
+    state.active[id.0 as usize] = InitState::Initialized;
+    set_leaves(function, state, id, InitState::Uninitialized);
+    Ok(())
+}
+
+pub(super) fn require_droppable(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    state: &FlowState,
+    id: StorageId,
+    mode: hew_sir::CleanupMode,
+) -> Result<(), PhysicalError> {
+    if mode == hew_sir::CleanupMode::Trap {
+        return Ok(());
+    }
+    let live_linear = |id: StorageId| -> Result<bool, PhysicalError> {
+        Ok(state.slots[id.0 as usize] != InitState::Uninitialized
+            && super::semantic_type_facts(module, &storage(function, id)?.ty)?.class
+                == hew_types::ValueClass::Linear)
+    };
+    let live = if let Some(entry) = function.place_storage.get(&id) {
+        let mut live = false;
+        for leaf in &entry.leaves {
+            live |= live_linear(leaf.storage)?;
+        }
+        live
+    } else {
+        live_linear(id)?
+    };
+    if live {
+        return Err(PhysicalError::new(
+            "physical ordinary cleanup cannot discard live linear contents",
+        ));
+    }
+    Ok(())
 }

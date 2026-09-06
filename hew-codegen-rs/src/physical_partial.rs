@@ -66,7 +66,7 @@ pub(super) fn allocate_storage<'ctx>(
             Ok(Some(slot))
         })
         .collect::<CodegenResult<Vec<_>>>()?;
-    for (&id, projection) in &function.aggregate_storage {
+    for (&id, projection) in &function.place_storage {
         if projection.path.is_empty() {
             continue;
         }
@@ -119,7 +119,7 @@ pub(super) fn allocate_flags<'ctx>(
     builder: &Builder<'ctx>,
 ) -> CodegenResult<BTreeMap<StorageId, PointerValue<'ctx>>> {
     let mut flags = BTreeMap::new();
-    for projection in function.aggregate_storage.values() {
+    for projection in function.place_storage.values() {
         for leaf in &projection.leaves {
             if let Entry::Vacant(entry) = flags.entry(leaf.storage) {
                 let flag = builder
@@ -146,8 +146,8 @@ pub(super) fn allocate_flags<'ctx>(
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
-    pub(super) fn aggregate_flag(&self, leaf: StorageId) -> CodegenResult<PointerValue<'ctx>> {
-        self.aggregate_flags.get(&leaf).copied().ok_or_else(|| {
+    pub(super) fn place_flag(&self, leaf: StorageId) -> CodegenResult<PointerValue<'ctx>> {
+        self.place_flags.get(&leaf).copied().ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "aggregate leaf {} lacks initialization storage",
                 leaf.0
@@ -155,27 +155,27 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         })
     }
 
-    pub(super) fn aggregate_initialized(&self, leaf: StorageId) -> CodegenResult<IntValue<'ctx>> {
+    pub(super) fn place_initialized(&self, leaf: StorageId) -> CodegenResult<IntValue<'ctx>> {
         self.builder
             .build_load(
                 self.ctx.bool_type(),
-                self.aggregate_flag(leaf)?,
+                self.place_flag(leaf)?,
                 "aggregate.initialized",
             )
             .llvm_ctx("load aggregate leaf initialization")
             .map(|value| value.into_int_value())
     }
 
-    pub(super) fn set_aggregate_initialized(
+    pub(super) fn set_place_initialized(
         &self,
         id: StorageId,
         initialized: bool,
     ) -> CodegenResult<()> {
-        if let Some(projection) = self.function.aggregate_storage.get(&id) {
+        if let Some(projection) = self.function.place_storage.get(&id) {
             for leaf in &projection.leaves {
                 self.builder
                     .build_store(
-                        self.aggregate_flag(leaf.storage)?,
+                        self.place_flag(leaf.storage)?,
                         self.ctx
                             .bool_type()
                             .const_int(u64::from(initialized), false),
@@ -186,20 +186,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    pub(super) fn destroy_partial_aggregate(&self, source: StorageId) -> CodegenResult<bool> {
-        let Some(projection) = self.function.aggregate_storage.get(&source) else {
+    pub(super) fn destroy_place_contents(&self, source: StorageId) -> CodegenResult<bool> {
+        let Some(projection) = self.function.place_storage.get(&source) else {
             return Ok(false);
         };
         for leaf in projection.leaves.iter().rev() {
             if let Some(action) = leaf.destroy {
-                let initialized = self.aggregate_initialized(leaf.storage)?;
+                let initialized = self.place_initialized(leaf.storage)?;
                 let drop = self.ctx.append_basic_block(self.value, "aggregate.drop");
                 let next = self.ctx.append_basic_block(self.value, "aggregate.next");
                 self.builder
                     .build_conditional_branch(initialized, drop, next)
                     .llvm_ctx("test aggregate leaf initialization before destruction")?;
                 self.builder.position_at_end(drop);
-                self.set_aggregate_initialized(leaf.storage, false)?;
+                self.set_place_initialized(leaf.storage, false)?;
                 let value = self.load(leaf.storage, "aggregate.drop.value")?;
                 self.value_emitter().destroy_loaded_value(
                     value,
@@ -211,7 +211,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .llvm_ctx("finish aggregate leaf destruction")?;
                 self.builder.position_at_end(next);
             } else {
-                self.set_aggregate_initialized(leaf.storage, false)?;
+                self.set_place_initialized(leaf.storage, false)?;
             }
         }
         Ok(true)

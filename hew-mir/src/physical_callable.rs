@@ -309,7 +309,7 @@ pub(super) fn depends_on(function: &PhysicalFunction, mut id: StorageId, owner: 
         } else if let StorageOrigin::Capture { environment, .. } = slot.origin {
             id = environment;
         } else if let Some(projection) = function
-            .aggregate_storage
+            .place_storage
             .get(&id)
             .filter(|projection| projection.root != id)
         {

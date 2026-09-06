@@ -1619,6 +1619,12 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
         task_ty: ResolvedTy,
     },
+    /// Start every child before waiting and collect one ordered aggregate result.
+    /// The task output type distinguishes vector and heterogeneous tuple batches.
+    ForkBatch {
+        children: Vec<HirExpr>,
+        task_ty: ResolvedTy,
+    },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.
     ForkBlock {

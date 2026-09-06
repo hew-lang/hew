@@ -7101,7 +7101,10 @@ fn collect_call_sites_in_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
             }
@@ -11024,7 +11027,10 @@ impl LowerCtx {
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirExprKind::TupleLiteral { elements } => {
+            HirExprKind::TupleLiteral { elements }
+            | HirExprKind::ForkBatch {
+                children: elements, ..
+            } => {
                 for elem in elements {
                     self.wrap_var_self_explicit_expr_returns(elem, receiver, abi_return_ty);
                 }
@@ -15588,15 +15594,6 @@ impl LowerCtx {
     }
 
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
-        // Nested control-flow bodies (while, loop, if, match) must not
-        // inherit the parent's `scope_depth`. The `scope_depth > 0` guard
-        // in `lower_expression_stmt_kind` is intended to intercept only the
-        // DIRECT statement-expressions of a `scope { }` body (handled by
-        // `lower_scope_block`). Resetting to 0 here ensures that a call
-        // inside `scope { while { call() } }` is NOT treated as a spawned
-        // task — only the top-level scope statements are spawn candidates.
-        let saved_scope_depth = self.scope_depth;
-        self.scope_depth = 0;
         self.push_scope();
         let scope = self.ids.scope();
         let prev_scope_id = std::mem::replace(&mut self.current_scope_id, scope);
@@ -15628,7 +15625,6 @@ impl LowerCtx {
         );
         self.current_scope_id = prev_scope_id;
         self.pop_scope();
-        self.scope_depth = saved_scope_depth;
 
         HirBlock {
             node: self.ids.node(),
@@ -18889,11 +18885,33 @@ impl LowerCtx {
                 (HirExprKind::Scope { body: hir_body }, ResolvedTy::Unit)
             }
             Expr::ForkChild { expr } => {
-                let spawned = self.lower_spawned_call(expr);
-                if let Some(type_args) = self.call_site_type_args.remove(&spawned.site) {
-                    self.call_site_type_args.insert(site, type_args);
+                if let Expr::Array(branches) | Expr::Tuple(branches) = &expr.0 {
+                    let Some(Ty::Task(output)) = self.expr_types.get(&self.mk_key(&span)) else {
+                        return self
+                            .unsupported_expr(span, "fork batch has no checked task result");
+                    };
+                    let Ok(output_ty) = ResolvedTy::from_ty(output) else {
+                        return self.unsupported_expr(span, "fork batch result type is unresolved");
+                    };
+                    let task_ty = ResolvedTy::Task(Box::new(output_ty));
+                    let children = branches
+                        .iter()
+                        .map(|child| self.lower_spawned_call(child))
+                        .collect();
+                    (
+                        HirExprKind::ForkBatch {
+                            children,
+                            task_ty: task_ty.clone(),
+                        },
+                        task_ty,
+                    )
+                } else {
+                    let spawned = self.lower_spawned_call(expr);
+                    if let Some(type_args) = self.call_site_type_args.remove(&spawned.site) {
+                        self.call_site_type_args.insert(site, type_args);
+                    }
+                    (spawned.kind, spawned.ty)
                 }
-                (spawned.kind, spawned.ty)
             }
             Expr::ForkBlock { body } => {
                 let checker_key = self.mk_key(&span);
@@ -30897,7 +30915,10 @@ fn collect_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
             }
@@ -31207,7 +31228,10 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
             }
@@ -32022,7 +32046,10 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 collect_hir_emitted_events_walk(elem, event_names, out);
             }
@@ -33107,7 +33134,7 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
     match expr {
         // FC-P1-A1 sites: spawn/fork child and fork block
         Expr::ForkChild { expr: child, .. } => {
-            check_fork_child_shape(child, span, ctx, program);
+            check_fork_child_shape(child, span, ctx);
             scan_expr_for_task_gates(&child.0, &child.1, ctx, program);
         }
         Expr::ForkBlock { body } => {
@@ -33286,12 +33313,13 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
 /// Check fork child (spawned call / fork child) expression shape.
 /// Sites: hew-mir/src/lower.rs:7623, 7641 (`TaskSpawn` signature/callee)
 /// FC-P1-A1 Blocker 2: Also validates return type is unit.
-fn check_fork_child_shape(
-    child: &Spanned<Expr>,
-    span: &Span,
-    ctx: &mut LowerCtx,
-    _program: &Program,
-) {
+fn check_fork_child_shape(child: &Spanned<Expr>, span: &Span, ctx: &mut LowerCtx) {
+    if let Expr::Array(children) | Expr::Tuple(children) = &child.0 {
+        for child in children {
+            check_fork_child_shape(child, &child.1, ctx);
+        }
+        return;
+    }
     let Expr::Call { function, args, .. } = &child.0 else {
         // Fork child must be a call expression
         ctx.diagnostics.push(HirDiagnostic::new(
@@ -34440,7 +34468,10 @@ fn scan_expr_for_call_shape(
         | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 scan_expr_for_call_shape(elem, callable, diagnostics);
             }

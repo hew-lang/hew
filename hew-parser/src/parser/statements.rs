@@ -625,14 +625,14 @@ impl Parser<'_> {
                 // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
                 if self.eat(&Token::Dot) {
                     self.error(
-                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
+                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `let name = fork expr;` bindings instead"
                             .to_string(),
                     );
                     return None;
                 }
                 if self.peek() == Some(&Token::Pipe) {
                     self.error(
-                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
+                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { let name = fork call(...); }' instead"
                             .to_string(),
                     );
                     return None;

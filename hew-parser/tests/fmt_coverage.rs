@@ -1769,7 +1769,7 @@ fn fmt_array_repeat_roundtrip() {
 
 #[test]
 fn fmt_scope_block_roundtrip() {
-    exact_roundtrip("fn main() {\n    scope {\n        fork child = run();\n    };\n}\n");
+    exact_roundtrip("fn main() {\n    scope {\n        let child = fork run();\n    };\n}\n");
 }
 
 #[test]
@@ -2278,7 +2278,7 @@ fn fmt_channel_half_handle_roundtrip() {
     );
 }
 
-// --- scope { fork name = call(); } structured concurrency ---------------
+// --- scope { let name = fork call(); } structured concurrency ---------------
 
 #[test]
 fn fmt_scope_fork_named_binding_roundtrip() {
@@ -2286,7 +2286,7 @@ fn fmt_scope_fork_named_binding_roundtrip() {
     // structured-concurrency form. `scope` is a statement, not a `Primary`
     // (HEW-SPEC-2026 §4.2), so the canonical spelling is a statement-expression.
     exact_roundtrip(
-        "fn main() {\n    scope {\n        fork worker = compute();\n        fork auditor = audit();\n        worker\n    };\n}\n",
+        "fn main() {\n    scope {\n        let worker = fork compute();\n        let auditor = fork audit();\n        worker\n    };\n}\n",
     );
 }
 

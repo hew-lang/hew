@@ -1403,7 +1403,10 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 walk_expr(
                     elem,

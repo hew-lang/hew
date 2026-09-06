@@ -4619,30 +4619,43 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn initialize_active_fault(&self, code: i32) -> CodegenResult<()> {
+        self.initialize_active_fault_value(self.ctx.i32_type().const_int(code as u64, true))
+    }
+
+    fn initialize_cancellation_fault(&self) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("cancellation requires a resumable invocation".into())
+        })?;
+        let code = self.state_value("hew_coro_state_cancel_code", frame.state)?;
+        self.initialize_active_fault_value(code)
+    }
+
+    fn initialize_active_fault_value(&self, code: IntValue<'ctx>) -> CodegenResult<()> {
         let function = external_fault_new(self.ctx, self.llvm)?;
         let fault = self
             .builder
-            .build_call(
-                function,
-                &[self.ctx.i32_type().const_int(code as u64, true).into()],
-                "trap.fault",
-            )
+            .build_call(function, &[code.into()], "trap.fault")
             .llvm_ctx("create physical trap fault")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("fault constructor returned void".into()))?;
-        self.store_active_fault(fault, code)
+        self.store_active_fault_value(fault, code)
     }
 
     fn store_active_fault(&self, fault: BasicValueEnum<'ctx>, code: i32) -> CodegenResult<()> {
+        self.store_active_fault_value(fault, self.ctx.i32_type().const_int(code as u64, true))
+    }
+
+    fn store_active_fault_value(
+        &self,
+        fault: BasicValueEnum<'ctx>,
+        code: IntValue<'ctx>,
+    ) -> CodegenResult<()> {
         self.builder
             .build_store(self.active_fault, fault)
             .llvm_ctx("store physical trap fault")?;
         self.builder
-            .build_store(
-                self.active_status,
-                self.ctx.i32_type().const_int(code as u64, true),
-            )
+            .build_store(self.active_status, code)
             .llvm_ctx("retain physical trap status")?;
         Ok(())
     }

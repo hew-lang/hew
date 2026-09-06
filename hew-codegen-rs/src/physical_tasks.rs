@@ -236,7 +236,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("choose task result transfer")?;
         self.builder.position_at_end(abandoned);
         self.free_handle("hew_checked_task_wait_free", wait)?;
-        self.initialize_active_fault(hew_runtime::fault::HEW_FAULT_CANCELLED)?;
+        self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(take);
         let private_status = self.state_value("hew_checked_task_wait_private_status", wait)?;
@@ -419,7 +419,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(cancellation, cancelled, success)
             .llvm_ctx("dispatch parent cancellation")?;
         self.builder.position_at_end(cancelled);
-        self.initialize_active_fault(hew_runtime::fault::HEW_FAULT_CANCELLED)?;
+        self.initialize_cancellation_fault()?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(failure);
         self.emit_edge(unwind)?;

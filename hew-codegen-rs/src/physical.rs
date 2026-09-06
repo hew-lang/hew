@@ -1570,6 +1570,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         callable: &PhysicalCallable,
         value: FunctionValue<'ctx>,
     ) -> CodegenResult<Self> {
+        if !function.aggregate_storage.is_empty() {
+            return Err(CodegenError::FailClosed(
+                "partial aggregate storage requires LLVM realization".into(),
+            ));
+        }
         let ctx = module.ctx;
         let builder = ctx.create_builder();
         let prologue = ctx.append_basic_block(value, "physical.prologue");

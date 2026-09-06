@@ -508,7 +508,8 @@ pub(super) fn verify_trap_cleanup_refinement(
                 PhysicalTerminator::CleanupDispatch { fault, .. } => {
                     pending.push(((fault.target, 0), false));
                 }
-                PhysicalTerminator::Goto(edge) => pending.push(((edge.target, 0), false)),
+                PhysicalTerminator::GeneratorClose { next: edge, .. }
+                | PhysicalTerminator::Goto(edge) => pending.push(((edge.target, 0), false)),
                 PhysicalTerminator::Branch {
                     then_target,
                     else_target,

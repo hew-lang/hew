@@ -1,0 +1,27 @@
+import std.stream;
+
+fn open() -> Stream<string> {
+    match stream.from_file("resource-read.bin") {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+gen fn held() -> string {
+    let input = open();
+    defer { input.close(); println("closed"); }
+    let value = "resource".to_upper();
+    yield value;
+    yield "later";
+}
+
+fn main() {
+    for index in 0..3 {
+        for value in held() {
+            println(value);
+            break;
+        }
+        println(index);
+    }
+    println("released");
+}

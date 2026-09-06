@@ -549,7 +549,22 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let result_out = function.get_nth_param(2).unwrap().into_pointer_value();
         let fault_out = function.get_nth_param(3).unwrap().into_pointer_value();
         let state = function.get_nth_param(4).unwrap().into_pointer_value();
-        let frame = coro::begin(self.ctx, &self.llvm, &builder, function, state)?;
+        // Consuming bodies copy their receiver and ordinary arguments into
+        // entry storage before suspension, then own all cleanup. Their adapters
+        // can transfer that frame directly instead of allocating a second one.
+        let transfers_receiver = has_receiver
+            && consuming
+            && body.params[0].passing == hew_mir::physical::SemParamPassing::Consume
+            && body.params.iter().all(|parameter| {
+                parameter.passing != hew_mir::physical::SemParamPassing::BorrowMut
+            });
+        let frame = if transfers_receiver {
+            None
+        } else {
+            Some(coro::begin(
+                self.ctx, &self.llvm, &builder, function, state,
+            )?)
+        };
         let mut arguments = Vec::<BasicMetadataValueEnum<'ctx>>::new();
         let receiver = if has_receiver {
             let carrier = callable_carrier(self.ctx, &builder, environment, descriptor)?;
@@ -600,6 +615,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             arguments.push(result_out.into());
         }
         arguments.push(fault_out.into());
+        if transfers_receiver && body.is_resumable {
+            arguments.push(state.into());
+            let child_frame =
+                suspend::call_value(&builder, self.ramps[&body.id], &arguments, "invoke.frame")?;
+            builder
+                .build_return(Some(&child_frame))
+                .llvm_ctx("transfer the owning callable continuation")?;
+            return Ok(function);
+        }
         let status = if body.is_resumable {
             let new_child = coro::external(
                 &self.llvm,
@@ -617,7 +641,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &self.llvm,
                 &builder,
                 function,
-                &frame,
+                frame.as_ref().expect("borrowed adapter owns a frame"),
                 child,
                 child_frame,
             )?
@@ -651,9 +675,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_call(finish, &[state.into(), status.into()], "")
             .llvm_ctx("publish callable adapter outcome")?;
-        builder
-            .build_unconditional_branch(frame.finish)
-            .llvm_ctx("finish callable adapter frame")?;
+        if let Some(frame) = frame {
+            builder
+                .build_unconditional_branch(frame.finish)
+                .llvm_ctx("finish callable adapter frame")?;
+        } else {
+            builder
+                .build_return(Some(&pointer.const_null()))
+                .llvm_ctx("finish synchronous owning callable")?;
+        }
         Ok(function)
     }
 }

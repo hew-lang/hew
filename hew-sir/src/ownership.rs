@@ -466,9 +466,17 @@ pub enum SuspendKind {
     CallClosure,
     Select,
     Timeout,
-    Join { scope: TaskScopeId, cancel: bool },
+    Join {
+        scope: TaskScopeId,
+        cancel: bool,
+    },
     ScopeDeadline,
     Yield,
+    GeneratorNext,
+    /// Drain an initialized generator local; preserve and combine cleanup faults.
+    GeneratorClose {
+        place: Option<crate::PlaceId>,
+    },
     Sleep,
     SleepUntil,
 }

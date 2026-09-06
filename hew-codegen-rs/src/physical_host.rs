@@ -72,7 +72,10 @@ impl<'a> HostExport<'a> {
             }
             for block in &body.blocks {
                 match &block.terminator {
-                    PhysicalTerminator::IndirectCall { .. }
+                    PhysicalTerminator::GeneratorYield { .. }
+                    | PhysicalTerminator::GeneratorNext { .. }
+                    | PhysicalTerminator::GeneratorClose { .. }
+                    | PhysicalTerminator::IndirectCall { .. }
                     | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::TaskAwait { .. }
                     | PhysicalTerminator::TaskScopeJoin { .. }

@@ -101,11 +101,20 @@ fn close_callers(
     }
 }
 
-pub(super) fn semantic_callables(module: &hew_sir::SemModule) -> BTreeSet<CallableId> {
+pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeSet<CallableId> {
+    let module = checked.module();
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
     for function in &module.functions {
-        for block in &function.blocks {
+        let lifetimes = checked
+            .function(function.callable)
+            .expect("verified callable body")
+            .place_lifetimes();
+        for block in function
+            .blocks
+            .iter()
+            .filter(|block| lifetimes.is_reachable(block.id))
+        {
             match &block.terminator {
                 hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::IndirectCall { .. } => {
@@ -129,7 +138,10 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
     for function in &module.functions {
         for block in &function.blocks {
             match &block.terminator {
-                PhysicalTerminator::Sleep { .. }
+                PhysicalTerminator::GeneratorYield { .. }
+                | PhysicalTerminator::GeneratorNext { .. }
+                | PhysicalTerminator::GeneratorClose { .. }
+                | PhysicalTerminator::Sleep { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. } => {

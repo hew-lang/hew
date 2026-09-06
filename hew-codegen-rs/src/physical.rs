@@ -19,8 +19,11 @@ mod partial;
 
 #[path = "physical_coro.rs"]
 mod coro;
+#[path = "physical_generators.rs"]
+mod generators;
 #[path = "physical_suspend.rs"]
 mod suspend;
+
 #[path = "physical_tasks.rs"]
 mod tasks;
 
@@ -1355,6 +1358,7 @@ fn build_module_with_host<'ctx>(
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
     emitter.emit_task_descriptors()?;
+    emitter.emit_generator_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
@@ -1922,6 +1926,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     )]
     fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
+            PhysicalOp::GeneratorMake { callable, dest, .. } => {
+                self.emit_generator_make(*callable, *dest)
+            }
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
             PhysicalOp::TaskScopeEnter { scope, parent } => {
@@ -2500,6 +2507,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::GeneratorYield {
+                value,
+                normal,
+                cancel,
+                ..
+            } => self.emit_generator_yield(value, normal, cancel),
+            PhysicalTerminator::GeneratorNext {
+                generator,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
+            PhysicalTerminator::GeneratorClose {
+                generator,
+                conditional,
+                next,
+            } => self.emit_generator_close(*generator, *conditional, next),
             PhysicalTerminator::TaskAwait {
                 task,
                 result,

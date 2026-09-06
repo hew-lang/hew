@@ -24,6 +24,9 @@ mod defer_tests;
 #[path = "physical_partial.rs"]
 mod partial;
 
+#[path = "physical_generators.rs"]
+mod generators;
+
 #[path = "physical_suspend.rs"]
 mod suspend;
 pub use partial::{
@@ -397,6 +400,7 @@ pub struct PhysicalValueRecipe {
 /// One exact closure body and its already selected concrete environment type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalClosure {
+    pub generator_yield: Option<ResolvedTy>,
     pub id: ClosureId,
     pub body: CallableId,
     pub ty: ResolvedTy,
@@ -563,6 +567,13 @@ impl PhysicalSetOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
+    GeneratorMake {
+        closure: ClosureId,
+        callable: StorageId,
+        dest: StorageId,
+        yielded: PhysicalValueRecipe,
+        returned: PhysicalValueRecipe,
+    },
     TaskScopeEnter {
         scope: hew_sir::TaskScopeId,
         parent: Option<hew_sir::TaskScopeId>,
@@ -818,6 +829,24 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    GeneratorYield {
+        value: ArgumentTransfer,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    GeneratorNext {
+        generator: ArgumentTransfer,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    GeneratorClose {
+        generator: StorageId,
+        conditional: bool,
+        next: PhysicalEdge,
+    },
     TaskAwait {
         task: ArgumentTransfer,
         result: Option<StorageId>,
@@ -1026,6 +1055,10 @@ impl std::error::Error for PhysicalError {}
 /// Returns [`PhysicalError`] when SIR verification fails, a concrete target
 /// layout is absent, an ownership action has no admitted physical realization,
 /// or the resulting storage/CFG model violates the physical verifier.
+#[expect(
+    clippy::too_many_lines,
+    reason = "materializes the complete checked module and its callable ABI"
+)]
 pub fn lower_physical_module(
     module: &SemModule,
     target: PhysicalTarget,
@@ -1048,49 +1081,53 @@ pub fn lower_physical_module(
         ids,
     } = build_glue(module)?;
 
-    let resumable = suspend::semantic_callables(module);
-    let callables = module
-        .callables
-        .iter()
-        .map(|callable| {
-            let params = callable
-                .signature
-                .params
-                .iter()
-                .map(|param| {
-                    Ok(PhysicalParam {
-                        ty: param.ty.clone(),
-                        layout: required_layout(&target, &param.ty)?.clone(),
-                        passing: param.passing,
-                        carrier: if param.passing == hew_sir::SemParamPassing::BorrowMut
-                            || matches!(
-                                required_layout(&target, &param.ty)?.repr,
-                                PhysicalRepr::Struct(_)
-                            ) {
-                            ParamCarrier::Indirect
-                        } else {
-                            ParamCarrier::Direct
-                        },
+    let resumable = suspend::semantic_callables(&checked);
+    let callables =
+        module
+            .callables
+            .iter()
+            .map(|callable| {
+                let params = callable
+                    .signature
+                    .params
+                    .iter()
+                    .map(|param| {
+                        Ok(PhysicalParam {
+                            ty: param.ty.clone(),
+                            layout: required_layout(&target, &param.ty)?.clone(),
+                            passing: param.passing,
+                            carrier: if param.passing == hew_sir::SemParamPassing::BorrowMut
+                                || matches!(
+                                    required_layout(&target, &param.ty)?.repr,
+                                    PhysicalRepr::Struct(_)
+                                ) {
+                                ParamCarrier::Indirect
+                            } else {
+                                ParamCarrier::Direct
+                            },
+                        })
                     })
+                    .collect::<Result<Vec<_>, PhysicalError>>()?;
+                let return_layout = if callable.signature.return_ty == ResolvedTy::Unit
+                    && !module.closures.iter().any(|closure| {
+                        closure.body == callable.id && closure.generator_yield.is_some()
+                    }) {
+                    None
+                } else {
+                    Some(required_layout(&target, &callable.signature.return_ty)?.clone())
+                };
+                Ok(PhysicalCallable {
+                    id: callable.id,
+                    declaration: callable.declaration.clone(),
+                    instance: callable.instance.clone(),
+                    symbol: callable.symbol.clone(),
+                    params,
+                    return_ty: callable.signature.return_ty.clone(),
+                    return_layout,
+                    is_resumable: resumable.contains(&callable.id),
                 })
-                .collect::<Result<Vec<_>, PhysicalError>>()?;
-            let return_layout = if callable.signature.return_ty == ResolvedTy::Unit {
-                None
-            } else {
-                Some(required_layout(&target, &callable.signature.return_ty)?.clone())
-            };
-            Ok(PhysicalCallable {
-                id: callable.id,
-                declaration: callable.declaration.clone(),
-                instance: callable.instance.clone(),
-                symbol: callable.symbol.clone(),
-                params,
-                return_ty: callable.signature.return_ty.clone(),
-                return_layout,
-                is_resumable: resumable.contains(&callable.id),
             })
-        })
-        .collect::<Result<Vec<_>, PhysicalError>>()?;
+            .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let functions = module
         .functions
@@ -1112,6 +1149,7 @@ pub fn lower_physical_module(
             .closures
             .iter()
             .map(|closure| PhysicalClosure {
+                generator_yield: closure.generator_yield.clone(),
                 id: closure.id,
                 body: closure.body,
                 ty: closure.ty.clone(),
@@ -1580,6 +1618,10 @@ fn collect_inventory_type(
     }
     inventory.types.insert(ty.clone());
     if collect_resource_type(module, inventory, ty) {
+        if let Some((yielded, returned)) = hew_sir::generator_parts(ty) {
+            collect_inventory_type(module, inventory, yielded);
+            collect_inventory_type(module, inventory, returned);
+        }
         return;
     }
     if let ResolvedTy::Closure { captures, .. } = ty {
@@ -2191,6 +2233,9 @@ impl FunctionLowerer<'_> {
             SemOpKind::TaskScopeClose { scope } => {
                 one(PhysicalOp::TaskScopeClose { scope: *scope })
             }
+            SemOpKind::GeneratorMake { closure, callable } => {
+                one(self.lower_generator_make(operation, *closure, callable)?)
+            }
             SemOpKind::TaskSpawn { scope, callable } => {
                 let dest = self.one_result(operation)?;
                 let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
@@ -2491,6 +2536,13 @@ impl FunctionLowerer<'_> {
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
+            term @ SemTerminator::Suspend {
+                kind:
+                    hew_sir::SuspendKind::Yield
+                    | hew_sir::SuspendKind::GeneratorNext
+                    | hew_sir::SuspendKind::GeneratorClose { .. },
+                ..
+            } => self.lower_generator_suspend(term),
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Sleep,
                 inputs,
@@ -3986,6 +4038,7 @@ fn verify_operation_storage(
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
     match operation {
+        PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
         PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::TaskSpawn {
             callable,
@@ -4529,7 +4582,8 @@ fn apply_operation(
             state.defers.register(*defer, *scope, dependencies)?;
         }
         PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
-        PhysicalOp::TaskSpawn { callable, dest, .. } => {
+        PhysicalOp::GeneratorMake { callable, dest, .. }
+        | PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;
             consume_if_owned(function, state, *callable)?;
             define(function, state, *dest, block, "task handle")?;
@@ -4804,6 +4858,11 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::GeneratorYield { .. }
+        | PhysicalTerminator::GeneratorNext { .. }
+        | PhysicalTerminator::GeneratorClose { .. } => {
+            generators::successors(function, terminator, state, block)
+        }
         PhysicalTerminator::TaskAwait {
             task,
             result,
@@ -5217,6 +5276,15 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::GeneratorYield { .. }
+        | PhysicalTerminator::GeneratorNext { .. }
+        | PhysicalTerminator::GeneratorClose { .. } => {
+            generators::verify_suspend(module, function, terminator)?;
+            for successor in defer::edges(terminator) {
+                edge(successor)?;
+            }
+            Ok(())
+        }
         PhysicalTerminator::TaskAwait {
             task,
             result,

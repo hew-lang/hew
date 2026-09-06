@@ -2177,3 +2177,25 @@ embedded NULs, empty strings and mismatching or longer prefixes. Both input
 values remain usable. When a later argument replaces the receiver variable,
 the comparison still uses the value evaluated first, including replacement by
 an empty string. Paired generated/runtime sanitizer validation is next.
+
+## Verify local storage without inventing an SSA owner
+
+SIR now models a local's active storage separately from whether its contents
+are initialized. A join may retain live or already-taken contents until lexical
+cleanup, without destroying a live value early or manufacturing an SSA owner.
+The same place query describes whole locals and complete nested field
+partitions. Allocation, initialization, borrowing, copying, taking, replacement
+and lifetime end share the existing ownership flow and canonical loan graph.
+
+Cleanup dispositions come from verified control flow. Linear contents require
+an explicit consume on normal and cancellation exits. Only a finite trap-only
+cleanup region may reclaim their representation without a consuming method;
+resource close obligations remain intact. An ordinary effect between an end
+and a trap prevents that end from gaining a trap exemption. Mixed predecessors,
+escaping cycles, outstanding loans and invalid storage activity are checked.
+
+Constructed SIR tests cover these boundaries, including zero-sized fields,
+non-copyable callables, private copies of borrowed parameters and partial local
+aggregates. The combined SIR, physical MIR and codegen suites pass. Lexical
+source promotion and physical Local execution remain separate implementation
+steps; the physical boundary continues to refuse Local storage explicitly.

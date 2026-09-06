@@ -135,6 +135,12 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: &'static str,
     },
+    /// Local storage activity, content availability or cleanup is invalid.
+    PlaceLifetime {
+        block: BlockId,
+        place: crate::PlaceId,
+        reason: &'static str,
+    },
     /// The function-owned fault must be present at propagation and cannot be lost.
     FaultLifetime {
         block: BlockId,
@@ -551,6 +557,38 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
     diagnostics
 }
 
+/// Check one function and return cleanup dispositions from its lifetime flow.
+/// No producer flag or physical fault-carrier inference may replace this query.
+///
+/// # Errors
+/// Returns the same semantic diagnostics as function verification, including
+/// invalid callable contracts, storage activity, loans and linear cleanup.
+///
+/// # Panics
+/// Panics only if an internal verifier inconsistency accepts a function without
+/// producing its checked lifetime result.
+pub fn place_lifetimes(
+    module: &SemModule,
+    function: &SemFunction,
+) -> Result<crate::PlaceLifetimes, Vec<SirDiagnostic>> {
+    let mut diagnostics = Vec::new();
+    let callables = verify_callable_table(module, &mut diagnostics);
+    verify_required_value_capabilities(module, function, &mut diagnostics);
+    let (function_diagnostics, lifetimes) = check_function_with_context(
+        function,
+        Some(&callables),
+        &module.type_facts,
+        &module.aggregate_shapes,
+        &module.variant_shapes,
+    );
+    diagnostics.extend(function_diagnostics);
+    if diagnostics.is_empty() {
+        Ok(lifetimes.expect("valid function has checked place lifetimes"))
+    } else {
+        Err(diagnostics)
+    }
+}
+
 /// Verify one semantic SSA function before it crosses into another SIR pass
 /// or the ownership/layout MIR boundary.
 ///
@@ -685,10 +723,6 @@ fn cfg_discard_diag(
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
-)]
 pub(crate) fn verify_function_with_context(
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
@@ -696,6 +730,27 @@ pub(crate) fn verify_function_with_context(
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
 ) -> Vec<SirDiagnostic> {
+    check_function_with_context(
+        function,
+        callable_context,
+        facts,
+        aggregate_shapes,
+        variant_shapes,
+    )
+    .0
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
+)]
+fn check_function_with_context(
+    function: &SemFunction,
+    callable_context: Option<&CallableContext<'_>>,
+    facts: &TypeFactTable,
+    aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
+) -> (Vec<SirDiagnostic>, Option<crate::PlaceLifetimes>) {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
     if let Err(reason) = verify_capture_places(function, callable_context) {
@@ -968,29 +1023,33 @@ pub(crate) fn verify_function_with_context(
             );
         }
     }
+    let mut lifetimes = None;
     if let Ok(projections) = projections {
-        diagnostics.extend(
-            crate::lifetime::verify(function, &projections)
-                .into_iter()
-                .map(|violation| {
-                    diag(
-                        function,
-                        match violation.value {
-                            Some(value) => SirDiagnosticKind::OwnershipLifetime {
-                                block: violation.block,
-                                value,
-                                reason: violation.reason,
-                            },
-                            None => SirDiagnosticKind::FaultLifetime {
-                                block: violation.block,
-                                reason: violation.reason,
-                            },
-                        },
-                    )
-                }),
-        );
+        let analysis = crate::lifetime::verify(function, &projections, facts);
+        diagnostics.extend(analysis.violations.into_iter().map(|violation| {
+            diag(
+                function,
+                match (violation.value, violation.place) {
+                    (_, Some(place)) => SirDiagnosticKind::PlaceLifetime {
+                        block: violation.block,
+                        place,
+                        reason: violation.reason,
+                    },
+                    (Some(value), None) => SirDiagnosticKind::OwnershipLifetime {
+                        block: violation.block,
+                        value,
+                        reason: violation.reason,
+                    },
+                    (None, None) => SirDiagnosticKind::FaultLifetime {
+                        block: violation.block,
+                        reason: violation.reason,
+                    },
+                },
+            )
+        }));
+        lifetimes = Some(analysis.lifetimes);
     }
-    diagnostics
+    (diagnostics, lifetimes)
 }
 
 #[allow(

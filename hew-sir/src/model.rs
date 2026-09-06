@@ -278,6 +278,9 @@ impl SemFunction {
 /// Runtime, C-ABI, coroutine, actor, and other specialised conventions stay
 /// outside this initial domain.  Keeping this enum explicit prevents a
 /// resolved SIR call from silently acquiring a target-specific ABI policy.
+/// Default calls return normally or propagate an unrecoverable trap. They do
+/// not transport cooperative cancellation; admitting another exit cause must
+/// extend this contract and the lifetime flow together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemCallConv {
     Default,
@@ -1038,7 +1041,8 @@ pub enum SemOpKind {
         source: Operand,
     },
     /// `destroy_value %v` - consumes the obligation. Illegal on a `Linear`
-    /// value except on an unwind edge (rule 6d).
+    /// value except within verified trap-only cleanup (rule 6d). Cancellation
+    /// does not forgive the consuming obligation.
     DestroyValue {
         value: Operand,
     },
@@ -1256,7 +1260,35 @@ impl SemOpKind {
             | Self::StoreInit { place, .. }
             | Self::StoreAssign { place, .. }
             | Self::EndLifetime { place } => visit(*place),
-            _ => {}
+            Self::FunctionMake { .. }
+            | Self::ClosureMake { .. }
+            | Self::CallableCoerce { .. }
+            | Self::ConstI64(..)
+            | Self::ConstBool(..)
+            | Self::TupleMake { .. }
+            | Self::TupleGet { .. }
+            | Self::AggregateMake { .. }
+            | Self::AggregateProjectCopy { .. }
+            | Self::AggregateProjectBorrow { .. }
+            | Self::VariantMake { .. }
+            | Self::Unary { .. }
+            | Self::Binary { .. }
+            | Self::Cast { .. }
+            | Self::ConstF64(..)
+            | Self::ConstChar(..)
+            | Self::ConstUnit
+            | Self::ConstDuration(..)
+            | Self::ConstStr(..)
+            | Self::ConstBytes(..)
+            | Self::StrEq { .. }
+            | Self::BytesEq { .. }
+            | Self::CopyValue { .. }
+            | Self::DestroyValue { .. }
+            | Self::BeginBorrow { .. }
+            | Self::EndBorrow { .. }
+            | Self::Move { .. }
+            | Self::Fork { .. }
+            | Self::Destructure { .. } => {}
         }
     }
 

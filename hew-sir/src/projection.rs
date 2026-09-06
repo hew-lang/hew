@@ -1,4 +1,4 @@
-//! Exact aggregate projections and their complete availability partitions.
+//! Exact local storage and aggregate projections with complete content partitions.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -18,7 +18,8 @@ pub struct AggregateProjectionStep {
     pub field: u32,
 }
 
-/// One exact projection; its availability is the availability of all `leaves`.
+/// One exact selection, including a local root with an empty path.
+/// Content availability is the availability of all `leaves`.
 /// Intermediate projections have no independent initialized bit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateProjection {
@@ -31,9 +32,10 @@ pub struct AggregateProjection {
     pub leaves: Vec<PlaceId>,
 }
 
-/// A checked snapshot of one function's aggregate projection relationships.
+/// A checked snapshot of one function's semantic storage relationships.
 ///
-/// The root retains its single owned obligation. Leaf availability lives in
+/// SSA roots retain their owned obligation; local roots have storage activity.
+/// Content availability lives in
 /// SIR's lifetime flow, not in this structural query. Physical lowering uses
 /// these same paths, recipes and edge mappings; it does not rediscover them
 /// through source names or storage offsets. Rebuild after changing places or
@@ -57,7 +59,7 @@ impl PlacePlan {
         self.projections.get(&place)
     }
 
-    /// Every aggregate root and its complete leaf partition.
+    /// Every local or projected SSA root and its complete content partition.
     pub fn roots(&self) -> impl Iterator<Item = (OwnerRoot, &[PlaceId])> {
         self.roots
             .iter()
@@ -187,12 +189,10 @@ pub fn place_plan(
                 plan.bases.insert(place.id, PlaceBase::Value(environment));
                 continue;
             }
-            PlaceOrigin::Local | PlaceOrigin::Runtime => {
-                return Err(
-                    "non-projected local and runtime places have no admitted lifetime contract"
-                        .into(),
-                );
+            PlaceOrigin::Runtime => {
+                return Err("runtime places have no admitted lifetime contract".into());
             }
+            PlaceOrigin::Local => {}
             PlaceOrigin::Aggregate { base, .. } => {
                 plan.bases.insert(place.id, base);
             }
@@ -264,20 +264,34 @@ fn resolve_projection(
     facts: &TypeFactTable,
 ) -> Result<AggregateProjection, String> {
     let (root, path) = place_path(&function.places, place.id)?;
-    let OwnerRoot::Value(value) = root else {
-        return Err("local places have no admitted lifetime contract".into());
+    let root_ty = match root {
+        OwnerRoot::Value(value) => {
+            let Some((OwnKind::Owned, ty)) = values.get(&value) else {
+                return Err("aggregate projection requires an owned root; a loan cannot supply field ownership".into());
+            };
+            if OwnKind::of_ty(ty, facts)? != OwnKind::Owned {
+                return Err("aggregate projection root has no owned type contract".into());
+            }
+            ty
+        }
+        OwnerRoot::Local(id) => {
+            &function
+                .places
+                .iter()
+                .find(|place| place.id == id)
+                .ok_or_else(|| "local root has no declaration".to_string())?
+                .ty
+        }
     };
-    let Some((OwnKind::Owned, root_ty)) = values.get(&value) else {
-        return Err(
-            "aggregate projection requires an owned root; a loan cannot supply field ownership"
-                .into(),
-        );
-    };
-    if OwnKind::of_ty(root_ty, facts)? != OwnKind::Owned {
-        return Err("aggregate projection root has no owned type contract".into());
-    }
+    let row = facts
+        .get(&TypeInstanceKey(root_ty.clone()))
+        .ok_or_else(|| "local root has no exact type facts".to_string())?;
     let mut ty = root_ty.clone();
-    let mut selected = None;
+    let mut selected = AggregateFieldRecipe {
+        ty: ty.clone(),
+        own: OwnKind::of_class(row.class),
+        clone: row.clone,
+    };
     for step in &path {
         let recipes = plain_field_recipes(step.shape, &ty, shapes, facts)?;
         let recipe = recipes
@@ -285,7 +299,7 @@ fn resolve_projection(
             .cloned()
             .ok_or_else(|| "aggregate projection field is out of bounds".to_string())?;
         ty = recipe.ty.clone();
-        selected = Some(recipe);
+        selected = recipe;
     }
     if ty != place.ty {
         return Err("aggregate projection differs from its exact field type".into());
@@ -294,7 +308,7 @@ fn resolve_projection(
         place: place.id,
         root,
         path,
-        recipe: selected.ok_or_else(|| "aggregate projection has no selected field".to_string())?,
+        recipe: selected,
         leaves: Vec::new(),
     })
 }
@@ -376,7 +390,10 @@ pub(crate) fn verify_operation(
     facts: &TypeFactTable,
 ) -> Option<Result<(), String>> {
     let (id, stored, borrowed) = match &operation.kind {
-        SemOpKind::LoadCopy { place } | SemOpKind::LoadTake { place } => (*place, None, false),
+        SemOpKind::LoadCopy { place }
+        | SemOpKind::LoadTake { place }
+        | SemOpKind::AllocPlace { place }
+        | SemOpKind::EndLifetime { place } => (*place, None, false),
         SemOpKind::LoadBorrow { place } => (*place, None, true),
         SemOpKind::StoreInit { place, value } | SemOpKind::StoreAssign { place, value } => {
             (*place, Some(value.value), false)
@@ -384,10 +401,21 @@ pub(crate) fn verify_operation(
         _ => return None,
     };
     let place = function.places.iter().find(|place| place.id == id)?;
-    let PlaceOrigin::Aggregate { .. } = place.origin else {
+    let (PlaceOrigin::Aggregate { .. } | PlaceOrigin::Local) = place.origin else {
         return None;
     };
     Some((|| {
+        if matches!(
+            operation.kind,
+            SemOpKind::AllocPlace { .. } | SemOpKind::EndLifetime { .. }
+        ) {
+            if place.origin != PlaceOrigin::Local || !operation.results.is_empty() {
+                return Err(
+                    "storage lifetime operations require a local root and no result".into(),
+                );
+            }
+            return Ok(());
+        }
         if let Some(value) = stored {
             if !operation.results.is_empty() || types.get(&value) != Some(&place.ty) {
                 return Err(

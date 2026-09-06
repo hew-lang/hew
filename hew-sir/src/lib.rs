@@ -29,6 +29,7 @@ pub use callable::{
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use dump::{dump_lowering, dump_sir};
+pub use lifetime::{CleanupMode, PlaceLifetimes};
 pub use lower::{
     lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
@@ -55,6 +56,6 @@ pub use ownership::{
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use verify::{
-    verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,
-    SirDiagnostic, SirDiagnosticKind,
+    place_lifetimes, verify_function, verify_function_in_module, verify_module,
+    CfgDiscardSafetyReason, SirDiagnostic, SirDiagnosticKind,
 };

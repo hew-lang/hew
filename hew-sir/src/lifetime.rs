@@ -1,8 +1,9 @@
-//! Path-sensitive availability of owned SSA obligations and local loans.
+//! Path-sensitive availability of SSA obligations, local storage and loans.
 //!
 //! Guaranteed inputs can be read or explicitly copied, never consumed or
 //! escaped. Local loans keep their immediate owner or parent loan live until
-//! they end. Capture initialization follows the same paths as its environment.
+//! they end. Local activity is separate from content availability; capture
+//! initialization follows the same paths as its environment.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -15,6 +16,7 @@ use crate::{
 pub(crate) struct Violation {
     pub block: BlockId,
     pub value: Option<ValueId>,
+    pub place: Option<crate::PlaceId>,
     pub reason: &'static str,
 }
 
@@ -29,16 +31,68 @@ struct State {
     values: Vec<u8>,
     fault: u8,
     places: Vec<u8>,
+    locals: Vec<u8>,
+    exit: u8,
 }
 
-pub(crate) fn verify(function: &SemFunction, projections: &crate::PlacePlan) -> Vec<Violation> {
-    let flow = Flow::new(function, projections);
+const ORDINARY: u8 = 1;
+const TRAP: u8 = 2;
+const CANCEL: u8 = 4;
+
+/// Verified semantics of an implicit cleanup, independent of fault transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupMode {
+    /// Normal scope exit or replacement; a linear consume is still required.
+    Ordinary,
+    /// A trap-only cleanup reclaims representation without a linear consume.
+    /// Resource close behaviour remains part of the type's drop contract.
+    Trap,
+}
+
+/// Immutable output of the existing lifetime flow for one checked function.
+/// Rebuild after changing its operations or control flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceLifetimes {
+    operations: BTreeMap<crate::OpId, CleanupMode>,
+}
+
+impl PlaceLifetimes {
+    fn new() -> Self {
+        Self {
+            operations: BTreeMap::new(),
+        }
+    }
+
+    /// The checked disposition of a reachable end-lifetime or destroy operation.
+    #[must_use]
+    pub fn cleanup(&self, operation: crate::OpId) -> Option<CleanupMode> {
+        self.operations.get(&operation).copied()
+    }
+}
+
+pub(crate) struct Analysis {
+    pub violations: Vec<Violation>,
+    pub lifetimes: PlaceLifetimes,
+}
+
+pub(crate) fn verify(
+    function: &SemFunction,
+    projections: &crate::PlacePlan,
+    facts: &crate::ownership::TypeFactTable,
+) -> Analysis {
+    let flow = Flow::new(function, projections, facts);
+    let mut lifetimes = PlaceLifetimes::new();
     if !flow.blocks.contains_key(&function.entry) {
-        return Vec::new();
+        return Analysis {
+            violations: Vec::new(),
+            lifetimes,
+        };
     }
     let mut initial = State {
         values: vec![DEAD; flow.values.len()],
         fault: DEAD,
+        exit: ORDINARY,
+        locals: vec![DEAD; flow.local_indices.len()],
         places: flow
             .places
             .iter()
@@ -66,11 +120,21 @@ pub(crate) fn verify(function: &SemFunction, projections: &crate::PlacePlan) -> 
     let mut queued = BTreeSet::from([function.entry]);
     while let Some(block) = queue.pop_front() {
         queued.remove(&block);
-        for (target, state) in flow.block(block, incoming[&block].clone(), &mut |_| {}) {
+        for (target, state) in
+            flow.block(block, incoming[&block].clone(), &mut |_| {}, &mut lifetimes)
+        {
             let changed = if let Some(previous) = incoming.get_mut(&target) {
                 let joined_fault = previous.fault | state.fault;
                 let mut changed = joined_fault != previous.fault;
                 previous.fault = joined_fault;
+                let exit = previous.exit | state.exit;
+                changed |= exit != previous.exit;
+                previous.exit = exit;
+                for (before, after) in previous.locals.iter_mut().zip(state.locals) {
+                    let joined = *before | after;
+                    changed |= joined != *before;
+                    *before = joined;
+                }
                 for (before, after) in previous.values.iter_mut().zip(state.values) {
                     let joined = *before | after;
                     changed |= joined != *before;
@@ -93,10 +157,70 @@ pub(crate) fn verify(function: &SemFunction, projections: &crate::PlacePlan) -> 
     }
     // Diagnose the fixed point, not a transient partial predecessor set.
     let mut violations = Vec::new();
+    lifetimes.operations.clear();
     for (block, state) in incoming {
-        flow.block(block, state, &mut |v| violations.push(v));
+        flow.block(block, state, &mut |v| violations.push(v), &mut lifetimes);
     }
-    violations
+    Analysis {
+        violations,
+        lifetimes,
+    }
+}
+
+fn mark_trap(state: &mut State) {
+    state.exit = if state.exit == ORDINARY {
+        TRAP
+    } else {
+        state.exit | TRAP
+    };
+}
+
+fn is_cleanup(kind: &SemOpKind) -> bool {
+    matches!(
+        kind,
+        SemOpKind::EndBorrow { .. }
+            | SemOpKind::DestroyValue { .. }
+            | SemOpKind::EndLifetime { .. }
+    )
+}
+
+/// A least fixed point admits only cleanup suffixes with a finite trap exit.
+/// A cycle cannot justify itself, and an ordinary operation cannot enter the
+/// region merely because a later terminator happens to trap.
+fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usize> {
+    let mut suffixes = BTreeMap::new();
+    loop {
+        let before = suffixes.len();
+        for block in &function.blocks {
+            if suffixes.contains_key(&block.id) {
+                continue;
+            }
+            let terminal = match &block.terminator {
+                SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind => true,
+                SemTerminator::Goto(edge) => suffixes.get(&edge.target) == Some(&0),
+                SemTerminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    suffixes.get(&then_target.target) == Some(&0)
+                        && suffixes.get(&else_target.target) == Some(&0)
+                }
+                _ => false,
+            };
+            if terminal {
+                let start = block
+                    .ops
+                    .iter()
+                    .rposition(|op| !is_cleanup(&op.kind))
+                    .map_or(0, |index| index + 1);
+                suffixes.insert(block.id, start);
+            }
+        }
+        if suffixes.len() == before {
+            return suffixes;
+        }
+    }
 }
 
 struct Flow<'a> {
@@ -106,16 +230,37 @@ struct Flow<'a> {
     guaranteed: BTreeSet<ValueId>,
     local_borrows: BTreeSet<ValueId>,
     parents: BTreeMap<ValueId, PlaceBase>,
+    // Derived lookup index over the same canonical dependency graph.
+    dependents: BTreeMap<PlaceBase, Vec<PlaceBase>>,
+    local_indices: BTreeMap<crate::PlaceId, usize>,
+    linear_places: BTreeSet<crate::PlaceId>,
+    linear_values: BTreeSet<ValueId>,
+    cleanup_suffixes: BTreeMap<BlockId, usize>,
     places: Vec<(crate::PlaceId, OwnerRoot)>,
     projections: &'a crate::PlacePlan,
     place_indices: BTreeMap<crate::PlaceId, usize>,
 }
 
 impl<'a> Flow<'a> {
-    fn new(function: &'a SemFunction, projections: &'a crate::PlacePlan) -> Self {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "constructs the derived value, place and dependency indices from one canonical function"
+    )]
+    fn new(
+        function: &'a SemFunction,
+        projections: &'a crate::PlacePlan,
+        facts: &crate::ownership::TypeFactTable,
+    ) -> Self {
         let mut values = BTreeSet::new();
         let mut guaranteed = BTreeSet::new();
-        let mut record = |value, own| {
+        let mut linear_values = BTreeSet::new();
+        let mut record = |value, own, ty: &hew_types::ResolvedTy| {
+            if facts
+                .get(&hew_types::TypeInstanceKey(ty.clone()))
+                .is_some_and(|row| row.class == hew_types::ValueClass::Linear)
+            {
+                linear_values.insert(value);
+            }
             if own == OwnKind::Owned {
                 values.insert(value);
             } else if own == OwnKind::Guaranteed {
@@ -123,20 +268,20 @@ impl<'a> Flow<'a> {
             }
         };
         for param in &function.params {
-            record(param.value, param.own);
+            record(param.value, param.own, &param.ty);
         }
         for block in &function.blocks {
             for arg in &block.args {
-                record(arg.value, arg.own);
+                record(arg.value, arg.own, &arg.ty);
             }
             for op in &block.ops {
                 for result in &op.results {
-                    record(result.id, result.own);
+                    record(result.id, result.own, &result.ty);
                 }
             }
             block
                 .terminator
-                .visit_results(|value| record(value.id, value.own));
+                .visit_results(|value| record(value.id, value.own, &value.ty));
         }
         let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
@@ -148,6 +293,38 @@ impl<'a> Flow<'a> {
                 }
             }
         }
+        let mut dependents = BTreeMap::<_, Vec<_>>::new();
+        for (&value, &base) in &parents {
+            dependents
+                .entry(base)
+                .or_default()
+                .push(PlaceBase::Value(value));
+        }
+        for place in &function.places {
+            if let Some(base) = projections.base(place.id) {
+                dependents
+                    .entry(base)
+                    .or_default()
+                    .push(PlaceBase::Place(place.id));
+            }
+        }
+        let local_indices = function
+            .places
+            .iter()
+            .filter(|place| place.origin == crate::PlaceOrigin::Local)
+            .enumerate()
+            .map(|(index, place)| (place.id, index))
+            .collect();
+        let linear_places = function
+            .places
+            .iter()
+            .filter(|place| {
+                facts
+                    .get(&hew_types::TypeInstanceKey(place.ty.clone()))
+                    .is_some_and(|row| row.class == hew_types::ValueClass::Linear)
+            })
+            .map(|place| place.id)
+            .collect();
         values.extend(&local_borrows);
         guaranteed.extend(&local_borrows);
         let values: Vec<_> = values.into_iter().collect();
@@ -186,6 +363,11 @@ impl<'a> Flow<'a> {
             guaranteed,
             local_borrows,
             parents,
+            dependents,
+            local_indices,
+            linear_places,
+            linear_values,
+            cleanup_suffixes: cleanup_suffixes(function),
             places,
             place_indices,
             projections,
@@ -202,6 +384,7 @@ impl<'a> Flow<'a> {
     ) {
         if consume && self.guaranteed.contains(&value) {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(value),
                 reason: "guaranteed input cannot be consumed; copy it into an owned value first",
@@ -213,6 +396,7 @@ impl<'a> Flow<'a> {
         };
         if state.values[index] != LIVE {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(value),
                 reason: if self.local_borrows.contains(&value) {
@@ -255,6 +439,33 @@ impl<'a> Flow<'a> {
         false
     }
 
+    fn any_live_dependent(
+        &self,
+        base: PlaceBase,
+        state: &State,
+        accept: impl Fn(ValueId) -> bool,
+    ) -> bool {
+        let mut pending = vec![base];
+        let mut seen = BTreeSet::new();
+        while let Some(base) = pending.pop() {
+            if !seen.insert(base) {
+                continue;
+            }
+            for &child in self.dependents.get(&base).into_iter().flatten() {
+                if let PlaceBase::Value(value) = child {
+                    if self.local_borrows.contains(&value)
+                        && state.values[self.indices[&value]] & LIVE != 0
+                        && accept(value)
+                    {
+                        return true;
+                    }
+                }
+                pending.push(child);
+            }
+        }
+        false
+    }
+
     fn require_no_live_borrows(
         &self,
         block: BlockId,
@@ -262,10 +473,12 @@ impl<'a> Flow<'a> {
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
-        if self.local_borrows.iter().any(|&borrow| {
-            state.values[self.indices[&borrow]] & LIVE != 0 && self.depends_on(borrow, base)
-        }) {
+        if self.any_live_dependent(base, state, |_| true) {
             emit(Violation {
+                place: match base {
+                    PlaceBase::Place(place) => Some(place),
+                    PlaceBase::Value(_) => None,
+                },
                 block,
                 value: match base {
                     PlaceBase::Value(value) => Some(value),
@@ -285,6 +498,7 @@ impl<'a> Flow<'a> {
     ) {
         if !self.local_borrows.contains(&value) {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(value),
                 reason: "end_borrow requires a local borrow producer",
@@ -308,6 +522,7 @@ impl<'a> Flow<'a> {
         };
         if state.values[index] != DEAD {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(value),
                 reason: if self.local_borrows.contains(&value) {
@@ -367,9 +582,10 @@ impl<'a> Flow<'a> {
         id: BlockId,
         mut state: State,
         emit: &mut impl FnMut(Violation),
+        lifetimes: &mut PlaceLifetimes,
     ) -> Vec<(BlockId, State)> {
         let block = self.blocks[&id];
-        self.operations(id, &block.ops, &mut state, emit);
+        self.operations(id, &block.ops, &mut state, emit, lifetimes);
         self.boundary_inputs(id, &block.terminator, &mut state, emit);
         let mut successors = Vec::new();
         match &block.terminator {
@@ -396,6 +612,7 @@ impl<'a> Flow<'a> {
                     if transfers_fault {
                         state.fault = LIVE;
                     }
+                    mark_trap(&mut state);
                     successors.extend(self.edge(id, edge, state, emit));
                 }
             }
@@ -424,36 +641,72 @@ impl<'a> Flow<'a> {
             SemTerminator::Suspend {
                 resumes, cancel, ..
             } => {
-                for edge in resumes.iter().chain(std::iter::once(cancel)) {
+                for edge in resumes {
                     successors.extend(self.edge(id, edge, state.clone(), emit));
                 }
+                state.exit = (state.exit & !ORDINARY) | CANCEL;
+                successors.extend(self.edge(id, cancel, state, emit));
             }
             SemTerminator::Return { .. }
             | SemTerminator::ResumeUnwind
             | SemTerminator::Trap { .. }
             | SemTerminator::Unreachable => {
-                let expected = if matches!(block.terminator, SemTerminator::ResumeUnwind) {
-                    LIVE
-                } else {
-                    DEAD
-                };
-                Self::require_fault(id, expected, &state, emit);
-                for (index, &value) in self.values.iter().enumerate() {
-                    if state.values[index] & LIVE != 0 {
-                        emit(Violation {
-                            block: id,
-                            value: Some(value),
-                            reason: if self.local_borrows.contains(&value) {
-                                "local borrow remains live at exit"
-                            } else {
-                                "owned value remains live at exit"
-                            },
-                        });
-                    }
-                }
+                self.exit(id, &block.terminator, &state, emit);
             }
         }
         successors
+    }
+
+    fn exit(
+        &self,
+        id: BlockId,
+        terminator: &SemTerminator,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        for (&place, &index) in &self.local_indices {
+            if state.locals[index] & LIVE != 0 {
+                emit(Violation {
+                    block: id,
+                    value: None,
+                    place: Some(place),
+                    reason: "local storage remains active at exit",
+                });
+            }
+        }
+        if state.exit & TRAP != 0
+            && !matches!(
+                terminator,
+                SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind
+            )
+        {
+            emit(Violation {
+                block: id,
+                value: None,
+                place: None,
+                reason: "trap cleanup cannot resume ordinary or cancellation execution",
+            });
+        }
+        let expected = if matches!(terminator, SemTerminator::ResumeUnwind) {
+            LIVE
+        } else {
+            DEAD
+        };
+        Self::require_fault(id, expected, state, emit);
+        for (index, &value) in self.values.iter().enumerate() {
+            if state.values[index] & LIVE != 0 {
+                emit(Violation {
+                    place: None,
+                    block: id,
+                    value: Some(value),
+                    reason: if self.local_borrows.contains(&value) {
+                        "local borrow remains live at exit"
+                    } else {
+                        "owned value remains live at exit"
+                    },
+                });
+            }
+        }
     }
 
     fn operations(
@@ -462,8 +715,31 @@ impl<'a> Flow<'a> {
         operations: &[crate::SemOp],
         state: &mut State,
         emit: &mut impl FnMut(Violation),
+        lifetimes: &mut PlaceLifetimes,
     ) {
-        for op in operations {
+        for (index, op) in operations.iter().enumerate() {
+            let cleanup = if self
+                .cleanup_suffixes
+                .get(&id)
+                .is_some_and(|&start| index >= start)
+                && (state.exit == TRAP
+                    || (state.exit == ORDINARY
+                        && matches!(self.blocks[&id].terminator, SemTerminator::Trap { .. })))
+            {
+                CleanupMode::Trap
+            } else {
+                CleanupMode::Ordinary
+            };
+            if matches!(
+                op.kind,
+                SemOpKind::EndLifetime { .. } | SemOpKind::DestroyValue { .. }
+            ) {
+                lifetimes.operations.insert(op.id, cleanup);
+            }
+            self.local_lifetime(id, &op.kind, cleanup, state, emit);
+            if let SemOpKind::DestroyValue { value } = &op.kind {
+                self.require_droppable_value(id, value.value, cleanup, state, emit);
+            }
             if let SemOpKind::EndBorrow { borrow } = &op.kind {
                 self.end_borrow(id, borrow.value, state, emit);
                 continue;
@@ -496,6 +772,7 @@ impl<'a> Flow<'a> {
             *owner == OwnerRoot::Value(value) && state.places[index] != LIVE
         }) {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(value),
                 reason: if self.projections.leaves(OwnerRoot::Value(value)).is_some() {
@@ -504,6 +781,113 @@ impl<'a> Flow<'a> {
                     "partially consumed environment cannot be copied, invoked or transferred"
                 },
             });
+        }
+    }
+
+    fn require_active(
+        &self,
+        block: BlockId,
+        place: crate::PlaceId,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if state.locals[self.local_indices[&place]] != LIVE {
+            emit(Violation {
+                block,
+                value: None,
+                place: Some(place),
+                reason: "local storage is not active on every incoming path",
+            });
+        }
+    }
+
+    fn require_droppable_places(
+        &self,
+        block: BlockId,
+        place: crate::PlaceId,
+        leaves: &[crate::PlaceId],
+        mode: CleanupMode,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if mode == CleanupMode::Ordinary
+            && leaves.iter().any(|leaf| {
+                self.linear_places.contains(leaf)
+                    && state.places[self.place_indices[leaf]] & LIVE != 0
+            })
+        {
+            emit(Violation {
+                block,
+                value: None,
+                place: Some(place),
+                reason:
+                    "live linear contents require an explicit consume outside trap-only cleanup",
+            });
+        }
+    }
+
+    fn require_droppable_value(
+        &self,
+        block: BlockId,
+        value: ValueId,
+        mode: CleanupMode,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        let live_linear = if let Some(leaves) = self.projections.leaves(OwnerRoot::Value(value)) {
+            leaves.iter().any(|leaf| {
+                self.linear_places.contains(leaf)
+                    && state.places[self.place_indices[leaf]] & LIVE != 0
+            })
+        } else {
+            self.linear_values.contains(&value)
+        };
+        if mode == CleanupMode::Ordinary && live_linear {
+            emit(Violation {
+                block,
+                value: Some(value),
+                place: None,
+                reason: "linear value requires an explicit consume outside trap-only cleanup",
+            });
+        }
+    }
+
+    fn local_lifetime(
+        &self,
+        block: BlockId,
+        kind: &SemOpKind,
+        mode: CleanupMode,
+        state: &mut State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        let (SemOpKind::AllocPlace { place } | SemOpKind::EndLifetime { place }) = *kind else {
+            return;
+        };
+        let Some(&index) = self.local_indices.get(&place) else {
+            return;
+        };
+        let leaves = self
+            .projections
+            .leaves(OwnerRoot::Local(place))
+            .expect("checked local content partition");
+        if matches!(kind, SemOpKind::AllocPlace { .. }) {
+            if state.locals[index] != DEAD {
+                emit(Violation {
+                    block,
+                    value: None,
+                    place: Some(place),
+                    reason: "local storage is already active on an incoming path",
+                });
+            }
+            state.locals[index] = LIVE;
+        } else {
+            self.require_active(block, place, state, emit);
+            self.require_no_live_borrows(block, PlaceBase::Place(place), state, emit);
+            self.require_droppable_places(block, place, leaves, mode, state, emit);
+            state.locals[index] = DEAD;
+        }
+        for leaf in leaves {
+            state.places[self.place_indices[leaf]] = DEAD;
         }
     }
 
@@ -522,12 +906,31 @@ impl<'a> Flow<'a> {
             _ => return,
         };
         if let Some(projection) = self.projections.projection(place) {
-            let OwnerRoot::Value(root) = projection.root else {
-                unreachable!("local admission remains closed")
+            let root_value = match projection.root {
+                OwnerRoot::Value(root) => {
+                    self.access(block, root, false, state, emit);
+                    if changes {
+                        self.require_no_live_borrows(block, PlaceBase::Value(root), state, emit);
+                    }
+                    Some(root)
+                }
+                OwnerRoot::Local(root) => {
+                    self.require_active(block, root, state, emit);
+                    if changes {
+                        self.require_no_live_borrows(block, PlaceBase::Place(root), state, emit);
+                    }
+                    None
+                }
             };
-            self.access(block, root, false, state, emit);
-            if changes {
-                self.require_no_live_borrows(block, PlaceBase::Value(root), state, emit);
+            if matches!(kind, SemOpKind::StoreAssign { .. }) {
+                self.require_droppable_places(
+                    block,
+                    place,
+                    &projection.leaves,
+                    CleanupMode::Ordinary,
+                    state,
+                    emit,
+                );
             }
             let stores = matches!(
                 kind,
@@ -544,8 +947,9 @@ impl<'a> Flow<'a> {
                 };
                 if expected.is_some_and(|expected| state.places[index] != expected) {
                     emit(Violation {
+                        place: root_value.is_none().then_some(place),
                         block,
-                        value: Some(root),
+                        value: root_value,
                         reason: if stores {
                             "aggregate field initialization would overwrite a live value"
                         } else {
@@ -567,11 +971,12 @@ impl<'a> Flow<'a> {
             return;
         };
         let (_, OwnerRoot::Value(owner)) = self.places[index] else {
-            unreachable!("local admission remains closed")
+            unreachable!("only capture places have no local or aggregate selection")
         };
         self.access(block, owner, false, state, emit);
         if state.places[index] != LIVE {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(owner),
                 reason: "capture field is not initialized on every incoming path",
@@ -606,13 +1011,11 @@ impl<'a> Flow<'a> {
     ) {
         self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
         let root = self.borrow_root(value);
-        if self.local_borrows.iter().any(|&borrow| {
-            borrow != value
-                && state.values[self.indices[&borrow]] & LIVE != 0
-                && self.borrow_root(borrow) == root
-                && !self.depends_on(value, PlaceBase::Value(borrow))
+        if self.any_live_dependent(root, state, |borrow| {
+            borrow != value && !self.depends_on(value, PlaceBase::Value(borrow))
         }) {
             emit(Violation {
+                place: None,
                 block,
                 value: Some(value),
                 reason: "exclusive receiver has another live loan of its owner",
@@ -628,6 +1031,7 @@ impl<'a> Flow<'a> {
     ) {
         if state.fault != expected {
             emit(Violation {
+                place: None,
                 block,
                 value: None,
                 reason: if expected == LIVE {
@@ -680,6 +1084,7 @@ impl<'a> Flow<'a> {
         self.define(id, result.id, &mut succeeded, emit);
         let mut successors = Vec::new();
         successors.extend(self.edge(id, normal, succeeded, emit));
+        mark_trap(&mut state);
         for failure in failures {
             successors.extend(self.edge(id, &failure.edge, state.clone(), emit));
         }
@@ -707,6 +1112,7 @@ impl<'a> Flow<'a> {
                 .is_some_and(|previous| *previous || exclusive)
             {
                 emit(Violation {
+                    place: None,
                     block: id,
                     value: Some(value),
                     reason: "exclusive receiver aliases another call operand",
@@ -732,6 +1138,7 @@ impl<'a> Flow<'a> {
                 );
                 if !scoped_call_borrow {
                     emit(Violation {
+                        place: None,
                         block: id,
                         value: Some(value),
                         reason: "guaranteed input requires an explicit owned copy at this boundary",
@@ -772,7 +1179,9 @@ mod tests {
         super::verify(
             function,
             &crate::place_plan(function, &[], &std::collections::BTreeMap::default()).unwrap(),
+            &crate::ownership::TypeFactTable::new(),
         )
+        .violations
     }
     use crate::{
         BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, CallableId,
@@ -889,6 +1298,174 @@ mod tests {
             },
             vec![],
         )
+    }
+
+    fn cleanup_analysis(blocks: Vec<SemBlock>) -> super::Analysis {
+        let mut f = function(blocks);
+        let mut facts = hew_types::TypeFactService::new(
+            hew_types::TypeFactContext::default(),
+            std::collections::BTreeMap::new(),
+        );
+        facts.require(&ResolvedTy::String).unwrap();
+        f.params.push(BlockArg {
+            value: ValueId(98),
+            ty: ResolvedTy::I64,
+            own: OwnKind::None,
+        });
+        f.places = vec![crate::PlaceDecl {
+            id: crate::PlaceId(0),
+            ty: ResolvedTy::String,
+            origin: crate::PlaceOrigin::Local,
+        }];
+        let mut entry = vec![
+            op(
+                20,
+                SemOpKind::AllocPlace {
+                    place: crate::PlaceId(0),
+                },
+                vec![],
+            ),
+            op(
+                21,
+                SemOpKind::StoreInit {
+                    place: crate::PlaceId(0),
+                    value: operand(0),
+                },
+                vec![],
+            ),
+        ];
+        entry.append(&mut f.blocks[0].ops);
+        f.blocks[0].ops = entry;
+        let rows = facts.into_rows();
+        let plan = crate::place_plan(&f, &[], &rows).unwrap();
+        super::verify(&f, &plan, &rows)
+    }
+
+    fn local_end() -> SemOp {
+        op(
+            22,
+            SemOpKind::EndLifetime {
+                place: crate::PlaceId(0),
+            },
+            vec![],
+        )
+    }
+
+    fn trap_endpoint() -> SemTerminator {
+        SemTerminator::Trap {
+            kind: crate::TrapKind::IntegerOverflow,
+        }
+    }
+
+    fn checked_cleanup(normal: u32, failure: u32) -> SemTerminator {
+        SemTerminator::CheckedBinary {
+            id: OpId(23),
+            op: hew_parser::ast::BinaryOp::Add,
+            lhs: operand(98),
+            rhs: operand(98),
+            result: ValueDef {
+                id: ValueId(2),
+                ty: ResolvedTy::I64,
+                own: OwnKind::None,
+            },
+            normal: edge(normal, &[]),
+            failures: vec![crate::CheckedFailure {
+                kind: crate::TrapKind::IntegerOverflow,
+                edge: edge(failure, &[]),
+            }],
+        }
+    }
+
+    #[test]
+    fn cancellation_and_mixed_predecessors_never_certify_a_trap_cleanup() {
+        // Suspend remains outside module admission. Exercise the existing flow
+        // transfer directly so future suspension support cannot conflate its
+        // cancellation edge with the currently admitted trap fault carrier.
+        for mixed in [false, true] {
+            let analysis = cleanup_analysis(vec![
+                block(
+                    0,
+                    vec![],
+                    SemTerminator::Suspend {
+                        kind: crate::SuspendKind::Await,
+                        inputs: vec![],
+                        resumes: vec![edge(if mixed { 1 } else { 2 }, &[])],
+                        cancel: edge(1, &[]),
+                    },
+                ),
+                block(1, vec![local_end()], trap_endpoint()),
+                block(
+                    2,
+                    vec![op(
+                        24,
+                        SemOpKind::EndLifetime {
+                            place: crate::PlaceId(0),
+                        },
+                        vec![],
+                    )],
+                    done(),
+                ),
+            ]);
+            assert!(analysis.violations.is_empty(), "{:?}", analysis.violations);
+            assert_eq!(
+                analysis.lifetimes.cleanup(OpId(22)),
+                Some(super::CleanupMode::Ordinary)
+            );
+        }
+        let analysis = cleanup_analysis(vec![
+            block(0, vec![], checked_cleanup(1, 1)),
+            block(1, vec![local_end()], trap_endpoint()),
+        ]);
+        assert_eq!(
+            analysis.lifetimes.cleanup(OpId(22)),
+            Some(super::CleanupMode::Ordinary)
+        );
+    }
+
+    #[test]
+    fn a_trap_cleanup_region_must_finish_without_normal_exit_or_escaping_cycle() {
+        let prefix = || {
+            vec![
+                block(0, vec![], checked_cleanup(1, 2)),
+                block(
+                    1,
+                    vec![op(
+                        24,
+                        SemOpKind::EndLifetime {
+                            place: crate::PlaceId(0),
+                        },
+                        vec![],
+                    )],
+                    done(),
+                ),
+                block(2, vec![local_end()], SemTerminator::Goto(edge(3, &[]))),
+                block(3, vec![], trap_endpoint()),
+            ]
+        };
+        let analysis = cleanup_analysis(prefix());
+        assert!(analysis.violations.is_empty(), "{:?}", analysis.violations);
+        assert_eq!(
+            analysis.lifetimes.cleanup(OpId(22)),
+            Some(super::CleanupMode::Trap)
+        );
+        for terminal in [
+            done(),
+            SemTerminator::Unreachable,
+            SemTerminator::Branch {
+                condition: operand(99),
+                then_target: edge(3, &[]),
+                else_target: edge(4, &[]),
+            },
+        ] {
+            let mut blocks = prefix();
+            blocks[3].terminator = terminal;
+            blocks.push(block(4, vec![], trap_endpoint()));
+            let analysis = cleanup_analysis(blocks);
+            assert_eq!(
+                analysis.lifetimes.cleanup(OpId(22)),
+                Some(super::CleanupMode::Ordinary)
+            );
+        }
     }
 
     #[test]

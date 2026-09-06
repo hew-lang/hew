@@ -24,6 +24,9 @@ mod suspend;
 #[path = "lower_tasks.rs"]
 mod tasks;
 
+#[path = "lower_select.rs"]
+mod select;
+
 #[path = "lower_scalar_match.rs"]
 mod scalar_match;
 
@@ -3593,6 +3596,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Ok(());
             }
 
+            HirExprKind::Select(select)
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
+                self.lower_task_select(expr, select)?;
+                return Ok(());
+            }
             HirExprKind::AwaitTask { operand, .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
@@ -3800,6 +3809,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<ValueId, String> {
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
+            HirExprKind::Select(select) => match self.lower_task_select(expr, select)? {
+                Some(value) => Ok(value),
+                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                None => Err("divergent select cannot produce a SIR value".into()),
+            },
             HirExprKind::Closure { .. } => self.lower_closure(expr),
             HirExprKind::ForkBlock { body, captures, .. } => {
                 self.lower_fork_block(expr, body, captures)
@@ -4657,12 +4671,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         arm: &HirMatchArm,
         result_ty: &ResolvedTy,
     ) -> Result<Option<Operand>, String> {
+        self.lower_selected_body(&arm.body, result_ty)
+    }
+
+    fn lower_selected_body(
+        &mut self,
+        body: &HirExpr,
+        result_ty: &ResolvedTy,
+    ) -> Result<Option<Operand>, String> {
         if *result_ty == ResolvedTy::Unit {
-            self.lower_discarded_expr(&arm.body)?;
+            self.lower_discarded_expr(body)?;
             return Ok(None);
         }
-        if matches!(self.ty(&arm.body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
-            self.lower_discarded_expr(&arm.body)?;
+        if matches!(self.ty(&body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
+            self.lower_discarded_expr(body)?;
             if self.is_open() {
                 return Err(
                     "non-divergent variant arm does not produce the match result".to_string(),
@@ -4670,13 +4692,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             return Ok(None);
         }
-        let value = lower_initial_value_transfer(
-            self,
-            &arm.body,
-            "variant match arm result",
-            OwnedBindingUse::Copy,
-        )?;
-        let value = self.coerce_value(value, result_ty, Provenance::Site(arm.body.site))?;
+        let value =
+            lower_initial_value_transfer(self, body, "selected arm result", OwnedBindingUse::Copy)?;
+        let value = self.coerce_value(value, result_ty, Provenance::Site(body.site))?;
         Ok(Some(Operand { value }))
     }
 
@@ -5849,20 +5867,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// Transfer a receiver or argument before evaluating later arguments. Its
     /// new owner remains live for argument-failure cleanup until the call starts.
     fn lower_consuming_value(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
+        self.require_consuming_capture(argument)?;
         let mut source = argument;
         while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
             source = inner;
-        }
-        if let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(binding),
-            ..
-        } = &source.kind
-        {
-            if let Some((_, field)) = self.capture_field(*binding) {
-                if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
-                    return Err("E_OWN_CONSUME_BORROWED: consuming a captured argument requires an owning capture transfer".into());
-                }
-            }
         }
         let value = match self.lower_consuming_projection(source)? {
             Some(value) => value,
@@ -5878,6 +5886,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 source: Operand { value },
             },
         )
+    }
+
+    fn require_consuming_capture(&self, expression: &HirExpr) -> Result<(), String> {
+        let mut source = expression;
+        while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
+            source = inner;
+        }
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &source.kind
+        {
+            if let Some((_, field)) = self.capture_field(*binding) {
+                if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
+                    return Err("E_OWN_CONSUME_BORROWED: consuming a captured argument requires an owning capture transfer".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Direct and indirect user calls share argument capture and both cleanup paths.

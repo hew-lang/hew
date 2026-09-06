@@ -2466,16 +2466,31 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         unsafe { crate::coro_exec::resume_park(a) }
     }));
     let poll = match poll {
-        Ok(poll) => poll,
+        Ok(poll) => {
+            if let Some(fault) = resume_context.checked_fault.take() {
+                // SAFETY: the checked body returned through its cleanup graph;
+                // this activation owns the completed frame and actor state.
+                unsafe {
+                    finish_failed_resume(
+                        actor,
+                        &raw mut resume_context,
+                        crate::actor_native::DispatchFailure::Checked(fault),
+                    );
+                }
+                return;
+            }
+            poll
+        }
         Err(payload) => {
-            let code = payload
-                .downcast_ref::<crate::actor::HewPanic>()
-                .map_or(101, |panic| panic.code);
-            crate::util::quarantine_panic_payload(payload);
-            crate::crash::record_logical_crash(a.id, code, 0, a.dispatch.map_or(0, |f| f as usize));
             // SAFETY: catch_unwind proves the resumed stack is dead; this
             // activation still exclusively owns actor and resume_context.
-            unsafe { resume_crash_recovery(actor, &raw mut resume_context, code) };
+            unsafe {
+                finish_failed_resume(
+                    actor,
+                    &raw mut resume_context,
+                    crate::actor_native::DispatchFailure::Unwind(payload),
+                );
+            }
             return;
         }
     };
@@ -2545,32 +2560,24 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     }
 }
 
-/// Crash recovery for a trap raised inside a RESUMED continuation.
+/// Finish a checked failure or native unwind from a resumed continuation.
 ///
-/// Reached only when [`resume_suspended_activation`]'s `catch_unwind` catches a
-/// logical Hew failure. Mirrors the fresh-dispatch unwind branch in
-/// [`activate_actor`]
-/// (lock release → swap unwind → reply routing → `Crashing` CAS → arena reset →
-/// late crash-reply → terminal `Crashed`), with the resume-specific differences:
-///   * the reply channel is read from the resume's installed context
-///     (`resume_context`, carrying the handler's stashed reply channel), not a
-///     mailbox node — a resume has no `msg` to free;
-///   * the crash-abandoned coroutine frame (tag stuck at `Resuming` because the
-///     unwind skipped the settle) is reclaimed via
-///     [`crate::coro_exec::abandon_resuming_after_crash`] BEFORE the actor frees,
-///     since `destroy_parked` refuses a `Resuming` tag.
+/// Both paths retire the parked reply and publish the actor fault through the
+/// same terminal transition. Checked completion has already run source cleanup
+/// and destroys its final frame normally. Native unwind instead recovers the
+/// abandoned frame's owners before raw reclamation.
 ///
 /// # Safety
 ///
-/// Called immediately after `catch_unwind` returned `Err` on this worker thread.
-/// `actor` is owned by this frame (Running CAS held). `resume_context` is the
+/// Called after a checked body reaches final suspend or `catch_unwind` returns
+/// `Err`. `actor` is owned by this frame (Running CAS held). `resume_context` is the
 /// still-installed dispatch context (a live stack local in the caller frame);
 /// the prior context is restored via `restore_current_context_after_dispatch`,
 /// which walks `resume_context`'s `prev_context`.
-unsafe fn resume_crash_recovery(
+unsafe fn finish_failed_resume(
     actor: *mut HewActor,
     resume_context: *mut HewExecutionContext,
-    code: i32,
+    failure: crate::actor_native::DispatchFailure,
 ) {
     // This frame is a crash teardown, and a crash teardown RELEASES OTHER
     // THREADS long before it reaches the trap that puts the crash on the
@@ -2584,6 +2591,26 @@ unsafe fn resume_crash_recovery(
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
     let actor_arena = a.arena;
+    let checked = matches!(&failure, crate::actor_native::DispatchFailure::Checked(_));
+    let code = match failure {
+        crate::actor_native::DispatchFailure::Checked(fault) => {
+            // SAFETY: the source cleanup returned normally; its actor state
+            // escrow remains borrowed and the final frame has one destroy owner.
+            if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                eprintln!("fatal: checked resumed actor failure retained crash-cleanup owners");
+                std::process::abort();
+            }
+            fault.code()
+        }
+        crate::actor_native::DispatchFailure::Unwind(payload) => {
+            let code = payload
+                .downcast_ref::<crate::actor::HewPanic>()
+                .map_or(101, |panic| panic.code);
+            crate::util::quarantine_panic_payload(payload);
+            code
+        }
+    };
+    crate::crash::record_logical_crash(a.id, code, 0, a.dispatch.map_or(0, |f| f as usize));
 
     // Generated dispatch wrappers acquire the actor-state lock before the
     // handler body; the unwind may bypass their explicit release edge, so release any
@@ -2598,27 +2625,29 @@ unsafe fn resume_crash_recovery(
     // handler root. Exclude it while raw-reclaiming nested synchronous child
     // ramps; `abandon_resuming_after_crash` below removes/frees that root exactly
     // once. Its typed field obligations are independent and run in swap unwind.
-    let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
-    // A child suspending-closure call that unwound inside the resume
-    // bypassed the driver's swap-pop and driver-channel teardown. Restore the
-    // outer reply routing, tear those channels down, and typed-drop abandoned
-    // frame slots before raw reclamation. Root field drops run here exactly
-    // once; only its raw frame allocation remains reserved for the actor-slot
-    // authority below.
-    crate::execution_context::reply_channel_swap_unwind();
-    // SAFETY: catch_unwind proves the active resume stack is dead. The drain
-    // frees only positively tracked nested frames and preserves
-    // `scheduler_root` for the actor-slot authority.
-    let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
-    // Frame/nested owners are newer and drain first. The dispatch registry then
-    // releases ordinary stack owners and finally the structurally valid actor
-    // state escrow, all before arena reset and raw state disposal.
-    // SAFETY: catch_unwind proves the dispatch stack is abandoned and this recovery
-    // path exclusively owns its cleanup scope.
-    let outcome = unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };
-    if outcome.state_authority_consumed {
-        // SAFETY: this recovery frame exclusively owns the crashed actor.
-        unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+    if !checked {
+        let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
+        // A child suspending-closure call that unwound inside the resume
+        // bypassed the driver's swap-pop and driver-channel teardown. Restore the
+        // outer reply routing, tear those channels down, and typed-drop abandoned
+        // frame slots before raw reclamation. Root field drops run here exactly
+        // once; only its raw frame allocation remains reserved for the actor-slot
+        // authority below.
+        crate::execution_context::reply_channel_swap_unwind();
+        // SAFETY: catch_unwind proves the active resume stack is dead. The drain
+        // frees only positively tracked nested frames and preserves
+        // `scheduler_root` for the actor-slot authority.
+        let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
+        // Frame/nested owners are newer and drain first. The dispatch registry then
+        // releases ordinary stack owners and finally the structurally valid actor
+        // state escrow, all before arena reset and raw state disposal.
+        // SAFETY: catch_unwind proves the dispatch stack is abandoned and this recovery
+        // path exclusively owns its cleanup scope.
+        let outcome = unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };
+        if outcome.state_authority_consumed {
+            // SAFETY: this recovery frame exclusively owns the crashed actor.
+            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+        }
     }
 
     // Capture the crashed resume's reply-channel state from the still-installed
@@ -2660,18 +2689,17 @@ unsafe fn resume_crash_recovery(
         }
     };
 
-    // Reclaim the crash-abandoned coroutine frame (tag stuck at `Resuming`)
-    // exactly once, while `Crashing` keeps the actor non-quiescent so the box
-    // stays alive. Frees the frame block WITHOUT running the `coro.destroy`
-    // cleanup outline — the coroutine was RUNNING (between suspend points) when
-    // it trapped, so re-running the last suspend's cleanup would double-free the
-    // registrations its resume edge already released. The frame-registry drain
-    // above already ran the root's registered typed field drops while reserving
-    // this raw allocation; arena reset below reclaims the remaining
-    // arena-backed state.
-    // SAFETY: the unwind killed the resume, so no concurrent resume/destroy can
-    // run; this worker owns the actor exclusively.
-    let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
+    // Retire the frame before publishing a quiescent actor state. The checked
+    // path reached Done; the unwind path abandoned a frame still tagged Resuming.
+    if checked {
+        // SAFETY: a returned checked fault has completed source cleanup and
+        // reached final suspend. Reclaim it through its normal destroy outline.
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+    } else {
+        // SAFETY: the native unwind abandoned a running frame; its typed
+        // obligations were recovered above, so only raw reclamation remains.
+        let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
+    }
 
     // Per-activation arena cleanup BEFORE publishing terminal `Crashed`.
     if took_crashing && !actor_arena.is_null() {

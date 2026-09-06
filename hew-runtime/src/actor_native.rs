@@ -289,4 +289,83 @@ mod tests {
         assert_eq!(crate::reply_channel::active_channel_count(), baseline);
         assert!(crate::execution_context::current_context().is_null());
     }
+
+    unsafe extern "C" fn checked_resume(frame: *mut c_void) {
+        // SAFETY: the scheduler owns this live scratch frame and installs the
+        // resumed actor's context before invoking its continuation.
+        unsafe {
+            let frame = &mut *frame.cast::<crate::coro_exec::test_support::ScratchFrame>();
+            frame.resumes.fetch_add(1, Ordering::AcqRel);
+            frame.resume = None;
+            let context = crate::execution_context::current_context();
+            *(*context).actor.as_ref().unwrap().state.cast::<i64>() = 7;
+            hew_actor_dispatch_set_fault(context, crate::fault::hew_fault_new(202));
+        }
+    }
+
+    #[test]
+    fn checked_resume_crashes_and_retires_reply_after_normal_frame_cleanup() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let baseline = crate::reply_channel::active_channel_count();
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
+        let mut state = 3_i64;
+        let mut actor = crate::test_actor::stub_actor();
+        let mut frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        frame.resume = Some(checked_resume);
+        actor.state = (&raw mut state).cast();
+        actor.state_size = std::mem::size_of::<i64>();
+        actor
+            .suspended_cont
+            .store(frame.handle(), Ordering::Release);
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        actor.actor_state.store(
+            crate::internal::types::HewActorState::Runnable as i32,
+            Ordering::Release,
+        );
+        // SAFETY: the fixture owns the frame and mailbox, and transfers one
+        // retained reply reference to the parked actor before resuming it.
+        unsafe {
+            let mailbox = crate::mailbox::hew_mailbox_new();
+            assert!(!mailbox.is_null());
+            actor.mailbox = mailbox.cast();
+            crate::reply_channel::hew_reply_channel_retain(channel);
+            actor
+                .suspended_reply_channel
+                .store(channel.cast(), Ordering::Release);
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Crashed as i32
+            );
+            assert_eq!(actor.error_code.load(Ordering::Acquire), 202);
+            assert_eq!(state, 7);
+            assert!(!actor.state_drop_consumed.load(Ordering::Acquire));
+            assert_eq!(frame.resumes.load(Ordering::Acquire), 1);
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert!(frame.heap_guard.load(Ordering::Acquire).is_null());
+            assert!(actor.suspended_cont.load(Ordering::Acquire).is_null());
+            assert!(actor
+                .suspended_reply_channel
+                .load(Ordering::Acquire)
+                .is_null());
+            assert_eq!(crate::reply_channel::ref_count_for_test(channel), 1);
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_failure_kind(channel),
+                crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED
+            );
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_await_status(channel),
+                crate::await_cancel::AwaitCancelStatus::Completed as i32
+            );
+            crate::reply_channel::hew_reply_channel_free(channel);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
+        assert!(crate::execution_context::current_context().is_null());
+    }
 }

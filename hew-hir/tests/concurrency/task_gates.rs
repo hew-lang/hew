@@ -46,7 +46,7 @@ fn fork_accepts_empty_multi_statement_and_nested_bodies() {
                     return await child;
                 };
                 let result: i64 = await nested;
-                let arithmetic: i64 = await fork (result + 1);
+                let arithmetic: i64 = await fork { result + 1 };
             }
         }
     ",
@@ -74,7 +74,7 @@ fn await_accepts_task_operands_from_blocks_and_branches() {
         r"
         fn main() {
             let block: i64 = await { let task = fork { 41 }; task };
-            let branch: i64 = await (if true { let chosen = fork { block + 1 }; chosen } else { let chosen = fork { 0 }; chosen });
+            let branch: i64 = await (if true { fork { block + 1 } } else { fork { 0 } });
         }
     ",
     );

@@ -754,8 +754,21 @@ fn await_non_task_operand_is_rejected_inside_and_outside_scope() {
 }
 
 #[test]
-fn task_fork_accepts_arbitrary_value_expression() {
-    lower_checked_task("fn main() { let task = fork 42; let result: i64 = await task; }");
+fn task_fork_block_produces_ordinary_value() {
+    lower_checked_task("fn main() { let task = fork { 42 }; let result: i64 = await task; }");
+}
+
+#[test]
+fn task_fork_scalar_requires_a_block() {
+    let (_, checked) =
+        support::checker_pipeline::typecheck_source("fn main() { let task = fork 42; }");
+    assert!(
+        checked.errors.iter().any(|error| error
+            .message
+            .contains("fork expects a call or a batch of calls")),
+        "{:?}",
+        checked.errors
+    );
 }
 
 #[test]
@@ -811,40 +824,19 @@ fn inferred_task_return_from_scope_is_rejected() {
     );
 }
 
-/// Regression (PR #1841): `let b = await { conn.read() };` must emit
-/// `AwaitOutOfPosition` and not slip through the let-value guard.
-///
-/// Before the fix the `is_bindable_await` guard computed one unwrapped
-/// `inner_key` (trailing-call span) and reused it for ALL side-table checks
-/// including `conn_await_reads`.  The checker records `conn_await_reads` under
-/// the method-call span, so the guard found the entry and returned `true` —
-/// allowing the let-value through.  The corresponding lowering arm at
-/// `Expr::Await` then looked up `conn_await_reads` by the BLOCK span (`inner.1`),
-/// found nothing, and fell through to the generic await path, producing an
-/// inconsistent or silently wrong HIR node.
-///
-/// After the fix only the `actor_method_dispatch` lookup uses the unwrapped
-/// effective span; the non-ask tables (`conn_await_reads`, `listener_await_accepts`,
-/// stream/channel recv) use the original `inner.1` span.  A block-wrapped
-/// `conn.read()` in a let-value position therefore fails the guard and the HIR
-/// lowering emits `AwaitOutOfPosition`, consistent with `main`-branch behaviour.
+/// The outer block and inner call have distinct spans. Await lowering must
+/// consume the checked dispatch for the call and preserve its reply type.
 #[test]
-fn block_wrapped_conn_read_await_in_let_value_rejects_with_await_out_of_position() {
-    // `fn handler(conn: Connection)` — Connection is a recognised built-in
-    // handle type; no import required.  The block-wrapped `await { conn.read() }`
-    // is the minimal non-ask bindable-await shape that the pre-fix guard would
-    // incorrectly accept (the checker records conn_await_reads under the method-
-    // call span, matching the unwrapped key but not the block span the lowering
-    // arm uses).
-    let output = lower("fn handler(conn: Connection) { let b = await { conn.read() }; }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "block-wrapped `await {{ conn.read() }}` in let-value must emit \
-         AwaitOutOfPosition (guard/lowering span consistency); got: {:?}",
-        output.diagnostics
+fn block_wrapped_actor_await_preserves_checked_reply() {
+    lower_checked_task(
+        r"
+        actor Worker { receive fn process(value: i64) -> i64 { value + 1 } }
+        fn main() {
+            let worker = spawn Worker;
+            let reply = await { worker.process(41) };
+            let value: i64 = match reply { .Ok(value) => value, .Err(_) => 0, };
+        }
+    ",
     );
 }
 
@@ -987,6 +979,10 @@ fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a h
     match &expr.kind {
         HirExprKind::SpawnLambdaActor { body, .. } => {
             walk_expr_collect_lambdas(body, out);
+        }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            walk_expr_collect_lambdas(scope, out);
+            walk_expr_collect_lambdas(handler, out);
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }

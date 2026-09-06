@@ -1,0 +1,25 @@
+fn invoke(consume callback: fn[once](i64) -> i64, value: i64) -> i64 {
+    println("unexpected callee entry");
+    callback(value)
+}
+
+fn later_argument(divisor: i64) -> i64 {
+    let text = "later argument owner".to_upper();
+    let bytes = text.to_bytes();
+    bytes.len() / divisor
+}
+
+fn main() -> i64 {
+    let caller = "caller owner".to_upper();
+    let text = "unexpected callback entry".to_upper();
+    let bytes = text.to_bytes();
+    let callback: fn[once, clone](i64) -> i64 = move |value: i64| -> i64 {
+        println(text);
+        value + bytes.len()
+    };
+    let uncalled = clone callback;
+    let result = invoke(callback, later_argument(0));
+    println(uncalled(1));
+    println(caller);
+    result
+}

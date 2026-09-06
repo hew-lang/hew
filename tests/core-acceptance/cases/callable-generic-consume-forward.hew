@@ -1,0 +1,23 @@
+fn forward<T>(consume value: T) -> T { value }
+
+fn main() -> i64 {
+    let count = 10;
+    let step = "x".to_upper();
+    var original: fn[var, clone]() -> i64 = move capture(var count) || {
+        count += step.len();
+        count
+    };
+    println(original());
+    var copied = clone original;
+    var moved = forward(original);
+    println(moved());
+    println(moved());
+    println(copied());
+
+    let text = forward("generic owner".to_upper());
+    let once: fn[once, clone]() -> string = move || text;
+    let returned = forward(once);
+    println(returned());
+    println(forward(42));
+    0
+}

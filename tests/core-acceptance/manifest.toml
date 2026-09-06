@@ -980,3 +980,60 @@ timeout_seconds = 15
 [case.expected]
 stdout = "42\nRETURNED FIRST\nRETURNED COPY\nRETURNED AGAIN\n"
 exit = 0
+
+[[case]]
+id = "callable-consume-later-argument-fault"
+intent = "Moving the first callback argument retains its cleanup obligation until a later argument succeeds; a later fault releases captured heap owners without entering the callee or callback."
+source = "cases/callable-consume-later-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "callable-generic-consume-forward"
+intent = "Generic consuming forwarding preserves owning strings and callable capabilities; private counter copies remain independent and a forwarded once callable returns its owned capture."
+source = "cases/callable-generic-consume-forward.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "11\n12\n13\n12\nGENERIC OWNER\n42\n"
+exit = 0
+
+[[case]]
+id = "callable-mutable-parameter-state"
+intent = "An ordinary mutable callable parameter advances a private copy, while a consuming mutable parameter advances the original environment transferred by its caller."
+source = "cases/callable-mutable-parameter-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "12\n11\n13\n"
+exit = 0
+
+[[case]]
+id = "callable-private-parameter-callback-fault"
+intent = "A fault inside a private mutable parameter callback releases its copied owned capture and callback locals, then cleans the original caller environment without continuing."
+source = "cases/callable-private-parameter-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "callable-aggregate-private-parameter"
+intent = "Mutable record and tuple parameters privately copy callable fields and owned labels; conditional and loop calls retain local state while caller environments remain unchanged."
+source = "cases/callable-aggregate-private-parameter.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "PRIVATE RECORD\n12\n11\nPRIVATE TUPLE\n13\n12\n12\nPRIVATE RECORD\nPRIVATE TUPLE\n"
+exit = 0

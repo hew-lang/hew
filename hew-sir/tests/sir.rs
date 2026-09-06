@@ -2046,16 +2046,6 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
     module
 }
 
-/// Does any diagnostic carry `needle` in its reason?
-fn any_reason_contains(diagnostics: &[hew_sir::SirDiagnostic], needle: &str) -> bool {
-    diagnostics.iter().any(|diagnostic| match &diagnostic.kind {
-        SirDiagnosticKind::InvalidCallable { reason, .. }
-        | SirDiagnosticKind::InvalidGenericTemplate { reason, .. }
-        | SirDiagnosticKind::InvalidOperation { reason, .. } => reason.contains(needle),
-        _ => false,
-    })
-}
-
 /// A scalar header cannot claim the owned-value `Borrow` convention.
 #[test]
 fn verifier_refuses_a_callable_header_carrying_a_borrow_slot() {
@@ -2085,14 +2075,11 @@ fn verifier_refuses_a_direct_call_to_a_borrow_slot_parameter() {
 #[test]
 fn verifier_admits_the_same_header_and_call_with_a_read_only_slot() {
     let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::ReadOnly));
-    assert!(
-        !any_reason_contains(&diagnostics, "non-ReadOnly ABI passing"),
-        "{diagnostics:#?}"
-    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
-/// A generic template header carries the same wall: SIR does not own parameter
-/// ownership policy before substitution either.
+/// A template retains the declared read/consume mode. The concrete borrowed
+/// representation is decided after substitution from the actual type facts.
 #[test]
 fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
@@ -2117,8 +2104,8 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidGenericTemplate { reason, .. }
-            if reason.contains("template parameter 0 carries ownership or caller-visible ABI policy")
-    )));
+            if reason.contains("template parameter 0 must retain a declared read or consume contract")
+    )), "{diagnostics:#?}");
 }
 
 /// The counterfactual for the template wall: the same template with a
@@ -2144,11 +2131,8 @@ fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
         },
     }];
     let diagnostics = verify_module(&module);
-    assert!(
-        !any_reason_contains(
-            &diagnostics,
-            "carries ownership or caller-visible ABI policy"
-        ),
-        "{diagnostics:#?}"
-    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    module.generic_templates[0].signature.params[0].passing = SemParamPassing::Consume;
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }

@@ -817,6 +817,20 @@ impl<'a> Flow<'a> {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
             SemTerminator::Suspend {
+                kind: crate::SuspendKind::Join { cancel: true, .. },
+                resumes,
+                cancel,
+                unwind,
+                ..
+            } => {
+                // A fault drain preserves its primary fault and exit kind;
+                // child faults are appended by the physical join operation.
+                Self::require_fault(id, LIVE, &state, emit);
+                for edge in resumes.iter().chain([cancel, unwind]) {
+                    successors.extend(self.edge(id, edge, state.clone(), emit));
+                }
+            }
+            SemTerminator::Suspend {
                 resumes,
                 cancel,
                 unwind,
@@ -1480,7 +1494,8 @@ impl<'a> Flow<'a> {
 fn operation_consumes_operands(kind: &SemOpKind) -> bool {
     matches!(
         kind,
-        SemOpKind::ClosureMake { .. }
+        SemOpKind::TaskSpawn { .. }
+            | SemOpKind::ClosureMake { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::TupleMake { .. }
             | SemOpKind::AggregateMake { .. }

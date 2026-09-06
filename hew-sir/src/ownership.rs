@@ -430,6 +430,10 @@ pub fn checked_binary_types_match(
     )
 }
 
+/// Function-local identity of a lexical structured-task lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskScopeId(pub u32);
+
 /// Which runtime operation a `Suspend` terminator parks on (§1.5).
 ///
 /// One variant per spelling in the **SIR `SuspendKind`** column of §1.5's kind
@@ -462,7 +466,7 @@ pub enum SuspendKind {
     CallClosure,
     Select,
     Timeout,
-    Join,
+    Join { scope: TaskScopeId, cancel: bool },
     ScopeDeadline,
     Yield,
     Sleep,

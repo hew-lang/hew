@@ -280,6 +280,24 @@ pub unsafe extern "C" fn hew_checked_task_wait_status(wait: *const HewCheckedTas
     unsafe { checked((*wait).task) }.lock_or_recover().outcome()
 }
 
+/// # Safety
+/// Wait retains a live child. Cancellation still requires a completed drain.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_wait_cancel(wait: *const HewCheckedTaskWait) {
+    // SAFETY: the wait retains its task and the task retains its token.
+    unsafe { hew_cancel_token_cancel((*(*wait).task).cancel_token, 1) };
+}
+
+/// # Safety
+/// Wait remains live and its task has completed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_wait_private_status(
+    wait: *const HewCheckedTaskWait,
+) -> i32 {
+    // SAFETY: the wait retains its task while the outcome is read.
+    unsafe { checked((*wait).task) }.lock_or_recover().status
+}
+
 /// Transfer a completed result or fault, leaving outputs untouched if pending.
 ///
 /// # Safety

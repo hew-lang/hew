@@ -881,12 +881,13 @@ fn check_function_with_context(
     variant_shapes: &[SemVariantShape],
 ) -> (Vec<SirDiagnostic>, Option<CheckedFunction>) {
     let mut diagnostics = Vec::new();
-    if let Err(reason) = crate::defer::plan(function) {
+    if let Err(reason) = crate::defer::plan(function)
+        .map_err(str::to_string)
+        .and_then(|_| crate::task_scope::verify(function))
+    {
         diagnostics.push(diag(
             function,
-            SirDiagnosticKind::InvalidTerminator {
-                reason: reason.into(),
-            },
+            SirDiagnosticKind::InvalidTerminator { reason },
         ));
     }
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
@@ -2249,7 +2250,9 @@ fn verify_operation_shape(
     }
     let expected_results = usize::from(!matches!(
         operation.kind,
-        SemOpKind::RegisterDefer { .. }
+        SemOpKind::TaskScopeEnter { .. }
+            | SemOpKind::TaskScopeClose { .. }
+            | SemOpKind::RegisterDefer { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::AllocPlace { .. }
             | SemOpKind::EndBorrow { .. }
@@ -2282,7 +2285,10 @@ fn verify_operation_shape(
     }
     if matches!(
         operation.kind,
-        SemOpKind::RegisterDefer { .. } | SemOpKind::EndBorrow { .. }
+        SemOpKind::TaskScopeEnter { .. }
+            | SemOpKind::TaskScopeClose { .. }
+            | SemOpKind::RegisterDefer { .. }
+            | SemOpKind::EndBorrow { .. }
     ) {
         // The lifetime relation requires an active local loan and proves
         // that every projection depending on it has already ended.
@@ -2299,7 +2305,26 @@ fn verify_operation_shape(
     }
     let result = &operation.results[0];
     match &operation.kind {
-        SemOpKind::RegisterDefer { .. } => unreachable!("result-free marker handled above"),
+        SemOpKind::TaskSpawn { callable, .. } => {
+            let valid = types.get(&callable.value).is_some_and(|ty| {
+                crate::callable_parts(ty).is_ok_and(|(params, output, caps)| {
+                    params.is_empty()
+                        && caps.call == hew_types::CallableCallMode::Once
+                        && result.ty == ResolvedTy::Task(Box::new(output.clone()))
+                })
+            });
+            if !valid {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "task spawn requires a nullary once callable and its exact Task result".into(),
+                    diagnostics,
+                );
+            }
+        }
+        SemOpKind::TaskScopeEnter { .. }
+        | SemOpKind::TaskScopeClose { .. }
+        | SemOpKind::RegisterDefer { .. } => unreachable!("result-free marker handled above"),
         SemOpKind::ConstUnit => {
             if result.ty != ResolvedTy::Unit || result.own != crate::OwnKind::None {
                 invalid_operation(
@@ -3448,6 +3473,7 @@ fn failure_cfg_matches_exit(
             !matches!(
                 op.kind,
                 SemOpKind::EndBorrow { .. }
+                    | SemOpKind::TaskScopeClose { .. }
                     | SemOpKind::DestroyValue { .. }
                     | SemOpKind::EndLifetime { .. }
             )
@@ -3455,6 +3481,18 @@ fn failure_cfg_matches_exit(
             return false;
         }
         let valid = match &block.terminator {
+            SemTerminator::Suspend {
+                kind: crate::SuspendKind::Join { cancel: true, .. },
+                resumes,
+                cancel,
+                unwind,
+                ..
+            } => {
+                expected.is_none()
+                    && resumes.iter().chain([cancel, unwind]).all(|edge| {
+                        reaches_only_matching_exits(edge.target, None, blocks, visiting, complete)
+                    })
+            }
             SemTerminator::EnterDefer { .. } | SemTerminator::FinishDefer { .. } => {
                 expected.is_none()
             }
@@ -3949,6 +3987,21 @@ fn verify_terminator_shape(
                         && matches!(inputs.as_slice(), [input]
                         if input.decision == crate::BoundaryDecision::Copy
                         && types.get(&input.operand.value) == Some(&ResolvedTy::Duration))
+                }
+                crate::SuspendKind::Await => {
+                    resumes.len() == 1
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::Move
+                        && matches!(types.get(&input.operand.value), Some(ResolvedTy::Task(output))
+                            if match result {
+                                crate::CallResult::Unit => **output == ResolvedTy::Unit,
+                                crate::CallResult::Value(value) => value.ty == **output,
+                            }))
+                }
+                crate::SuspendKind::Join { .. } => {
+                    inputs.is_empty()
+                        && resumes.len() == 1
+                        && matches!(result, crate::CallResult::Unit)
                 }
                 _ => false,
             };

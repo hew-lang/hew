@@ -21,6 +21,9 @@ mod var_self;
 #[path = "lower_suspend.rs"]
 mod suspend;
 
+#[path = "lower_tasks.rs"]
+mod tasks;
+
 #[path = "lower_scalar_match.rs"]
 mod scalar_match;
 
@@ -2212,6 +2215,7 @@ struct ControlState {
     owned_live: BTreeMap<ValueId, ResolvedTy>,
     scopes: Vec<Vec<BindingId>>,
     defers: Vec<deferred::PendingDefer>,
+    task_scopes: Vec<(crate::TaskScopeId, usize)>,
 }
 
 struct MatchExit {
@@ -2362,6 +2366,7 @@ struct Builder<'hir, 'service> {
     argument_receiver_loans: Vec<ValueId>,
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
+    task_scopes: Vec<(crate::TaskScopeId, usize)>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2459,6 +2464,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             argument_receiver_loans: Vec::new(),
             defers: Vec::new(),
             defer_bodies: Vec::new(),
+            task_scopes: Vec::new(),
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
@@ -2626,6 +2632,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.ty(&self.function.return_ty).user_facing()
             ));
         }
+        self.enter_task_scope()?;
         let result = self.lower_source_body(source)?;
         let result = result
             .map(|operand| {
@@ -2661,6 +2668,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             places: self.places,
             bindings: self.source_bindings,
         };
+        tasks::remove_empty_scopes(&mut function);
         projection::complete_edge_partitions(
             &mut function,
             &self.service.aggregate_shapes,
@@ -2873,7 +2881,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     )?
                 }
                 BindingTarget::Value(source) => {
-                    if OwnKind::of_ty(&ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                    if take && self.value_own_kind(source) == Some(OwnKind::Owned) {
+                        self.owned_live.remove(&source);
+                        source
+                    } else if OwnKind::of_ty(&ty, self.service.checked_facts.rows())?
+                        == OwnKind::Owned
+                    {
                         self.emit_typed(
                             provenance,
                             &ty,
@@ -3062,6 +3075,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             owned_live: self.owned_live.clone(),
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
+            task_scopes: self.task_scopes.clone(),
         }
     }
 
@@ -3073,6 +3087,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.owned_live = state.owned_live.clone();
         self.scopes.clone_from(&state.scopes);
         self.defers.clone_from(&state.defers);
+        self.task_scopes.clone_from(&state.task_scopes);
     }
 
     fn retain_bindings(
@@ -3545,6 +3560,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
+            HirExprKind::AwaitTask { operand, .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                self.lower_task_await(expr, operand)?;
+                return Ok(());
+            }
+            HirExprKind::Scope { body }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
+                self.lower_task_scope(body)?;
+                return Ok(());
+            }
             HirExprKind::SubsumedValue { source } => {
                 if self.ty(&source.ty) != self.ty(&expr.ty) {
                     return Err(
@@ -3738,6 +3763,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
             HirExprKind::Closure { .. } => self.lower_closure(expr),
+            HirExprKind::ForkBlock { body, captures, .. } => {
+                self.lower_fork_block(expr, body, captures)
+            }
+            HirExprKind::AwaitTask { operand, .. } => match self.lower_task_await(expr, operand)? {
+                Some(value) => Ok(value),
+                None => self.emit(expr, SemOpKind::ConstUnit),
+            },
+            HirExprKind::Scope { body } => match self.lower_task_scope(body)? {
+                Some(value) => Ok(value),
+                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                None => Err("divergent scope cannot produce a SIR value".into()),
+            },
             HirExprKind::RecordCloneCall { src, .. }
                 if matches!(
                     self.ty(&src.ty),
@@ -4426,6 +4463,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             owned_live,
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
+            task_scopes: self.task_scopes.clone(),
         })
     }
 
@@ -5483,13 +5521,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 });
             }
         }
-        require_initial_scalar_read(expr.intent)?;
         let (object, shape, field) = match &expr.kind {
             HirExprKind::FieldAccess { object, field } => {
+                require_initial_scalar_read(expr.intent)?;
                 let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
                 (object.as_ref(), shape, field)
             }
             HirExprKind::TupleIndex { tuple, index } => {
+                require_initial_scalar_read(expr.intent)?;
                 let field = self.tuple_projection_index(expr, tuple, *index)?;
                 let ty = self.ty(&tuple.ty);
                 if is_initial_value_type(&ty) {
@@ -5502,9 +5541,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )
             }
             HirExprKind::SubsumedValue { source, .. } => {
+                if self.ty(&source.ty) != self.ty(&expr.ty) {
+                    return Err("transparent borrowed value must preserve its exact type".into());
+                }
                 return self.lower_borrowed_read(source, loans);
             }
-            _ => return self.lower_read_operand(expr, "borrowed call argument"),
+            _ if expr.intent == IntentKind::Read => {
+                return self.lower_read_operand(expr, "borrowed call argument")
+            }
+            _ => {
+                return Ok(Operand {
+                    value: lower_initial_value_transfer(
+                        self,
+                        expr,
+                        "borrowed call argument",
+                        OwnedBindingUse::Copy,
+                    )?,
+                })
+            }
         };
         let aggregate = self.lower_borrowed_read(object, loans)?;
         let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
@@ -6464,6 +6518,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
+        self.finish_task_scopes(scope.scope_floor, false)?;
         let args = scope
             .carried
             .iter()

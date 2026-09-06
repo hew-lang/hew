@@ -189,7 +189,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    fn state_value(&self, name: &str, state: PointerValue<'ctx>) -> CodegenResult<IntValue<'ctx>> {
+    pub(super) fn state_value(
+        &self,
+        name: &str,
+        state: PointerValue<'ctx>,
+    ) -> CodegenResult<IntValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = coro::external(
             self.llvm,
@@ -199,7 +203,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(call_value(&self.builder, function, &[state.into()], "state.status")?.into_int_value())
     }
 
-    fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
+    pub(super) fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let free = coro::external(
             self.llvm,

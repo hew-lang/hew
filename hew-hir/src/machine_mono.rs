@@ -1459,7 +1459,8 @@ fn walk_expr(
                 );
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. } => {
             walk_expr(
                 receiver,

@@ -954,25 +954,10 @@ impl Checker {
             };
             ActorMethodKind::StreamProducer(method_id, elem_ty)
         } else if matches!(resolved_reply, Ty::Unit) {
-            let actor_identity = method_id
-                .rsplit_once("::")
-                .map_or(method_id.as_str(), |(actor, _)| actor);
-            let overflow_policy = self.actor_overflow_policies.get(actor_identity);
-            let is_policy_sensitive = overflow_policy.is_some_and(|policy| {
-                matches!(
-                    policy,
-                    hew_parser::ast::OverflowPolicy::DropNew
-                        | hew_parser::ast::OverflowPolicy::DropOld
-                        | hew_parser::ast::OverflowPolicy::Fail
-                        | hew_parser::ast::OverflowPolicy::Coalesce { .. }
-                )
-            });
-            if is_policy_sensitive {
-                ActorMethodKind::CheckedFire(method_id)
-            } else if overflow_policy == Some(&hew_parser::ast::OverflowPolicy::Block) {
-                ActorMethodKind::BlockingFire(method_id)
-            } else {
-                ActorMethodKind::Fire(method_id)
+            ActorMethodKind::Message {
+                method_id,
+                policy: crate::actor_delivery::SendPolicy::Reject,
+                argument_order: Vec::new(),
             }
         } else {
             // Ask-shaped: the reply value crosses the actor boundary back to the
@@ -1033,13 +1018,9 @@ impl Checker {
             }
             ActorMethodKind::Ask(method_id, reply_ty.clone())
         };
-        let call_ty = match &dispatch {
-            ActorMethodKind::CheckedFire(_) => Ty::result(Ty::Unit, Ty::send_error()),
-            _ => reply_ty,
-        };
         self.actor_method_dispatch
             .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
-        call_ty
+        reply_ty
     }
 
     pub(super) fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
@@ -2531,8 +2512,20 @@ impl Checker {
                 None,
                 args,
                 span,
-                SignatureArgApplication::PositionalOnly {
-                    arity_context: format!("method `{method}`"),
+                if sig.return_type == Ty::Unit
+                    && self
+                        .actor_receive_methods
+                        .contains(&format!("{canonical_name}::{method}"))
+                {
+                    SignatureArgApplication::FunctionLike {
+                        param_names: &sig.param_names,
+                        accepts_kwargs: false,
+                        module_qualified: false,
+                    }
+                } else {
+                    SignatureArgApplication::PositionalOnly {
+                        arity_context: format!("method `{method}`"),
+                    }
                 },
                 true,
                 Some(GenericCallee::Method {
@@ -7374,6 +7367,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
+        let result = self.finish_actor_message_description(receiver, args, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
         let runtime_rewrite_consumes_receiver = matches!(
@@ -7863,6 +7857,12 @@ impl Checker {
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
         self.place_base_depth -= 1;
         let resolved = self.subst.resolve(&receiver_ty);
+        if let Some(result) =
+            self.check_actor_delivery_method(receiver, &resolved, method, args, span)
+        {
+            return result;
+        }
+
         // If the receiver is still an unresolved inference variable that was
         // created from a coercible integer-literal / const-integer range (both
         // bounds were literals or let-/const-bound integer literals), eagerly
@@ -8668,8 +8668,16 @@ impl Checker {
                             None,
                             args,
                             span,
-                            SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method `{method}`"),
+                            if sig.return_type == Ty::Unit {
+                                SignatureArgApplication::FunctionLike {
+                                    param_names: &sig.param_names,
+                                    accepts_kwargs: false,
+                                    module_qualified: false,
+                                }
+                            } else {
+                                SignatureArgApplication::PositionalOnly {
+                                    arity_context: format!("method `{method}`"),
+                                }
                             },
                             true,
                             Some(GenericCallee::Method {

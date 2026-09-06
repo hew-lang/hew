@@ -303,6 +303,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         }
         Expr::Unary { operand, .. }
         | Expr::ReturnError(operand)
+        | Expr::Send(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -379,6 +380,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::RecordInitSuffix { .. }
             | Expr::QualifiedAssoc(_)
             | Expr::Unary { .. }
+            | Expr::Send(_)
             | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Tuple(_)
@@ -430,6 +432,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::RecordInitSuffix { .. }
         | Expr::QualifiedAssoc(_)
         | Expr::Unary { .. }
+        | Expr::Send(_)
         | Expr::Clone(_)
         | Expr::Literal(_)
         | Expr::Tuple(_)
@@ -715,6 +718,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         } => bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0),
         Expr::Unary { operand, .. }
         | Expr::ReturnError(operand)
+        | Expr::Send(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -973,6 +977,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         } => expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name),
         Expr::Unary { operand, .. }
         | Expr::ReturnError(operand)
+        | Expr::Send(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)

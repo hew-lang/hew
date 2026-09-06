@@ -563,18 +563,26 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::ActorSelf => {
             writeln!(out, "{pad}  actor-self").expect("write to string");
         }
-        HirExprKind::ActorSend {
+        HirExprKind::ActorMessage {
             receiver,
             method_id,
             args,
-            checked,
-            blocking,
+            policy,
+            ..
         } => {
-            writeln!(
-                out,
-                "{pad}  actor-send {method_id} checked={checked} blocking={blocking}"
-            )
-            .expect("write to string");
+            writeln!(out, "{pad}  actor-message {method_id} policy={policy:?}")
+                .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
+        HirExprKind::ActorDelivery {
+            receiver,
+            args,
+            operation,
+        } => {
+            writeln!(out, "{pad}  actor-delivery {operation:?}").expect("write to string");
             dump_expr(out, receiver, indent + 4);
             for arg in args {
                 dump_expr(out, arg, indent + 4);

@@ -38,38 +38,65 @@ pub extern "C" fn hew_actor_payload_alloc(size: usize) -> *mut std::ffi::c_void 
     allocation
 }
 
-/// Transfer an initialized generated message through the existing mailbox.
+/// Allocate an unpublished message wrapper, preserving the source on failure.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn hew_actor_payload_try_alloc(size: usize) -> *mut std::ffi::c_void {
+    // SAFETY: malloc accepts every size; zero-sized wrappers still need an address.
+    unsafe { libc::malloc(size.max(1)) }
+}
+
+/// Try to transfer a generated message wrapper into its exact destination.
+/// Returns 0 for acceptance, 1 for full, 2 for closed, 3 for allocation failure,
+/// and 4 for an explicitly selected newest-message discard.
 ///
 /// # Safety
-/// `payload` is a uniquely owned malloc allocation, initialized according to
-/// `drop_payload`. The caller relinquishes it on every outcome. `fault` is a
-/// writable, initially null fault slot.
+/// `payload` is an unpublished malloc wrapper containing shallowly transferred
+/// typed fields. Acceptance or discard consumes those fields; rejection frees
+/// only the wrapper bytes, leaving the original typed message with the caller.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_native(
+pub unsafe extern "C" fn hew_actor_submit_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     payload: *mut std::ffi::c_void,
     size: usize,
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
-    fault: *mut *mut HewFault,
+    policy: i32,
 ) -> i32 {
-    // SAFETY: ownership and the destructor pass unchanged to the envelope.
+    if payload.is_null() {
+        return 3;
+    }
+    // SAFETY: the wrapper is uniquely owned until the mailbox accepts it.
     let envelope =
         unsafe { crate::mailbox::hew_msg_envelope_new(payload, size, Some(drop_payload)) };
-    let status = if envelope.is_null() {
-        // SAFETY: failed envelope allocation leaves payload ownership here.
+    if envelope.is_null() {
+        // SAFETY: the source still owns all typed fields in the unpublished wrapper.
         unsafe {
-            drop_payload(payload);
             libc::free(payload);
         }
-        crate::internal::types::HewError::ErrOom as i32
-    } else {
-        // SAFETY: the newly allocated envelope transfers one reference.
-        unsafe { crate::actor::send_native_envelope(token, message, envelope) }
+        return 3;
+    }
+    // SAFETY: the envelope is unpublished and transfers only on admission.
+    let outcome = unsafe { crate::actor::try_submit_native_envelope(token, message, envelope) };
+    let status = match outcome {
+        crate::mailbox::SendOutcome::Enqueued => return 0,
+        crate::mailbox::SendOutcome::Failed if policy == 2 => {
+            // SAFETY: explicit DropNewest transfers the typed payload for destruction.
+            unsafe {
+                crate::mailbox::hew_msg_envelope_release(envelope);
+            }
+            return 4;
+        }
+        crate::mailbox::SendOutcome::Failed => 1,
+        crate::mailbox::SendOutcome::Closed => 2,
+        crate::mailbox::SendOutcome::Oom => 3,
+        _ => unreachable!("native admission cannot apply implicit eviction or discard"),
     };
-    if status != 0 {
-        // SAFETY: the generated caller supplies an empty writable fault slot.
-        unsafe { *fault = crate::fault::hew_fault_new(status) };
+    // SAFETY: admission failed without publishing or aliasing. The source retains
+    // the typed fields; these two allocations contain no other owning resources.
+    unsafe {
+        libc::free(payload);
+        libc::free(envelope.cast());
     }
     status
 }

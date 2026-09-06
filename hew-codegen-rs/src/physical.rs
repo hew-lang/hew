@@ -2589,7 +2589,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 normal,
                 unwind,
-            } => self.emit_actor_call(*operation, args, *result, normal, unwind.as_ref()),
+            } => self.emit_actor_call(operation.clone(), args, *result, normal, unwind.as_ref()),
             PhysicalTerminator::Call {
                 callee,
                 args,

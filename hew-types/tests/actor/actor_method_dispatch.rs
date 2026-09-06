@@ -4,7 +4,7 @@ use common::typecheck_isolated as typecheck;
 use hew_types::{ActorMethodKind, Ty};
 
 #[test]
-fn actor_method_dispatch_classifies_fire_and_ask_sites() {
+fn actor_method_dispatch_classifies_message_and_ask_sites() {
     let output = typecheck(
         r"
         actor Counter {
@@ -34,9 +34,9 @@ fn actor_method_dispatch_classifies_fire_and_ask_sites() {
     );
     assert!(
         output.actor_method_dispatch.values().any(|kind| {
-            matches!(kind, ActorMethodKind::Fire(method_id) if method_id == "Counter::increment")
+            matches!(kind, ActorMethodKind::Message { method_id, .. } if method_id == "Counter::increment")
         }),
-        "increment call should be recorded as actor fire dispatch: {:?}",
+        "increment call should be recorded as actor message description: {:?}",
         output.actor_method_dispatch
     );
     assert!(

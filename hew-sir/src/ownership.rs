@@ -33,7 +33,7 @@ pub struct AggregateFieldRecipe {
 ///
 /// # Errors
 ///
-/// Refuses an empty/non-tuple structural shape, a missing/non-canonical record
+/// Refuses a non-tuple structural shape, a missing/non-canonical record
 /// ID, or a record descriptor whose concrete type differs from the operation.
 pub fn aggregate_field_types(
     shape: AggregateShapeRef,
@@ -42,8 +42,7 @@ pub fn aggregate_field_types(
 ) -> Result<Vec<ResolvedTy>, String> {
     match shape {
         AggregateShapeRef::Tuple => match aggregate_ty {
-            ResolvedTy::Tuple(fields) if !fields.is_empty() => Ok(fields.clone()),
-            ResolvedTy::Tuple(_) => Err("empty tuples have no owned aggregate shape".to_string()),
+            ResolvedTy::Tuple(fields) => Ok(fields.clone()),
             _ => Err(format!(
                 "tuple aggregate operation has non-tuple type `{}`",
                 aggregate_ty.user_facing()

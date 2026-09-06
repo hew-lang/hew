@@ -45,6 +45,47 @@ pub type Location {
 pub type RemotePid<T> {
 }
 
+/// An immutable sender view. Construct one with `policy(target, on_full: ...)`.
+/// The policy type records whether submission can suspend.
+pub type ActorSender<Target, Policy> {
+    target: Target,
+}
+
+/// An owned, addressed message description. Only a checked receive method can
+/// construct one. `send message` submits it; `message.to(target)` readdresses
+/// it to a compatible actor without opening its payload.
+pub type Message<Target, Payload, Policy> {
+    target: Target,
+    message_id: u32,
+    payload: Payload,
+}
+
+/// A rejected submission retains its complete unaccepted message.
+pub type SendFailure<M> {
+    reason: SendError,
+    message: M,
+}
+
+/// Successful submission describes acceptance or an explicitly chosen discard.
+pub enum Delivery {
+    Accepted,
+    Discarded,
+}
+
+/// A sender chooses how its own submission responds to a full mailbox.
+pub enum OnFull {
+    Reject,
+    Wait,
+    DropNewest,
+    ReplaceLatest,
+}
+
+// Compiler-selected immutable policy witnesses. They contain no runtime state.
+pub type RejectSend {}
+pub type WaitSend {}
+pub type DropNewestSend {}
+pub type ReplaceLatestSend {}
+
 /// Error returned when a pid send cannot be completed.
 pub enum SendError {
     /// The destination mailbox is full.

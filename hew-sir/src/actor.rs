@@ -263,10 +263,15 @@ pub(crate) fn verify_operation(
 }
 
 /// Actor boundary selected from an exact demanded protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
     Spawn(ActorId),
-    Send { actor: ActorId, message: u32 },
+    Submit {
+        actor: ActorId,
+        policy: hew_types::actor_delivery::SendPolicy,
+        message_ty: ResolvedTy,
+        result_ty: ResolvedTy,
+    },
 }
 
 impl ActorOperation {
@@ -275,12 +280,12 @@ impl ActorOperation {
     /// # Errors
     /// Refuses missing actors, handlers, init bodies or incompatible sends.
     pub fn signature(
-        self,
+        &self,
         actors: &[SemActor],
         callable: impl Fn(crate::CallableId) -> Option<crate::SemSignature>,
     ) -> Result<crate::SemSignature, String> {
         let id = match self {
-            Self::Spawn(id) | Self::Send { actor: id, .. } => id,
+            Self::Spawn(id) | Self::Submit { actor: id, .. } => *id,
         };
         let actor = actors
             .get(id.0 as usize)
@@ -295,21 +300,25 @@ impl ActorOperation {
                     .collect::<Vec<_>>(),
                 actor.handle_ty.clone(),
             ),
-            Self::Send { message, .. } => {
-                let handler = actor
-                    .handlers
-                    .iter()
-                    .find(|handler| handler.message_id == message)
-                    .ok_or("unknown actor message")?;
-                if handler.return_ty != ResolvedTy::Unit {
-                    return Err("send requires a unit receive handler".into());
+            Self::Submit {
+                policy,
+                message_ty,
+                result_ty,
+                ..
+            } => {
+                let source_ty = message_ty.to_ty();
+                let (target, _, selected) = hew_types::actor_delivery::message_parts(&source_ty)
+                    .ok_or("submission requires an exact message description")?;
+                if *target != actor.handle_ty.to_ty()
+                    || selected != *policy
+                    || result_ty.to_ty()
+                        != hew_types::actor_delivery::result_type(source_ty.clone())
+                {
+                    return Err(
+                        "submission changes the checked target, policy or result contract".into(),
+                    );
                 }
-                (
-                    std::iter::once(actor.handle_ty.clone())
-                        .chain(handler.params.clone())
-                        .collect(),
-                    ResolvedTy::Unit,
-                )
+                (vec![message_ty.clone()], result_ty.clone())
             }
         };
         if matches!(self, Self::Spawn(_)) {

@@ -1139,6 +1139,14 @@ impl Checker {
         );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
         self.register_builtin_fn(
+            "policy",
+            vec![
+                Ty::Var(TypeVar::fresh()),
+                crate::actor_delivery::nominal(crate::actor_delivery::ON_FULL_TYPE, Vec::new()),
+            ],
+            Ty::Var(TypeVar::fresh()),
+        );
+        self.register_builtin_fn(
             "sleep_until",
             vec![Ty::Named {
                 name: "instant".to_string(),
@@ -1901,7 +1909,10 @@ impl Checker {
     /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
     /// and must never mint a second synthetic source owner.
     fn register_builtin_error_prelude_bindings(&mut self) {
-        for name in ["LinkError", "LookupError", "ScopeFailure"] {
+        for name in ["LinkError", "LookupError", "ScopeFailure"]
+            .into_iter()
+            .chain(crate::actor_delivery::DECLARATIONS.iter().copied())
+        {
             let canonical = format!("std.builtins.{name}");
             debug_assert!(
                 self.type_defs.contains_key(&canonical),
@@ -4821,6 +4832,7 @@ impl Checker {
             }
             Expr::Unary { operand, .. }
             | Expr::ReturnError(operand)
+            | Expr::Send(operand)
             | Expr::Clone(operand)
             | Expr::ForkChild { expr: operand, .. }
             | Expr::PostfixTry(operand)

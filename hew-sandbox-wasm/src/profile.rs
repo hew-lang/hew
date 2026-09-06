@@ -939,7 +939,7 @@ impl<'a> ProfileChecker<'a> {
                 );
                 self.check_block(block);
             }
-            Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) | Expr::Lambda { .. } => self.reject(
+            Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) | Expr::Lambda { .. } | Expr::Send(_) => self.reject(
                 span.clone(),
                 "reserved_runtime_feature",
                 "this value form is not admitted to sandbox bytecode export yet",

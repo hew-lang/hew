@@ -257,6 +257,30 @@ fn compact_unreachable(
         .get(&entry)
         .expect("a verified SIR entry must be reachable");
     function.blocks = retained;
+    // Source binding rows name definitions, including loop-carried versions.
+    // Once a proven unreachable block is removed, its value-only debug rows
+    // must leave with it; otherwise they name values absent from valid IR.
+    let mut values = function
+        .params
+        .iter()
+        .map(|param| param.value)
+        .collect::<BTreeSet<_>>();
+    for block in &function.blocks {
+        values.extend(block.args.iter().map(|arg| arg.value));
+        values.extend(
+            block
+                .ops
+                .iter()
+                .flat_map(|op| op.results.iter().map(|result| result.id)),
+        );
+        block.terminator.visit_results(|result| {
+            values.insert(result.id);
+        });
+    }
+    function.bindings.retain(|binding| match binding.target {
+        crate::BindingTarget::Value(value) => values.contains(&value),
+        crate::BindingTarget::Place(_) => true,
+    });
 
     (removed_blocks, block_remap)
 }

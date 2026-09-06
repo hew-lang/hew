@@ -62,7 +62,7 @@ use hew_sir::{
 };
 pub use hew_sir::{
     BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, SemParamPassing,
-    TrapKind,
+    TaskScopeId, TrapKind,
 };
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
@@ -563,6 +563,19 @@ impl PhysicalSetOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
+    TaskScopeEnter {
+        scope: hew_sir::TaskScopeId,
+        parent: Option<hew_sir::TaskScopeId>,
+    },
+    TaskScopeClose {
+        scope: hew_sir::TaskScopeId,
+    },
+    TaskSpawn {
+        scope: hew_sir::TaskScopeId,
+        callable: StorageId,
+        dest: StorageId,
+        output: PhysicalValueRecipe,
+    },
     /// Static scheduling marker; dependencies alias existing storage.
     RegisterDefer {
         defer: DeferId,
@@ -805,6 +818,19 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    TaskAwait {
+        task: ArgumentTransfer,
+        result: Option<StorageId>,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    TaskScopeJoin {
+        scope: hew_sir::TaskScopeId,
+        cancel: bool,
+        normal: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     Sleep {
         duration: StorageId,
         normal: PhysicalEdge,
@@ -1872,6 +1898,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             result: CallResult::Value(result),
             ..
         }
+        | SemTerminator::Suspend {
+            result: CallResult::Value(result),
+            ..
+        }
         | SemTerminator::CheckedBinary { result, .. } => Some(result),
         _ => None,
     }
@@ -2154,6 +2184,25 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 callee: *callable,
             }),
+            SemOpKind::TaskScopeEnter { scope, parent } => one(PhysicalOp::TaskScopeEnter {
+                scope: *scope,
+                parent: *parent,
+            }),
+            SemOpKind::TaskScopeClose { scope } => {
+                one(PhysicalOp::TaskScopeClose { scope: *scope })
+            }
+            SemOpKind::TaskSpawn { scope, callable } => {
+                let dest = self.one_result(operation)?;
+                let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
+                    return Err(PhysicalError::new("task spawn has no exact output type"));
+                };
+                one(PhysicalOp::TaskSpawn {
+                    scope: *scope,
+                    callable: self.value(callable.value)?,
+                    dest,
+                    output: physical_value_recipe(self.module, self.glue_ids, output)?,
+                })
+            }
             SemOpKind::ClosureMake { closure, fields } => one(PhysicalOp::ClosureMake {
                 dest: self.one_result(operation)?,
                 closure: *closure,
@@ -2453,6 +2502,34 @@ impl FunctionLowerer<'_> {
                 duration: self.value(inputs[0].operand.value)?,
                 normal: self.lower_edge(&resumes[0])?,
                 cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Await,
+                inputs,
+                result,
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::TaskAwait {
+                task: self.argument_transfers(inputs)?[0],
+                result: match result {
+                    CallResult::Value(value) => Some(self.value(value.id)?),
+                    CallResult::Unit => None,
+                },
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Join { scope, cancel },
+                resumes,
+                unwind,
+                ..
+            } => Ok(PhysicalTerminator::TaskScopeJoin {
+                scope: *scope,
+                cancel: *cancel,
+                normal: self.lower_edge(&resumes[0])?,
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend { .. } => Err(PhysicalError::new(
@@ -3282,6 +3359,7 @@ fn verify_physical_function(
     module: &PhysicalModule,
     function: &PhysicalFunction,
 ) -> Result<(), PhysicalError> {
+    suspend::verify_task_scopes(function)?;
     let callable = module
         .callables
         .get(function.callable.0 as usize)
@@ -3908,6 +3986,28 @@ fn verify_operation_storage(
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
     match operation {
+        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskSpawn {
+            callable,
+            dest,
+            output,
+            ..
+        } => {
+            let input = storage(function, *callable)?;
+            let result = storage(function, *dest)?;
+            let (params, ret, capabilities) =
+                hew_sir::callable_parts(&input.ty).map_err(PhysicalError::new)?;
+            if !params.is_empty()
+                || capabilities.call != hew_types::CallableCallMode::Once
+                || ret != &output.ty
+                || result.ty != ResolvedTy::Task(Box::new(output.ty.clone()))
+            {
+                return Err(PhysicalError::new(
+                    "task spawn disagrees with its callable/result contract",
+                ));
+            }
+            verify_value_recipe(module, output)?;
+        }
         PhysicalOp::RegisterDefer { dependencies, .. } => {
             for dependency in dependencies {
                 storage(function, *dependency)?;
@@ -4428,6 +4528,12 @@ fn apply_operation(
             }
             state.defers.register(*defer, *scope, dependencies)?;
         }
+        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskSpawn { callable, dest, .. } => {
+            initialized(function, state, *callable, block, "task callable")?;
+            consume_if_owned(function, state, *callable)?;
+            define(function, state, *dest, block, "task handle")?;
+        }
         PhysicalOp::FunctionMake { dest, .. } | PhysicalOp::Const { dest, .. } => {
             define(function, state, *dest, block, "constant")?;
         }
@@ -4698,6 +4804,62 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::TaskAwait {
+            task,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let ArgumentTransfer::Move(task) = task else {
+                return Err(PhysicalError::new("task await must consume its handle"));
+            };
+            initialized(function, &state, *task, block, "await task")?;
+            consume_if_owned(function, &mut state, *task)?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new("await cannot replace an active fault"));
+            }
+            let mut completed = state.clone();
+            if let Some(result) = result {
+                define(function, &mut completed, *result, block, "await result")?;
+            }
+            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
+        PhysicalTerminator::TaskScopeJoin {
+            cancel,
+            normal,
+            unwind,
+            ..
+        } => {
+            if *cancel {
+                if state.fault != FaultState::Active {
+                    return Err(PhysicalError::new(
+                        "fault drain requires an active primary fault",
+                    ));
+                }
+                Ok(vec![
+                    apply_edge(function, normal, state.clone(), block)?,
+                    apply_edge(function, unwind, state, block)?,
+                ])
+            } else {
+                if state.fault != FaultState::None {
+                    return Err(PhysicalError::new(
+                        "normal drain cannot replace an active fault",
+                    ));
+                }
+                let completed = apply_edge(function, normal, state.clone(), block)?;
+                state.fault = FaultState::Active;
+                state.exit = defer::TRAP | defer::CANCEL;
+                Ok(vec![completed, apply_edge(function, unwind, state, block)?])
+            }
+        }
         PhysicalTerminator::Sleep {
             duration,
             normal,
@@ -5055,6 +5217,32 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::TaskAwait {
+            task,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let ArgumentTransfer::Move(task) = task else {
+                return Err(PhysicalError::new("await requires a moved task handle"));
+            };
+            let ResolvedTy::Task(output) = &slot(*task)?.ty else {
+                return Err(PhysicalError::new("await requires an exact Task type"));
+            };
+            match result {
+                Some(result) if slot(*result)?.ty == **output => {}
+                None if **output == ResolvedTy::Unit => {}
+                _ => return Err(PhysicalError::new("await output differs from task result")),
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::TaskScopeJoin { normal, unwind, .. } => {
+            edge(normal)?;
+            edge(unwind)
+        }
         PhysicalTerminator::Sleep {
             duration,
             normal,

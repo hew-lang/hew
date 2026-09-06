@@ -106,9 +106,15 @@ pub(super) struct Region {
 
 pub(super) type Plan = BTreeMap<BlockId, Region>;
 
-fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
+pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     match term {
         PhysicalTerminator::Sleep {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::TaskAwait {
             normal,
             cancel,
             unwind,
@@ -138,7 +144,8 @@ fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         | PhysicalTerminator::IndirectCall { normal, unwind, .. } => {
             std::iter::once(normal).chain(unwind).collect()
         }
-        PhysicalTerminator::ValueCall { normal, unwind, .. } => vec![normal, unwind],
+        PhysicalTerminator::TaskScopeJoin { normal, unwind, .. }
+        | PhysicalTerminator::ValueCall { normal, unwind, .. } => vec![normal, unwind],
         PhysicalTerminator::RuntimeCall {
             normal, failure, ..
         } => std::iter::once(normal).chain(failure).collect(),
@@ -156,6 +163,11 @@ fn operation_storage(
     locals: &mut BTreeSet<StorageId>,
 ) {
     match operation {
+        PhysicalOp::TaskScopeEnter { .. } | PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::TaskSpawn { dest, callable, .. } => {
+            defined.insert(*dest);
+            used.insert(*callable);
+        }
         PhysicalOp::RegisterDefer { dependencies, .. } => used.extend(dependencies),
         PhysicalOp::StorageLive { storage } => {
             locals.insert(*storage);
@@ -284,6 +296,8 @@ pub(super) fn verify_calls(
                 }
             }
             PhysicalTerminator::Sleep { .. }
+            | PhysicalTerminator::TaskAwait { .. }
+            | PhysicalTerminator::TaskScopeJoin { .. }
             | PhysicalTerminator::IndirectCall { .. }
             | PhysicalTerminator::ValueCall { .. } => {
                 return Err(PhysicalError::new(

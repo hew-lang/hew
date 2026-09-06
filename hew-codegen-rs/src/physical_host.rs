@@ -74,6 +74,8 @@ impl<'a> HostExport<'a> {
                 match &block.terminator {
                     PhysicalTerminator::IndirectCall { .. }
                     | PhysicalTerminator::Sleep { .. }
+                    | PhysicalTerminator::TaskAwait { .. }
+                    | PhysicalTerminator::TaskScopeJoin { .. }
                     | PhysicalTerminator::ValueCall { .. }
                     | PhysicalTerminator::SwitchVariant { .. } => {
                         return Err(fail(

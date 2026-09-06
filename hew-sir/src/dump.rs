@@ -142,6 +142,17 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
     }
     match &op.kind {
+        SemOpKind::TaskScopeEnter { scope, parent } => {
+            writeln!(out, "task_scope.enter #{} parent {:?}", scope.0, parent)
+                .expect("write to String");
+        }
+        SemOpKind::TaskScopeClose { scope } => {
+            writeln!(out, "task_scope.close #{}", scope.0).expect("write to String");
+        }
+        SemOpKind::TaskSpawn { scope, callable } => {
+            writeln!(out, "task.spawn #{} %{}", scope.0, callable.value.0)
+                .expect("write to String");
+        }
         SemOpKind::RegisterDefer {
             defer,
             scope,

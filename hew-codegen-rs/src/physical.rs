@@ -21,6 +21,8 @@ mod partial;
 mod coro;
 #[path = "physical_suspend.rs"]
 mod suspend;
+#[path = "physical_tasks.rs"]
+mod tasks;
 
 #[path = "physical_host.rs"]
 mod host;
@@ -687,6 +689,7 @@ struct FunctionEmitter<'a, 'ctx> {
     value_callbacks: &'a key::CallbackTable<'ctx>,
     ramps: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     frame: Option<coro::Frame<'ctx>>,
+    task_scopes: BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
 }
 
 /// Execute verified type recipes in either a language body or a container
@@ -1351,6 +1354,7 @@ fn build_module_with_host<'ctx>(
     };
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
+    emitter.emit_task_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
@@ -1771,6 +1775,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
             }
         }
+        let mut task_scopes = BTreeMap::new();
+        for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
+                let slot = builder
+                    .build_alloca(
+                        ctx.ptr_type(AddressSpace::default()),
+                        &format!("task.scope.{}", scope.0),
+                    )
+                    .llvm_ctx("allocate task scope slot")?;
+                task_scopes.insert(*scope, slot);
+            }
+        }
         let mut param_index = 0u32;
         for ((parameter, storage_id), physical_param) in value
             .get_params()
@@ -1843,6 +1859,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value_callbacks: &module.value_callbacks,
             ramps: &module.ramps,
             frame,
+            task_scopes,
         })
     }
 
@@ -1907,6 +1924,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         match operation {
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
+            PhysicalOp::TaskScopeEnter { scope, parent } => {
+                self.emit_task_scope_enter(*scope, *parent)
+            }
+            PhysicalOp::TaskScopeClose { scope } => self.emit_task_scope_close(*scope),
+            PhysicalOp::TaskSpawn {
+                scope,
+                callable,
+                dest,
+                ..
+            } => self.emit_task_spawn(*scope, *callable, *dest),
             PhysicalOp::ClosureMake {
                 dest,
                 closure,
@@ -2473,6 +2500,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::TaskAwait {
+                task,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_task_await(task, *result, normal, cancel, unwind),
+            PhysicalTerminator::TaskScopeJoin {
+                scope,
+                cancel,
+                normal,
+                unwind,
+            } => self.emit_task_scope_join(*scope, *cancel, normal, unwind),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,

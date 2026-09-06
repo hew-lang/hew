@@ -1524,6 +1524,13 @@ impl Checker {
             &params,
             &result,
             &contract.consuming_params,
+        ) || family.matches_async_io_extern(
+            module,
+            declaration.full_path(),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
         ))
         .then_some(family)
     }

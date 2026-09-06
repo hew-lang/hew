@@ -16,6 +16,7 @@ pub(super) use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
 pub(super) use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 mod actor_fields;
+mod async_io;
 mod basic;
 mod branch_join;
 mod builtins;
@@ -116,12 +117,17 @@ pub(super) fn check_source_in_canonical_std_module(
     let root_id = ModuleId::root();
     let mod_id = ModuleId::new(module_path.to_vec());
     let leaf = module_path.last().expect("canonical std module has a leaf");
-    let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let module_base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types has a workspace parent")
         .join("std")
-        .join(module_path.iter().skip(1).collect::<std::path::PathBuf>())
-        .join(format!("{leaf}.hew"));
+        .join(module_path.iter().skip(1).collect::<std::path::PathBuf>());
+    let flat_source = module_base.with_extension("hew");
+    let source_path = if flat_source.is_file() {
+        flat_source
+    } else {
+        module_base.join(format!("{leaf}.hew"))
+    };
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,

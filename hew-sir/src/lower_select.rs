@@ -167,6 +167,12 @@ impl Builder<'_, '_> {
                     BindingTarget::Value(value) => *value,
                 };
                 let value = self.lower_task_await_value(value, output)?;
+                if !self.is_open() {
+                    if let Some(failure) = failure {
+                        self.restore_control_state(&failure);
+                    }
+                    continue;
+                }
                 if let (Some(binding), Some(name)) = (arm.binding_id, &arm.binding_name) {
                     let value = match value {
                         Some(value) => value,

@@ -655,6 +655,7 @@ fn dump_call(
     }
     match result {
         CallResult::Unit => write!(out, ")"),
+        CallResult::Never => write!(out, ") -> !"),
         CallResult::Value(value) => write!(
             out,
             ") -> %{}: {} [{:?}]",

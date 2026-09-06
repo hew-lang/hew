@@ -184,6 +184,9 @@ fn physical_target_for_parts<'a>(
         )?;
     }
     for ty in types {
+        if *ty == ResolvedTy::Never {
+            continue;
+        }
         realize_layout(
             &ctx,
             &data,

@@ -928,6 +928,8 @@ pub fn collection_value_dependencies(
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallResult {
     Unit,
+    /// The checked result is uninhabited; there is no normal continuation.
+    Never,
     Value(ValueDef),
 }
 
@@ -1742,29 +1744,29 @@ impl SemTerminator {
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::Call {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::RtCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ActorCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::IndirectCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ValueCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::Suspend {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ResumeUnwind

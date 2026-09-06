@@ -6,6 +6,79 @@ use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
 #[test]
+fn never_returning_children_can_be_awaited_and_recovered() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        let child = fork { defer println("child cleanup"); panic("bottom child"); };
+        await child;
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("wrong deadline"),
+            .Fault { message } => println(message),
+        }
+    };
+    let fail = true;
+    let result = scope {
+        let child = fork {
+            if fail { panic("implicit join"); } else { panic("other branch"); }
+        };
+        "unreachable"
+    } handle failure { "joined and recovered" };
+    println(result);
+}
+"#,
+        "child cleanup\nhew: failure: UserPanic (212): bottom child\n\njoined and recovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn a_deadline_cancels_and_drains_a_never_returning_child() {
+    run_task(
+        r#"
+fn main() {
+    scope within 5ms {
+        let child = fork {
+            defer println("child cleanup");
+            await sleep(1s);
+            panic("unexpected completion");
+        };
+        await child;
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline recovered"),
+            .Fault { message } => println("wrong fault"),
+        }
+    };
+}
+"#,
+        "child cleanup\ndeadline recovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn selecting_a_never_returning_child_propagates_its_fault() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        let child = fork { panic("selected bottom child"); };
+        select { value = await child => println("incorrect arm") };
+    } handle failure { println("recovered selection"); };
+}
+"#,
+        "recovered selection\n",
+        0,
+        "",
+    );
+}
+
+#[test]
 fn returning_past_recovery_does_not_catch_an_outer_child_fault() {
     run_task(
         r#"

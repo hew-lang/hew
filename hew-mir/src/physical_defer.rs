@@ -119,13 +119,13 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             cancel,
             unwind,
             ..
-        }
-        | PhysicalTerminator::TaskAwait {
+        } => vec![normal, cancel, unwind],
+        PhysicalTerminator::TaskAwait {
             normal,
             cancel,
             unwind,
             ..
-        } => vec![normal, cancel, unwind],
+        } => normal.iter().chain([cancel, unwind]).collect(),
         PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. }

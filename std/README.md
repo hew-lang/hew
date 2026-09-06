@@ -1,5 +1,10 @@
 # Hew Standard Library
 
+JSON and YAML expose owning values with automatic cleanup, independent copies,
+checked accessors and ordinary mutable receivers. Their format-specific APIs
+preserve exact integer access and return typed parse, access and encode errors.
+TOML currently retains its independent resource API.
+
 The Hew standard library provides core types, data structures, networking, encoding, and utilities.
 
 This file is the canonical index of shipped stdlib modules in this repository. Module links below go to the public `.hew` surface that Hew programs import.
@@ -34,7 +39,7 @@ fn main() {
 - **CLI, files, and OS** — [`std::io`](io.hew), [`std::fs`](fs.hew), [`std::path`](path.hew), [`std::os`](os.hew), [`std::process`](process.hew)
 - **Collections and scans** — [`std::vec`](vec.hew), [`std::arena`](arena.hew), [`std::deque`](deque.hew), [`std::iter`](iter.hew), [`std::sort`](sort/sort.hew)
 - **Streams and coordination** — [`std::stream`](stream.hew), [`std::channel::channel`](channel/channel.hew), [`std::semaphore`](semaphore.hew), [`std::concurrency`](concurrency/concurrency.hew)
-- **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew), [`std::encoding::wire::value_trait`](encoding/wire/value_trait.hew)
+- **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew)
 - **Networking** — [`std::net`](net/net.hew), [`std::net::http`](net/http/http.hew), [`std::net::dns`](net/dns/dns.hew), [`std::net::tls`](net/tls/tls.hew), [`std::net::quic`](net/quic/quic.hew), [`std::net::url`](net/url/url.hew)
 - **Testing, perf, and observability** — [`std::testing`](testing/testing.hew), [`std::bench`](bench/bench.hew), [`std::observe`](observe.hew)
 
@@ -85,21 +90,20 @@ Every shipped module under `std/` should appear here.
 
 ### Encoding and wire formats
 
-| Module                                         | Import                             | Use for                                           |
-| ---------------------------------------------- | ---------------------------------- | ------------------------------------------------- |
-| [`base64`](encoding/base64/base64.hew)         | `std::encoding::base64`            | Base64 encoding and decoding                      |
-| [`binary`](encoding/binary/binary.hew)         | `std::encoding::binary`            | Fixed-width integer encoding in either byte order |
-| [`compress`](encoding/compress/compress.hew)   | `std::encoding::compress`          | Compression and decompression                     |
-| [`csv`](encoding/csv/csv.hew)                  | `std::encoding::csv`               | CSV parsing                                       |
-| [`hex`](encoding/hex/hex.hew)                  | `std::encoding::hex`               | Hexadecimal encoding and decoding                 |
-| [`json`](encoding/json/json.hew)               | `std::encoding::json`              | JSON parsing and manipulation                     |
-| [`markdown`](encoding/markdown/markdown.hew)   | `std::encoding::markdown`          | Markdown to HTML conversion                       |
-| [`msgpack`](encoding/msgpack/msgpack.hew)      | `std::encoding::msgpack`           | MessagePack serialization                         |
-| [`protobuf`](encoding/protobuf/protobuf.hew)   | `std::encoding::protobuf`          | Protocol Buffers message construction             |
-| [`toml`](encoding/toml/toml.hew)               | `std::encoding::toml`              | TOML parsing and generation                       |
-| [`value_trait`](encoding/wire/value_trait.hew) | `std::encoding::wire::value_trait` | Shared opaque-value contract for encoding modules |
-| [`xml`](encoding/xml/xml.hew)                  | `std::encoding::xml`               | XML parsing and manipulation                      |
-| [`yaml`](encoding/yaml/yaml.hew)               | `std::encoding::yaml`              | YAML parsing and generation                       |
+| Module                                       | Import                    | Use for                                           |
+| -------------------------------------------- | ------------------------- | ------------------------------------------------- |
+| [`base64`](encoding/base64/base64.hew)       | `std::encoding::base64`   | Base64 encoding and decoding                      |
+| [`binary`](encoding/binary/binary.hew)       | `std::encoding::binary`   | Fixed-width integer encoding in either byte order |
+| [`compress`](encoding/compress/compress.hew) | `std::encoding::compress` | Compression and decompression                     |
+| [`csv`](encoding/csv/csv.hew)                | `std::encoding::csv`      | CSV parsing                                       |
+| [`hex`](encoding/hex/hex.hew)                | `std::encoding::hex`      | Hexadecimal encoding and decoding                 |
+| [`json`](encoding/json/json.hew)             | `std::encoding::json`     | JSON parsing and manipulation                     |
+| [`markdown`](encoding/markdown/markdown.hew) | `std::encoding::markdown` | Markdown to HTML conversion                       |
+| [`msgpack`](encoding/msgpack/msgpack.hew)    | `std::encoding::msgpack`  | MessagePack serialization                         |
+| [`protobuf`](encoding/protobuf/protobuf.hew) | `std::encoding::protobuf` | Protocol Buffers message construction             |
+| [`toml`](encoding/toml/toml.hew)             | `std::encoding::toml`     | TOML parsing and generation                       |
+| [`xml`](encoding/xml/xml.hew)                | `std::encoding::xml`      | XML parsing and manipulation                      |
+| [`yaml`](encoding/yaml/yaml.hew)             | `std::encoding::yaml`     | YAML parsing and generation                       |
 
 ### Crypto
 

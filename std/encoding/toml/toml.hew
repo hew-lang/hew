@@ -22,8 +22,6 @@
 //! }
 //! ```
 
-import std.encoding.wire.value_trait;
-
 /// Structured error type for TOML parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `parse` for structured error
@@ -46,8 +44,7 @@ impl Display for ParseError {
 /// An opaque TOML value.
 ///
 /// Represents any TOML type: string, integer, float, boolean, array,
-/// table, or datetime. The canonical shared wire tag prefix reserves
-/// `0` for null, even though TOML itself has no null value. Must be freed
+/// table, or datetime. TOML has no null value.
 /// Values close automatically at the end of their ownership scope;
 /// `close()` performs the same release explicitly.
 #[resource]
@@ -56,11 +53,8 @@ pub type Value {
 }
 
 /// Methods available on a TOML `Value`.
-///
-/// Extends the shared opaque-handle contract from
-/// `std.encoding.wire.value_trait`. Canonical methods are redeclared here
-/// with TOML-specific docstrings for documentation purposes.
-trait ValueMethods: CanonicalValueMethods {
+/// This module retains an independent resource carrier.
+trait ValueMethods {
     /// Return the type tag (0=null reserved, 1=bool, 2=i64, 3=float,
     /// 4=string, 5=array, 6=table, 7=datetime).
     fn type_of(self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
@@ -137,7 +131,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn push_bool(consuming self, val: bool) -> Self;
 }
 
-impl CanonicalValueMethods for Value {
+impl ValueMethods for Value {
     fn type_of(val: Value) -> i32 { // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
         unsafe {
             hew_toml_type(val)
@@ -268,9 +262,6 @@ impl CanonicalValueMethods for Value {
         };
         self
     }
-}
-
-impl ValueMethods for Value {
 }
 
 // `close` is the sole compiler-visible disposer. `free` above remains a

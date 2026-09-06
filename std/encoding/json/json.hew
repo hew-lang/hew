@@ -1,453 +1,355 @@
-//! JSON parsing and manipulation.
+//! JSON values with automatic cleanup and independent copies.
 //!
-//! Parse JSON strings into values, inspect their types, extract fields,
-//! and convert back to JSON text.
-//!
-//! # Examples
-//!
-//! ```
-//! import std.encoding.json;
-//!
-//! fn main() {
-//!     let val = match json.parse("{\"name\": \"Hew\", \"version\": 1}") {
-//!         .Ok(value) => value,
-//!         .Err(_) => panic("invalid JSON"),
-//!     };
-//!     let name = val.get_field("name");
-//!     println(name.get_string());
-//!     name.free();
-//!     val.free();
-//! }
-//! ```
+//! Inspect values with checked accessors. Mutate a `var` value with `set`
+//! or `push`; supplied children remain usable and independent.
 
-import std.encoding.wire.value_trait;
+/// The represented JSON kind, without exposing runtime tags.
+pub enum Kind {
+    Null,
+    Bool,
+    Integer,
+    Float,
+    String,
+    Array,
+    Object,
+}
 
-/// Structured error type for JSON parsing failures.
-///
-/// Use `Result<Value, ParseError>` with `parse` for structured error
-/// handling. Import `std.encoding.json` when matching on the returned error
-/// value so you can use the existing unqualified
-/// `ParseError.Invalid(message)` constructor/pattern style.
+/// Malformed JSON input.
 pub enum ParseError {
-    /// The input was not valid JSON. Carries the native parser message.
     Invalid(string),
 }
 
 impl Display for ParseError {
-    fn fmt(err: ParseError) -> string {
-        match err {
+    fn fmt(self) -> string {
+        match self {
             ParseError.Invalid(message) => message,
         }
     }
 }
 
-/// An opaque JSON value.
-///
-/// Represents any JSON type: null, bool, integer, float, string, array,
-/// or object. Created by `json.parse(s)` or by navigating into a
-/// parsed value. Values close automatically at the end of their ownership
-/// scope; `close()` performs the same release explicitly.
-#[resource]
+/// A value cannot be represented as JSON text.
+pub enum EncodeError {
+    Invalid(string),
+    NonFiniteFloat,
+}
+
+impl Display for EncodeError {
+    fn fmt(self) -> string {
+        match self {
+            EncodeError.Invalid(message) => message,
+            EncodeError.NonFiniteFloat => "json: non-finite float",
+        }
+    }
+}
+
+/// A checked access or mutation failed without changing the value.
+pub enum AccessError {
+    /// Expected kind, followed by the actual kind.
+    WrongKind(Kind, Kind),
+    /// The integer does not fit the requested signed or unsigned type.
+    IntegerRange,
+    /// The index is negative or exceeds the supported runtime index range.
+    InvalidIndex(i64),
+}
+
+impl Display for AccessError {
+    fn fmt(self) -> string {
+        match self {
+            AccessError.WrongKind(_, _) => "json: unexpected value kind",
+            AccessError.IntegerRange => "json: integer outside the requested range",
+            AccessError.InvalidIndex(index) => f"json: unsupported array index {index}",
+        }
+    }
+}
+
+/// An owning JSON value. Assignment and extraction produce independent values.
+/// Cleanup is automatic; the representation remains private.
 #[opaque]
 pub type Value {
 }
 
-/// Methods available on a JSON `Value`.
-///
-/// Extends the shared opaque-handle contract from
-/// `std.encoding.wire.value_trait`. Canonical methods are redeclared here
-/// with JSON-specific docstrings for documentation purposes.
-trait ValueMethods: CanonicalValueMethods {
-    /// Serialize the value back to a JSON string.
-    fn stringify(self) -> string;
-
-    /// Return the type tag (0=null, 1=bool, 2=i64, 3=float, 4=string, 5=array, 6=object).
-    fn type_of(self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
-    /// Extract the boolean value (0 or 1).
-    fn get_bool(self) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
-    /// Extract the integer value.
-    fn get_int(self) -> i64;
-
-    /// Extract the floating-point value.
-    fn get_float(self) -> f64;
-
-    /// Extract the string value.
-    fn get_string(self) -> string;
-
-    /// Look up a field by key in a JSON object.
-    fn get_field(self, key: string) -> Value;
-
-    /// Return the number of elements in a JSON array.
-    fn array_len(self) -> i64;
-
-    /// Return the element at the given index in a JSON array.
-    fn array_get(self, index: i64) -> Value;
-
-    /// Return a JSON array of the object's keys.
-    fn keys(self) -> Value;
-
-    /// Consuming compatibility alias for the inherent `close()`.
-    fn free(consuming self);
-
-    // ── Fluent builders (return self for chaining) ──────────────
-    /// Set a string field on an object. Returns the object for chaining.
-    #[returns_receiver]
-    fn with_string(consuming self, key: string, val: string) -> Self;
-
-    /// Set an integer field. Returns the object for chaining.
-    #[returns_receiver]
-    fn with_int(consuming self, key: string, val: i64) -> Self;
-
-    /// Set a float field. Returns the object for chaining.
-    #[returns_receiver]
-    fn with_float(consuming self, key: string, val: f64) -> Self;
-
-    /// Set a boolean field. Returns the object for chaining.
-    #[returns_receiver]
-    fn with_bool(consuming self, key: string, val: bool) -> Self;
-
-    /// Set a null field. Returns the object for chaining.
-    #[returns_receiver]
-    fn with_null(consuming self, key: string) -> Self;
-
-    /// Set a Value child on an object. The child is consumed. Returns the object.
-    #[returns_receiver]
-    fn with(consuming self, key: string, consume child: Value) -> Self;
-
-    /// Push a Value onto an array. The child is consumed. Returns the array.
-    #[returns_receiver]
-    fn push(consuming self, consume child: Value) -> Self;
-
-    /// Push an integer onto an array. Returns the array.
-    #[returns_receiver]
-    fn push_int(consuming self, val: i64) -> Self;
-
-    /// Push a string onto an array. Returns the array.
-    #[returns_receiver]
-    fn push_string(consuming self, val: string) -> Self;
-
-    /// Push a float onto an array. Returns the array.
-    #[returns_receiver]
-    fn push_float(consuming self, val: f64) -> Self;
-
-    /// Push a boolean onto an array. Returns the array.
-    #[returns_receiver]
-    fn push_bool(consuming self, val: bool) -> Self;
-
-    /// Push null onto an array. Returns the array.
-    #[returns_receiver]
-    fn push_null(consuming self) -> Self;
+impl Eq for Value {
+    fn eq(self, other: Value) -> bool {
+        unsafe {
+            hew_json_eq(self, other) == 1
+        }
+    }
 }
 
-impl CanonicalValueMethods for Value {
-    fn stringify(val: Value) -> string {
-        unsafe {
-            hew_json_stringify(val)
-        }
-    }
-    fn type_of(val: Value) -> i32 { // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
-        unsafe {
-            hew_json_type(val)
-        }
-    }
-    fn get_bool(val: Value) -> i32 { // INTERNAL-ABI: C ABI returns bool as i32
-        unsafe {
-            hew_json_get_bool(val)
-        }
-    }
-    fn get_int(val: Value) -> i64 {
-        let status = unsafe {
-            hew_json_int_status(val)
-        };
-        if status == 0 {
-            panic("json.Value.get_int: the value is an integer no i64 can hold");
-            0
-        } else {
-            unsafe {
-                hew_json_get_int(val)
-            }
-        }
-    }
-    fn get_float(val: Value) -> f64 {
-        unsafe {
-            hew_json_get_float(val)
-        }
-    }
-    fn get_string(val: Value) -> string {
-        unsafe {
-            hew_json_get_string(val)
-        }
-    }
-    fn get_field(val: Value, key: string) -> Value {
-        unsafe {
-            hew_json_get_field(val, key)
-        }
-    }
-    fn array_len(val: Value) -> i64 {
-        unsafe {
-            hew_json_array_len(val) as i64
-        }
-    }
-    fn array_get(val: Value, index: i64) -> Value {
-        if index < 0 || index > 2147483647 {
-            panic(f"json.Value.array_get: index {index} is outside the supported range");
-        }
-        unsafe {
-            hew_json_array_get(val, index as i32)
-        }
-    } // INTERNAL-ABI: C ABI index is i32
-    fn free(consuming self) {
-        self.close();
-    }
-    #[returns_receiver]
-    fn with_string(consuming self, key: string, val: string) -> Value {
-        unsafe {
-            hew_json_object_set_string(self, key, val)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn with_int(consuming self, key: string, val: i64) -> Value {
-        unsafe {
-            hew_json_object_set_int(self, key, val as i64)
-        };
-        self // INTERNAL-ABI: C ABI takes i64
-    }
-    #[returns_receiver]
-    fn with_float(consuming self, key: string, val: f64) -> Value {
-        unsafe {
-            hew_json_object_set_float(self, key, val)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn with_bool(consuming self, key: string, val: bool) -> Value {
-        unsafe {
-            hew_json_object_set_bool(self, key, val as i32)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn with(consuming self, key: string, consume child: Value) -> Value {
-        unsafe {
-            hew_json_object_set(self, key, child)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn push(consuming self, consume child: Value) -> Value {
-        unsafe {
-            hew_json_array_push(self, child)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn push_int(consuming self, val: i64) -> Value {
-        unsafe {
-            hew_json_array_push_int(self, val as i64)
-        };
-        self // INTERNAL-ABI: C ABI takes i64
-    }
-    #[returns_receiver]
-    fn push_string(consuming self, val: string) -> Value {
-        unsafe {
-            hew_json_array_push_string(self, val)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn push_float(consuming self, val: f64) -> Value {
-        unsafe {
-            hew_json_array_push_float(self, val)
-        };
-        self
-    }
-    #[returns_receiver]
-    fn push_bool(consuming self, val: bool) -> Value {
-        unsafe {
-            hew_json_array_push_bool(self, val as i32)
-        };
-        self
+trait ValueMethods {
+    fn type_of(self) -> Kind;
+
+    fn stringify(self) -> Result<string, EncodeError>;
+
+    fn get_bool(self) -> Result<bool, AccessError>;
+
+    fn get_int(self) -> Result<i64, AccessError>;
+
+    fn get_u64(self) -> Result<u64, AccessError>;
+
+    /// Read a float without coercing an integer to a float.
+    fn get_float(self) -> Result<f64, AccessError>;
+
+    fn get_string(self) -> Result<string, AccessError>;
+
+    /// Missing keys return None; an explicit null returns Some(value).
+    fn get_field(self, key: string) -> Result<Option<Value>, AccessError>;
+
+    fn array_len(self) -> Result<i64, AccessError>;
+
+    /// Missing elements return None; unsupported indices return InvalidIndex.
+    fn array_get(self, index: i64) -> Result<Option<Value>, AccessError>;
+
+    /// Return an independent array of object keys.
+    fn keys(self) -> Result<Value, AccessError>;
+
+    /// Set a string-keyed field, preserving the supplied child.
+    fn set(var self, key: string, child: Value) -> Result<(), AccessError>;
+
+    /// Append an independent copy of the child.
+    fn push(var self, child: Value) -> Result<(), AccessError>;
+}
+
+fn require_kind(value: Value, expected: Kind) -> Result<(), AccessError> {
+    let actual = value.type_of();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(AccessError.WrongKind(expected, actual))
     }
 }
 
 impl ValueMethods for Value {
-    fn keys(val: Value) -> Value {
-        unsafe {
-            hew_json_object_keys(val)
+    fn type_of(self) -> Kind {
+        match unsafe {
+            hew_json_type(self)
+        } {
+            0 => Kind.Null,
+            1 => Kind.Bool,
+            2 => Kind.Integer,
+            3 => Kind.Float,
+            4 => Kind.String,
+            5 => Kind.Array,
+            6 => Kind.Object,
+            _ => panic("json: invalid internal value"),
         }
     }
-    #[returns_receiver]
-    fn with_null(consuming self, key: string) -> Value {
-        unsafe {
-            hew_json_object_set_null(self, key)
+    fn stringify(self) -> Result<string, EncodeError> {
+        let text = unsafe {
+            hew_json_stringify(self)
         };
-        self
-    }
-    #[returns_receiver]
-    fn push_null(consuming self) -> Value {
-        unsafe {
-            hew_json_array_push_null(self)
+        // Read immediately: the runtime clears this slot on successful encoding.
+        let reason = unsafe {
+            hew_json_last_error()
         };
-        self
+        if !reason.is_empty() {
+            Err(EncodeError.Invalid(reason))
+        } else {
+            Ok(text)
+        }
     }
-}
-
-// `close` is the sole compiler-visible disposer. `free` above remains a
-// terminal consuming compatibility alias and delegates here.
-impl Value {
-    fn close(consuming self) {
-        unsafe {
-            hew_json_free(self)
+    fn get_bool(self) -> Result<bool, AccessError> {
+        require_kind(self, Kind.Bool)?;
+        Ok(unsafe {
+            hew_json_get_bool(self) == 1
+        })
+    }
+    fn get_int(self) -> Result<i64, AccessError> {
+        require_kind(self, Kind.Integer)?;
+        if unsafe {
+            hew_json_int_status(self)
+        } == 1 {
+            Ok(unsafe {
+                hew_json_get_int(self)
+            })
+        } else {
+            Err(AccessError.IntegerRange)
+        }
+    }
+    fn get_u64(self) -> Result<u64, AccessError> {
+        require_kind(self, Kind.Integer)?;
+        if unsafe {
+            hew_json_int_status(self)
+        } == 1 {
+            if unsafe {
+                hew_json_get_int(self)
+            } < 0 {
+                return Err(AccessError.IntegerRange);
+            }
+        }
+        Ok(unsafe {
+            hew_json_get_u64(self)
+        })
+    }
+    fn get_float(self) -> Result<f64, AccessError> {
+        require_kind(self, Kind.Float)?;
+        Ok(unsafe {
+            hew_json_get_float(self)
+        })
+    }
+    fn get_string(self) -> Result<string, AccessError> {
+        require_kind(self, Kind.String)?;
+        Ok(unsafe {
+            hew_json_get_string(self)
+        })
+    }
+    fn get_field(self, key: string) -> Result<Option<Value>, AccessError> {
+        require_kind(self, Kind.Object)?;
+        let child = unsafe {
+            hew_json_get_field(self, key)
         };
+        if unsafe {
+            hew_json_type(child)
+        } < 0 {
+            Ok(None)
+        } else {
+            Ok(Some(child))
+        }
+    }
+    fn array_len(self) -> Result<i64, AccessError> {
+        require_kind(self, Kind.Array)?;
+        Ok(unsafe {
+            hew_json_array_len(self) as i64
+        })
+    }
+    fn array_get(self, index: i64) -> Result<Option<Value>, AccessError> {
+        require_kind(self, Kind.Array)?;
+        if index < 0 || index > 2147483647 {
+            return Err(AccessError.InvalidIndex(index));
+        }
+        let child = unsafe {
+            hew_json_array_get(self, index as i32)
+        };
+        if unsafe {
+            hew_json_type(child)
+        } < 0 {
+            Ok(None)
+        } else {
+            Ok(Some(child))
+        }
+    }
+    fn keys(self) -> Result<Value, AccessError> {
+        require_kind(self, Kind.Object)?;
+        Ok(unsafe {
+            hew_json_object_keys(self)
+        })
+    }
+    fn set(var self, key: string, child: Value) -> Result<(), AccessError> {
+        require_kind(self, Kind.Object)?;
+        // Assignment acquires an independent value; insertion transfers that owner.
+        let owned_child = child;
+        unsafe {
+            hew_json_object_set(self, key, owned_child)
+        };
+        Ok(())
+    }
+    fn push(var self, child: Value) -> Result<(), AccessError> {
+        require_kind(self, Kind.Array)?;
+        let owned_child = child;
+        unsafe {
+            hew_json_array_push(self, owned_child)
+        };
+        Ok(())
     }
 }
 
-// ── Module-level functions ────────────────────────────────────────────
-fn parse_error_message() -> string {
-    unsafe {
-        hew_json_last_error()
-    }
-}
-
-fn parse_value(s: string) -> Value {
-    unsafe {
-        hew_json_parse(s)
-    }
-}
-
-/// Parse a JSON string into a `Value`.
-///
-/// Returns `Err(ParseError.Invalid(message))` with the native parser message
-/// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
-/// original parser message.
-pub fn parse(s: string) -> Result<Value, ParseError> {
-    let val = parse_value(s);
-    if val.type_of() >= 0 {
-        Ok(val)
-    } else {
-        Err(ParseError.Invalid(parse_error_message()))
-    }
-}
-
-/// Read `val` as an `i64` without panicking.
-///
-/// A JSON number above `i64::MAX` is still an integer, so reading it as `0`
-/// would be the document's value replaced by a fabricated one. Returns
-/// `Err(reason)` for such a value and for a non-integer value.
-pub fn get_int(val: Value) -> Result<i64, string> {
-    let status = unsafe {
-        hew_json_int_status(val)
+/// Parse JSON, retaining the parser's diagnostic on failure.
+pub fn parse(text: string) -> Result<Value, ParseError> {
+    let value = unsafe {
+        hew_json_parse(text)
     };
-    if status == 1 {
-        let n = unsafe {
-            hew_json_get_int(val)
-        };
-        Ok(n)
-    } else if status == 0 {
-        Err("json: the value is an integer no i64 can hold")
+    let reason = unsafe {
+        hew_json_last_error()
+    };
+    if unsafe {
+        hew_json_type(value)
+    } < 0 {
+        Err(ParseError.Invalid(reason))
     } else {
-        Err("json: the value is not an integer")
+        Ok(value)
     }
 }
 
-/// Count the integers in `val` and its descendants that no `i64` can hold.
-///
-/// The walk is recursive, so an unrepresentable integer nested inside arrays
-/// and objects is reported here rather than surfacing later as a fabricated
-/// `0` from `get_int()`. Returns -1 for an invalid handle.
-pub fn unrepresentable_int_count(val: Value) -> i64 {
-    unsafe {
-        hew_json_unrepresentable_int_count(val)
-    }
-}
-
-/// Report whether every integer in `val` and its descendants fits an `i64`.
-pub fn ints_are_representable(val: Value) -> bool {
-    unrepresentable_int_count(val) == 0
-}
-
-/// Create a new empty JSON object.
+/// Create an empty Object.
 pub fn object() -> Value {
     unsafe {
         hew_json_object_new()
     }
 }
 
-/// Create a new empty JSON array.
+/// Create an empty Array.
 pub fn array() -> Value {
     unsafe {
         hew_json_array_new()
     }
 }
 
-/// Create a JSON Value from an integer.
+/// Construct an exact signed integer.
 pub fn from_int(val: i64) -> Value {
     unsafe {
-        hew_json_from_int(val as i64)
-    }
-} // INTERNAL-ABI: C ABI takes i64
-/// Create a JSON Value from a float.
-pub fn from_float(val: f64) -> Value {
-    unsafe {
-        hew_json_from_float(val)
+        hew_json_from_int(val)
     }
 }
 
-/// Create a JSON Value wrapping a string.
-pub fn string_value(val: string) -> Value {
+/// Construct an exact unsigned integer, including values above i64's range.
+pub fn from_u64(val: u64) -> Value {
+    unsafe {
+        hew_json_from_u64(val)
+    }
+}
+
+/// Construct a finite float; JSON cannot represent NaN or infinity.
+pub fn from_float(val: f64) -> Result<Value, EncodeError> {
+    if val != val || val < -179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0 || val > 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0 {
+        Err(EncodeError.NonFiniteFloat)
+    } else {
+        Ok(unsafe {
+            hew_json_from_float(val)
+        })
+    }
+}
+
+pub fn from_string(val: string) -> Value {
     unsafe {
         hew_json_from_string(val)
     }
 }
 
-/// Create a JSON Value from a boolean.
 pub fn from_bool(val: bool) -> Value {
     unsafe {
         hew_json_from_bool(val as i32)
     }
 }
 
-/// Create a JSON null Value.
 pub fn null() -> Value {
     unsafe {
         hew_json_from_null()
     }
 }
 
-// ── FFI bindings (implementation detail) ──────────────────────────────
+// Runtime tags, private copies and consuming child insertion stay behind the API.
 extern "C" {
-    fn hew_json_parse(json_str: string) -> Value;
+    fn hew_json_parse(text: string) -> Value;
     fn hew_json_last_error() -> string;
     fn hew_json_stringify(val: Value) -> string;
     fn hew_json_type(val: Value) -> i32;
+    fn hew_json_eq(lhs: Value, rhs: Value) -> i32;
     fn hew_json_get_bool(val: Value) -> i32;
     fn hew_json_get_int(val: Value) -> i64;
+    fn hew_json_get_u64(val: Value) -> u64;
     fn hew_json_int_status(val: Value) -> i32;
-    fn hew_json_unrepresentable_int_count(val: Value) -> i64;
     fn hew_json_get_float(val: Value) -> f64;
     fn hew_json_get_string(val: Value) -> string;
     fn hew_json_get_field(val: Value, key: string) -> Value;
     fn hew_json_array_len(val: Value) -> i32;
     fn hew_json_array_get(val: Value, index: i32) -> Value;
     fn hew_json_object_keys(val: Value) -> Value;
-    fn hew_json_free(consume val: Value);
-    // Builders
     fn hew_json_object_new() -> Value;
     fn hew_json_array_new() -> Value;
-    fn hew_json_object_set_string(obj: Value, key: string, val: string);
-    fn hew_json_object_set_int(obj: Value, key: string, val: i64);
-    fn hew_json_object_set_float(obj: Value, key: string, val: f64);
-    fn hew_json_object_set_bool(obj: Value, key: string, val: i32);
-    fn hew_json_object_set_null(obj: Value, key: string);
     fn hew_json_object_set(obj: Value, key: string, consume child: Value);
     fn hew_json_array_push(arr: Value, consume child: Value);
-    fn hew_json_array_push_int(arr: Value, val: i64);
-    fn hew_json_array_push_string(arr: Value, val: string);
-    fn hew_json_array_push_float(arr: Value, val: f64);
-    fn hew_json_array_push_bool(arr: Value, val: i32);
-    fn hew_json_array_push_null(arr: Value);
     fn hew_json_from_int(val: i64) -> Value;
+    fn hew_json_from_u64(val: u64) -> Value;
     fn hew_json_from_float(val: f64) -> Value;
     fn hew_json_from_string(val: string) -> Value;
     fn hew_json_from_bool(val: i32) -> Value;

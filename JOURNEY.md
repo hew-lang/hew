@@ -2230,3 +2230,26 @@ value API cutover. Canonical type facts own automatic copy and destruction.
 
 The FFI ownership and generated C ABI checks pass. Source wrapper integration
 still needs to verify the complete replacement through HIR and native lowering.
+
+## Expose ordinary JSON and YAML values
+
+JSON and YAML source APIs now use owning values with automatic cleanup, checked
+scalar access and typed kind, parse, encode and access errors. Field and element
+lookup distinguish an absent entry from explicit null and a wrong receiver kind.
+Mutable `set` and `push` acquire a child through ordinary assignment before
+transferring that owner into the existing runtime insertion operation. Failed
+kind checks happen before acquiring the child. Equality explicitly selects the
+format's semantic runtime implementation.
+
+Exact signed and unsigned integer access preserves the runtime's numeric range.
+JSON rejects non-finite float construction; YAML preserves non-finite values,
+tags and arbitrary mapping keys. The public source methods do not peel tags.
+The shared resource-shaped encoding trait and its exclusive dispatch fixture
+are removed. TOML retains its current methods in its own implementation; generic
+supertrait tests remain independent of encoding APIs.
+
+The compiler builds, and TOML passes source checking. The migrated JSON/YAML
+wrappers and behavioural tests pass parsing and type checking but still reach an
+HIR conflict from the old generated resource lifecycle metadata. Native value
+copy/drop and consuming-child runtime operation integration remain necessary
+before these source tests can execute. No source runtime acceptance is claimed.

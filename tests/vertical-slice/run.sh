@@ -658,12 +658,6 @@ run_accept_expect_stdout_contains \
     "std_machines_toggle_import_run" \
     "toggle:Off:On:Off"
 
-# std.encoding.wire.value_trait must dispatch an imported canonical method
-# through a generic bound to JSON's concrete implementation.
-run_accept_expect_stdout_contains \
-    "std_encoding_wire_value_trait_import_run" \
-    "canonical-value:42"
-
 # std.io's imported write wrapper must reach the runtime and emit the exact
 # requested bytes.
 run_accept_expect_stdout_contains \

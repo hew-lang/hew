@@ -448,14 +448,14 @@ impl Checker {
                 let then_ty = self.synthesize(&then_block.0, &then_block.1);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 if let Some(eb) = else_block {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&eb.0, &eb.1);
                     let else_exit = BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&eb.0, &else_ty),
+                        diverges: Self::arm_skips_join(&else_ty),
                     };
                     self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
@@ -1209,7 +1209,7 @@ impl Checker {
         let body_ty = self.check_expr_with_expected(&body.0, &body.1, &payload);
         let taken = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
-            diverges: Self::arm_skips_join_expr(&body.0, &body_ty),
+            diverges: Self::arm_skips_join(&body_ty),
         };
         self.env.pop_scope();
         self.join_fall_through(&entry, taken);
@@ -1284,7 +1284,7 @@ impl Checker {
         let then_ty = self.check_block(body, None);
         let then_exit = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
-            diverges: Self::arm_skips_join_block(body, &then_ty),
+            diverges: Self::arm_skips_join(&then_ty),
         };
         self.env.pop_scope();
         if let Some(block) = else_body {
@@ -1292,7 +1292,7 @@ impl Checker {
             let else_ty = self.check_block(block, None);
             let else_exit = BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
-                diverges: Self::arm_skips_join_block(block, &else_ty),
+                diverges: Self::arm_skips_join(&else_ty),
             };
             self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
@@ -1347,6 +1347,11 @@ impl Checker {
             return;
         };
         if !path.is_empty() {
+            if self.reject_borrowed_consumption(expr, span)
+                || self.reject_partial_place_consumption(&root, &path, span)
+            {
+                return;
+            }
             self.env.mark_place_moved(&root, path, span.clone());
             return;
         }
@@ -1369,6 +1374,74 @@ impl Checker {
             self.errors.push(error);
         }
         self.env.mark_moved(&root, span.clone());
+    }
+
+    /// A selected field may move only when every enclosing value supports
+    /// independent field ownership. The selected value's own cleanup contract
+    /// does not prevent moving that entire value out of its plain parent.
+    fn reject_partial_place_consumption(
+        &mut self,
+        root: &str,
+        path: &[String],
+        span: &Span,
+    ) -> bool {
+        let Some(binding) = self.env.lookup_ref(root) else {
+            return false;
+        };
+        let mut parent = self.subst.resolve(&binding.ty);
+        for field in path {
+            let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::OwnPartialConsume,
+                    span,
+                    format!(
+                        "cannot consume `{}` separately: enclosing type `{}` must remain whole",
+                        Self::render_place(root, path),
+                        parent.user_facing(),
+                    ),
+                    vec!["transfer the enclosing value whole to a consuming operation".to_string()],
+                );
+                return true;
+            };
+            parent = self.subst.resolve(&selected);
+        }
+        false
+    }
+
+    fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
+        match parent {
+            Ty::Tuple(items) => items.get(field.parse::<usize>().ok()?).cloned(),
+            Ty::Named { name, args, .. } => {
+                let declaration = crate::value_class::ClassDeclarations::declared_type(
+                    &self.class_declarations(),
+                    name,
+                )?;
+                if declaration.marker != crate::value_class::DeclarationMarker::None
+                    || declaration.is_opaque
+                {
+                    return None;
+                }
+                let definition = self.type_defs.get(name)?;
+                if !matches!(definition.kind, TypeDefKind::Struct | TypeDefKind::Record)
+                    || definition.type_params.len() != args.len()
+                {
+                    return None;
+                }
+                let substitutions = definition
+                    .type_params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+                Some(
+                    definition
+                        .fields
+                        .get(field)?
+                        .substitute_named_params_parallel(&substitutions),
+                )
+            }
+            _ => None,
+        }
     }
 
     /// Resolve an expression to a checker PLACE: the root binding name plus the
@@ -3053,7 +3126,7 @@ impl Checker {
                     };
                     arm_exits.push(BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&arm.body.0, &body_ty),
+                        diverges: Self::arm_skips_join(&body_ty),
                     });
                     if result_ty.is_none() {
                         result_ty = Some(body_ty);
@@ -3065,7 +3138,7 @@ impl Checker {
                     let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
                     arm_exits.push(BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&tc.body.0, &timeout_ty),
+                        diverges: Self::arm_skips_join(&timeout_ty),
                     });
                     if let Some(expected) = &result_ty {
                         self.expect_type(expected, &timeout_ty, &tc.body.1);
@@ -3418,7 +3491,7 @@ impl Checker {
                 let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 let actual = if let Some(else_block) = else_block {
                     self.tail_ok_armed = tail_ok_armed;
@@ -3427,7 +3500,7 @@ impl Checker {
                         self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
                     let else_exit = BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&else_block.0, &else_ty),
+                        diverges: Self::arm_skips_join(&else_ty),
                     };
                     self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
@@ -7432,7 +7505,7 @@ impl Checker {
             let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
                 let guard_ty = self.check_against(guard, gs, &Ty::Bool);
-                if Self::arm_skips_join_expr(guard, &guard_ty) {
+                if Self::arm_skips_join(&guard_ty) {
                     guard_diverges = true;
                     // Rewind the guard's consumes: neither the unreachable body
                     // below nor any later arm ever observes them.
@@ -7456,7 +7529,7 @@ impl Checker {
             self.record_callable_value_transfer(&arm.body.0, &arm.body.1);
             arm_exits.push(BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
-                diverges: guard_diverges || Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
+                diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
             });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
@@ -7687,6 +7760,8 @@ impl Checker {
         let body_environment = std::mem::replace(&mut self.env, outer_environment);
         self.env.merge_closure_reads(&body_environment);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        // Acquisition happens in the enclosing scope, not in the new closure.
+        self.lambda_capture_depth = prev_capture_depth;
         let capture_facts = self.finish_closure_captures(
             raw_capture_facts,
             &private_bindings,
@@ -7704,7 +7779,6 @@ impl Checker {
         let captures: Vec<Ty> = capture_facts.iter().map(|fact| fact.ty.clone()).collect();
 
         // Restore outer capture tracking state
-        self.lambda_capture_depth = prev_capture_depth;
         self.lambda_captures = prev_captures;
         self.lambda_capture_facts = prev_capture_facts;
         if let Some(depth) = prev_capture_depth {

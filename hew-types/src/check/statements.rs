@@ -505,7 +505,7 @@ impl Checker {
         let then_ty = self.check_block(then_block, None);
         let then_exit = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
-            diverges: Self::arm_skips_join_block(then_block, &then_ty),
+            diverges: Self::arm_skips_join(&then_ty),
         };
         let then_skips_join = then_exit.diverges;
         let Some(eb) = else_block else {
@@ -527,7 +527,7 @@ impl Checker {
             }
         } else if let Some(block) = &eb.block {
             let else_ty = self.check_block(block, None);
-            Self::arm_skips_join_block(block, &else_ty)
+            Self::arm_skips_join(&else_ty)
         } else {
             // `else` with neither a block nor a chained `if`: nothing runs on
             // that path, so it is the implicit fall-through.
@@ -651,7 +651,7 @@ impl Checker {
                 let then_ty = self.check_block(then_block, expected);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_block(then_block, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 // An `else if` link is itself a two-way branch, so recursing
                 // gives the chain its join for free: each link restores to its
@@ -660,13 +660,13 @@ impl Checker {
                     if let Some(ref if_stmt) = eb.if_stmt {
                         self.env.restore_ownership(&entry);
                         let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
-                        let else_skips = Self::arm_skips_join_stmt(&if_stmt.0, &else_ty);
+                        let else_skips = Self::arm_skips_join(&else_ty);
                         self.join_two_way(&entry, then_exit, else_skips);
                         self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
                     } else if let Some(block) = &eb.block {
                         self.env.restore_ownership(&entry);
                         let else_ty = self.check_block(block, expected);
-                        let else_skips = Self::arm_skips_join_block(block, &else_ty);
+                        let else_skips = Self::arm_skips_join(&else_ty);
                         self.join_two_way(&entry, then_exit, else_skips);
                         self.unify_branches(&then_ty, &else_ty, span)
                     } else {
@@ -698,13 +698,13 @@ impl Checker {
                 let then_ty = self.check_block(body, expected);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_block(body, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 self.env.pop_scope();
                 if let Some(block) = else_body {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.check_block(block, expected);
-                    let else_skips = Self::arm_skips_join_block(block, &else_ty);
+                    let else_skips = Self::arm_skips_join(&else_ty);
                     self.join_two_way(&entry, then_exit, else_skips);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
@@ -1208,7 +1208,7 @@ impl Checker {
                                     },
                                     BranchArmExit {
                                         ownership: self.env.ownership_snapshot(),
-                                        diverges: Self::arm_skips_join_block(else_blk, &else_ty),
+                                        diverges: Self::arm_skips_join(&else_ty),
                                     },
                                 ],
                             );
@@ -1639,13 +1639,13 @@ impl Checker {
                 let then_ty = self.check_block(body, None);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_block(body, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 self.env.pop_scope();
                 if let Some(block) = else_body {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.check_block(block, None);
-                    let else_skips = Self::arm_skips_join_block(block, &else_ty);
+                    let else_skips = Self::arm_skips_join(&else_ty);
                     self.join_two_way(&entry, then_exit, else_skips);
                 } else {
                     self.join_fall_through(&entry, then_exit);
@@ -2084,6 +2084,7 @@ impl Checker {
                 }
                 if self.loop_depth > 0 {
                     self.recheck_loop_edge_defers(label.as_deref(), span);
+                    self.env.record_loop_exit(label.as_deref());
                 }
             }
             Stmt::Continue { label } => {
@@ -2104,6 +2105,7 @@ impl Checker {
                 }
                 if self.loop_depth > 0 {
                     self.recheck_loop_edge_defers(label.as_deref(), span);
+                    self.env.record_loop_exit(label.as_deref());
                 }
             }
             Stmt::Match { scrutinee, arms } => {

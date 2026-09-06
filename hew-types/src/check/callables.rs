@@ -51,7 +51,7 @@ impl Checker {
     /// SIR authors the actual transfer; the checker uses the same class facts
     /// to determine capture capabilities and reject later source uses.
     pub(super) fn record_callable_value_transfer(&mut self, expr: &Expr, span: &Span) {
-        let Some((root, _)) = self.expr_place(expr) else {
+        let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
         let key = super::SpanKey::in_module(span, self.current_module_idx);
@@ -63,7 +63,7 @@ impl Checker {
                 .lookup_ref_with_depth(&root)
                 .is_some_and(|(depth, _)| depth < capture_depth)
         });
-        if !is_capture && !ty.contains_callable() {
+        if !is_capture && path.is_empty() && !ty.contains_callable() {
             return;
         }
         let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
@@ -74,7 +74,8 @@ impl Checker {
         if matches!(
             crate::value_class::classify_ty(&resolved, &context),
             Ok((_, crate::type_facts::CloneKind::None))
-        ) {
+        ) && !self.reject_borrowed_consumption(expr, span)
+        {
             self.mark_expr_moved(expr, span);
         }
     }
@@ -172,7 +173,9 @@ impl Checker {
             fact.is_sync = self.registry.is_sync(&fact.ty);
             let is_copy = self.registry.implements_marker(&fact.ty, MarkerTrait::Copy);
             if is_move {
-                if !is_copy {
+                if !is_copy
+                    && !self.reject_borrowed_consumption(&Expr::Identifier(fact.name.clone()), span)
+                {
                     self.env.mark_moved(&fact.name, span.clone());
                 }
             } else if !self.capture_is_cloneable(&fact.ty)
@@ -342,7 +345,7 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_declared_callable_argument(
+    pub(super) fn record_declared_argument_consumption(
         &mut self,
         sig: &super::FnSig,
         index: usize,
@@ -352,13 +355,7 @@ impl Checker {
         if sig.param_ownership.get(index) != Some(&crate::env::ParameterOwnership::Consume) {
             return;
         }
-        let key = super::SpanKey::in_module(span, self.current_module_idx);
-        if self
-            .expr_types
-            .get(&key)
-            .is_some_and(|ty| self.subst.resolve(ty).contains_callable())
-            && !self.reject_borrowed_callable_consumption(expr, span)
-        {
+        if !self.reject_borrowed_consumption(expr, span) {
             self.mark_expr_moved(expr, span);
         }
     }
@@ -371,7 +368,7 @@ impl Checker {
         })
     }
 
-    fn reject_borrowed_callable_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
+    pub(super) fn reject_borrowed_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
         let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
@@ -386,22 +383,14 @@ impl Checker {
             format!("declare the parameter `consume {root}: ...` before consuming it")
         };
         self.report_error_with_suggestions(TypeErrorKind::OwnConsumeBorrowed, span,
-            format!("E_OWN_CONSUME_BORROWED: cannot consume a callable through borrowed parameter `{root}`"),
+            format!("E_OWN_CONSUME_BORROWED: cannot consume a value through borrowed parameter `{root}`"),
             vec![suggestion]);
         true
     }
 
     fn record_callable_consumption(&mut self, expr: &Expr, span: &Span) {
-        if self.reject_borrowed_callable_consumption(expr, span) {
+        if self.reject_borrowed_consumption(expr, span) {
             return;
-        }
-        if let Some((root, path)) = self.expr_place(expr) {
-            if !path.is_empty() && !self.is_current_closure_capture(&root) {
-                self.report_error_with_suggestions(TypeErrorKind::OwnPartialConsume, span,
-                    "E_OWN_PARTIAL_CONSUME: cannot consume a callable field of a live local aggregate".to_string(),
-                    vec!["explicitly destructure the aggregate into local bindings, then invoke the callable binding".to_string()]);
-                return;
-            }
         }
         self.mark_expr_moved(expr, span);
     }

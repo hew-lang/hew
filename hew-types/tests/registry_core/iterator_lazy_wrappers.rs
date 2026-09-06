@@ -119,14 +119,14 @@ where
     }
 }
 
-pub fn map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B>
+pub fn map<I, A, B>(it: I, consume f: fn(A) -> B) -> Map<I, A, B>
 where
     I: Iterator<Item = A>,
 {
     Map { iter: it, f: f }
 }
 
-pub fn filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
+pub fn filter<I, A>(it: I, consume pred: fn(A) -> bool) -> Filter<I, A>
 where
     I: Iterator<Item = A>,
 {

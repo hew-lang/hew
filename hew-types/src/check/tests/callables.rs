@@ -310,7 +310,7 @@ fn callable_qualifiers_survive_aggregate_erasure() {
         output
             .errors
             .iter()
-            .any(|error| error.message.contains("E_OWN_PARTIAL_CONSUME")),
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
         "{:?}",
         output.errors
     );
@@ -341,23 +341,14 @@ fn callable_qualifiers_survive_aggregate_erasure() {
 }
 
 #[test]
-fn once_callable_fields_require_explicit_destructuring() {
+fn once_callable_fields_allow_independent_owned_use() {
     for qualifier in ["once", "once, clone"] {
         let declarations = format!("type Callbacks {{ first: fn[{qualifier}]() -> i64, second: fn[{qualifier}]() -> i64 }}");
         for invocation in ["pair.first()", "(pair.first)()"] {
             let output = check_source(&format!(
                 "{declarations} fn invoke(consume pair: Callbacks) {{ {invocation}; }}"
             ));
-            let error = output
-                .errors
-                .iter()
-                .find(|error| error.message.contains("E_OWN_PARTIAL_CONSUME"))
-                .expect("partial consume diagnostic");
-            assert_eq!(error.kind, TypeErrorKind::OwnPartialConsume);
-            assert!(error
-                .suggestions
-                .iter()
-                .any(|text| text.contains("destructure")));
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
         }
         let output = check_source(&format!("{declarations} fn invoke(consume pair: Callbacks) {{ let Callbacks {{ first, second }} = pair; first(); second(); }}"));
         assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -373,6 +364,169 @@ fn once_callable_fields_require_explicit_destructuring() {
         "{:?}",
         output.errors
     );
+}
+
+const PARTIAL_JOB: &str = "type Job { done: fn[once]() -> i64, label: string }
+    fn new_job() -> Job { Job { done: || 7, label: \"ready\" } }
+    fn inspect(job: Job) { println(job.label); }";
+
+#[test]
+fn partial_move_complete_job_keeps_siblings_usable() {
+    let output = check_source(&format!(
+        "{PARTIAL_JOB}
+        fn complete_job(consume job: Job) -> i64 {{
+            let result = job.done(); println(job.label); result
+        }}
+        fn main() {{ println(complete_job(new_job())); }}"
+    ));
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(
+        "type Pair { left: fn[once]() -> i64, right: fn[once]() -> i64 }
+        fn complete(consume pair: Pair) -> i64 { pair.left() + pair.right() }
+        fn main() { println(complete(Pair { left: || 1, right: || 2 })); }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn partial_move_nested_records_and_tuples_preserve_siblings() {
+    let output = check_source(&format!(
+        "{PARTIAL_JOB}
+        type Batch {{ pair: (Job, fn[once]() -> i64), label: string }}
+        fn complete(consume batch: Batch) {{
+            batch.pair.0.done(); println(batch.pair.0.label);
+            batch.pair.1(); println(batch.label);
+        }}
+        fn main() {{ complete(Batch {{ pair: (new_job(), || 9), label: \"batch\" }}); }}"
+    ));
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for body in [
+        "let inner = batch.job; batch.job.done();",
+        "complete_job(batch.job); batch.job.done();",
+    ] {
+        let output = check_source(&format!(
+            "{PARTIAL_JOB}
+            type Batch {{ job: Job, label: string }}
+            fn complete_job(consume job: Job) {{ job.done(); }}
+            fn complete(consume batch: Batch) {{ {body} }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn partial_move_whole_and_selected_use_require_reinitialization() {
+    for body in [
+        "job.done(); job.done();",
+        "job.done(); inspect(job);",
+        "if flag { job.done(); } inspect(job);",
+        "if flag { job.done(); } job.done();",
+        "job.done(); if flag { job.done = || 8; } inspect(job);",
+        "job.done(); for i in 0..n { job.done = || 8; } inspect(job);",
+        "for i in 0..n { if flag { job.done(); break; } job.done = || 8; } inspect(job);",
+    ] {
+        let output = check_source(&format!(
+            "{PARTIAL_JOB}
+            fn complete(consume var job: Job, flag: bool, n: i64) {{ {body} }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn partial_move_reinitialization_restores_whole_use() {
+    for body in [
+        "job.done(); job.done = || 8; inspect(job); job.done();",
+        "job.done(); job = new_job(); inspect(job); job.done();",
+        "job.done(); if flag { job.done = || 8; } else { job.done = || 9; } inspect(job);",
+        "for i in 0..n { job.done(); println(job.label); job.done = || 8; } inspect(job);",
+        "for i in 0..n { if flag { job.done(); job.done = || 8; continue; } job.done(); job.done = || 9; } inspect(job);",
+    ] {
+        let output = check_source(&format!(
+            "{PARTIAL_JOB}
+            fn complete(consume var job: Job, flag: bool, n: i64) {{ {body} }}"
+        ));
+        assert!(output.errors.is_empty(), "{body}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn partial_move_borrowed_parameters_and_capture_acquisitions_are_rejected() {
+    for body in [
+        "job.done();",
+        "let done = job.done; done();",
+        "let complete = || job.done(); complete();",
+        "let complete = move || job.done(); complete();",
+    ] {
+        let output = check_source(&format!("{PARTIAL_JOB} fn complete(job: Job) {{ {body} }}"));
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::OwnConsumeBorrowed
+                    | TypeErrorKind::ClosureExplicitMoveRequired { .. }
+            )),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+    let output = check_source(&format!("{PARTIAL_JOB}
+        fn complete(consume job: Job) {{ let finish = move || {{ job.done(); println(job.label); }}; finish(); }}"));
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
+    for prefix in ["#[resource]", "#[linear]"] {
+        let declarations = format!(
+            "{prefix} type Bundle {{ done: fn[once]() -> i64 }}
+            impl Bundle {{ fn close(consuming self) {{ }} }}
+            type Outer {{ inner: (Bundle, string) }}"
+        );
+        for body in [
+            "outer.inner.0.done();",
+            "let done = outer.inner.0.done; done();",
+        ] {
+            let output = check_source(&format!(
+                "{declarations}
+                fn complete(consume outer: Outer) {{ {body} }}"
+            ));
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == TypeErrorKind::OwnPartialConsume),
+                "{prefix} {body}: {:?}",
+                output.errors
+            );
+        }
+        let output = check_source(&format!("{declarations}
+            fn complete(consume outer: Outer) {{ let inner = outer.inner.0; inner.close(); println(outer.inner.1); }}"));
+        assert!(output.errors.is_empty(), "{prefix}: {:?}", output.errors);
+        let output = check_source(&format!("{declarations}
+            fn complete(consume outer: Outer) {{ let inner = outer.inner.0; let again = outer.inner.0; }}"));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+            "{prefix}: {:?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
@@ -417,7 +571,7 @@ fn transferring_a_captured_owner_requires_once() {
 
 #[test]
 fn moving_an_erased_callable_prevents_reuse() {
-    let output = check_source("fn invoke(f: fn() -> i64) { let other = f; f(); }");
+    let output = check_source("fn invoke(consume f: fn() -> i64) { let other = f; f(); }");
     assert!(
         output
             .errors
@@ -428,8 +582,9 @@ fn moving_an_erased_callable_prevents_reuse() {
     );
     let output = check_source("fn invoke(f: fn[clone]() -> i64) { let other = f; f(); other(); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output =
-        check_source("fn wrap(f: fn() -> i64) { let outer = move || f; outer(); outer(); }");
+    let output = check_source(
+        "fn wrap(consume f: fn() -> i64) { let outer = move || f; outer(); outer(); }",
+    );
     assert_eq!(
         capture(&output, "f").consumption,
         ClosureCaptureConsumption::Consumed
@@ -461,7 +616,7 @@ fn inferred_lambda_returns_join_callable_guarantees() {
         "if flag { return a; } b",
         "if flag { return b; } a",
     ] {
-        let source = format!("fn choose(a: fn[clone]() -> i64, b: fn[once, clone]() -> i64) {{ let f = move |flag: bool| {{ {returns} }}; let result = f(true); result(); }}");
+        let source = format!("fn choose(consume a: fn[clone]() -> i64, consume b: fn[once, clone]() -> i64) {{ let f = move |flag: bool| {{ {returns} }}; let result = f(true); result(); }}");
         let output = check_source(&source);
         assert!(output.errors.is_empty(), "{returns}: {:?}", output.errors);
         assert!(output.expr_types.values().any(|ty| matches!(ty, Ty::Closure { ret, .. } if matches!(&**ret, Ty::Function { capabilities, .. } if capabilities.call == CallableCallMode::Once && capabilities.clone))), "{returns}");

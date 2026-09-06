@@ -801,9 +801,9 @@ pub enum TypeErrorKind {
     UseAfterConsume,
     /// A consuming operation requires ownership of a borrowed parameter.
     OwnConsumeBorrowed,
-    /// Mutation of a borrowed callable requires an independent clone or owner.
+    /// Mutation of borrowed storage requires an independent clone or owner.
     OwnMutateBorrowed,
-    /// Consuming a local aggregate field requires explicit destructuring.
+    /// A projection's enclosing value cannot be split into independent owners.
     OwnPartialConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,

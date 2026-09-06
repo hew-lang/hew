@@ -211,6 +211,14 @@ pub struct OwnershipState {
     pub released_at: Option<Span>,
 }
 
+#[derive(Debug, Clone)]
+struct LoopScope {
+    label: Option<String>,
+    floor: usize,
+    entry: OwnershipSnapshot,
+    exits: Vec<OwnershipSnapshot>,
+}
+
 /// Ownership state of every visible binding at one point in the control flow.
 ///
 /// Captured at a branch entry and at each arm's exit so alternative-execution
@@ -275,7 +283,7 @@ pub struct TypeEnv {
     /// Deferred bodies registered in each lexical scope, parallel to `scopes`.
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
-    loop_scope_floors: Vec<(Option<String>, usize, OwnershipSnapshot)>,
+    loop_scope_floors: Vec<LoopScope>,
     next_binding_id: u32,
 }
 
@@ -353,11 +361,26 @@ impl TypeEnv {
 
     /// Record the lexical scope depth immediately before a loop body opens.
     pub fn enter_loop(&mut self, label: Option<&str>) {
-        self.loop_scope_floors.push((
-            label.map(str::to_string),
-            self.deferred_scopes.len(),
-            self.ownership_snapshot(),
-        ));
+        self.loop_scope_floors.push(LoopScope {
+            label: label.map(str::to_string),
+            floor: self.deferred_scopes.len(),
+            entry: self.ownership_snapshot(),
+            exits: Vec::new(),
+        });
+    }
+
+    /// Retain the ownership state of an early loop edge before later source
+    /// traversal can reinitialize places on a different path.
+    pub fn record_loop_exit(&mut self, label: Option<&str>) {
+        let state = self.ownership_snapshot();
+        if let Some(scope) = self
+            .loop_scope_floors
+            .iter_mut()
+            .rev()
+            .find(|scope| label.is_none() || scope.label.as_deref() == label)
+        {
+            scope.exits.push(state);
+        }
     }
 
     /// Retire the innermost loop boundary.
@@ -367,20 +390,15 @@ impl TypeEnv {
     /// Panics if no loop boundary is active, which indicates an unbalanced
     /// checker traversal.
     pub fn exit_loop(&mut self) {
-        let (_, _, entry) = self
+        let mut scope = self
             .loop_scope_floors
             .pop()
             .expect("cannot exit loop with no active loop boundary");
-        // A loop body may not run, or may leave before a replacement. Retain
-        // only entry-proven replacements without changing move/release facts.
-        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
-            if let Some(before) = entry.get(binding.id) {
-                binding.parameter_replacements = common_parameter_replacements(
-                    &before.parameter_replacements,
-                    &binding.parameter_replacements,
-                );
-            }
-        }
+        // Conservatively include zero iterations, normal body completion and
+        // early edges. They all use the same ownership join as branch arms.
+        scope.exits.push(scope.entry.clone());
+        scope.exits.push(self.ownership_snapshot());
+        self.merge_ownership(&scope.entry, &scope.exits);
     }
 
     /// Deferred bodies materialized by a `break` or `continue` edge.
@@ -390,13 +408,13 @@ impl TypeEnv {
     /// source checker cannot identify the loop boundary.
     #[must_use]
     pub fn loop_edge_defers(&self, label: Option<&str>) -> Option<Vec<Spanned<Expr>>> {
-        let (_, floor, _) = self
+        let scope = self
             .loop_scope_floors
             .iter()
             .rev()
-            .find(|(candidate, _, _)| label.is_none() || candidate.as_deref() == label)?;
+            .find(|scope| label.is_none() || scope.label.as_deref() == label)?;
         Some(
-            self.deferred_scopes[*floor..]
+            self.deferred_scopes[scope.floor..]
                 .iter()
                 .rev()
                 .flat_map(|scope| scope.iter().rev().cloned())
@@ -761,19 +779,15 @@ impl TypeEnv {
         let mut merged: HashMap<TypeBindingId, OwnershipState> =
             HashMap::with_capacity(entry.states.len());
         for (id, entry_state) in &entry.states {
-            let mut state = entry_state.clone();
-            // A replacement is definite only when every reaching arm replaced
-            // that place or one of its ancestors. Entry is included only when
-            // the caller supplies it as a real fall-through path.
-            let replacements = exits.iter().filter_map(|exit| exit.states.get(id));
-            state.parameter_replacements = replacements
-                .map(|exit| exit.parameter_replacements.clone())
-                .reduce(|left, right| common_parameter_replacements(&left, &right))
-                .unwrap_or_else(|| entry_state.parameter_replacements.clone());
-            for exit in exits {
-                let Some(exit_state) = exit.states.get(id) else {
-                    continue;
-                };
+            let mut reaching = exits.iter().filter_map(|exit| exit.states.get(id));
+            // Entry identifies bindings, not an additional execution path.
+            // Joining only reaching exits lets every arm repair a moved field.
+            let mut state = reaching.next().unwrap_or(entry_state).clone();
+            for exit_state in reaching {
+                state.parameter_replacements = common_parameter_replacements(
+                    &state.parameter_replacements,
+                    &exit_state.parameter_replacements,
+                );
                 if exit_state.is_moved && !state.is_moved {
                     state.is_moved = true;
                     state.moved_at.clone_from(&exit_state.moved_at);
@@ -781,11 +795,7 @@ impl TypeEnv {
                 if state.moved_at.is_none() {
                     state.moved_at.clone_from(&exit_state.moved_at);
                 }
-                // Place moves union the same monotone way whole-binding moves
-                // do: a place consumed on ANY path is not usable after the
-                // join, and a place re-initialised on only SOME paths still
-                // carries the obligation. Union only ever ADDS facts, which is
-                // what keeps the join structurally sound.
+                // A place missing on any reaching path remains unavailable.
                 for place in &exit_state.moved_places {
                     if !state.moved_places.iter().any(|m| m.path == place.path) {
                         state.moved_places.push(place.clone());

@@ -2052,3 +2052,15 @@ releasing it through the closure environment.
 The expected reports independently check callback results, sibling contents and
 vector growth. Source checks pass; native and paired generated/runtime sanitizer
 execution remains pending.
+
+## Initialize aggregate runtime results on their normal edges
+
+Paired generated/runtime sanitizers exposed a recursive-carrier leak after the
+projection cutover. Collection indexing writes an owned record directly to an
+output address; its payload was valid, but its leaf flags remained empty when
+the normal edge copied their state. Cleanup therefore skipped owned fields.
+All result-producing normal edges now publish result initialization before their
+parallel transfers, independent of whether LLVM or the runtime wrote the payload.
+Failure edges leave result storage uninitialized. The original recursive-carrier
+safety case now passes at O0 and O2. Focused vector/map returned-record controls
+and the full integrated safety rerun remain the next validation steps.

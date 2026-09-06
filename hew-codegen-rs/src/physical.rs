@@ -2511,7 +2511,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     _ => unreachable!("matched checked shift"),
                 };
                 self.store(result, value.into())?;
-                self.emit_edge(normal)
+                self.emit_result_edge(Some(result), normal)
             }
             BinaryOp::Equal
             | BinaryOp::NotEqual
@@ -2556,7 +2556,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_edge(failure)?;
         self.builder.position_at_end(normal_block);
         self.store(result, value.into())?;
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
     }
 
     #[allow(
@@ -2649,7 +2649,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         .llvm_ctx("emit guarded division or modulo")?;
         self.store(result, value.into())?;
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// A successful terminator defines its result even when a runtime writes
+    /// directly to its output address. Publish that fact before edge snapshots.
+    fn emit_result_edge(
+        &self,
+        result: Option<StorageId>,
+        edge: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        if let Some(result) = result {
+            self.set_aggregate_initialized(result, true)?;
+        }
+        self.emit_edge(edge)
     }
 
     fn emit_edge(&self, edge: &PhysicalEdge) -> CodegenResult<()> {
@@ -2838,10 +2851,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(ok, success, failure)
             .llvm_ctx("branch on physical call status")?;
         self.builder.position_at_end(success);
-        if let Some(result) = result {
-            self.set_aggregate_initialized(result, true)?;
-        }
-        self.emit_edge(normal)?;
+        self.emit_result_edge(result, normal)?;
         self.builder.position_at_end(failure);
         if let Some(unwind) = unwind {
             self.emit_edge(unwind)
@@ -2869,7 +2879,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ))
             })
         };
-        let result = || {
+        let required_result = || {
             result.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "physical runtime action {action:?} lacks result storage"
@@ -2882,7 +2892,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 return self.emit_map_call(
                     (operation, glue),
                     transfers,
-                    result()?,
+                    required_result()?,
                     normal,
                     failure,
                 );
@@ -2891,7 +2901,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 return self.emit_set_call(
                     (operation, glue),
                     transfers,
-                    result()?,
+                    required_result()?,
                     normal,
                     failure,
                 );
@@ -2900,7 +2910,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 return self.emit_vector_call(
                     (operation, glue),
                     transfers,
-                    result()?,
+                    required_result()?,
                     normal,
                     failure,
                 );
@@ -2910,7 +2920,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 error,
                 error_len,
             } => {
-                self.emit_utf8_decode(source(0)?, result()?, result_glue, error, error_len)?;
+                self.emit_utf8_decode(
+                    source(0)?,
+                    required_result()?,
+                    result_glue,
+                    error,
+                    error_len,
+                )?;
             }
             PhysicalRuntimeAction::BytesDecodeUtf8Lossy => {
                 let function =
@@ -2920,7 +2936,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.slots[source(0)?.0 as usize].into()],
                     "bytes.decode.utf8.lossy",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::StringConcat => {
                 let function = get_or_declare_external(
@@ -2936,7 +2952,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "string.concat",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::StringEquals => {
                 let function = get_or_declare_external(
@@ -2965,7 +2981,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         "string.equals.truth",
                     )
                     .llvm_ctx("normalize string equality")?;
-                let dest = result()?;
+                let dest = required_result()?;
                 let bool_ty =
                     llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
                 let truth = self
@@ -2986,7 +3002,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     function,
                     &[
                         self.load(source(0)?, "string.to.bytes.input")?.into(),
-                        self.slots[result()?.0 as usize].into(),
+                        self.slots[required_result()?.0 as usize].into(),
                     ],
                     "string.to.bytes",
                 )?;
@@ -2998,7 +3014,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.load(source(0)?, "uppercase.input")?.into()],
                     "string.uppercase",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::StringLen | PhysicalRuntimeAction::StringByteLen => {
                 let symbol = if action == PhysicalRuntimeAction::StringLen {
@@ -3016,7 +3032,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.load(source(0)?, "string.length.input")?.into()],
                     "string.length",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::U8ToString => {
                 let function = get_or_declare_external(
@@ -3029,7 +3045,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.load(source(0)?, "u8.to.string.input")?.into()],
                     "u8.to.string",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::I64ToString => {
                 let function = get_or_declare_external(
@@ -3042,7 +3058,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.load(source(0)?, "i64.to.string.input")?.into()],
                     "i64.to.string",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::PrintlnI64 => {
                 let function = get_or_declare_external(
@@ -3115,13 +3131,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.slots[source(0)?.0 as usize].into()],
                     "bytes.len",
                 )?;
-                self.store(result()?, value)?;
+                self.store(required_result()?, value)?;
             }
             PhysicalRuntimeAction::BytesIndex => {
                 return self.emit_bytes_index(
                     source(0)?,
                     source(1)?,
-                    result()?,
+                    required_result()?,
                     normal,
                     failure.ok_or_else(|| {
                         CodegenError::FailClosed(
@@ -3143,7 +3159,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[
                         self.slots[source(0)?.0 as usize].into(),
                         self.load(source(1)?, "bytes.push.byte")?.into(),
-                        self.slots[result()?.0 as usize].into(),
+                        self.slots[required_result()?.0 as usize].into(),
                     ],
                     "bytes.push.owned",
                 )?;
@@ -3154,7 +3170,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 "infallible physical runtime action {action:?} carries a failure edge"
             )));
         }
-        self.emit_edge(normal)
+        self.emit_result_edge(result, normal)
     }
 
     #[expect(
@@ -3198,7 +3214,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 "vector.new",
             )?;
             self.store(result, value)?;
-            return self.emit_edge(normal);
+            return self.emit_result_edge(Some(result), normal);
         }
         let receiver = source(0)?;
         let vector = self.load(receiver, "vector.receiver")?.into_pointer_value();
@@ -3319,7 +3335,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.builder.position_at_end(absent);
                 if let PhysicalVectorOp::Get { result: option } = operation {
                     self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
-                    self.emit_edge(normal)?;
+                    self.emit_result_edge(Some(result), normal)?;
                 } else {
                     self.emit_edge(failure()?)?;
                 }
@@ -3393,7 +3409,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, pair.into())?;
             }
         }
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
     }
 
     fn descriptor_pointer(&self, symbol: &str) -> CodegenResult<PointerValue<'ctx>> {
@@ -3462,7 +3478,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )?;
             let map = self.runtime_call_value(function, &[key.into(), value.into()], "map.new")?;
             self.store(result, map)?;
-            return self.emit_edge(normal);
+            return self.emit_result_edge(Some(result), normal);
         }
         let receiver = source(0)?;
         let map = self.load(receiver, "map.receiver")?;
@@ -3556,7 +3572,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, entries)?;
             }
         }
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
     }
 
     #[expect(
@@ -3684,7 +3700,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, value)?;
             }
         }
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
     }
 
     fn emit_set_call(
@@ -3707,7 +3723,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             let function = external_unary_ptr(self.ctx, self.llvm, "hew_hashset_new_with_layout")?;
             let set = self.runtime_call_value(function, &[descriptor.into()], "set.new")?;
             self.store(result, set)?;
-            return self.emit_edge(normal);
+            return self.emit_result_edge(Some(result), normal);
         }
         let receiver = source(0)?;
         let set = self.load(receiver, "set.receiver")?;
@@ -3758,7 +3774,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, vector)?;
             }
         }
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
     }
 
     /// Callback status precedes every read of the presence or value outputs.
@@ -4105,7 +4121,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_load(self.ctx.i8_type(), read_at, "bytes.index.load")
             .llvm_ctx("load indexed byte")?;
         self.store(result, indexed)?;
-        self.emit_edge(normal)
+        self.emit_result_edge(Some(result), normal)
     }
 
     fn runtime_call_value(

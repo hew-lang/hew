@@ -618,5 +618,24 @@ fn ordinary_fork_and_await_expressions_lower_through_checked_hir() {
     ",
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    assert!(hew_hir::verify::verify_hir(&output.module).is_empty());
+    let diagnostics = hew_hir::verify::verify_hir(&output.module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn ordinary_fork_batches_keep_checked_aggregate_result_shapes() {
+    let output = lower(
+        r#"
+        fn number() -> i64 { 42 }
+        fn text() -> string { "hello" }
+        fn main() {
+            let numbers = await fork [number(), number()];
+            let mixed = await fork (text(), number());
+            let _ = (numbers, mixed);
+        }
+    "#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let diagnostics = hew_hir::verify::verify_hir(&output.module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }

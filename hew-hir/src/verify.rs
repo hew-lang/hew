@@ -533,6 +533,39 @@ impl Verifier {
                     self.expr(arg);
                 }
             }
+            HirExprKind::ForkBatch { children, task_ty } => {
+                let matches_result = match task_ty {
+                    ResolvedTy::Task(output) => match output.as_ref() {
+                        ResolvedTy::Tuple(fields) => fields.len() == children.len()
+                            && fields.iter().zip(children).all(|(field, child)| {
+                                matches!(&child.ty, ResolvedTy::Task(result) if result.as_ref() == field)
+                            }),
+                        ResolvedTy::Named { builtin: Some(BuiltinType::Vec), args, .. }
+                            if args.len() == 1 => children.iter().all(|child| {
+                                matches!(&child.ty, ResolvedTy::Task(result) if result.as_ref() == &args[0])
+                            }),
+                        ResolvedTy::Unit => children.is_empty(),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if task_ty != &expr.ty || !matches_result {
+                    self.diagnostics.push(
+                        self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "fork batch".to_string(),
+                                reason: "child result types do not match the aggregate task type"
+                                    .to_string(),
+                            },
+                            expr.span.clone(),
+                            "fork batch must preserve each checked child result in input order",
+                        ),
+                    );
+                }
+                for child in children {
+                    self.expr(child);
+                }
+            }
             HirExprKind::SpawnedCall { callee, args, .. } => {
                 self.expr(callee);
                 for arg in args {

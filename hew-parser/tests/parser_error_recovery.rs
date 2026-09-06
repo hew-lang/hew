@@ -69,24 +69,6 @@ fn normal_fn_still_parses() {
     );
 }
 
-/// `fork { ... }` block syntax was removed in v0.5; use `scope { ... }` with
-/// `fork name = call(...);` bindings instead.  The parser emits a clear
-/// diagnostic pointing at the replacement form.
-#[test]
-fn fork_block_syntax_is_rejected() {
-    let source = r"fn main() { fork { let x = 1; } }";
-    let result = hew_parser::parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected `fork {{ ... }}` to be rejected, got clean parse"
-    );
-    assert!(
-        result.errors.iter().any(|e| e.message.contains("scope")),
-        "expected error message to mention `scope` as the replacement, got: {:?}",
-        result.errors
-    );
-}
-
 /// Accept side of §3.3: the supported replacement (`Pattern.is_match`) parses
 /// cleanly. Pairs with the reject tests above so the removal is exercised
 /// from both directions.

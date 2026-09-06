@@ -4987,7 +4987,7 @@ fn main() {
     fn fork_child_forms_roundtrip() {
         let src = "\
 fn main() {
-    fork child = run();
+    let child = fork run();
     fork run_other();
 }
 ";
@@ -4999,7 +4999,7 @@ fn main() {
         let src = "\
 fn main() {
     scope {
-        fork worker = run();
+        let worker = fork run();
         fork audit();
         worker
     };

@@ -15,7 +15,7 @@ struct SupervisorInput {
 impl SupervisorInput {
     fn to_source(&self) -> String {
         let fork = if self.bind_child {
-            "        fork child_task = background_task();"
+            "        let child_task = fork background_task();"
         } else {
             "        fork background_task();"
         };

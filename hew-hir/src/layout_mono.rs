@@ -645,7 +645,10 @@ fn walk_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements }
+        | HirExprKind::ForkBatch {
+            children: elements, ..
+        } => {
             for elem in elements {
                 walk_expr(elem, subst, residual_domain, disc);
             }

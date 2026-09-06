@@ -275,7 +275,35 @@ impl Checker {
                     self.errors.push(error);
                 }
             }
-            CallableCallMode::Once => self.mark_expr_moved(&callee.0, &callee.1),
+            CallableCallMode::Once => {
+                if let Some((root, path)) = &place {
+                    // An approved closure environment capture is its own owned place.
+                    let captured = self.lambda_capture_depth.is_some_and(|capture_depth| {
+                        self.env
+                            .lookup_ref_with_depth(root)
+                            .is_some_and(|(depth, _)| depth < capture_depth)
+                    });
+                    if !captured {
+                        if self.env.lookup_ref(root).is_some_and(|binding| {
+                            binding.is_param()
+                                && binding.parameter_ownership
+                                    == crate::env::ParameterOwnership::Borrow
+                        }) {
+                            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &callee.1,
+                                format!("E_OWN_CONSUME_BORROWED: cannot invoke a once callable through borrowed parameter `{root}`"),
+                                vec![format!("declare the parameter `consume {root}: ...` before consuming it")]);
+                            return;
+                        }
+                        if !path.is_empty() {
+                            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &callee.1,
+                                "E_OWN_PARTIAL_CONSUME: cannot consume a callable field of a live local aggregate".to_string(),
+                                vec!["explicitly destructure the aggregate into local bindings, then invoke the callable binding".to_string()]);
+                            return;
+                        }
+                    }
+                }
+                self.mark_expr_moved(&callee.0, &callee.1);
+            }
         }
     }
     pub(super) fn callable_erasure_loses_obligation(&self, expected: &Ty, actual: &Ty) -> bool {

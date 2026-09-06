@@ -1039,6 +1039,8 @@ impl Checker {
                 self.env
                     .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
             }
+            self.env
+                .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
         }
 
         // Use the return type from the already-registered fn signature so that

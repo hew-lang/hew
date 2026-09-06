@@ -98,25 +98,46 @@ fn nested_closure_acquisition_is_a_capture_of_the_enclosing_closure() {
 }
 
 #[test]
-fn call_once_parameter_is_consumed_and_field_consumption_is_independent() {
-    let output = check_source("fn use_once(f: fn[once]() -> i64) { f(); f(); }");
-    assert!(
-        output
+fn once_invocation_requires_an_owned_parameter() {
+    for qualifier in ["once", "once, clone"] {
+        let output = check_source(&format!(
+            "fn invoke(f: fn[{qualifier}]() -> i64) {{ f(); }}"
+        ));
+        let error = output
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
-        "{:?}",
-        output.errors
-    );
-    let output = check_source("type Callbacks { first: fn[once]() -> i64, second: fn[once]() -> i64 } fn invoke(pair: Callbacks) { (pair.first)(); (pair.second)(); (pair.first)(); }");
-    assert!(
-        output.errors.iter().any(|error| matches!(
-            error.kind,
-            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
-        )),
-        "{:?}",
-        output.errors
-    );
+            .find(|error| error.message.contains("E_OWN_CONSUME_BORROWED"))
+            .expect("borrowed once diagnostic");
+        assert!(error
+            .suggestions
+            .iter()
+            .any(|text| text.contains("consume f:")));
+        let output = check_source(&format!(
+            "fn invoke(consume f: fn[{qualifier}]() -> i64) {{ f(); }}"
+        ));
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let output = check_source(&format!(
+            "fn invoke(consume f: fn[{qualifier}]() -> i64) {{ f(); f(); }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn ordinary_callable_arguments_remain_borrowed_without_clone() {
+    for ty in ["fn() -> i64", "fn[once]() -> i64", "fn[clone]() -> i64"] {
+        let output = check_source(&format!(
+            "fn inspect(f: {ty}) {{}} fn forward(f: {ty}) {{ inspect(f); inspect(f); }}"
+        ));
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+    }
 }
 
 #[test]
@@ -285,10 +306,10 @@ fn callable_qualifiers_survive_aggregate_erasure() {
         "fn main() { let pair: (fn[once]() -> i64, i64) = (|| 1, 0); (pair.0)(); (pair.0)(); }",
     );
     assert!(
-        output.errors.iter().any(|error| matches!(
-            error.kind,
-            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
-        )),
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("E_OWN_PARTIAL_CONSUME")),
         "{:?}",
         output.errors
     );
@@ -319,23 +340,26 @@ fn callable_qualifiers_survive_aggregate_erasure() {
 }
 
 #[test]
-fn method_style_callable_field_invocation_checks_the_selected_place() {
-    let declarations = "type Callbacks { first: fn[once]() -> i64, second: fn[once]() -> i64 }";
-    let output = check_source(&format!(
-        "{declarations} fn invoke(pair: Callbacks) {{ pair.first(); pair.second(); }}"
-    ));
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output = check_source(&format!(
-        "{declarations} fn invoke(pair: Callbacks) {{ pair.first(); pair.first(); }}"
-    ));
-    assert!(
-        output.errors.iter().any(|error| matches!(
-            error.kind,
-            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
-        )),
-        "{:?}",
-        output.errors
-    );
+fn once_callable_fields_require_explicit_destructuring() {
+    for qualifier in ["once", "once, clone"] {
+        let declarations = format!("type Callbacks {{ first: fn[{qualifier}]() -> i64, second: fn[{qualifier}]() -> i64 }}");
+        for invocation in ["pair.first()", "(pair.first)()"] {
+            let output = check_source(&format!(
+                "{declarations} fn invoke(consume pair: Callbacks) {{ {invocation}; }}"
+            ));
+            let error = output
+                .errors
+                .iter()
+                .find(|error| error.message.contains("E_OWN_PARTIAL_CONSUME"))
+                .expect("partial consume diagnostic");
+            assert!(error
+                .suggestions
+                .iter()
+                .any(|text| text.contains("destructure")));
+        }
+        let output = check_source(&format!("{declarations} fn invoke(consume pair: Callbacks) {{ let Callbacks {{ first, second }} = pair; first(); second(); }}"));
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+    }
     let output = check_source(
         "type Counter { next: fn[var]() -> i64 } fn invoke(counter: Counter) { counter.next(); }",
     );

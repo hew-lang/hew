@@ -1906,3 +1906,7 @@ new downstream commit is available to the integration publisher.
 ### Concrete identity for empty closure environments
 
 Preserve `Ty::Closure` for every literal even when lexical shadowing removes all captures. HIR now receives the concrete environment type directly from the checker. Added source-to-HIR controls for plain, annotated and shadow-filtered literals, and updated the contextual-lambda assertion to the concrete representation. Make component tests initially exposed only that obsolete assertion; native integration remains the coordinating lane's validation.
+
+### Diagnose forbidden once-callable consumption at the source boundary
+
+Preserve explicit parameter consume declarations independently of local mutability. Once invocation through a borrowed parameter now reports `E_OWN_CONSUME_BORROWED` with a declaration fix; direct consumption of a callable field in a live local aggregate reports `E_OWN_PARTIAL_CONSUME` with an explicit-destructuring fix. Clone capability does not authorize implicit cloning for invocation. Approved closure environment captures retain their existing place contract. Focused Make callable tests cover borrowed and consumed parameters, reuse, ordinary non-Clone argument borrowing, both field-call spellings and destructuring. No ordinary-call transfer path was removed: the current shared argument checker already borrows.

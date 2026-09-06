@@ -62,6 +62,8 @@ pub struct Binding {
     pub ty: Ty,
     /// Whether the binding is mutable (var vs let)
     pub is_mutable: bool,
+    /// Whether this parameter declaration transfers ownership to the callee.
+    pub parameter_ownership: ParameterOwnership,
     /// Whether the value has been moved (e.g., sent to an actor)
     pub is_moved: bool,
     /// Where the move happened, for error reporting
@@ -107,6 +109,13 @@ pub struct Binding {
     /// `reject_ineffective_mutable_value_param`), so suggesting it there
     /// routes the user into a construct the compiler refuses.
     pub origin: BindingOrigin,
+}
+
+/// Ownership explicitly declared at a source parameter boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterOwnership {
+    Borrow,
+    Consume,
 }
 
 /// What produced a [`Binding`].
@@ -351,6 +360,7 @@ impl TypeEnv {
                     id,
                     ty,
                     is_mutable,
+                    parameter_ownership: ParameterOwnership::Borrow,
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -376,6 +386,7 @@ impl TypeEnv {
                     id,
                     ty,
                     is_mutable,
+                    parameter_ownership: ParameterOwnership::Borrow,
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -409,6 +420,18 @@ impl TypeEnv {
             span,
             BindingOrigin::Parameter,
         );
+    }
+
+    /// Preserve declared parameter ownership independently of local mutability.
+    pub fn set_parameter_consume(&mut self, name: &str, is_consume: bool) {
+        if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+            debug_assert!(binding.is_param());
+            binding.parameter_ownership = if is_consume {
+                ParameterOwnership::Consume
+            } else {
+                ParameterOwnership::Borrow
+            };
+        }
     }
 
     /// Define a method receiver parameter, preserving its caller-visible
@@ -445,6 +468,7 @@ impl TypeEnv {
                     id,
                     ty,
                     is_mutable,
+                    parameter_ownership: ParameterOwnership::Borrow,
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),

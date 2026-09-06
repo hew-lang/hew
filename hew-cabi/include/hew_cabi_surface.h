@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1507u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1511u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1507] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1511] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -2754,6 +2754,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1507] = {
      "HewString) -> *mut HewJsonValue\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_from_u64",
+     "{\"native\": \"fn hew_json_from_u64( u64) -> *mut HewJsonValue\", "
+     "\"wasm32-wasip1\": \"fn hew_json_from_u64( u64) -> *mut HewJsonValue\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_get_bool",
      "{\"native\": \"fn hew_json_get_bool( *const HewJsonValue) -> i32\", "
      "\"wasm32-wasip1\": \"fn hew_json_get_bool( *const HewJsonValue) -> "
@@ -2800,6 +2805,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1507] = {
      "{\"native\": \"fn hew_json_get_string( *const HewJsonValue) -> *mut "
      "HewString\", \"wasm32-wasip1\": \"fn hew_json_get_string( *const "
      "HewJsonValue) -> *mut HewString\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_get_u64",
+     "{\"native\": \"fn hew_json_get_u64( *const HewJsonValue) -> u64\", "
+     "\"wasm32-wasip1\": \"fn hew_json_get_u64( *const HewJsonValue) -> u64\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_int_status",
@@ -7293,6 +7303,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1507] = {
      "HewString) -> *mut HewYamlValue\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_yaml_from_u64",
+     "{\"native\": \"fn hew_yaml_from_u64( u64) -> *mut HewYamlValue\", "
+     "\"wasm32-wasip1\": \"fn hew_yaml_from_u64( u64) -> *mut HewYamlValue\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_get_bool",
      "{\"native\": \"fn hew_yaml_get_bool( *const HewYamlValue) -> i32\", "
      "\"wasm32-wasip1\": \"fn hew_yaml_get_bool( *const HewYamlValue) -> "
@@ -7339,6 +7354,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1507] = {
      "{\"native\": \"fn hew_yaml_get_string( *const HewYamlValue) -> *mut "
      "HewString\", \"wasm32-wasip1\": \"fn hew_yaml_get_string( *const "
      "HewYamlValue) -> *mut HewString\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_yaml_get_u64",
+     "{\"native\": \"fn hew_yaml_get_u64( *const HewYamlValue) -> u64\", "
+     "\"wasm32-wasip1\": \"fn hew_yaml_get_u64( *const HewYamlValue) -> u64\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_int_status",

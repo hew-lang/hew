@@ -7717,6 +7717,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_json_from_u64( u64) -> *mut HewJsonValue",
+        "wasm32-wasip1": "fn hew_json_from_u64( u64) -> *mut HewJsonValue"
+      },
+      "symbol": "hew_json_from_u64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_json_get_bool( *const HewJsonValue) -> i32",
         "wasm32-wasip1": "fn hew_json_get_bool( *const HewJsonValue) -> i32"
       },
@@ -7826,6 +7841,21 @@
         "wasm32-wasip1": "fn hew_json_get_string( *const HewJsonValue) -> *mut HewString"
       },
       "symbol": "hew_json_get_string"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_get_u64( *const HewJsonValue) -> u64",
+        "wasm32-wasip1": "fn hew_json_get_u64( *const HewJsonValue) -> u64"
+      },
+      "symbol": "hew_json_get_u64"
     },
     {
       "availability": [
@@ -20641,6 +20671,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_yaml_from_u64( u64) -> *mut HewYamlValue",
+        "wasm32-wasip1": "fn hew_yaml_from_u64( u64) -> *mut HewYamlValue"
+      },
+      "symbol": "hew_yaml_from_u64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_yaml_get_bool( *const HewYamlValue) -> i32",
         "wasm32-wasip1": "fn hew_yaml_get_bool( *const HewYamlValue) -> i32"
       },
@@ -20750,6 +20795,21 @@
         "wasm32-wasip1": "fn hew_yaml_get_string( *const HewYamlValue) -> *mut HewString"
       },
       "symbol": "hew_yaml_get_string"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_yaml_get_u64( *const HewYamlValue) -> u64",
+        "wasm32-wasip1": "fn hew_yaml_get_u64( *const HewYamlValue) -> u64"
+      },
+      "symbol": "hew_yaml_get_u64"
     },
     {
       "availability": [

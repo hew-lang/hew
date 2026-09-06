@@ -1056,6 +1056,7 @@ stable-stdlib = [
   "hew_json_from_int",
   "hew_json_from_null",
   "hew_json_from_string",
+  "hew_json_from_u64",
   "hew_json_get_bool",
   "hew_json_get_field",
   "hew_json_get_float",
@@ -1063,6 +1064,7 @@ stable-stdlib = [
   "hew_json_int_status",
   "hew_json_unrepresentable_int_count",
   "hew_json_get_string",
+  "hew_json_get_u64",
   "hew_json_last_error",
   "hew_json_object_keys",
   "hew_json_object_new",
@@ -1261,6 +1263,7 @@ stable-stdlib = [
   "hew_yaml_from_int",
   "hew_yaml_from_null",
   "hew_yaml_from_string",
+  "hew_yaml_from_u64",
   "hew_yaml_get_bool",
   "hew_yaml_get_field",
   "hew_yaml_get_float",
@@ -1268,6 +1271,7 @@ stable-stdlib = [
   "hew_yaml_int_status",
   "hew_yaml_unrepresentable_int_count",
   "hew_yaml_get_string",
+  "hew_yaml_get_u64",
   "hew_yaml_last_error",
   "hew_yaml_object_new",
   "hew_yaml_object_set",
@@ -5571,6 +5575,14 @@ result-retention = "resource-transfer"
 result-retention-basis = "copies the C string into a new serde_json string and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
+symbol = "hew_json_from_u64"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_json_get_bool"
 result = "none"
 params = ["borrow"]
@@ -5629,6 +5641,13 @@ resource-param-types = ["std.encoding.json.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_json_get_u64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_json_last_error"
@@ -6156,6 +6175,14 @@ result-retention = "resource-transfer"
 result-retention-basis = "copies the C string into a new serde_yaml string and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
+symbol = "hew_yaml_from_u64"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_yaml_get_bool"
 result = "none"
 params = ["borrow"]
@@ -6214,6 +6241,13 @@ resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_get_u64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_last_error"

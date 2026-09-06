@@ -393,8 +393,60 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
     }
 }
 
+/// Per-function place analysis retained by successful semantic verification.
+/// Its plan and cleanup dispositions come from the same checked body.
+#[derive(Debug)]
+pub struct CheckedFunction {
+    places: crate::PlacePlan,
+    lifetimes: crate::PlaceLifetimes,
+}
+
+impl CheckedFunction {
+    #[must_use]
+    pub fn place_plan(&self) -> &crate::PlacePlan {
+        &self.places
+    }
+
+    #[must_use]
+    pub fn place_lifetimes(&self) -> &crate::PlaceLifetimes {
+        &self.lifetimes
+    }
+}
+
+/// A module accepted by every semantic context and function check.
+/// The immutable input borrow keeps its analyses tied to the checked revision.
+#[derive(Debug)]
+pub struct CheckedModule<'a> {
+    module: &'a SemModule,
+    functions: BTreeMap<CallableId, CheckedFunction>,
+}
+
+impl<'a> CheckedModule<'a> {
+    #[must_use]
+    pub fn module(&self) -> &'a SemModule {
+        self.module
+    }
+
+    /// Analysis for a concrete body, identified by its semantic callable.
+    #[must_use]
+    pub fn function(&self, callable: CallableId) -> Option<&CheckedFunction> {
+        self.functions.get(&callable)
+    }
+}
+
 #[must_use]
 pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
+    check_module(module).err().unwrap_or_default()
+}
+
+/// Verify all module contracts and every body, retaining their checked places
+/// and lifetime dispositions for the next compiler stage. Module context is
+/// checked once; each body's place plan and lifetime flow are computed once.
+///
+/// # Errors
+/// Returns all diagnostics from the same checks used by [`verify_module`].
+pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiagnostic>> {
+    let mut functions = BTreeMap::new();
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
@@ -464,15 +516,23 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                 ));
             }
         }
-        diagnostics.extend(verify_function_with_context(
+        let (function_diagnostics, analysis) = check_function_with_context(
             function,
             Some(&callables),
             &module.type_facts,
             &module.aggregate_shapes,
             &module.variant_shapes,
-        ));
+        );
+        diagnostics.extend(function_diagnostics);
+        if let Some(analysis) = analysis {
+            functions.insert(function.callable, analysis);
+        }
     }
-    diagnostics
+    if diagnostics.is_empty() {
+        Ok(CheckedModule { module, functions })
+    } else {
+        Err(diagnostics)
+    }
 }
 
 fn verify_required_value_capabilities(
@@ -559,6 +619,9 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
 
 /// Check one function and return cleanup dispositions from its lifetime flow.
 /// No producer flag or physical fault-carrier inference may replace this query.
+/// This focused query does not validate the entire module context. Compiler
+/// stage boundaries should use [`check_module`] to retain both the checked
+/// place plan and lifetime result after all module-level checks.
 ///
 /// # Errors
 /// Returns the same semantic diagnostics as function verification, including
@@ -583,7 +646,9 @@ pub fn place_lifetimes(
     );
     diagnostics.extend(function_diagnostics);
     if diagnostics.is_empty() {
-        Ok(lifetimes.expect("valid function has checked place lifetimes"))
+        Ok(lifetimes
+            .expect("valid function has checked place lifetimes")
+            .lifetimes)
     } else {
         Err(diagnostics)
     }
@@ -750,7 +815,7 @@ fn check_function_with_context(
     facts: &TypeFactTable,
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
-) -> (Vec<SirDiagnostic>, Option<crate::PlaceLifetimes>) {
+) -> (Vec<SirDiagnostic>, Option<CheckedFunction>) {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
     if let Err(reason) = verify_capture_places(function, callable_context) {
@@ -1047,7 +1112,10 @@ fn check_function_with_context(
                 },
             )
         }));
-        lifetimes = Some(analysis.lifetimes);
+        lifetimes = Some(CheckedFunction {
+            places: projections,
+            lifetimes: analysis.lifetimes,
+        });
     }
     (diagnostics, lifetimes)
 }

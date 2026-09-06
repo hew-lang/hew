@@ -56,6 +56,6 @@ pub use ownership::{
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use verify::{
-    place_lifetimes, verify_function, verify_function_in_module, verify_module,
-    CfgDiscardSafetyReason, SirDiagnostic, SirDiagnosticKind,
+    check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,
+    CfgDiscardSafetyReason, CheckedFunction, CheckedModule, SirDiagnostic, SirDiagnosticKind,
 };

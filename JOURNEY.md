@@ -2208,3 +2208,16 @@ preserve their distinct runtime result ABIs while sharing the boolean
 normalization path. The full lint run has clean Rust diagnostics; its benchmark
 now reaches the next unsupported string operation, `trim`. Machine lowering
 and the pinned grammar remain separate unfinished capabilities.
+
+## Retain complete module verification at the physical boundary
+
+The checked module query now returns each body's verified place plan and
+cleanup dispositions together. It retains the same plan used by the lifetime
+flow, so physical lowering can consume the result without rebuilding plans or
+verifying each function again. The result borrows its source module immutably.
+
+The query preserves the full module boundary: aggregate and variant tables,
+capability and collection rows, function identities and literal pools. The
+existing diagnostics-only verifier uses this same path. Regression controls
+reject malformed module contexts and missing local cleanup while successful
+checks retain the exact local partition and cleanup disposition for each body.

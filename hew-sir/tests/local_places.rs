@@ -540,3 +540,151 @@ fn taking_a_zero_sized_field_still_empties_its_content_cell() {
         .insert(3, take(2, 3, empty, OwnKind::None));
     refuses(&mut module, "not initialized on every incoming path");
 }
+
+#[test]
+fn checked_module_retains_the_local_plan_and_cleanup_for_each_body() {
+    let mut module = strings();
+    normalize(&mut module);
+    let checked = hew_sir::check_module(&module).unwrap();
+    for function in &checked.module().functions {
+        let analysis = checked.function(function.callable).unwrap();
+        if function.name == "probe" {
+            assert_eq!(
+                analysis
+                    .place_plan()
+                    .leaves(OwnerRoot::Local(PlaceId(0)))
+                    .unwrap(),
+                [PlaceId(0)]
+            );
+            let end = function.blocks[0].ops.last().unwrap();
+            assert_eq!(
+                analysis.place_lifetimes().cleanup(end.id),
+                Some(CleanupMode::Ordinary)
+            );
+        } else {
+            assert!(analysis.place_plan().roots().next().is_none());
+        }
+    }
+    probe(&mut module).blocks[0].ops.pop();
+    assert!(hew_sir::check_module(&module)
+        .unwrap_err()
+        .iter()
+        .any(|error| matches!(
+            error.kind,
+            SirDiagnosticKind::PlaceLifetime {
+                reason: "local storage remains active at exit",
+                ..
+            }
+        )));
+}
+
+fn module_context_fixture() -> SemModule {
+    let mut module = fixture(
+        r#"
+        type Row { text: string }
+        enum Choice { First(string), Second }
+        fn probe(consume owner: string, flag: bool) {}
+        fn main() {
+            let rows = [Row { text: "row" }];
+            let choice = Choice.First("choice");
+            let raw = b"raw";
+            println(rows == rows);
+        }
+    "#,
+    );
+    normalize(&mut module);
+    assert!(hew_sir::check_module(&module).is_ok());
+    module
+}
+
+fn rejects_module_context(module: &SemModule, expected: impl Fn(&SirDiagnosticKind) -> bool) {
+    for diagnostics in [
+        hew_sir::check_module(module).unwrap_err(),
+        verify_module(module),
+    ] {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| expected(&diagnostic.kind)),
+            "{diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn checked_module_rejects_invalid_aggregate_and_variant_tables() {
+    let module = module_context_fixture();
+    let mut aggregate = module.clone();
+    aggregate.aggregate_shapes[0].id = hew_sir::AggregateShapeId(u32::MAX);
+    rejects_module_context(&aggregate, |kind| {
+        matches!(kind, SirDiagnosticKind::InvalidAggregateShape { .. })
+    });
+    let mut variant = module;
+    variant.variant_shapes[0].id = hew_sir::VariantShapeId(u32::MAX);
+    rejects_module_context(&variant, |kind| {
+        matches!(kind, SirDiagnosticKind::InvalidVariantShape { .. })
+    });
+}
+
+#[test]
+fn checked_module_rejects_invalid_capability_and_collection_rows() {
+    let module = module_context_fixture();
+    let mut capability = module.clone();
+    capability
+        .value_capabilities
+        .values_mut()
+        .next()
+        .unwrap()
+        .callable = Some(hew_sir::CallableId(u32::MAX));
+    rejects_module_context(&capability, |kind| {
+        matches!(kind, SirDiagnosticKind::InvalidValueCapability { .. })
+    });
+    let mut collection = module;
+    let element = collection
+        .type_facts
+        .keys()
+        .find_map(|key| {
+            hew_types::runtime_call::collection_type_arguments(&key.0)
+                .map(|(_, arguments)| arguments[0].clone())
+        })
+        .unwrap();
+    collection
+        .type_facts
+        .remove(&hew_types::TypeInstanceKey(element));
+    rejects_module_context(&collection, |kind| {
+        matches!(kind, SirDiagnosticKind::InvalidCollectionType { .. })
+    });
+}
+
+#[test]
+fn checked_module_rejects_duplicate_identities_and_missing_literal_pool_entries() {
+    let module = module_context_fixture();
+    let mut duplicate = module.clone();
+    duplicate.functions.push(duplicate.functions[0].clone());
+    rejects_module_context(&duplicate, |kind| {
+        matches!(kind, SirDiagnosticKind::DuplicateFunctionName(_))
+    });
+    rejects_module_context(&duplicate, |kind| {
+        matches!(kind, SirDiagnosticKind::DuplicateFunctionDeclaration(_))
+    });
+    for bytes in [false, true] {
+        let mut missing = module.clone();
+        if bytes {
+            missing.bytes_literals.clear();
+        } else {
+            missing.string_literals.clear();
+        }
+        // The isolated probe contains no literals: accepting it cannot certify
+        // the pool entries referenced by a different body in this module.
+        let probe = missing
+            .functions
+            .iter()
+            .find(|function| function.name == "probe")
+            .unwrap();
+        assert!(place_lifetimes(&missing, probe).is_ok());
+        rejects_module_context(&missing, |kind| {
+            matches!(kind, SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason == "literal operation references a missing module pool entry")
+        });
+    }
+}

@@ -924,3 +924,37 @@ timeout_seconds = 15
 [case.expected]
 stdout = "3072\n"
 exit = 0
+
+[[case]]
+id = "callable-record-private-counter"
+intent = "Direct calls through a stored callable mutate the same record environment; copying the record and explicitly cloning its callable field create independent counters."
+source = "cases/callable-record-private-counter.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\n2\n3\n2\n2\n3\n4\n3\n0\n"
+exit = 0
+
+[[case]]
+id = "callable-conditional-result-option"
+intent = "If expressions and guarded boolean matches construct nested Result/Option callable payloads; extracted private counters retain state across repeated invocation and empty/error alternatives remain distinct."
+source = "cases/callable-conditional-result-option.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "11\n12\nnone\n12\n14\n13\n16\nUNAVAILABLE\nnone\n"
+exit = 0
+
+[[case]]
+id = "callable-callee-loan-argument-fault"
+intent = "A fault during argument evaluation ends the captured callee loan without invoking it, then releases both closure environments and live argument/caller owners."
+source = "cases/callable-callee-loan-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

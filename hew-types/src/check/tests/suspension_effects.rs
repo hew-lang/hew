@@ -121,6 +121,38 @@ fn fork_cannot_promote_an_affine_borrow() {
 }
 
 #[test]
+fn ordinary_fork_operands_snapshot_owned_values_and_reusable_closures() {
+    let source = "fn echo(value: string) -> string { value } fn main() { let text = \"hello\"; let length = fork text.len(); println(await length); println(text); let prefix = \"prefix\"; let callback = || prefix; let child = fork callback(); let again = callback(); let batch = fork (echo(text), echo(text)); let body = fork { println(text); }; println(text); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for (key, fact) in &output.suspension_effects.fork_transfers {
+        if matches!(source[key.start..key.end].trim(), "text" | "callback") {
+            assert_eq!(fact.acquisition, crate::ClosureCaptureAcquisition::Snapshot);
+        }
+    }
+}
+
+#[test]
+fn consuming_fork_arguments_still_transfer_the_original_owner() {
+    let source = "fn take(consume value: string) -> string { value } fn main() { let text = \"hello\"; let child = fork take(text); println(text); }";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, crate::error::TypeErrorKind::UseAfterMove)),
+        "{:?}",
+        output.errors
+    );
+    assert!(output
+        .suspension_effects
+        .fork_transfers
+        .iter()
+        .any(|(key, fact)| source[key.start..key.end].trim() == "text"
+            && fact.acquisition == crate::ClosureCaptureAcquisition::Move));
+}
+
+#[test]
 fn fork_accepts_owning_arguments_and_send_callable_values() {
     for source in [
         "fn echo(value: string) -> string { value } fn main() { let task = fork echo(\"hello\"); let result = await task; }",

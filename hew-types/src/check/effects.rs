@@ -181,9 +181,17 @@ impl Checker {
         let ty = self.subst.resolve(ty);
         let origin = self.infer_expression_callable_origin(expr, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
-        let promote_borrow = self
-            .expr_place(expr)
-            .is_some_and(|(root, path)| self.env.place_borrows_parameter(&root, &path))
+        // Invocation checking has already recorded explicit consuming
+        // parameters/receivers. Ordinary value operands acquire snapshots.
+        let place = self.expr_place(expr);
+        let consumed = place.as_ref().is_some_and(|(root, path)| {
+            self.env
+                .lookup_ref(root)
+                .is_some_and(|binding| binding.is_moved)
+                || self.env.place_move_conflict(root, path).is_some()
+        });
+        let snapshot = place.is_some()
+            && !consumed
             && !matches!(ty, crate::Ty::Borrow { .. })
             && self.parameter_has_independent_clone(&ty);
         self.effect_graph.fork_transfers.push(PendingForkTransfer {
@@ -191,7 +199,7 @@ impl Checker {
             ty: ty.clone(),
             origin,
             source_module: self.current_module.clone(),
-            acquisition: if promote_borrow {
+            acquisition: if snapshot {
                 crate::ClosureCaptureAcquisition::Snapshot
             } else {
                 crate::ClosureCaptureAcquisition::Move
@@ -203,7 +211,7 @@ impl Checker {
                 span,
                 "fork cannot retain a borrowed view in its owning task environment".to_string(),
             );
-        } else if !promote_borrow
+        } else if !snapshot
             && !self
                 .registry
                 .implements_marker(&ty, crate::traits::MarkerTrait::Copy)

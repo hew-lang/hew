@@ -1,0 +1,6 @@
+fn divide(value: i64) -> i64 { 7 / value }
+
+fn main() {
+    defer { panic("cleanup"); }
+    println(divide(0));
+}

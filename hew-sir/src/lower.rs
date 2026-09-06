@@ -8,6 +8,9 @@ mod projection;
 #[path = "lower_binding.rs"]
 mod binding;
 
+#[path = "lower_defer.rs"]
+mod deferred;
+
 #[path = "lower_var_self.rs"]
 mod var_self;
 
@@ -2127,6 +2130,8 @@ fn lower_initial_value_transfer(
 enum OwnedBindingUse {
     Copy,
     Move,
+    /// A final value may move only when cleanup does not still need its binding.
+    Return,
 }
 
 /// The evaluated receiver is retained separately from the ordinary arguments.
@@ -2174,6 +2179,7 @@ struct ControlState {
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
     scopes: Vec<Vec<BindingId>>,
+    defers: Vec<deferred::PendingDefer>,
 }
 
 struct MatchExit {
@@ -2322,6 +2328,8 @@ struct Builder<'hir, 'service> {
     /// Receivers already evaluated while their arguments are being lowered.
     /// A terminating argument path must end these loans before owner cleanup.
     argument_receiver_loans: Vec<ValueId>,
+    defers: Vec<deferred::PendingDefer>,
+    defer_bodies: Vec<deferred::BodyBoundary>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2410,13 +2418,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             places: Vec::new(),
             capture_places: HashMap::new(),
             argument_receiver_loans: Vec::new(),
+            defers: Vec::new(),
+            defer_bodies: Vec::new(),
         };
         builder.bind_captures(source)?;
         builder.bind_private_value_parameters(source_params)?;
         for parameter in source_params {
             if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
-                if builder.value_own_kind(value) == Some(OwnKind::Owned) {
-                    let target = builder.acquire_binding_target(value)?;
+                if (parameter.mutable && builder.value_own_kind(value) == Some(OwnKind::None))
+                    || builder.value_own_kind(value) == Some(OwnKind::Owned)
+                {
+                    let target = if parameter.mutable {
+                        builder.acquire_local_target(value)?
+                    } else {
+                        builder.acquire_binding_target(value)?
+                    };
                     builder.bindings.insert(parameter.id, target);
                     let declaration = builder.binding_declarations[&parameter.id];
                     builder.source_bindings[declaration].target = target;
@@ -2582,16 +2598,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .transpose()?;
         if self.is_open() {
-            if let Some(result) = &result {
-                self.owned_live.remove(&result.value);
-            }
-            self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::Return {
-                value: result.map(|operand| crate::BoundaryOperand {
-                    operand,
-                    decision: crate::BoundaryDecision::Move,
-                }),
-            })?;
+            self.finish_return_value(result.map(|operand| crate::BoundaryOperand {
+                operand,
+                decision: crate::BoundaryDecision::Move,
+            }))?;
         }
         let blocks = std::mem::take(&mut self.blocks)
             .into_iter()
@@ -2621,7 +2631,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn lower_source_body(&mut self, source: BodySource) -> Result<Option<Operand>, String> {
         match source {
-            BodySource::Function => self.lower_block(&self.function.body, OwnedBindingUse::Move),
+            BodySource::Function => self.lower_block(&self.function.body, OwnedBindingUse::Return),
             BodySource::Closure(expression) => {
                 let HirExprKind::Closure { body, ret_ty, .. } = &expression.kind else {
                     unreachable!()
@@ -2638,7 +2648,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             self,
                             body,
                             "closure body result",
-                            OwnedBindingUse::Move,
+                            OwnedBindingUse::Return,
                         )?,
                     }))
                 }
@@ -2693,7 +2703,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             {
                 match self.binding_target(*binding)? {
                     BindingTarget::Place(place) => {
-                        let mut take = movable || binding_use == OwnedBindingUse::Move;
+                        let mut take = movable
+                            || binding_use == OwnedBindingUse::Move
+                            || (binding_use == OwnedBindingUse::Return && self.defers.is_empty());
                         if take {
                             if let Some((_, field)) = self.capture_field(*binding) {
                                 if field.consumption
@@ -2938,7 +2950,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn bind_source_value(&mut self, binding: &HirBinding, value: ValueId) -> Result<(), String> {
-        let target = self.acquire_binding_target(value)?;
+        let target = if binding.mutable {
+            self.acquire_local_target(value)?
+        } else {
+            self.acquire_binding_target(value)?
+        };
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
@@ -3002,6 +3018,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             binding_declarations: self.binding_declarations.clone(),
             owned_live: self.owned_live.clone(),
             scopes: self.scopes.clone(),
+            defers: self.defers.clone(),
         }
     }
 
@@ -3012,6 +3029,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .clone_from(&state.binding_declarations);
         self.owned_live = state.owned_live.clone();
         self.scopes.clone_from(&state.scopes);
+        self.defers.clone_from(&state.defers);
     }
 
     fn retain_bindings(
@@ -3229,11 +3247,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         else_body,
                     )?;
                 }
-                HirStmtKind::Defer { .. } => {
-                    return Err(
-                        "control-flow ownership forms are deferred to a later SIR slice"
-                            .to_string(),
-                    );
+                HirStmtKind::Defer { body, scope_id } => {
+                    self.register_defer(body, scope_id.0)?;
                 }
             }
         }
@@ -3607,8 +3622,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
         self.current = cleanup;
         self.end_call_loans(&loans)?;
-        self.destroy_all_live()?;
-        self.set_terminator(SemTerminator::ResumeUnwind)
+        self.finish_fault_exit()
     }
 
     /// Seal the current block with the one function-return cleanup contract.
@@ -3616,6 +3630,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// path, so a divergent expression cannot manufacture a placeholder SSA
     /// value or continue evaluating sibling operands.
     fn lower_function_return(&mut self, value: Option<&HirExpr>) -> Result<(), String> {
+        if self.in_deferred_body() {
+            return Err("return and error propagation cannot escape a deferred body".into());
+        }
         let mut value = match value {
             Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 lower_initial_unit_return(self, expr)?;
@@ -3627,7 +3644,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self,
                         expr,
                         "return value",
-                        OwnedBindingUse::Move,
+                        OwnedBindingUse::Return,
                     )?,
                 },
                 decision: crate::BoundaryDecision::Move,
@@ -3640,10 +3657,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 &self.callable.signature.return_ty.clone(),
                 Provenance::Synthesized,
             )?;
-            self.owned_live.remove(&value.operand.value);
         }
-        self.destroy_all_live()?;
-        self.set_terminator(SemTerminator::Return { value })
+        self.finish_return_value(value)
     }
 
     #[allow(
@@ -4347,6 +4362,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             binding_declarations,
             owned_live,
             scopes: self.scopes.clone(),
+            defers: self.defers.clone(),
         })
     }
 
@@ -5557,8 +5573,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current = unwind;
         self.owned_live = live_at_call.clone();
         self.end_call_loans(&loans)?;
-        self.destroy_all_live()?;
-        self.set_terminator(SemTerminator::ResumeUnwind)?;
+        self.finish_fault_exit()?;
         self.current = normal;
         self.owned_live = live_at_call;
         self.end_call_loans(&loans)?;
@@ -5920,8 +5935,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current = unwind;
         self.owned_live = live_at_call.clone();
         self.end_call_loans(loans)?;
-        self.destroy_all_live()?;
-        self.set_terminator(SemTerminator::ResumeUnwind)?;
+        self.finish_fault_exit()?;
         self.current = normal_block;
         self.owned_live = live_at_call;
         self.end_call_loans(loans)?;
@@ -6279,16 +6293,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.current = block;
             self.owned_live = live_at_call.clone();
             self.end_call_loans(&loans)?;
-            self.destroy_all_live()?;
-            let terminal = if contract.propagates_fault() {
-                SemTerminator::ResumeUnwind
+            if contract.propagates_fault() {
+                self.finish_fault_exit()?;
             } else {
-                SemTerminator::Trap {
-                    kind: crate::runtime_failure_trap_kind(failure)
+                self.finish_checked_fault(
+                    crate::runtime_failure_trap_kind(failure)
                         .ok_or_else(|| "static runtime failure has no trap kind".to_string())?,
-                }
-            };
-            self.set_terminator(terminal)?;
+                )?;
+            }
         }
         self.current = normal_target;
         self.owned_live = live_at_call;
@@ -6411,6 +6423,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn lower_loop_exit(&mut self, continuing: bool) -> Result<(), String> {
+        self.check_deferred_loop_exit()?;
         let scope = self
             .loops
             .last()
@@ -6814,8 +6827,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for (kind, block) in failure_blocks {
             self.current = block;
             self.owned_live = live_at_operation.clone();
-            self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::Trap { kind })?;
+            self.finish_checked_fault(kind)?;
         }
         self.current = normal;
         self.owned_live = live_at_operation;

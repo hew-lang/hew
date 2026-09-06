@@ -68,6 +68,11 @@ impl Builder<'_, '_> {
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
             return Ok(BindingTarget::Value(value));
         }
+        self.acquire_local_target(value)
+    }
+
+    /// Mutable bindings have stable storage across calls, cleanup and suspension.
+    pub(super) fn acquire_local_target(&mut self, value: ValueId) -> Result<BindingTarget, String> {
         let ty = self
             .value_ty(value)
             .ok_or_else(|| "binding initializer has no type".to_string())?;
@@ -106,16 +111,7 @@ impl Builder<'_, '_> {
     /// Emit an exit without changing the declaration context used to generate
     /// another successor. `EndLifetime` itself determines initialized contents.
     pub(super) fn end_scopes(&mut self, floor: usize) -> Result<(), String> {
-        let bindings = self.scopes[floor..]
-            .iter()
-            .rev()
-            .flat_map(|scope| scope.iter().rev())
-            .copied()
-            .collect::<Vec<_>>();
-        for binding in bindings {
-            self.end_binding_scope(binding)?;
-        }
-        Ok(())
+        self.drain_scopes(floor, true)
     }
 
     pub(super) fn leave_scope(&mut self) {

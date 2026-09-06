@@ -1,0 +1,26 @@
+import std.stream;
+
+fn open() -> Stream<string> {
+    match stream.from_file("resource-read.bin") {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+fn take(consume input: Stream<string>, value: i64) {
+    input.close();
+    println(value);
+}
+
+fn fail() -> i64 { panic("argument"); }
+
+fn main() {
+    var value = 4;
+    defer { println(value); panic("older"); }
+    defer {
+        value = 5;
+        let input = open();
+        take(input, fail());
+        value = 100;
+    }
+}

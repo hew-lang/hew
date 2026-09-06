@@ -2983,6 +2983,8 @@ pub struct Checker {
     /// `await` (rejected: requires explicit `await`).
     pub(super) inside_await_expr: bool,
     pub(super) loop_depth: u32,
+    /// Loop and label floors of a currently checked deferred body.
+    pub(super) deferred_body: Option<(u32, usize)>,
     /// Labels of enclosing loops, for validating `break @label` / `continue @label`.
     pub(super) loop_labels: Vec<String>,
     pub(super) modules: HashSet<String>,
@@ -3841,6 +3843,7 @@ impl Checker {
             in_generator: false,
             inside_await_expr: false,
             loop_depth: 0,
+            deferred_body: None,
             loop_labels: Vec::new(),
             modules: HashSet::new(),
             known_types: HashSet::new(),

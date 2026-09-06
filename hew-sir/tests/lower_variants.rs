@@ -495,10 +495,6 @@ fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
             >= 3,
         "two guards and one literal predicate must remain ordered CFG decisions"
     );
-    assert!(
-        classify.blocks.iter().any(|block| block.args.len() >= 2),
-        "the match join must carry both its value and the mutated outer binding"
-    );
 }
 
 #[test]

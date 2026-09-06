@@ -1952,6 +1952,8 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Closure { .. }
         )
         || collection_type_arguments(ty).is_some()
+        || ty.is_builtin(hew_types::BuiltinType::JsonValue)
+        || ty.is_builtin(hew_types::BuiltinType::YamlValue)
 }
 
 fn is_concrete_aggregate_type(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
@@ -2056,14 +2058,7 @@ fn lower_initial_value_transfer(
         ));
     }
     builder.service.require_type_facts(&ty)?;
-    if !matches!(
-        ty,
-        ResolvedTy::String
-            | ResolvedTy::Bytes
-            | ResolvedTy::Function { .. }
-            | ResolvedTy::Closure { .. }
-    ) && collection_type_arguments(&ty).is_none()
-    {
+    if !is_initial_call_value(&ty) {
         if is_concrete_variant_type(builder.service.module, &ty) {
             builder
                 .service
@@ -5978,10 +5973,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self.lower_call_read(arg, &mut loans, stable_tail, read_only && no_owner)?;
                     (operand.value, crate::BoundaryDecision::Copy)
                 }
-                RuntimeArgumentEffect::Move => {
-                    if index != 0 || transformed_place.is_some() {
-                        return Err("runtime transform must move only its receiver".into());
-                    }
+                RuntimeArgumentEffect::Move
+                    if index == 0
+                        && matches!(
+                            contract.result,
+                            RuntimeResultEffect::UpdatedReceiver(_)
+                                | RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                        ) =>
+                {
                     let place = self.resolve_mutable_place(arg)?;
                     if OwnKind::of_ty(&place.leaf_ty, self.service.checked_facts.rows())?
                         != OwnKind::Owned
@@ -5993,6 +5992,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // no operand or snapshot is emitted for it here.
                     continue;
                 }
+                RuntimeArgumentEffect::Move => (
+                    self.lower_consuming_value(arg)?,
+                    crate::BoundaryDecision::Move,
+                ),
             };
             lowered_args.push(crate::BoundaryOperand {
                 operand: Operand { value },
@@ -6035,6 +6038,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .collect::<Result<Vec<_>, _>>()?;
             self.end_call_loans(&related)?;
             loans.retain(|loan| !related.contains(loan));
+        }
+
+        // Consumed arguments stay owned during later argument evaluation so
+        // a fault can clean them. The runtime owns them once the call begins.
+        for argument in &lowered_args {
+            if argument.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&argument.operand.value);
+            }
         }
 
         // Argument temporaries precede the receiver's actual transfer.

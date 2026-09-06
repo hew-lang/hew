@@ -2401,3 +2401,16 @@ existing C ABI still returns void and updates the same pointer. Types tests cove
 these relationships and provenance refusals. Ownership-SIR support and physical
 realization remain separate integration work; runtime-family selection alone
 does not establish native execution.
+
+## Lower consuming encoding runtime operands
+
+Canonical encoding values now use the existing semantic owner transfer path
+without requiring transparent aggregate fields. Runtime mutations retain the
+updated receiver convention while other consuming operands use the ordinary
+call transfer helper. Those owners remain live during later argument evaluation
+and transfer to the runtime only when the call starts.
+
+The focused import regression compiles but still stops before its transfer
+assertions: HIR currently drops the canonical encoding identity, causing a value
+binding to be mistaken for an unsupported aggregate. That separate identity
+repair is required before this source regression can establish acceptance.

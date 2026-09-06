@@ -2047,6 +2047,8 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
+        || ty.is_builtin(hew_types::BuiltinType::JsonValue)
+        || ty.is_builtin(hew_types::BuiltinType::YamlValue)
         || matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
         || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
         || module.aggregate_shape_for_type(ty).is_some()

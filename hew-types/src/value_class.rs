@@ -630,7 +630,7 @@ fn classify(
         | ResolvedTy::Unit
         | ResolvedTy::Never => bits,
         ResolvedTy::String | ResolvedTy::Bytes => cow_retain,
-        ResolvedTy::CancellationToken => affine_none,
+        ResolvedTy::CancellationToken | ResolvedTy::Task(_) => affine_none,
         ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => view,
         ResolvedTy::TraitObject { .. } => share_retain,
         ResolvedTy::Function { capabilities, .. } => {
@@ -674,7 +674,6 @@ fn classify(
         }
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
         ResolvedTy::Array(element, _) => aggregate_facts(&[classify(element, decls, walk)?]),
-        ResolvedTy::Task(_) => linear_none,
         ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
         ResolvedTy::Named {
             name,
@@ -754,8 +753,7 @@ fn classify(
             | BuiltinType::RecvHalf
             | BuiltinType::LambdaActorHandle
             | BuiltinType::MonitorRef
-            | BuiltinType::CancellationToken => affine_none,
-            BuiltinType::Task => linear_none,
+            | BuiltinType::CancellationToken | BuiltinType::Task => affine_none,
             // Never the type of a value: `Iterator` is the std trait name, and
             // `ActorState`/`MachineState` are compiler-internal payload carriers.
             BuiltinType::Iterator | BuiltinType::ActorState | BuiltinType::MachineState => {

@@ -2007,6 +2007,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || matches!(
             ty,
             ResolvedTy::String
+                | ResolvedTy::Task(_)
                 | ResolvedTy::Bytes
                 | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }

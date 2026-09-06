@@ -26,6 +26,8 @@ use crate::util::{CondvarExt, MutexExt};
 #[path = "task_scope_wake.rs"]
 mod wake;
 pub use wake::{hew_cancel_observe, hew_cancel_unobserve, HewCancelObserver};
+#[path = "task_scope_checked.rs"]
+pub mod checked;
 
 /// Return the current context's active task scope (null if none).
 pub(crate) fn current_task_scope() -> *mut HewTaskScope {
@@ -314,6 +316,9 @@ unsafe fn cancel_token_cancel_if_present(token: *mut HewCancellationToken, reaso
 /// Opaque, Box-allocated. Linked into its parent scope's task list via
 /// the `next` pointer. Thread-safe completion notification via `done_signal`.
 pub struct HewTask {
+    /// Scope, source handle and running worker hold independent references.
+    refs: AtomicUsize,
+    checked: Option<Mutex<checked::CheckedTaskState>>,
     /// Current lifecycle state (atomic for cross-thread visibility).
     ///
     /// Worker threads store `Done` with `Release` ordering after writing the
@@ -500,8 +505,9 @@ impl std::fmt::Debug for HewTask {
     }
 }
 
-// SAFETY: Tasks are only accessed from the single actor thread that owns
-// the enclosing task scope. No cross-thread sharing occurs.
+// SAFETY: the scope serializes lifecycle operations; completion publishes
+// worker writes through Release/Acquire state and checked payloads use a mutex.
+// Running checked workers retain a reference independent of the scope.
 unsafe impl Send for HewTask {}
 
 impl HewTask {
@@ -654,6 +660,8 @@ unsafe fn free_scope_tasks(scope: &mut HewTaskScope) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
     let task = Box::new(HewTask {
+        refs: AtomicUsize::new(1),
+        checked: None,
         state: AtomicI32::new(HewTaskState::Ready as i32),
         error: HewTaskError::None,
         result: ptr::null_mut(),
@@ -682,7 +690,11 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
     cabi_guard!(task.is_null());
-    // SAFETY: Caller guarantees `task` was Box-allocated.
+    // SAFETY: caller transfers one live task reference.
+    if unsafe { &*task }.refs.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+    // SAFETY: the last task reference owns the allocation exclusively.
     let t = unsafe { Box::from_raw(task) };
     if !t.result.is_null() {
         if t.result_written && !t.result_consumed {

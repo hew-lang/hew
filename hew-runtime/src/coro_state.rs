@@ -207,6 +207,8 @@ pub unsafe extern "C" fn hew_coro_state_finish(
             state,
             if private_status == 0 {
                 CoroStatus::Complete as i32
+            } else if private_status == crate::fault::HEW_FAULT_CANCELLED {
+                CoroStatus::Cancelled as i32
             } else {
                 CoroStatus::Fault as i32
             },
@@ -227,7 +229,7 @@ pub unsafe extern "C" fn hew_coro_state_private_status(state: *const HewCoroStat
     let state = unsafe { &*state };
     match state.status.load(Ordering::Acquire) {
         status if status == CoroStatus::Complete as i32 => 0,
-        status if status == CoroStatus::Fault as i32 => {
+        status if status == CoroStatus::Fault as i32 || status == CoroStatus::Cancelled as i32 => {
             state.private_status.load(Ordering::Relaxed)
         }
         _ => 1,

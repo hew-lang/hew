@@ -1129,20 +1129,21 @@ impl<'a> Flow<'a> {
                 .and_modify(|previous| *previous |= exclusive)
                 .or_insert(exclusive);
             if self.guaranteed.contains(&value) {
-                // The call contract must separately prove a synchronous,
+                // The boundary contract must separately prove a synchronous,
                 // non-retaining borrow. Other boundaries require an explicit
                 // owned copy so their lifetime never depends on this input.
-                let scoped_call_borrow = matches!(
+                let scoped_borrow = matches!(
                     terminator,
                     SemTerminator::Call { .. }
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }
+                        | SemTerminator::Panic { .. }
                 ) && matches!(
                     operand.decision,
                     BoundaryDecision::Borrow | BoundaryDecision::BorrowMut
                 );
-                if !scoped_call_borrow {
+                if !scoped_borrow {
                     emit(Violation {
                         place: None,
                         block: id,

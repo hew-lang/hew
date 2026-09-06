@@ -38,6 +38,10 @@ mod partial_fixture;
 #[path = "physical_partial_tests.rs"]
 mod partial_tests;
 
+#[cfg(test)]
+#[path = "physical_panic_tests.rs"]
+mod panic_tests;
+
 use hew_sir::{
     AggregateShapeRef, BoundaryDecision, CallResult, CallUnwind, Edge, SemFunction, SemModule,
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
@@ -4571,6 +4575,19 @@ fn terminator_successors(
                     "physical bb{} propagates a fault that is not initialized",
                     block.0
                 )));
+            }
+            if function.storage.iter().any(|slot| {
+                slot.own == OwnKind::Owned
+                    && !matches!(slot.origin, StorageOrigin::Capture { .. })
+                    && function
+                        .place_storage
+                        .get(&slot.id)
+                        .is_none_or(|place| place.root == slot.id)
+                    && state.slots[slot.id.0 as usize] != InitState::Uninitialized
+            }) {
+                return Err(PhysicalError::new(
+                    "physical fault propagation leaves owned storage initialized",
+                ));
             }
             Ok(vec![])
         }

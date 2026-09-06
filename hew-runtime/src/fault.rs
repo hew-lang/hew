@@ -114,6 +114,20 @@ mod tests {
                 output,
                 format!("hew: failure: UserPanic (212): {text}\n").as_bytes()
             );
+            // Fail at every output boundary, including inside UTF-8 and after NUL.
+            // A partial report must leave the fault available for another attempt.
+            for limit in 0..output.len() {
+                let mut buffer = vec![0; limit];
+                // SAFETY: reporting only borrows the same live fault owner.
+                let error =
+                    write_report(unsafe { &*fault }, &mut buffer.as_mut_slice()).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+                assert_eq!(buffer, output[..limit]);
+            }
+            let mut retry = Vec::new();
+            // SAFETY: failed reports neither release nor mutate the fault.
+            write_report(unsafe { &*fault }, &mut retry).unwrap();
+            assert_eq!(retry, output);
             // SAFETY: the test transfers its sole fault and message owner.
             unsafe { hew_fault_drop(fault) };
         }

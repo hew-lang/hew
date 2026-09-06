@@ -16,6 +16,9 @@ mod locals;
 #[path = "physical_partial_tests.rs"]
 mod partial;
 
+#[path = "physical_panic_tests.rs"]
+mod panic;
+
 type HashCallback = unsafe extern "C" fn(*const c_void, *mut u64, *mut *mut c_void) -> i32;
 type EqCallback =
     unsafe extern "C" fn(*const c_void, *const c_void, *mut bool, *mut *mut c_void) -> i32;

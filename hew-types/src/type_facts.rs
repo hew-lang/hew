@@ -724,11 +724,17 @@ impl TypeFactService {
                     ResolvedTy::from_ty(member).map_err(|_| ClassError::UnknownDeclaration {
                         name: name.to_string(),
                     })?;
-                let member = if let Some((prefix, _)) = name.rsplit_once('.') {
-                    crate::check::canonicalize_member_ty(member, prefix, &self.context.type_defs)
-                } else {
-                    member
-                };
+                let member = crate::check::resolve_member_ty(
+                    member,
+                    name.rsplit_once('.').map(|(prefix, _)| prefix),
+                    &self.context.type_defs,
+                    &|name| {
+                        self.context
+                            .declarations
+                            .get(name)
+                            .is_some_and(|decl| decl.is_opaque)
+                    },
+                );
                 Ok(crate::value_class::substitute(
                     &member,
                     &declaration.type_params,

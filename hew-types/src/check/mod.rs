@@ -213,6 +213,12 @@ pub(crate) struct CheckerClassDeclarations<'a> {
     module_registry: &'a crate::module_registry::ModuleRegistry,
 }
 
+impl CheckerClassDeclarations<'_> {
+    fn is_opaque_type(&self, name: &str) -> bool {
+        self.user_opaque_type_names.contains(name) || self.module_registry.is_handle_type(name)
+    }
+}
+
 impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
     fn declared_type(&self, name: &str) -> Option<crate::value_class::DeclaredType> {
         use crate::value_class::{DeclarationMarker, DeclaredType};
@@ -220,11 +226,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // The `#[opaque]` attribute is a declaration fact, carried for a
         // program's own declarations by the checker's set and for an imported
         // handle by the module registry.
-        let is_opaque = self.user_opaque_type_names.contains(name)
-            || name
-                .split_once('.')
-                .is_some_and(|(_, leaf)| self.user_opaque_type_names.contains(leaf))
-            || self.module_registry.is_handle_type(name);
+        let is_opaque = self.is_opaque_type(name);
         let marker = if self.registry.is_resource(name) {
             DeclarationMarker::Resource
         } else if self.registry.is_linear(name) {
@@ -309,10 +311,9 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             // unclassifiable: an aggregate over the members that happened to
             // convert would be a guess.
             let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
-            let resolved = match module_prefix {
-                Some(prefix) => canonicalize_member_ty(resolved, prefix, self.type_defs),
-                None => resolved,
-            };
+            let resolved = resolve_member_ty(resolved, module_prefix, self.type_defs, &|name| {
+                self.is_opaque_type(name)
+            });
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -342,13 +343,19 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
 /// Only rewrites a bare name that has a `{prefix}.{bare}` twin registered in
 /// `type_defs` — an unqualified reference to a type outside this module (a
 /// builtin, or a name `type_defs` never published under the prefix) is left
-/// exactly as resolved.
-pub(crate) fn canonicalize_member_ty(
+/// exactly as resolved. Restore opacity from the same declaration authority
+/// after qualifying each name, including nominals nested inside members.
+/// `Ty` carries no opacity, so its boundary conversion alone is insufficient.
+pub(crate) fn resolve_member_ty(
     ty: ResolvedTy,
-    prefix: &str,
+    prefix: Option<&str>,
     type_defs: &HashMap<String, crate::check::types::TypeDef>,
+    is_opaque_type: &impl Fn(&str) -> bool,
 ) -> ResolvedTy {
     let rewrite_name = |name: String| -> String {
+        let Some(prefix) = prefix else {
+            return name;
+        };
         if name.starts_with(prefix) && name[prefix.len()..].starts_with('.') {
             return name;
         }
@@ -359,7 +366,7 @@ pub(crate) fn canonicalize_member_ty(
             name
         }
     };
-    let canonicalize = |ty| canonicalize_member_ty(ty, prefix, type_defs);
+    let resolve = |ty| resolve_member_ty(ty, prefix, type_defs, is_opaque_type);
     match ty {
         ResolvedTy::Named {
             name,
@@ -367,7 +374,7 @@ pub(crate) fn canonicalize_member_ty(
             builtin,
             is_opaque,
         } => {
-            let args = args.into_iter().map(canonicalize).collect();
+            let args = args.into_iter().map(resolve).collect();
             // A builtin already carries its identity in `builtin`; the name
             // string is display-only there and rewriting it would be a
             // second, redundant identity authority.
@@ -376,6 +383,7 @@ pub(crate) fn canonicalize_member_ty(
             } else {
                 name
             };
+            let is_opaque = is_opaque || is_opaque_type(&name);
             ResolvedTy::Named {
                 name,
                 args,
@@ -384,23 +392,18 @@ pub(crate) fn canonicalize_member_ty(
             }
         }
         ResolvedTy::Tuple(elements) => {
-            ResolvedTy::Tuple(elements.into_iter().map(canonicalize).collect())
+            ResolvedTy::Tuple(elements.into_iter().map(resolve).collect())
         }
-        ResolvedTy::Array(element, len) => ResolvedTy::Array(
-            Box::new(canonicalize_member_ty(*element, prefix, type_defs)),
-            len,
-        ),
-        ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(canonicalize_member_ty(
-            *element, prefix, type_defs,
-        ))),
+        ResolvedTy::Array(element, len) => ResolvedTy::Array(Box::new(resolve(*element)), len),
+        ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(resolve(*element))),
         ResolvedTy::Function {
             capabilities,
             params,
             ret,
         } => ResolvedTy::Function {
             capabilities,
-            params: params.into_iter().map(canonicalize).collect(),
-            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
+            params: params.into_iter().map(resolve).collect(),
+            ret: Box::new(resolve(*ret)),
         },
         ResolvedTy::Closure {
             capabilities,
@@ -409,33 +412,35 @@ pub(crate) fn canonicalize_member_ty(
             captures,
         } => ResolvedTy::Closure {
             capabilities,
-            params: params.into_iter().map(canonicalize).collect(),
-            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
-            captures: captures.into_iter().map(canonicalize).collect(),
+            params: params.into_iter().map(resolve).collect(),
+            ret: Box::new(resolve(*ret)),
+            captures: captures.into_iter().map(resolve).collect(),
         },
         ResolvedTy::Pointer {
             is_mutable,
             pointee,
         } => ResolvedTy::Pointer {
             is_mutable,
-            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+            pointee: Box::new(resolve(*pointee)),
         },
         ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
-            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+            pointee: Box::new(resolve(*pointee)),
         },
         ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
             traits: traits
                 .into_iter()
                 .map(|bound| crate::resolved_ty::ResolvedTraitBound {
                     trait_name: bound.trait_name,
-                    args: bound.args.into_iter().map(canonicalize).collect(),
-                    assoc_bindings: bound.assoc_bindings,
+                    args: bound.args.into_iter().map(resolve).collect(),
+                    assoc_bindings: bound
+                        .assoc_bindings
+                        .into_iter()
+                        .map(|(name, ty)| (name, resolve(ty)))
+                        .collect(),
                 })
                 .collect(),
         },
-        ResolvedTy::Task(inner) => {
-            ResolvedTy::Task(Box::new(canonicalize_member_ty(*inner, prefix, type_defs)))
-        }
+        ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(resolve(*inner))),
         other => other,
     }
 }

@@ -3656,10 +3656,9 @@ impl Checker {
             let canonical_name = self
                 .current_module_identity()
                 .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
-            // Keep the defining module's lexical spelling as its own identity
-            // too. Lookups remain exact, so this cannot authorize a foreign
-            // qualified same-leaf declaration.
-            self.user_opaque_type_names.insert(td.name.clone());
+            // Imported declarations keep their exact owner. Publishing their
+            // bare spelling would mark an unrelated root type with the same
+            // name opaque when declaration facts are collected.
             self.user_opaque_type_names.insert(canonical_name);
         }
 

@@ -223,3 +223,97 @@ fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
         other => panic!("expected ResolvedTy::Named, got {other:?}"),
     }
 }
+
+#[test]
+fn checked_member_types_preserve_nominal_opacity_through_hir() {
+    use hew_types::BuiltinType;
+    let option = |inner| ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![inner]);
+    let vector = |inner| ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![inner]);
+
+    for (definition, name, expected) in [
+        (
+            "#[opaque] type Handle {}",
+            "Handle",
+            ResolvedTy::named_opaque("Handle", vec![]),
+        ),
+        (
+            "import std.encoding.json;",
+            "json.Value",
+            ResolvedTy::Named {
+                name: "std.encoding.json.Value".into(),
+                args: vec![],
+                builtin: Some(BuiltinType::JsonValue),
+                is_opaque: true,
+            },
+        ),
+        (
+            "import std.encoding.yaml;",
+            "yaml.Value",
+            ResolvedTy::Named {
+                name: "std.encoding.yaml.Value".into(),
+                args: vec![],
+                builtin: Some(BuiltinType::YamlValue),
+                is_opaque: true,
+            },
+        ),
+    ] {
+        let source = format!(
+            r"{definition}
+            type Value {{ count: i64 }}
+            type Envelope {{
+                value: {name},
+                nested: (Option<{name}>, Vec<{name}>),
+                callback: fn({name}) -> {name},
+                ordinary: Value
+            }}
+            enum Payload {{
+                Direct({name}),
+                Nested {{ value: Option<Vec<{name}>> }}
+            }}
+            fn main() -> i64 {{ 0 }}"
+        );
+        let parsed = hew_parser::parse(&source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let checked = Checker::new(ModuleRegistry::new(vec![root])).check_program(&parsed.program);
+        let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let fields = &find_type(&hir, "Envelope").fields;
+        let published = &checked.type_fact_context.declarations()["Envelope"].members;
+        assert_eq!(
+            published,
+            &fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(published[0], expected);
+        assert_eq!(
+            published[1],
+            ResolvedTy::Tuple(vec![option(expected.clone()), vector(expected.clone()),])
+        );
+        let ResolvedTy::Function { params, ret, .. } = &published[2] else {
+            panic!("expected callable member");
+        };
+        assert_eq!(params, std::slice::from_ref(&expected));
+        assert_eq!(ret.as_ref(), &expected);
+        assert_eq!(published[3], ResolvedTy::named_user("Value", vec![]));
+
+        let payload = find_type(&hir, "Payload");
+        let mut variants: Vec<_> = payload.variants.iter().collect();
+        variants.sort_by_key(|variant| &variant.name);
+        let payloads: Vec<_> = variants
+            .into_iter()
+            .flat_map(hew_hir::HirVariant::field_tys)
+            .collect();
+        assert_eq!(
+            checked.type_fact_context.declarations()["Payload"].members,
+            payloads
+        );
+        assert_eq!(payloads, vec![expected.clone(), option(vector(expected))]);
+    }
+}

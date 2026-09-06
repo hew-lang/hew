@@ -1423,3 +1423,11 @@ runtime execution evidence remain the integration owner's next boundary. No
 HIR, SIR, MIR, codegen or runtime source was changed.
 
 `make lint-rust CLIPPY_ARGS='-p hew-types'`, Rust formatting and diff checks pass.
+
+## Bytes equality source composition
+
+The combined checker and SIR suites pass with selected Eq admission composed
+with its source producer. The permanent bytes case covers independent
+NUL-containing payloads, different lengths, nested owned data and a record key
+whose user Hash pairs with derived Eq over bytes. Bare bytes gains no Hash
+capability. Native execution still awaits the selected-call physical layer.

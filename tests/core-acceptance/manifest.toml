@@ -833,3 +833,15 @@ timeout_seconds = 15
 stdout = "1\nROOT\n0\nROOT\n0\n"
 stderr = ""
 exit = 0
+
+[[case]]
+id = "selected-bytes-equality"
+intent = "Byte equality compares complete NUL-containing payloads and composes through owned aggregates and custom-hashed record keys without granting bytes Hash."
+source = "cases/selected-bytes-equality.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\ntrue\ntrue\ntrue\ntrue\ntrue\nSTORED\n"
+stderr = ""
+exit = 0

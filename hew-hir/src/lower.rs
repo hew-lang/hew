@@ -2892,8 +2892,9 @@ pub fn lower_program_with_mono_cap(
         }
     }
     ctx.seed_stdlib_fn_registry();
+    let builtin_declarations = builtin_callable_impl_program();
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
-        match builtin_callable_impl_program() {
+        match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
@@ -4740,55 +4741,48 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
-    let scope_failure = if ctx
-        .recovery_kinds
-        .values()
-        .any(|kind| matches!(kind, hew_types::check::RecoveryKind::Scope { .. }))
-    {
-        builtin_callable_impl_program.as_ref().and_then(|builtins| {
-            let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
-                _ => None,
-            })?;
-            let canonical_name = "std.builtins.ScopeFailure";
-            let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned()
-            else {
-                ctx.unsupported(
-                    span.clone(),
-                    "scope failure declaration identity",
-                    "checker-boundary",
-                );
-                return None;
-            };
-            let mut source = source.clone();
-            source.name = canonical_name.to_string();
-            let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
-            ctx.type_classes
-                .insert(canonical_name.to_string(), (decl.marker, None));
-            ctx.type_member_tys.insert(
-                canonical_name.to_string(),
-                decl.variants
-                    .iter()
-                    .flat_map(hew_hir_variant_field_tys)
-                    .collect(),
+    // ScopeFailure is a source-owned prelude type. Publish its declaration
+    // independently of recovery expressions and executable builtin methods.
+    let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
+        let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
+            Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+            _ => None,
+        })?;
+        let canonical_name = "std.builtins.ScopeFailure";
+        let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned() else {
+            ctx.unsupported(
+                span.clone(),
+                "scope failure declaration identity",
+                "checker-boundary",
             );
-            ctx.enum_variants_by_name
-                .insert(canonical_name.to_string(), decl.variants.clone());
-            ctx.enum_type_params
-                .insert(canonical_name.to_string(), decl.type_params.clone());
-            ctx.enum_item_ids
-                .insert(canonical_name.to_string(), decl.id);
-            for (index, variant) in decl.variants.iter().enumerate() {
-                ctx.machine_ctor_registry.insert(
-                    format!("{canonical_name}::{}", variant.name),
-                    (canonical_name.to_string(), index),
-                );
-            }
-            Some(decl)
-        })
-    } else {
-        None
-    };
+            return None;
+        };
+        let mut source = source.clone();
+        source.name = canonical_name.to_string();
+        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+        ctx.type_classes
+            .insert(canonical_name.to_string(), (decl.marker, None));
+        ctx.type_member_tys.insert(
+            canonical_name.to_string(),
+            decl.variants
+                .iter()
+                .flat_map(hew_hir_variant_field_tys)
+                .collect(),
+        );
+        ctx.enum_variants_by_name
+            .insert(canonical_name.to_string(), decl.variants.clone());
+        ctx.enum_type_params
+            .insert(canonical_name.to_string(), decl.type_params.clone());
+        ctx.enum_item_ids
+            .insert(canonical_name.to_string(), decl.id);
+        for (index, variant) in decl.variants.iter().enumerate() {
+            ctx.machine_ctor_registry.insert(
+                format!("{canonical_name}::{}", variant.name),
+                (canonical_name.to_string(), index),
+            );
+        }
+        Some(decl)
+    });
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {

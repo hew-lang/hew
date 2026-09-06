@@ -859,6 +859,14 @@ pub enum PhysicalTerminator {
         normal: PhysicalEdge,
         fault: PhysicalEdge,
     },
+    RecoverFault {
+        result: StorageId,
+        glue: PhysicalVariantId,
+        deadline_variant: u32,
+        fault_variant: u32,
+        normal: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     CheckedRaiseFault {
         kind: TrapKind,
         cleanup: PhysicalEdge,
@@ -1903,7 +1911,8 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             result: CallResult::Value(result),
             ..
         }
-        | SemTerminator::CheckedBinary { result, .. } => Some(result),
+        | SemTerminator::CheckedBinary { result, .. }
+        | SemTerminator::RecoverFault { result, .. } => Some(result),
         _ => None,
     }
 }
@@ -2379,6 +2388,20 @@ impl FunctionLowerer<'_> {
                     fault: self.lower_edge(fault)?,
                 })
             }
+            SemTerminator::RecoverFault {
+                result,
+                deadline_variant,
+                fault_variant,
+                normal,
+                unwind,
+            } => Ok(PhysicalTerminator::RecoverFault {
+                result: self.value(result.id)?,
+                glue: self.variant_id(&result.ty)?,
+                deadline_variant: *deadline_variant,
+                fault_variant: *fault_variant,
+                normal: self.lower_edge(normal)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
             SemTerminator::CheckedRaiseFault { kind, cleanup } => {
                 Ok(PhysicalTerminator::CheckedRaiseFault {
                     kind: *kind,
@@ -4330,7 +4353,7 @@ fn verify_initialization(
             defer::verify_entry_phase(&defer_plan, block_id, &state)?;
             for operation in &block.ops {
                 if cleanup_needs_fault.is_some_and(|blocks| blocks.contains(&block_id))
-                    && state.exit != defer::TRAP
+                    && (state.exit == 0 || state.exit & defer::ORDINARY != 0)
                     && matches!(operation, PhysicalOp::Destroy { cleanup, .. } | PhysicalOp::StorageDead { cleanup, .. }
                         if cleanup.mode() == hew_sir::CleanupMode::Trap)
                 {
@@ -4908,6 +4931,26 @@ fn terminator_successors(
         | PhysicalTerminator::CheckedRaiseFault { .. } => {
             unreachable!("defer boundary handled above")
         }
+        PhysicalTerminator::RecoverFault {
+            result,
+            normal,
+            unwind,
+            ..
+        } => {
+            if state.fault != FaultState::Active {
+                return Err(PhysicalError::new(
+                    "scope recovery requires an active fault",
+                ));
+            }
+            let mut recovered = state.clone();
+            recovered.fault = FaultState::None;
+            recovered.exit = defer::ORDINARY;
+            define(function, &mut recovered, *result, block, "scope failure")?;
+            Ok(vec![
+                apply_edge(function, normal, recovered, block)?,
+                apply_edge(function, unwind, state, block)?,
+            ])
+        }
         PhysicalTerminator::IndirectCall {
             callee,
             args,
@@ -5283,6 +5326,33 @@ fn verify_terminator(
         PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. } => edge(body),
+        PhysicalTerminator::RecoverFault {
+            result,
+            glue,
+            deadline_variant,
+            fault_variant,
+            normal,
+            unwind,
+        } => {
+            let glue = variant_glue(module, *glue)?;
+            if slot(*result)?.ty != glue.ty
+                || slot(*result)?.own != OwnKind::Owned
+                || glue.is_indirect
+                || deadline_variant == fault_variant
+                || glue.variants.len() != 2
+                || [*deadline_variant, *fault_variant].iter().any(|tag| {
+                    glue.variants.get(*tag as usize).is_none_or(|variant| {
+                        variant.fields.len() != 1 || variant.fields[0].ty != ResolvedTy::String
+                    })
+                })
+            {
+                return Err(PhysicalError::new(
+                    "scope recovery requires owned string failure variants",
+                ));
+            }
+            edge(normal)?;
+            edge(unwind)
+        }
         PhysicalTerminator::CleanupDispatch { normal, fault } => {
             edge(normal)?;
             edge(fault)

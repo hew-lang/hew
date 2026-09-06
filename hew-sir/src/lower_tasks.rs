@@ -32,6 +32,13 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
     if function
         .blocks
         .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::RecoverFault { .. }))
+    {
+        return;
+    }
+    if function
+        .blocks
+        .iter()
         .flat_map(|block| &block.ops)
         .any(|op| {
             matches!(

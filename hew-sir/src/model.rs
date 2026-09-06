@@ -1487,6 +1487,15 @@ pub enum SemTerminator {
         normal: Edge,
         fault: Edge,
     },
+    /// Admit recovery after lexical cleanup, consuming the fault into its
+    /// checked source enum only when enclosing cancellation permits it.
+    RecoverFault {
+        result: ValueDef,
+        deadline_variant: u32,
+        fault_variant: u32,
+        normal: Edge,
+        unwind: Edge,
+    },
     /// Materialize the original checked failure before any effectful cleanup.
     CheckedRaiseFault {
         kind: TrapKind,
@@ -1677,6 +1686,7 @@ impl SemTerminator {
             | Self::FinishDefer { .. }
             | Self::CheckedRaiseFault { .. }
             | Self::CleanupDispatch { .. }
+            | Self::RecoverFault { .. }
             | Self::Return { value: None }
             | Self::Goto(_)
             | Self::Branch { .. }
@@ -1715,7 +1725,8 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
-            | Self::CheckedBinary { result, .. } => visit(result),
+            | Self::CheckedBinary { result, .. }
+            | Self::RecoverFault { result, .. } => visit(result),
             Self::SwitchVariant { arms, .. } => {
                 for arm in arms {
                     for field in &arm.fields {
@@ -1787,7 +1798,12 @@ impl SemTerminator {
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
             | Self::Goto(edge) => edge.visit_operands(visit),
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 let mut index = 0;
                 for operand in normal.args.iter().chain(fault.args.iter()) {
                     visit(OperandSlot(index), operand);
@@ -1924,7 +1940,12 @@ impl SemTerminator {
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
             | Self::Goto(edge) => edge.visit_operands_mut(visit),
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 let mut index = 0;
                 for operand in normal.args.iter_mut().chain(fault.args.iter_mut()) {
                     visit(OperandSlot(index), operand);
@@ -2052,7 +2073,12 @@ impl SemTerminator {
     /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 visit(SuccessorSlot(0), normal);
                 visit(SuccessorSlot(1), fault);
             }
@@ -2134,7 +2160,12 @@ impl SemTerminator {
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 visit(SuccessorSlot(0), normal);
                 visit(SuccessorSlot(1), fault);
             }
@@ -2213,7 +2244,12 @@ impl SemTerminator {
     #[must_use]
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
-            Self::CleanupDispatch { normal, fault } => match slot.0 {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => match slot.0 {
                 0 => Some(normal),
                 1 => Some(fault),
                 _ => None,
@@ -2284,7 +2320,12 @@ impl SemTerminator {
     #[must_use]
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
-            Self::CleanupDispatch { normal, fault } => match slot.0 {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => match slot.0 {
                 0 => Some(normal),
                 1 => Some(fault),
                 _ => None,
@@ -2442,7 +2483,8 @@ impl SemTerminator {
             Self::EnterDefer { .. }
             | Self::FinishDefer { .. }
             | Self::CheckedRaiseFault { .. }
-            | Self::CleanupDispatch { .. } => "cleanup edge operand",
+            | Self::CleanupDispatch { .. }
+            | Self::RecoverFault { .. } => "cleanup edge operand",
             Self::Trap { .. } => "trap terminator operand",
             Self::ResumeUnwind => "resume-unwind terminator operand",
             Self::Unreachable => "unreachable terminator operand",

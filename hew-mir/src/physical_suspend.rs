@@ -116,7 +116,8 @@ pub(super) fn semantic_callables(module: &hew_sir::SemModule) -> BTreeSet<Callab
     for function in &module.functions {
         for block in &function.blocks {
             match &block.terminator {
-                hew_sir::SemTerminator::Suspend { .. }
+                hew_sir::SemTerminator::RecoverFault { .. }
+                | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::IndirectCall { .. } => {
                     // Callable values have no source-level non-suspension
                     // guarantee, so their invocation must admit suspension.
@@ -138,7 +139,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
     for function in &module.functions {
         for block in &function.blocks {
             match &block.terminator {
-                PhysicalTerminator::Sleep { .. }
+                PhysicalTerminator::RecoverFault { .. }
+                | PhysicalTerminator::Sleep { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. } => {

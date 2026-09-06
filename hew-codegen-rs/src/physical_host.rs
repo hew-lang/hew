@@ -101,6 +101,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::EnterDefer { .. }
                     | PhysicalTerminator::FinishDefer { .. }
                     | PhysicalTerminator::CleanupDispatch { .. }
+                    | PhysicalTerminator::RecoverFault { .. }
                     | PhysicalTerminator::CheckedRaiseFault { .. }
                     | PhysicalTerminator::Trap(_)
                     | PhysicalTerminator::PropagateFault

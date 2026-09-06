@@ -125,7 +125,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. }
         | PhysicalTerminator::Panic { cleanup: body, .. }
         | PhysicalTerminator::Goto(body) => vec![body],
-        PhysicalTerminator::CleanupDispatch { normal, fault } => vec![normal, fault],
+        PhysicalTerminator::RecoverFault {
+            normal,
+            unwind: fault,
+            ..
+        }
+        | PhysicalTerminator::CleanupDispatch { normal, fault } => vec![normal, fault],
         PhysicalTerminator::Branch {
             then_target,
             else_target,
@@ -518,7 +523,8 @@ fn drain_suffix(
     let valid = match &block.terminator {
         PhysicalTerminator::EnterDefer { .. }
         | PhysicalTerminator::FinishDefer { .. }
-        | PhysicalTerminator::CleanupDispatch { .. } => true,
+        | PhysicalTerminator::CleanupDispatch { .. }
+        | PhysicalTerminator::RecoverFault { .. } => true,
         PhysicalTerminator::Goto(_) | PhysicalTerminator::Branch { .. } => edges(&block.terminator)
             .iter()
             .all(|e| drain_suffix(e.target, blocks, visiting)),

@@ -2528,6 +2528,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalTerminator::CleanupDispatch { normal, fault } => {
                 self.emit_cleanup_dispatch(normal, fault)
             }
+            PhysicalTerminator::RecoverFault {
+                result,
+                glue,
+                deadline_variant,
+                fault_variant,
+                normal,
+                unwind,
+            } => self.emit_scope_recovery(
+                *result,
+                *glue,
+                *deadline_variant,
+                *fault_variant,
+                normal,
+                unwind,
+            ),
             PhysicalTerminator::CheckedRaiseFault { kind, cleanup } => {
                 self.initialize_active_fault(trap_code(*kind))?;
                 self.emit_edge(cleanup)
@@ -4570,6 +4585,91 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_store(self.active_status, status)
             .llvm_ctx("install combined fault status")?;
         self.emit_edge(next)
+    }
+
+    fn emit_scope_recovery(
+        &self,
+        result: StorageId,
+        glue: PhysicalVariantId,
+        deadline_variant: u32,
+        fault_variant: u32,
+        normal: &PhysicalEdge,
+        unwind: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("scope recovery requires a resumable invocation".into())
+        })?;
+        let cancelled = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelled = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                cancelled,
+                cancelled.get_type().const_zero(),
+                "recovery.parent.cancelled",
+            )
+            .llvm_ctx("test parent cancellation")?;
+        let bypass = self.ctx.append_basic_block(self.value, "recovery.bypass");
+        let recover = self.ctx.append_basic_block(self.value, "recovery.consume");
+        self.builder
+            .build_conditional_branch(cancelled, bypass, recover)
+            .llvm_ctx("dispatch scope recovery")?;
+        self.builder.position_at_end(bypass);
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(recover);
+        let code = self
+            .builder
+            .build_load(self.ctx.i32_type(), self.active_status, "recovery.code")
+            .llvm_ctx("load fault category")?
+            .into_int_value();
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let fault = self
+            .builder
+            .build_load(pointer, self.active_fault, "recovery.fault")
+            .llvm_ctx("load recovery fault")?;
+        let message = self.task_pointer_call("hew_fault_take_message", &[fault.into()])?;
+        self.clear_fault_pair(self.active_fault, self.active_status)?;
+        let is_deadline = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                code,
+                self.ctx.i32_type().const_int((-2_i32) as u64, true),
+                "recovery.deadline",
+            )
+            .llvm_ctx("classify scope failure")?;
+        let deadline = self
+            .ctx
+            .append_basic_block(self.value, "recovery.deadline.case");
+        let logical = self
+            .ctx
+            .append_basic_block(self.value, "recovery.fault.case");
+        let done = self.ctx.append_basic_block(self.value, "recovery.ready");
+        self.builder
+            .build_conditional_branch(is_deadline, deadline, logical)
+            .llvm_ctx("select failure variant")?;
+        self.builder.position_at_end(deadline);
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            deadline_variant,
+            &[message.into()],
+            glue,
+        )?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish deadline recovery")?;
+        self.builder.position_at_end(logical);
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            fault_variant,
+            &[message.into()],
+            glue,
+        )?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish fault recovery")?;
+        self.builder.position_at_end(done);
+        self.emit_edge(normal)
     }
 
     fn emit_cleanup_dispatch(

@@ -2366,6 +2366,7 @@ struct Builder<'hir, 'service> {
     argument_receiver_loans: Vec<ValueId>,
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
+    recovery_bodies: Vec<deferred::BodyBoundary>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
 }
 
@@ -2464,6 +2465,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             argument_receiver_loans: Vec::new(),
             defers: Vec::new(),
             defer_bodies: Vec::new(),
+            recovery_bodies: Vec::new(),
             task_scopes: Vec::new(),
         };
         builder.bind_captures(source)?;
@@ -3564,6 +3566,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
+            HirExprKind::ScopeRecovery {
+                scope,
+                error,
+                handler,
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) => {
+                self.lower_scope_recovery(expr, scope, error, handler)?;
+                return Ok(());
+            }
+
             HirExprKind::AwaitTask { operand, .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
@@ -3792,6 +3803,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     None => Err("divergent scope cannot produce a SIR value".into()),
                 }
             }
+            HirExprKind::ScopeRecovery {
+                scope,
+                error,
+                handler,
+            } => match self.lower_scope_recovery(expr, scope, error, handler)? {
+                Some(value) => Ok(value),
+                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                None => Err("divergent recovery cannot produce a SIR value".into()),
+            },
             HirExprKind::RecordCloneCall { src, .. }
                 if matches!(
                     self.ty(&src.ty),
@@ -6535,6 +6555,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
+        let saved = self.control_state();
+        let recovery = self.recovery_bodies.clone();
+        let preserved = self
+            .owned_live
+            .iter()
+            .filter(|(value, _)| scope.preserved.contains(value))
+            .map(|(value, ty)| (*value, ty.clone()))
+            .collect();
+        self.finish_recovery_scopes(scope.scope_floor, &preserved)?;
         self.finish_task_scopes(scope.scope_floor, false)?;
         let args = scope
             .carried
@@ -6551,6 +6580,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.emit_destroy(value)?;
         }
         self.end_scopes(scope.scope_floor)?;
+        let terminal = self.current;
+        self.restore_control_state(&saved);
+        self.recovery_bodies = recovery;
+        self.current = terminal;
         Ok(Edge { target, args })
     }
 

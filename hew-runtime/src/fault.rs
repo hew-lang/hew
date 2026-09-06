@@ -127,6 +127,22 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
     HewError::new(HostStatus::LogicalFault, message).into_raw()
 }
 
+/// Consume a logical fault into an owned diagnostic for scope recovery.
+///
+/// # Safety
+/// `fault` must be a live, unique, non-null fault owner without borrowers.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_take_message(fault: *mut HewFault) -> *mut HewString {
+    // SAFETY: the caller transfers the unique fault allocation.
+    let fault = unsafe { Box::from_raw(fault) };
+    let mut diagnostic = Vec::new();
+    let _ = write_report(&fault, &mut diagnostic);
+    // SAFETY: reports consist entirely of UTF-8 strings and ASCII formatting.
+    let message = unsafe { String::from_utf8_unchecked(diagnostic) };
+    hew_cabi::string::string_from_str(&message)
+}
+
 /// Release one fault owner. Null is accepted for an empty fault output slot.
 ///
 /// # Safety
@@ -241,6 +257,18 @@ mod tests {
                 unsafe { hew_fault_drop(combined) };
             }
         }
+    }
+
+    #[test]
+    fn recovery_owns_complete_primary_and_secondary_diagnostics() {
+        let primary = panic_fault("primary\0é");
+        let secondary = panic_fault("cleanup 雪");
+        // SAFETY: both faults are distinct unique owners; recovery consumes them.
+        let message = unsafe { hew_fault_take_message(hew_fault_combine(primary, secondary)) };
+        // SAFETY: recovery returned a live managed string owned by this test.
+        assert_eq!(unsafe { string_as_str(message) }, "hew: failure: UserPanic (212): primary\0é\nhew: secondary failure: UserPanic (212): cleanup 雪\n");
+        // SAFETY: no borrow remains, so release the transferred owner once.
+        unsafe { hew_cabi::string::string_release(message) };
     }
 
     #[test]

@@ -244,6 +244,7 @@ fn is_cleanup(kind: &SemOpKind) -> bool {
     matches!(
         kind,
         SemOpKind::EndBorrow { .. }
+            | SemOpKind::TaskScopeClose { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::EndLifetime { .. }
     )
@@ -262,7 +263,22 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 continue;
             }
             let terminal = match &block.terminator {
-                SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind => true,
+                SemTerminator::Trap { .. }
+                | SemTerminator::ResumeUnwind
+                | SemTerminator::RecoverFault { .. } => true,
+                SemTerminator::Suspend {
+                    kind: crate::SuspendKind::Join { cancel: true, .. },
+                    resumes,
+                    cancel,
+                    unwind,
+                    ..
+                } => resumes
+                    .iter()
+                    .chain([cancel, unwind])
+                    .all(|edge| suffixes.get(&edge.target) == Some(&0)),
+                SemTerminator::CleanupDispatch { fault, .. } => {
+                    suffixes.get(&fault.target) == Some(&0)
+                }
                 SemTerminator::EnterDefer { .. }
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CheckedRaiseFault { .. } => boundaries.is_some(),
@@ -743,6 +759,20 @@ impl<'a> Flow<'a> {
                 }
                 successors.extend(self.edge(id, next, state, emit));
             }
+            SemTerminator::RecoverFault {
+                result,
+                normal,
+                unwind,
+                ..
+            } => {
+                Self::require_fault(id, LIVE, &state, emit);
+                let mut recovered = state.clone();
+                recovered.fault = DEAD;
+                recovered.exit = ORDINARY;
+                self.define(id, result.id, &mut recovered, emit);
+                successors.extend(self.edge(id, normal, recovered, emit));
+                successors.extend(self.edge(id, unwind, state, emit));
+            }
             SemTerminator::CleanupDispatch { normal, fault } => {
                 if state.fault & DEAD != 0 {
                     let mut success = state.clone();
@@ -950,7 +980,7 @@ impl<'a> Flow<'a> {
                 .cleanup_suffixes
                 .get(&id)
                 .is_some_and(|&start| index >= start)
-                && (cleanup_exit == TRAP
+                && ((cleanup_exit != 0 && cleanup_exit & ORDINARY == 0)
                     || (cleanup_exit == ORDINARY
                         && matches!(self.blocks[&id].terminator, SemTerminator::Trap { .. })))
             {

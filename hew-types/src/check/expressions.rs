@@ -1256,14 +1256,23 @@ impl Checker {
             self.env
                 .define_with_span(name.clone(), error_ty, false, binding_span.clone());
         }
-        let body_ty = self.check_expr_with_expected(&body.0, &body.1, &payload);
+        let body_ty = if payload == Ty::Never {
+            self.synthesize(&body.0, &body.1)
+        } else {
+            self.check_expr_with_expected(&body.0, &body.1, &payload)
+        };
         let taken = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
             diverges: Self::arm_skips_join(&body_ty),
         };
         self.env.pop_scope();
         self.join_fall_through(&entry, taken);
-        self.subst.resolve(&payload)
+        let payload = self.subst.resolve(&payload);
+        if payload == Ty::Never {
+            self.subst.resolve(&body_ty)
+        } else {
+            payload
+        }
     }
 
     pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {

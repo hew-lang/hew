@@ -1727,3 +1727,9 @@ calls and arithmetic checks; terminating argument paths end that loan before
 environment cleanup. The focused callable source suite passes these combined
 paths. Native invocation and sanitizer acceptance remain pending physical
 integration.
+
+### Callable carrier and environment ABI
+
+Defined the shared two-pointer callable carrier, immutable descriptor, and erased borrowed/consuming invocation adapter signature. SIR retains call permission and capture ownership decisions; compiler-generated environment layouts own initialization masks and clone/drop behaviour. Once adapters dispose the environment on both outcomes. The runtime interface provides zeroed aligned allocation, independent cloning with failure-preserved output, and drop with carrier clearing.
+
+CABI tests and layout assertions compile for native, Windows x64, macOS arm64 and WASI. This is the ABI checkpoint; runtime helper implementation and executable closure integration remain pending.

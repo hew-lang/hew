@@ -3067,12 +3067,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "string.to.bytes",
                 )?;
             }
-            PhysicalRuntimeAction::StringToUppercase => {
-                let function = external_unary_ptr(self.ctx, self.llvm, "hew_string_to_uppercase")?;
+            PhysicalRuntimeAction::StringToUppercase | PhysicalRuntimeAction::StringTrim => {
+                let symbol = if action == PhysicalRuntimeAction::StringTrim {
+                    "hew_string_trim"
+                } else {
+                    "hew_string_to_uppercase"
+                };
+                let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
                 let value = self.runtime_call_value(
                     function,
-                    &[self.load(source(0)?, "uppercase.input")?.into()],
-                    "string.uppercase",
+                    &[self.load(source(0)?, "string.transform.input")?.into()],
+                    "string.transform",
                 )?;
                 self.store(required_result()?, value)?;
             }

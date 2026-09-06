@@ -562,7 +562,7 @@ pub unsafe extern "C" fn hew_bool_to_string(b: bool) -> *mut HewString {
     string_from_str(s)
 }
 
-/// Trim leading and trailing ASCII whitespace. Caller must free the result with `hew_string_drop`.
+/// Trim leading and trailing Unicode whitespace. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///

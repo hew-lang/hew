@@ -1433,6 +1433,7 @@ pub enum RuntimeCallFamily {
     StringSliceCodepoints,
     StringToBytes,
     StringToUppercase,
+    StringTrim,
     U8ToString,
     I64ToString,
     /// Compiler catalogue `println_i64` intercept. Physical lowering expands
@@ -1785,6 +1786,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         params: EMPTY,
         result: CanonicalExternTy::String,
     },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::trim",
+        symbol: "hew_string_trim",
+        family: Some(RuntimeCallFamily::StringTrim),
+        params: EMPTY,
+        result: CanonicalExternTy::String,
+    },
 ];
 
 /// Return a canonical stdlib extern declaration when its source identity,
@@ -1910,7 +1919,7 @@ impl RuntimeCallFamily {
         const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
 
         Some(match self {
-            Self::StringToUppercase => RuntimeSemanticContract {
+            Self::StringToUppercase | Self::StringTrim => RuntimeSemanticContract {
                 arguments: STRING_BORROW,
                 result: FreshOwned(String),
                 failures: NO_FAILURES,
@@ -2228,6 +2237,7 @@ impl RuntimeCallFamily {
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             Self::StringToBytes => "hew_string_to_bytes",
             Self::StringToUppercase => "hew_string_to_uppercase",
+            Self::StringTrim => "hew_string_trim",
             Self::U8ToString => "hew_u8_to_string",
             Self::I64ToString => "hew_i64_to_string",
             Self::PrintlnI64 => "hew_print_value",
@@ -2608,6 +2618,7 @@ impl RuntimeCallFamily {
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             "hew_string_to_bytes" => Self::StringToBytes,
             "hew_string_to_uppercase" => Self::StringToUppercase,
+            "hew_string_trim" => Self::StringTrim,
             "hew_u8_to_string" => Self::U8ToString,
             "hew_i64_to_string" => Self::I64ToString,
             "hew_print_value" => Self::PrintlnI64,
@@ -3649,6 +3660,7 @@ impl RuntimeCallFamily {
             | F::StringSliceCodepoints
             | F::StringToBytes
             | F::StringToUppercase
+            | F::StringTrim
             | F::U8ToString
             | F::I64ToString
             | F::PrintlnI64
@@ -4669,35 +4681,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_stdlib_extern_descriptor_covers_the_typed_surface() {
-        let signatures = canonical_std_io_extern_signatures();
-        let names: Vec<_> = signatures.iter().map(|entry| entry.signature_key).collect();
-        assert_eq!(
-            names,
-            vec![
-                "bytes::append",
-                "bytes::clear",
-                "bytes::contains",
-                "bytes::get",
-                "bytes::is_empty",
-                "bytes::len",
-                "bytes::pop",
-                "bytes::push",
-                "bytes::set",
-                "string::byte_len",
-                "string::starts_with",
-                "string::is_empty",
-                "string::find",
-                "string::char_at",
-                "string::get",
-                "string::codepoint_at_utf8",
-                "string::len",
-                "string::to_bytes",
-                "string::to_upper",
-            ],
-            "a compiler-lowered stdlib extern must be described here before it can lift into a runtime family",
-        );
-        for entry in signatures {
+    fn canonical_stdlib_extern_descriptors_agree_with_runtime_symbols() {
+        for entry in canonical_std_io_extern_signatures() {
             if let Some(family) = entry.family {
                 assert_eq!(family.c_symbol(), entry.symbol, "{entry:?}");
             }

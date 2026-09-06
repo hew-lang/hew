@@ -689,6 +689,7 @@ pub enum PhysicalRuntimeAction {
     StringIsEmpty,
     StringToBytesOwned,
     StringToUppercase,
+    StringTrim,
     StringLen,
     StringByteLen,
     BytesDecodeUtf8 {
@@ -730,6 +731,7 @@ impl PhysicalRuntimeAction {
             Self::StringIsEmpty => RuntimeCallFamily::StringIsEmpty,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
+            Self::StringTrim => RuntimeCallFamily::StringTrim,
             Self::StringLen => RuntimeCallFamily::StringLen,
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
             Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
@@ -1746,6 +1748,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringIsEmpty => PhysicalRuntimeAction::StringIsEmpty,
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
+        RuntimeCallFamily::StringTrim => PhysicalRuntimeAction::StringTrim,
         RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
         RuntimeCallFamily::StringByteLen => PhysicalRuntimeAction::StringByteLen,
         RuntimeCallFamily::BytesDecodeUtf8Lossy => PhysicalRuntimeAction::BytesDecodeUtf8Lossy,

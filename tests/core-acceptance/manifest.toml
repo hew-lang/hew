@@ -1312,3 +1312,14 @@ timeout_seconds = 15
 [case.expected]
 stdout = ""
 exit = 0
+
+[[case]]
+id = "string-trim-values"
+intent = "Unicode whitespace trimming returns independent strings after owner scope exit, projected replacement and captured calls while preserving interior NUL and empty values."
+source = "cases/string-trim-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

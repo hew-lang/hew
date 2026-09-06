@@ -2064,3 +2064,17 @@ parallel transfers, independent of whether LLVM or the runtime wrote the payload
 Failure edges leave result storage uninitialized. The original recursive-carrier
 safety case now passes at O0 and O2. Focused vector/map returned-record controls
 and the full integrated safety rerun remain the next validation steps.
+
+## Eval timeout recovery across hosts
+
+The timeout-recovery test now uses the one-second worker budget demonstrated by
+the macOS control, with a trillion-iteration loop that cannot finish during that
+budget. Compilation finishes before the deadline begins; post-spawn child
+startup and execution consume the budget. The previous 100 ms check timed out
+even the following arithmetic expression on macOS. That is a reproduced test
+failure; its latency cause and whether it predates the revision remain unproven.
+
+The check requires exactly one timeout diagnostic, a successful REPL exit and
+exactly `42` from the next submission. A separate bounded runner contains a
+broken deadline. This verifies enforced termination and recovery without making
+sub-second startup speed part of the contract. Runtime behaviour is unchanged.

@@ -3599,15 +3599,27 @@ fn eval_repl_recovers_after_worker_trap_and_type_error() {
 #[test]
 fn eval_aot_timeout_stops_worker_and_allows_next_submission() {
     require_codegen();
-    let output = run_eval_with_stdin(
-        &["eval", "--quiet", "--timeout", "100ms"],
-        "for i in 0..2000000000 { }\n6 * 7\n:quit\n",
+    // The worker deadline starts after spawn, excluding compilation but
+    // including the child's remaining startup. On macOS even `6 * 7` exceeded
+    // 100 ms; the one-second control timed out the loop and then returned 42.
+    // Test termination and recovery with that demonstrated startup allowance.
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["eval", "--quiet", "--timeout", "1s"])
+        .current_dir(repo_root());
+    // A trillion iterations keeps the worker busy beyond its deadline. The
+    // outer runner bounds the test if the worker deadline stops being enforced.
+    let output = support::run_bounded_command_with_stdin(
+        command,
+        "eval worker timeout and recovery",
+        b"for i in 0..1000000000000 { }\n6 * 7\n:quit\n",
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(output.status.success(), "REPL did not recover: {stderr}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
-    assert!(
-        stderr.contains("evaluation timed out after 100ms"),
-        "worker timeout missing: {stderr}"
+    assert_eq!(
+        stderr.trim(),
+        "error: evaluation timed out after 1s",
+        "expected exactly one worker timeout and no error from the next submission"
     );
 }

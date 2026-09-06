@@ -286,9 +286,7 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
         .iter()
         .find(|function| function.name == "main")
         .unwrap();
-    let plan =
-        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
-            .unwrap();
+    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let mut receivers = Vec::new();
     for block in &main.blocks {
         if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
@@ -303,11 +301,15 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
                         .any(|value| value.id == callee.operand.value)
                 })
                 .expect("stored receiver loan");
-            let SemOpKind::LoadBorrow { place, environment } = &borrow.kind else {
+            let SemOpKind::LoadBorrow { place } = &borrow.kind else {
                 panic!("mutable field call must borrow its stored owner");
             };
             let projection = plan.projection(*place).unwrap();
-            assert_eq!(projection.root, environment.value);
+            let hew_sir::OwnerRoot::Local(root) = projection.root else {
+                panic!("holder must own local storage")
+            };
+            assert!(main.bindings.iter().any(|binding| binding.name == "holder"
+                && binding.target == hew_sir::BindingTarget::Place(root)));
             assert_eq!(projection.path.len(), 1);
             assert_eq!(projection.path[0].field, 0);
             receivers.push(*place);
@@ -405,9 +407,24 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     assert_eq!(advance.params[0].own, hew_sir::OwnKind::Guaranteed);
     let copied = advance.blocks.iter().flat_map(|block| &block.ops)
         .find(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == advance.params[0].value)).unwrap();
+    let private = advance
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find_map(|op| match op.kind {
+            SemOpKind::StoreInit { place, ref value } if value.value == copied.results[0].id => {
+                Some(place)
+            }
+            _ => None,
+        })
+        .expect("the private parameter copy must initialize local storage");
     for block in &advance.blocks {
         if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
-            assert_eq!(callee.operand.value, copied.results[0].id);
+            assert_eq!(callee.decision, hew_sir::BoundaryDecision::BorrowMut);
+            assert!(block.ops.iter().any(
+                |op| matches!(op.kind, SemOpKind::LoadBorrow { place } if place == private)
+                    && op.results[0].id == callee.operand.value
+            ));
         }
     }
     let consuming = module

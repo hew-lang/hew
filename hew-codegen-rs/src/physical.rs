@@ -619,7 +619,7 @@ struct FunctionEmitter<'a, 'ctx> {
     value: FunctionValue<'ctx>,
     blocks: BTreeMap<BlockId, BasicBlock<'ctx>>,
     slots: Vec<PointerValue<'ctx>>,
-    aggregate_flags: BTreeMap<StorageId, PointerValue<'ctx>>,
+    place_flags: BTreeMap<StorageId, PointerValue<'ctx>>,
     result_out: Option<PointerValue<'ctx>>,
     fault_out: PointerValue<'ctx>,
     active_fault: PointerValue<'ctx>,
@@ -1578,7 +1578,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let prologue = ctx.append_basic_block(value, "physical.prologue");
         builder.position_at_end(prologue);
         let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
-        let aggregate_flags = partial::allocate_flags(module, function, &builder)?;
+        let place_flags = partial::allocate_flags(module, function, &builder)?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
             .llvm_ctx("allocate active fault")?;
@@ -1657,7 +1657,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value,
             blocks,
             slots,
-            aggregate_flags,
+            place_flags,
             result_out,
             fault_out,
             active_fault,
@@ -1701,14 +1701,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_store(self.slots[id.0 as usize], value)
             .llvm_ctx("store physical storage")?;
         self.set_capture_initialized(id, true)?;
-        self.set_aggregate_initialized(id, true)?;
+        self.set_place_initialized(id, true)?;
         Ok(())
     }
 
     fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
         self.set_capture_initialized(id, false)?;
-        self.set_aggregate_initialized(id, false)?;
-        if self.function.aggregate_storage.contains_key(&id) {
+        self.set_place_initialized(id, false)?;
+        if self.function.place_storage.contains_key(&id) {
             return Ok(());
         }
         if self.storage(id)?.own == OwnKind::Owned {
@@ -1930,23 +1930,33 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.clone_value(*source, *action)?;
                 self.store(*dest, value)
             }
-            PhysicalOp::Destroy { source, action } => self.destroy_value(*source, *action),
+            PhysicalOp::Destroy { source, action, .. } => self.destroy_value(*source, *action),
             PhysicalOp::Borrow { dest, source } => {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
             }
-            PhysicalOp::EndBorrow { .. } | PhysicalOp::StorageLive { .. } => Ok(()),
+            PhysicalOp::EndBorrow { .. } => Ok(()),
+            PhysicalOp::StorageLive { storage } => self.set_place_initialized(*storage, false),
             PhysicalOp::Assign {
                 dest,
                 source,
                 destroy_old,
             } => {
-                self.destroy_value(*dest, *destroy_old)?;
+                if let Some(action) = destroy_old {
+                    self.destroy_value(*dest, *action)?;
+                }
                 let value = self.load(*source, "assign")?;
                 self.store(*dest, value)?;
                 self.clear_owned(*source)
             }
-            PhysicalOp::StorageDead { storage, destroy } => self.destroy_value(*storage, *destroy),
+            PhysicalOp::StorageDead { storage, .. } => {
+                if !self.destroy_place_contents(*storage)? {
+                    return Err(CodegenError::FailClosed(
+                        "local lifetime lacks a verified content partition".into(),
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -2271,7 +2281,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
-        if self.destroy_partial_aggregate(source)? {
+        if self.destroy_place_contents(source)? {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
@@ -2660,7 +2670,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         edge: &PhysicalEdge,
     ) -> CodegenResult<()> {
         if let Some(result) = result {
-            self.set_aggregate_initialized(result, true)?;
+            self.set_place_initialized(result, true)?;
         }
         self.emit_edge(edge)
     }
@@ -2674,7 +2684,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let initialized = edge
             .leaf_transfers
             .iter()
-            .map(|(source, _)| self.aggregate_initialized(*source))
+            .map(|(source, _)| self.place_initialized(*source))
             .collect::<CodegenResult<Vec<_>>>()?;
         let destinations = edge
             .transfers
@@ -2691,7 +2701,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         for ((_, destination), initialized) in edge.leaf_transfers.iter().zip(initialized) {
             self.builder
-                .build_store(self.aggregate_flag(*destination)?, initialized)
+                .build_store(self.place_flag(*destination)?, initialized)
                 .llvm_ctx("transfer aggregate leaf initialization")?;
         }
         self.builder

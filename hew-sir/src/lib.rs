@@ -1,7 +1,8 @@
 //! Hew Semantic IR (SIR).
 //!
 //! SIR is the value-oriented SSA layer between resolved HIR and the existing
-//! ownership/layout MIR ladder.  It deliberately contains no `Place`, alloca,
+//! ownership/layout MIR ladder. Semantic places carry ownership and lifetime
+//! contracts; SIR contains no machine allocation,
 //! ABI carrier, byte-offset, or LLVM operation.  The strict `--sir-lower` lane
 //! owns a conservative subset today; each supported family moves onto
 //! SIR -> MIR and deletes its established HIR -> MIR body lowering.
@@ -28,6 +29,7 @@ pub use callable::{
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use dump::{dump_lowering, dump_sir};
+pub use lifetime::{CleanupMode, PlaceLifetimes};
 pub use lower::{
     lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
@@ -48,14 +50,12 @@ pub use optimize::{
 pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, checked_binary_failure_kinds,
     runtime_failure_trap_kind, variant_field_recipes, variant_field_types, AggregateFieldRecipe,
-    Binding, BindingId, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl,
-    PlaceId, PlaceOrigin, SnapshotDecision, StringLiteralId, SuspendKind, TrapKind,
+    Binding, BindingId, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, OwnerRoot,
+    PlaceBase, PlaceDecl, PlaceId, PlaceOrigin, SnapshotDecision, StringLiteralId, SuspendKind,
+    TrapKind,
 };
-pub use projection::{
-    aggregate_projection_plan, AggregateProjection, AggregateProjectionPlan,
-    AggregateProjectionStep,
-};
+pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use verify::{
-    verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,
-    SirDiagnostic, SirDiagnosticKind,
+    check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,
+    CfgDiscardSafetyReason, CheckedFunction, CheckedModule, SirDiagnostic, SirDiagnosticKind,
 };

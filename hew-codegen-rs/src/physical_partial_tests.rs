@@ -82,7 +82,15 @@ fn roots(code: i64) -> (Root, Root, Vec<usize>) {
 }
 
 fn physical_fixture(case: fixture::Case) -> PhysicalModule {
-    let semantic = fixture::module(case);
+    physical_fixture_storage(case, false)
+}
+
+fn physical_fixture_storage(case: fixture::Case, local: bool) -> PhysicalModule {
+    let semantic = if local {
+        fixture::local_module(case)
+    } else {
+        fixture::module(case)
+    };
     let diagnostics = hew_sir::verify_module(&semantic);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let target = physical_target_for_inventory(
@@ -105,7 +113,11 @@ fn physical_fixture(case: fixture::Case) -> PhysicalModule {
 }
 
 fn execute(case: fixture::Case, flag: bool, code: i64, order: &[usize]) {
-    let physical = physical_fixture(case);
+    execute_storage(case, flag, code, order, false);
+}
+
+fn execute_storage(case: fixture::Case, flag: bool, code: i64, order: &[usize], local: bool) {
+    let physical = physical_fixture_storage(case, local);
     let callee = &physical.callables[0];
     assert_eq!(callee.params[0].carrier, ParamCarrier::Indirect);
     assert_eq!(callee.params[1].carrier, ParamCarrier::Indirect);
@@ -173,6 +185,26 @@ fn execute(case: fixture::Case, flag: bool, code: i64, order: &[usize]) {
             assert!(fault.is_null());
             assert_eq!(result, 42);
         }
+    }
+}
+
+#[test]
+fn local_partial_assignment_and_fault_cleanup_release_only_live_leaves_at_o0_o2() {
+    for case in [
+        fixture::Case::LiveReplacement,
+        fixture::Case::DeadReplacement,
+    ] {
+        execute_storage(case, false, 1, &[2, 1, 5, 4, 0, 3], true);
+    }
+    execute_storage(
+        fixture::Case::MixedReplacement,
+        false,
+        1,
+        &[1, 2, 5, 4, 0, 3],
+        true,
+    );
+    for code in [0, 1] {
+        execute_storage(fixture::Case::Fault, false, code, &[1, 2, 0, 5, 4, 3], true);
     }
 }
 
@@ -246,7 +278,7 @@ fn projected_storage_uses_root_addresses_and_separate_initialization_bits() {
                 .into_owned()
         })
         .collect::<BTreeSet<_>>();
-    for (&id, projection) in &function.aggregate_storage {
+    for (&id, projection) in &function.place_storage {
         assert_eq!(
             allocations.contains(&format!("s{}", id.0)),
             projection.path.is_empty()

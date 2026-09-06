@@ -2136,6 +2136,20 @@ diagnostics. Both failed against the checked-fault output before their assertion
 were migrated. The separate controls for silent workers, hardware signals and
 Windows fault statuses remain unchanged, as does the product output.
 
+## Exercise lexical callback ownership across loop exits
+
+The new callback fixtures cover zero iterations and consuming breaks for
+immutable and mutable locals, replacement after a conditional take, continue,
+nested scopes, early returns, consumed parameters and owned captures. Separate
+argument and callback-body faults require cleanup of allocated strings, bytes
+and vectors on both sides of the call boundary. Observable work follows each
+loop so later release-order instrumentation can detect premature cleanup.
+
+At the published partial-aggregate baseline, all fixtures reach SIR and fail its
+ownership verifier on the conditional whole-owner join. They are pending
+acceptance cases for function-owned Local storage; native execution and paired
+sanitizer validation are not yet claimed.
+
 ## Admit the canonical string-prefix predicate
 
 String prefix checks now have an exact stdlib declaration and typed runtime
@@ -2163,6 +2177,28 @@ embedded NULs, empty strings and mismatching or longer prefixes. Both input
 values remain usable. When a later argument replaces the receiver variable,
 the comparison still uses the value evaluated first, including replacement by
 an empty string. Paired generated/runtime sanitizer validation is next.
+
+## Verify local storage without inventing an SSA owner
+
+SIR now models a local's active storage separately from whether its contents
+are initialized. A join may retain live or already-taken contents until lexical
+cleanup, without destroying a live value early or manufacturing an SSA owner.
+The same place query describes whole locals and complete nested field
+partitions. Allocation, initialization, borrowing, copying, taking, replacement
+and lifetime end share the existing ownership flow and canonical loan graph.
+
+Cleanup dispositions come from verified control flow. Linear contents require
+an explicit consume on normal and cancellation exits. Only a finite trap-only
+cleanup region may reclaim their representation without a consuming method;
+resource close obligations remain intact. An ordinary effect between an end
+and a trap prevents that end from gaining a trap exemption. Mixed predecessors,
+escaping cycles, outstanding loans and invalid storage activity are checked.
+
+Constructed SIR tests cover these boundaries, including zero-sized fields,
+non-copyable callables, private copies of borrowed parameters and partial local
+aggregates. The combined SIR, physical MIR and codegen suites pass. Lexical
+source promotion and physical Local execution remain separate implementation
+steps; the physical boundary continues to refuse Local storage explicitly.
 
 ## Validate borrowed string prefix execution
 
@@ -2267,3 +2303,76 @@ The compiler builds. Full lint passes Rust and shell checks, then stops at the
 dogfood benchmark's unsupported `JobState` aggregate transfer. Native execution
 of the encoding suites still needs the runtime-call and physical value protocols;
 source checking alone does not establish runtime copy or cleanup correctness.
+
+## Retain complete module verification at the physical boundary
+
+The checked module query now returns each body's verified place plan and
+cleanup dispositions together. It retains the same plan used by the lifetime
+flow, so physical lowering can consume the result without rebuilding plans or
+verifying each function again. The result borrows its source module immutably.
+
+The query preserves the full module boundary: aggregate and variant tables,
+capability and collection rows, function identities and literal pools. The
+existing diagnostics-only verifier uses this same path. Regression controls
+reject malformed module contexts and missing local cleanup while successful
+checks retain the exact local partition and cleanup disposition for each body.
+
+## Lexical source storage
+
+Owned source declarations now acquire Local places. Scalar bindings retain SSA
+values, while calls and expression results retain actual transfer obligations.
+One declaration-scope stack emits lexical lifetime ends without changing the
+context used to generate sibling control-flow paths. Loops carry scalar values
+and retain stable outer places through skipped, consuming and nested exits.
+
+The callback loop, later-argument fault and callback-body fault sources pass
+semantic verification and checked place-lifetime analysis. Match results copy
+ordinary outer bindings so later uses remain valid, while non-copyable values
+retain their transfer contract. Borrow ancestry uses an index derived from
+operation definitions and the canonical place paths.
+
+The SIR suite passes with source assertions following Local loads, writeback
+and lexical lifetime ends. Malformed-IR cases still reject missing loop and
+fault cleanup, premature owner ends and invalid field loans. Native Local
+execution remains a separate physical integration step.
+
+## Execute Local storage through physical MIR and LLVM
+
+Physical lowering now consumes the checked module's retained place plans and
+cleanup dispositions. A Local has its own allocation and active lifetime;
+initialization belongs only to its canonical terminal cells. Expanded roots
+and intermediate fields add no owner bit, while unexpanded and zero-sized
+locals each retain one content cell. Copy, take, borrow, replacement and end
+operate on this same partition. Runtime results still initialize their cells
+only on the normal return edge.
+
+LLVM uses conditional leaf cleanup for replacement and lifetime end, including
+joins where only one predecessor consumed the old contents. Trap-certified
+Linear cleanup reclaims the live representation without invoking a consuming
+method. Ordinary cleanup and assignment retain their Linear restrictions.
+Physical verification checks storage activity separately from content state
+and binds cleanup dispositions to their originating function, source and site.
+
+Constructed SIR fixtures execute with the real runtime at O0 and O2. An allocated
+closure capture survives a zero-iteration loop until after observable work,
+and the consuming iteration releases it before that work. Additional execution
+and malformed-IR tests cover conditional assignment, nested loans, repeated
+empty lifetimes, zero-sized cells, partial aggregates and trap reclamation.
+These tests establish the physical storage contract independently of lexical
+source production; combined source acceptance remains a separate check.
+
+## Preserve certified cleanup through physical CFG changes
+
+A cleanup's function and storage identity do not prove that mutable physical
+control flow still reaches the certified exit. Physical verification now
+checks continuations from SIR-certified trap cleanup: only certified cleanup
+and loan ends may follow, and every path must finish with a trap or fault
+propagation. Ordinary effects, returning branches and cycles invalidate the
+certificate. This check can reject a stale certificate but cannot assign a
+cleanup mode or grant an exemption.
+
+Malformed physical controls reproduce the previously accepted ordinary return
+and reject work inserted after cleanup, including an observable print call.
+A finite branching cleanup region remains valid, while a returning successor
+or an escaping cycle is refused. The physical and LLVM suites continue to
+execute the Local ownership and allocated-capture witnesses at O0 and O2.

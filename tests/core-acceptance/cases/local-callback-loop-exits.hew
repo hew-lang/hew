@@ -1,0 +1,98 @@
+fn make_callback(label: string) -> fn[once]() -> string {
+    let title = label.to_upper();
+    let payload = label.to_bytes();
+    move || f"{title}:{payload.len()}"
+}
+
+fn immutable_exit(enabled: bool) {
+    let callback = make_callback("immutable");
+    while enabled {
+        println(callback());
+        break;
+    }
+    println("after immutable");
+}
+
+fn mutable_exit(enabled: bool) {
+    var callback = make_callback("mutable");
+    while enabled {
+        println(callback());
+        break;
+    }
+    println("after mutable");
+    callback = make_callback("restored");
+    println(callback());
+}
+
+fn repeated_replacement() {
+    var callback = make_callback("initial");
+    for round in 0..3 {
+        println(callback());
+        if round == 2 {
+            break;
+        }
+        callback = make_callback(f"round {round}");
+        continue;
+    }
+    println("after replacements");
+    callback = make_callback("final");
+    println(callback());
+}
+
+fn nested_exit(enabled: bool) {
+    for round in 0..2 {
+        let callback = make_callback(f"nested {round}");
+        while enabled {
+            println(callback());
+            break;
+        }
+        println(f"after nested {round}");
+    }
+}
+
+fn returning_exit(enabled: bool) -> i64 {
+    let callback = make_callback("return");
+    while enabled {
+        println(callback());
+        return 9;
+    }
+    println("after return loop");
+    7
+}
+
+fn parameter_exit(consume callback: fn[once]() -> string, enabled: bool) {
+    while enabled {
+        println(callback());
+        break;
+    }
+    println("after parameter");
+}
+
+fn captured_exit(enabled: bool) {
+    let callback = make_callback("captured");
+    let run = move || {
+        while enabled {
+            println(callback());
+            break;
+        }
+        println("after captured");
+    };
+    run();
+}
+
+fn main() -> i64 {
+    immutable_exit(false);
+    immutable_exit(true);
+    mutable_exit(false);
+    mutable_exit(true);
+    repeated_replacement();
+    nested_exit(false);
+    nested_exit(true);
+    println(returning_exit(false));
+    println(returning_exit(true));
+    parameter_exit(make_callback("parameter"), false);
+    parameter_exit(make_callback("parameter"), true);
+    captured_exit(false);
+    captured_exit(true);
+    0
+}

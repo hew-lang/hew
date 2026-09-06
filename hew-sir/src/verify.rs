@@ -135,6 +135,12 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: &'static str,
     },
+    /// Local storage activity, content availability or cleanup is invalid.
+    PlaceLifetime {
+        block: BlockId,
+        place: crate::PlaceId,
+        reason: &'static str,
+    },
     /// The function-owned fault must be present at propagation and cannot be lost.
     FaultLifetime {
         block: BlockId,
@@ -387,8 +393,60 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
     }
 }
 
+/// Per-function place analysis retained by successful semantic verification.
+/// Its plan and cleanup dispositions come from the same checked body.
+#[derive(Debug)]
+pub struct CheckedFunction {
+    places: crate::PlacePlan,
+    lifetimes: crate::PlaceLifetimes,
+}
+
+impl CheckedFunction {
+    #[must_use]
+    pub fn place_plan(&self) -> &crate::PlacePlan {
+        &self.places
+    }
+
+    #[must_use]
+    pub fn place_lifetimes(&self) -> &crate::PlaceLifetimes {
+        &self.lifetimes
+    }
+}
+
+/// A module accepted by every semantic context and function check.
+/// The immutable input borrow keeps its analyses tied to the checked revision.
+#[derive(Debug)]
+pub struct CheckedModule<'a> {
+    module: &'a SemModule,
+    functions: BTreeMap<CallableId, CheckedFunction>,
+}
+
+impl<'a> CheckedModule<'a> {
+    #[must_use]
+    pub fn module(&self) -> &'a SemModule {
+        self.module
+    }
+
+    /// Analysis for a concrete body, identified by its semantic callable.
+    #[must_use]
+    pub fn function(&self, callable: CallableId) -> Option<&CheckedFunction> {
+        self.functions.get(&callable)
+    }
+}
+
 #[must_use]
 pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
+    check_module(module).err().unwrap_or_default()
+}
+
+/// Verify all module contracts and every body, retaining their checked places
+/// and lifetime dispositions for the next compiler stage. Module context is
+/// checked once; each body's place plan and lifetime flow are computed once.
+///
+/// # Errors
+/// Returns all diagnostics from the same checks used by [`verify_module`].
+pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiagnostic>> {
+    let mut functions = BTreeMap::new();
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
@@ -458,15 +516,23 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                 ));
             }
         }
-        diagnostics.extend(verify_function_with_context(
+        let (function_diagnostics, analysis) = check_function_with_context(
             function,
             Some(&callables),
             &module.type_facts,
             &module.aggregate_shapes,
             &module.variant_shapes,
-        ));
+        );
+        diagnostics.extend(function_diagnostics);
+        if let Some(analysis) = analysis {
+            functions.insert(function.callable, analysis);
+        }
     }
-    diagnostics
+    if diagnostics.is_empty() {
+        Ok(CheckedModule { module, functions })
+    } else {
+        Err(diagnostics)
+    }
 }
 
 fn verify_required_value_capabilities(
@@ -549,6 +615,43 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
         &module.variant_shapes,
     ));
     diagnostics
+}
+
+/// Check one function and return cleanup dispositions from its lifetime flow.
+/// No producer flag or physical fault-carrier inference may replace this query.
+/// This focused query does not validate the entire module context. Compiler
+/// stage boundaries should use [`check_module`] to retain both the checked
+/// place plan and lifetime result after all module-level checks.
+///
+/// # Errors
+/// Returns the same semantic diagnostics as function verification, including
+/// invalid callable contracts, storage activity, loans and linear cleanup.
+///
+/// # Panics
+/// Panics only if an internal verifier inconsistency accepts a function without
+/// producing its checked lifetime result.
+pub fn place_lifetimes(
+    module: &SemModule,
+    function: &SemFunction,
+) -> Result<crate::PlaceLifetimes, Vec<SirDiagnostic>> {
+    let mut diagnostics = Vec::new();
+    let callables = verify_callable_table(module, &mut diagnostics);
+    verify_required_value_capabilities(module, function, &mut diagnostics);
+    let (function_diagnostics, lifetimes) = check_function_with_context(
+        function,
+        Some(&callables),
+        &module.type_facts,
+        &module.aggregate_shapes,
+        &module.variant_shapes,
+    );
+    diagnostics.extend(function_diagnostics);
+    if diagnostics.is_empty() {
+        Ok(lifetimes
+            .expect("valid function has checked place lifetimes")
+            .lifetimes)
+    } else {
+        Err(diagnostics)
+    }
 }
 
 /// Verify one semantic SSA function before it crosses into another SIR pass
@@ -685,10 +788,6 @@ fn cfg_discard_diag(
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
-)]
 pub(crate) fn verify_function_with_context(
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
@@ -696,6 +795,27 @@ pub(crate) fn verify_function_with_context(
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
 ) -> Vec<SirDiagnostic> {
+    check_function_with_context(
+        function,
+        callable_context,
+        facts,
+        aggregate_shapes,
+        variant_shapes,
+    )
+    .0
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
+)]
+fn check_function_with_context(
+    function: &SemFunction,
+    callable_context: Option<&CallableContext<'_>>,
+    facts: &TypeFactTable,
+    aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
+) -> (Vec<SirDiagnostic>, Option<CheckedFunction>) {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
     if let Err(reason) = verify_capture_places(function, callable_context) {
@@ -853,7 +973,7 @@ pub(crate) fn verify_function_with_context(
             ));
         }
     }
-    let projections = crate::aggregate_projection_plan(function, aggregate_shapes, facts);
+    let projections = crate::place_plan(function, aggregate_shapes, facts);
     if let Err(reason) = &projections {
         diagnostics.push(diag(
             function,
@@ -968,29 +1088,36 @@ pub(crate) fn verify_function_with_context(
             );
         }
     }
+    let mut lifetimes = None;
     if let Ok(projections) = projections {
-        diagnostics.extend(
-            crate::lifetime::verify(function, &projections)
-                .into_iter()
-                .map(|violation| {
-                    diag(
-                        function,
-                        match violation.value {
-                            Some(value) => SirDiagnosticKind::OwnershipLifetime {
-                                block: violation.block,
-                                value,
-                                reason: violation.reason,
-                            },
-                            None => SirDiagnosticKind::FaultLifetime {
-                                block: violation.block,
-                                reason: violation.reason,
-                            },
-                        },
-                    )
-                }),
-        );
+        let analysis = crate::lifetime::verify(function, &projections, facts);
+        diagnostics.extend(analysis.violations.into_iter().map(|violation| {
+            diag(
+                function,
+                match (violation.value, violation.place) {
+                    (_, Some(place)) => SirDiagnosticKind::PlaceLifetime {
+                        block: violation.block,
+                        place,
+                        reason: violation.reason,
+                    },
+                    (Some(value), None) => SirDiagnosticKind::OwnershipLifetime {
+                        block: violation.block,
+                        value,
+                        reason: violation.reason,
+                    },
+                    (None, None) => SirDiagnosticKind::FaultLifetime {
+                        block: violation.block,
+                        reason: violation.reason,
+                    },
+                },
+            )
+        }));
+        lifetimes = Some(CheckedFunction {
+            places: projections,
+            lifetimes: analysis.lifetimes,
+        });
     }
-    diagnostics
+    (diagnostics, lifetimes)
 }
 
 #[allow(
@@ -1575,10 +1702,10 @@ fn verify_capture_operation(
     context: Option<&CallableContext<'_>>,
 ) -> Option<Result<(), String>> {
     let (place, stored, borrowed, takes) = match &operation.kind {
-        SemOpKind::LoadCopy { place } => (*place, None, None, false),
-        SemOpKind::LoadTake { place } => (*place, None, None, true),
-        SemOpKind::LoadBorrow { place, environment } => (*place, None, Some(environment), false),
-        SemOpKind::StoreAssign { place, value } => (*place, Some(value), None, false),
+        SemOpKind::LoadCopy { place } => (*place, None, false, false),
+        SemOpKind::LoadTake { place } => (*place, None, false, true),
+        SemOpKind::LoadBorrow { place } => (*place, None, true, false),
+        SemOpKind::StoreAssign { place, value } => (*place, Some(value), false, false),
         _ => return None,
     };
     Some((|| {
@@ -1588,7 +1715,7 @@ fn verify_capture_operation(
             .iter()
             .find(|decl| decl.id == place)
             .ok_or_else(|| "capture operation names an unknown place".to_string())?;
-        let crate::PlaceOrigin::Capture { environment, field } = decl.origin else {
+        let crate::PlaceOrigin::Capture { field, .. } = decl.origin else {
             return Err("capture operation requires an environment-owned place".to_string());
         };
         let field = closure
@@ -1616,9 +1743,8 @@ fn verify_capture_operation(
         if result.ty != decl.ty {
             return Err("capture load changes its field type".to_string());
         }
-        if let Some(parent) = borrowed {
-            if parent.value != environment || OwnKind::of_ty(&decl.ty, facts) != Ok(OwnKind::Owned)
-            {
+        if borrowed {
+            if OwnKind::of_ty(&decl.ty, facts) != Ok(OwnKind::Owned) {
                 return Err(
                     "capture loan requires its exact environment and an owning field".to_string(),
                 );
@@ -1691,13 +1817,14 @@ fn callable_mutation_permitted(
             });
         };
         if let SemOpKind::LoadBorrow { place, .. } = operation.kind {
-            if let Some(crate::PlaceDecl {
-                origin: crate::PlaceOrigin::Aggregate { root, .. },
-                ..
-            }) = function.places.iter().find(|decl| decl.id == place)
-            {
-                value = *root;
-                continue;
+            if let Ok((root, _)) = crate::projection::place_path(&function.places, place) {
+                match root {
+                    crate::OwnerRoot::Value(root) => {
+                        value = root;
+                        continue;
+                    }
+                    crate::OwnerRoot::Local(_) => return true,
+                }
             }
             return closure_for_body(function, context)
                 .ok()
@@ -1718,8 +1845,8 @@ fn callable_mutation_permitted(
                         })
                 });
         }
-        if let Some(parent) = operation.kind.borrow_parent() {
-            value = parent.value;
+        if let Some(crate::PlaceBase::Value(parent)) = operation.kind.borrow_parent() {
+            value = parent;
             continue;
         }
         return operation
@@ -1995,6 +2122,7 @@ fn verify_operation_shape(
     let expected_results = usize::from(!matches!(
         operation.kind,
         SemOpKind::DestroyValue { .. }
+            | SemOpKind::AllocPlace { .. }
             | SemOpKind::EndBorrow { .. }
             | SemOpKind::StoreInit { .. }
             | SemOpKind::StoreAssign { .. }
@@ -3584,21 +3712,19 @@ fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
 fn uses_in_op(function: &SemFunction, op: &crate::SemOp) -> Vec<(ValueId, bool)> {
     let mut uses = Vec::new();
     op.visit_operands(|_, operand| uses.push((operand.value, false)));
-    let place = match op.kind {
-        SemOpKind::LoadTake { place }
-        | SemOpKind::LoadCopy { place }
-        | SemOpKind::LoadBorrow { place, .. }
-        | SemOpKind::StoreInit { place, .. }
-        | SemOpKind::StoreAssign { place, .. } => Some(place),
-        _ => None,
-    };
-    if let Some(crate::PlaceDecl {
-        origin: crate::PlaceOrigin::Aggregate { root, .. },
-        ..
-    }) = place.and_then(|id| function.places.iter().find(|place| place.id == id))
-    {
-        uses.push((*root, false));
-    }
+    op.kind.visit_places(|id| {
+        if let Some(crate::PlaceDecl {
+            origin: crate::PlaceOrigin::Capture { environment, .. },
+            ..
+        }) = function.places.iter().find(|place| place.id == id)
+        {
+            uses.push((*environment, false));
+        } else if let Ok((crate::OwnerRoot::Value(root), _)) =
+            crate::projection::place_path(&function.places, id)
+        {
+            uses.push((root, false));
+        }
+    });
     uses
 }
 

@@ -2,10 +2,11 @@
 
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    aggregate_projection_plan, lower_module, verify_module, AggregateShapeRef, BlockArg, BlockId,
+    lower_module, place_plan, verify_module, AggregateShapeRef, BlockArg, BlockId,
     BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, Edge, OpId, Operand, OwnKind,
-    PlaceDecl, PlaceId, PlaceOrigin, Provenance, SemBlock, SemFunction, SemModule, SemOp,
-    SemOpKind, SemTerminator, SirDiagnosticKind, SirLoweringStatus, ValueDef, ValueId,
+    OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin, Provenance, SemBlock, SemFunction,
+    SemModule, SemOp, SemOpKind, SemTerminator, SirDiagnosticKind, SirLoweringStatus, ValueDef,
+    ValueId,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -74,8 +75,7 @@ fn partition(root: u32, start: u32) -> Vec<PlaceDecl> {
         id: PlaceId(start + u32::try_from(index).unwrap()),
         ty,
         origin: PlaceOrigin::Aggregate {
-            root: ValueId(root),
-            parent,
+            base: parent.map_or(PlaceBase::Value(ValueId(root)), PlaceBase::Place),
             shape: AggregateShapeRef::Tuple,
             field,
         },
@@ -207,10 +207,9 @@ fn nested_take_preserves_siblings_and_one_root_cleanup() {
     ];
     assert_valid(&module);
     let function = probe(&mut module).clone();
-    let plan =
-        aggregate_projection_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
     assert_eq!(
-        plan.leaves(ValueId(0)).unwrap(),
+        plan.leaves(OwnerRoot::Value(ValueId(0))).unwrap(),
         [PlaceId(0), PlaceId(2), PlaceId(3)]
     );
     let nested = plan.projection(PlaceId(2)).unwrap();
@@ -321,8 +320,7 @@ fn partial_state_crosses_root_versions_and_joined_assignment_restores_it() {
 
 fn assert_projection_error(module: &mut SemModule, expected: &str) {
     let function = probe(module).clone();
-    let error = aggregate_projection_plan(&function, &module.aggregate_shapes, &module.type_facts)
-        .unwrap_err();
+    let error = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap_err();
     assert!(error.contains(expected), "{error}");
     let diagnostics = verify_module(module);
     assert!(
@@ -349,15 +347,16 @@ fn projection_query_rejects_missing_siblings_and_lost_cfg_partitions() {
     assert_projection_error(&mut collapsed, "loses or invents projected field state");
 
     let mut forgotten = joined_fixture();
-    probe(&mut forgotten).places.retain(|place| {
-        !matches!(
-            place.origin,
-            PlaceOrigin::Aggregate {
-                root: ValueId(4),
-                ..
-            }
-        )
-    });
+    let function = probe(&mut forgotten).clone();
+    let plan = place_plan(
+        &function,
+        &forgotten.aggregate_shapes,
+        &forgotten.type_facts,
+    )
+    .unwrap();
+    probe(&mut forgotten)
+        .places
+        .retain(|place| plan.projection(place.id).unwrap().root != OwnerRoot::Value(ValueId(4)));
     assert_projection_error(&mut forgotten, "loses or invents projected field state");
 }
 
@@ -370,16 +369,16 @@ fn projection_query_rejects_ambiguous_or_inexact_paths() {
     assert_projection_error(&mut duplicate, "duplicate places for one field");
 
     let mut cycle = fixture();
-    if let PlaceOrigin::Aggregate { parent, .. } = &mut probe(&mut cycle).places[1].origin {
-        *parent = Some(PlaceId(3));
+    if let PlaceOrigin::Aggregate { base, .. } = &mut probe(&mut cycle).places[1].origin {
+        *base = PlaceBase::Place(PlaceId(3));
     }
     assert_projection_error(&mut cycle, "cyclic parent path");
 
     let mut changed_root = fixture();
-    if let PlaceOrigin::Aggregate { root, .. } = &mut probe(&mut changed_root).places[2].origin {
-        *root = ValueId(1);
+    if let PlaceOrigin::Aggregate { base, .. } = &mut probe(&mut changed_root).places[2].origin {
+        *base = PlaceBase::Value(ValueId(1));
     }
-    assert_projection_error(&mut changed_root, "changes its owning root");
+    assert_projection_error(&mut changed_root, "requires an owned root");
 
     let mut wrong_type = fixture();
     probe(&mut wrong_type).places[2].ty = ResolvedTy::Bytes;
@@ -687,8 +686,8 @@ fn record_fixture() -> SemModule {
     let function = probe(&mut module);
     function.places[1].ty = inner_ty;
     for place in &mut function.places {
-        if let PlaceOrigin::Aggregate { parent, shape, .. } = &mut place.origin {
-            *shape = if parent.is_some() {
+        if let PlaceOrigin::Aggregate { base, shape, .. } = &mut place.origin {
+            *shape = if matches!(base, PlaceBase::Place(_)) {
                 inner_shape
             } else {
                 outer_shape
@@ -747,10 +746,11 @@ fn custom_cleanup_fields_remain_indivisible_transferable_leaves() {
             .marker = marker;
         probe(&mut module).places.truncate(2);
         let function = probe(&mut module).clone();
-        let plan =
-            aggregate_projection_plan(&function, &module.aggregate_shapes, &module.type_facts)
-                .unwrap();
-        assert_eq!(plan.leaves(ValueId(0)).unwrap(), [PlaceId(0), PlaceId(1)]);
+        let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+        assert_eq!(
+            plan.leaves(OwnerRoot::Value(ValueId(0))).unwrap(),
+            [PlaceId(0), PlaceId(1)]
+        );
         assert_eq!(plan.projection(PlaceId(1)).unwrap().recipe.ty, inner_ty);
     }
 }
@@ -782,8 +782,7 @@ fn opaque_fields_are_leaves_but_cannot_be_projection_ancestors() {
     assert_projection_error(&mut module, "cannot traverse an opaque ancestor");
     probe(&mut module).places.truncate(2);
     let function = probe(&mut module).clone();
-    let plan =
-        aggregate_projection_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
     assert_eq!(plan.projection(PlaceId(1)).unwrap().recipe.ty, opaque_ty);
 }
 
@@ -805,8 +804,7 @@ fn zero_sized_no_drop_fields_still_have_initialization_identity() {
             id: PlaceId(0),
             ty: ResolvedTy::String,
             origin: PlaceOrigin::Aggregate {
-                root: ValueId(0),
-                parent: None,
+                base: PlaceBase::Value(ValueId(0)),
                 shape: AggregateShapeRef::Tuple,
                 field: 0,
             },
@@ -815,8 +813,7 @@ fn zero_sized_no_drop_fields_still_have_initialization_identity() {
             id: PlaceId(1),
             ty: empty_ty.clone(),
             origin: PlaceOrigin::Aggregate {
-                root: ValueId(0),
-                parent: None,
+                base: PlaceBase::Value(ValueId(0)),
                 shape: AggregateShapeRef::Tuple,
                 field: 1,
             },

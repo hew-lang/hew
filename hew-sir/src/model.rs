@@ -10,8 +10,8 @@ use hew_types::{
 };
 
 use crate::ownership::{
-    Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId,
-    StringLiteralId, SuspendKind, TrapKind,
+    Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceBase, PlaceDecl,
+    PlaceId, StringLiteralId, SuspendKind, TrapKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -237,8 +237,8 @@ pub struct SemFunction {
     pub return_ty: ResolvedTy,
     pub entry: BlockId,
     pub blocks: Vec<SemBlock>,
-    /// Memory places this body addresses (§1.3 `alloc_place`). Non-escaping
-    /// `var`s never get one: HIR-to-SIR construction does mem2reg.
+    /// Semantic storage locations this body addresses, with typed origins and
+    /// explicit lifetime operations independent of their physical allocation.
     pub places: Vec<PlaceDecl>,
     /// Every source binding in this body, parameters first and then statement
     /// bindings in source order (§1.6).
@@ -278,6 +278,9 @@ impl SemFunction {
 /// Runtime, C-ABI, coroutine, actor, and other specialised conventions stay
 /// outside this initial domain.  Keeping this enum explicit prevents a
 /// resolved SIR call from silently acquiring a target-specific ABI policy.
+/// Default calls return normally or propagate an unrecoverable trap. They do
+/// not transport cooperative cancellation; admitting another exit cause must
+/// extend this contract and the lifetime flow together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemCallConv {
     Default,
@@ -943,10 +946,10 @@ pub enum SemOpKind {
         source: Operand,
     },
     /// Borrow a projected field, retaining its explicit owner dependency.
-    /// `environment` is the capture receiver or the aggregate root value.
+    /// Its sole dependency is the declared place; the place origin supplies
+    /// the owner instead of a redundant value operand.
     LoadBorrow {
         place: PlaceId,
-        environment: Operand,
     },
     ConstI64(i64),
     ConstBool(bool),
@@ -1038,7 +1041,8 @@ pub enum SemOpKind {
         source: Operand,
     },
     /// `destroy_value %v` - consumes the obligation. Illegal on a `Linear`
-    /// value except on an unwind edge (rule 6d).
+    /// value except within verified trap-only cleanup (rule 6d). Cancellation
+    /// does not forgive the consuming obligation.
     DestroyValue {
         value: Operand,
     },
@@ -1123,6 +1127,7 @@ impl SemOpKind {
             | Self::ConstBytes(_)
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
+            | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::EndLifetime { .. } => {}
             Self::TupleMake { elements } => {
@@ -1160,9 +1165,6 @@ impl SemOpKind {
                 visit(OperandSlot(1), rhs);
             }
             Self::CallableCoerce { source: value }
-            | Self::LoadBorrow {
-                environment: value, ..
-            }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
@@ -1196,6 +1198,7 @@ impl SemOpKind {
             | Self::ConstBytes(_)
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
+            | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::EndLifetime { .. } => {}
             Self::TupleMake { elements } => {
@@ -1233,9 +1236,6 @@ impl SemOpKind {
                 visit(OperandSlot(1), rhs);
             }
             Self::CallableCoerce { source: value }
-            | Self::LoadBorrow {
-                environment: value, ..
-            }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
@@ -1250,15 +1250,59 @@ impl SemOpKind {
         }
     }
 
+    /// Visit the declared storage locations directly addressed by this operation.
+    pub fn visit_places(&self, mut visit: impl FnMut(PlaceId)) {
+        match self {
+            Self::AllocPlace { place }
+            | Self::LoadCopy { place }
+            | Self::LoadTake { place }
+            | Self::LoadBorrow { place }
+            | Self::StoreInit { place, .. }
+            | Self::StoreAssign { place, .. }
+            | Self::EndLifetime { place } => visit(*place),
+            Self::FunctionMake { .. }
+            | Self::ClosureMake { .. }
+            | Self::CallableCoerce { .. }
+            | Self::ConstI64(..)
+            | Self::ConstBool(..)
+            | Self::TupleMake { .. }
+            | Self::TupleGet { .. }
+            | Self::AggregateMake { .. }
+            | Self::AggregateProjectCopy { .. }
+            | Self::AggregateProjectBorrow { .. }
+            | Self::VariantMake { .. }
+            | Self::Unary { .. }
+            | Self::Binary { .. }
+            | Self::Cast { .. }
+            | Self::ConstF64(..)
+            | Self::ConstChar(..)
+            | Self::ConstUnit
+            | Self::ConstDuration(..)
+            | Self::ConstStr(..)
+            | Self::ConstBytes(..)
+            | Self::StrEq { .. }
+            | Self::BytesEq { .. }
+            | Self::CopyValue { .. }
+            | Self::DestroyValue { .. }
+            | Self::BeginBorrow { .. }
+            | Self::EndBorrow { .. }
+            | Self::Move { .. }
+            | Self::Fork { .. }
+            | Self::Destructure { .. } => {}
+        }
+    }
+
     /// Immediate lifetime dependency of the operation's guaranteed result.
     /// Projection chains preserve each parent rather than guessing an owner
     /// from the result's type or its eventual runtime consumer.
     #[must_use]
-    pub const fn borrow_parent(&self) -> Option<&Operand> {
+    pub const fn borrow_parent(&self) -> Option<PlaceBase> {
         match self {
-            Self::BeginBorrow { owner } => Some(owner),
-            Self::LoadBorrow { environment, .. } => Some(environment),
-            Self::AggregateProjectBorrow { aggregate, .. } => Some(aggregate),
+            Self::BeginBorrow { owner } => Some(PlaceBase::Value(owner.value)),
+            Self::LoadBorrow { place } => Some(PlaceBase::Place(*place)),
+            Self::AggregateProjectBorrow { aggregate, .. } => {
+                Some(PlaceBase::Value(aggregate.value))
+            }
             _ => None,
         }
     }
@@ -1277,7 +1321,6 @@ impl SemOpKind {
             // `destroy_value` or a place write is observable.
             Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
-            | Self::LoadBorrow { .. }
             | Self::CopyValue { .. }
             | Self::DestroyValue { .. }
             | Self::BeginBorrow { .. }
@@ -1291,6 +1334,7 @@ impl SemOpKind {
             | Self::Destructure { .. }
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
+            | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::StoreInit { .. }
             | Self::StoreAssign { .. }

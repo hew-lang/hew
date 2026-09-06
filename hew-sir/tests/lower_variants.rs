@@ -435,15 +435,14 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
         .find(|function| function.name == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     let fallback = choose
-        .blocks
+        .bindings
         .iter()
-        .flat_map(|block| &block.ops)
-        .find_map(|operation| {
-            matches!(operation.kind, SemOpKind::ConstStr(_))
-                .then(|| operation.results.first().map(|result| result.id))
-                .flatten()
-        })
-        .expect("choose must define its fallback string");
+        .find(|binding| binding.name == "fallback")
+        .expect("choose must define its fallback string")
+        .target;
+    let hew_sir::BindingTarget::Place(fallback) = fallback else {
+        panic!("fallback must have local storage")
+    };
     assert!(
         choose
             .blocks
@@ -451,7 +450,7 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
             .flat_map(|block| &block.ops)
             .any(|operation| matches!(
                 &operation.kind,
-                SemOpKind::CopyValue { source } if source.value == fallback
+                SemOpKind::LoadCopy { place } if *place == fallback
             )),
         "the None arm must copy its outer fallback instead of consuming it"
     );

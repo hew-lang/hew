@@ -5,6 +5,9 @@ use std::ops::Range;
 #[path = "lower_projection.rs"]
 mod projection;
 
+#[path = "lower_binding.rs"]
+mod binding;
+
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
     HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
@@ -16,12 +19,13 @@ use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService,
 
 use crate::ownership::{Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable};
 use crate::{
-    AggregateShapeId, AggregateShapeRef, BlockArg, BlockId, CallResult, CallUnwind, CallableId,
-    CallableInstance, CheckedFailure, Edge, FunctionSourceOrigin, GenericTemplateId, OpId, Operand,
-    Provenance, SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock, SemCallConv,
-    SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField,
-    SemVariantShape, SirInstanceKey, ValueDef, ValueId, VariantShapeId,
+    AggregateShapeId, AggregateShapeRef, BindingTarget, BlockArg, BlockId, CallResult, CallUnwind,
+    CallableId, CallableInstance, CheckedFailure, Edge, FunctionSourceOrigin, GenericTemplateId,
+    OpId, Operand, PlaceId, PlaceOrigin, Provenance, SemAbiParam, SemAggregateField,
+    SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
+    SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
+    SemVariant, SemVariantArm, SemVariantField, SemVariantShape, SirInstanceKey, ValueDef, ValueId,
+    VariantShapeId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2132,9 +2136,10 @@ impl PreparedCallee {
 #[derive(Clone)]
 struct ControlState {
     block: BlockId,
-    bindings: HashMap<BindingId, ValueId>,
+    bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    scopes: Vec<Vec<BindingId>>,
 }
 
 struct MatchExit {
@@ -2233,6 +2238,7 @@ struct LoopScope {
     exit: BlockId,
     carried: Vec<BindingId>,
     preserved: BTreeSet<ValueId>,
+    scope_floor: usize,
 }
 
 /// A checked local root and concrete aggregate projections. Resolving this
@@ -2244,9 +2250,8 @@ struct BindingPlace {
     projections: Vec<(ResolvedTy, AggregateShapeRef, usize)>,
 }
 
-/// Fields retained while one leaf is transferred or replaced. The existing
-/// owned-live relation carries their cleanup obligations across a call.
-struct AggregateParent {
+/// Non-owning aggregate fields retained during a scalar field replacement.
+struct ScalarAggregateParent {
     ty: ResolvedTy,
     shape: AggregateShapeRef,
     index: usize,
@@ -2262,12 +2267,14 @@ struct Builder<'hir, 'service> {
     current: BlockId,
     values: u32,
     ops: u32,
-    bindings: HashMap<BindingId, ValueId>,
+    bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
-    /// Binding owners that a nested value-producing branch must preserve even
-    /// when its result position otherwise permits moving a fresh local.
-    move_protected_bindings: std::collections::HashSet<BindingId>,
+    /// Definition ancestry derived once from `SemOpKind::borrow_parent`.
+    borrow_parents: HashMap<ValueId, crate::PlaceBase>,
+    /// Lexical declarations only. Storage activity and payload availability
+    /// belong to the verified place lifetime relation.
+    scopes: Vec<Vec<BindingId>>,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -2317,7 +2324,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 let value = ValueId(values);
                 values += 1;
-                bindings.insert(param.id, value);
+                bindings.insert(param.id, BindingTarget::Value(value));
                 // The header decides whether the caller retains the obligation
                 // or transfers it to this body's normal and fault cleanup.
                 let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts.rows())?;
@@ -2358,7 +2365,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings,
             binding_declarations,
             owned_live,
-            move_protected_bindings: std::collections::HashSet::new(),
+            borrow_parents: HashMap::new(),
+            scopes: vec![Vec::new()],
             source_bindings,
             params,
             loops: Vec::new(),
@@ -2368,6 +2376,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         };
         builder.bind_captures(source)?;
         builder.bind_private_value_parameters(source_params)?;
+        for parameter in source_params {
+            if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
+                let target = builder.acquire_binding_target(value)?;
+                builder.bindings.insert(parameter.id, target);
+                let declaration = builder.binding_declarations[&parameter.id];
+                builder.source_bindings[declaration].target = target;
+            }
+            builder.declare_in_scope(parameter.id);
+        }
         Ok(builder)
     }
 
@@ -2380,7 +2397,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 continue;
             }
             let ty = self.ty(&parameter.ty);
-            let source = self.bindings[&parameter.id];
+            let BindingTarget::Value(source) = self.binding_target(parameter.id)? else {
+                continue;
+            };
             if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
                 continue;
             }
@@ -2397,9 +2416,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     source: Operand { value: source },
                 },
             )?;
-            self.bindings.insert(parameter.id, copied);
+            let target = self.acquire_binding_target(copied)?;
+            self.bindings.insert(parameter.id, target);
             let declaration = self.binding_declarations[&parameter.id];
-            self.source_bindings[declaration].target = crate::BindingTarget::Value(copied);
+            self.source_bindings[declaration].target = target;
         }
         Ok(())
     }
@@ -2427,7 +2447,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for (index, capture) in captures.iter().enumerate() {
             let field =
                 u32::try_from(index).map_err(|_| "capture count exceeds u32".to_string())?;
-            let place = crate::PlaceId(field);
+            let place =
+                PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
             self.places.push(crate::PlaceDecl {
                 id: place,
                 ty: self.ty(&capture.ty),
@@ -2437,6 +2458,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             });
             self.capture_places.insert(capture.binding, place);
+            self.bindings
+                .insert(capture.binding, BindingTarget::Place(place));
             self.source_bindings.push(Binding {
                 id: crate::BindingId(
                     u32::try_from(self.source_bindings.len())
@@ -2447,20 +2470,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 mutable: capture.access == hew_types::ClosureCaptureAccess::Var,
                 target: crate::BindingTarget::Place(place),
             });
-            let ty = self.ty(&capture.ty);
-            if capture.consumption == hew_types::ClosureCaptureConsumption::Consumed
-                && is_concrete_aggregate_type(&self.service.checked_facts, &ty)
-            {
-                // A consuming closure owns the whole captured aggregate. Give
-                // its body one local root so partial fields and their siblings
-                // share ordinary cleanup, even when a branch skips the take.
+            let declaration = self.source_bindings.len() - 1;
+            self.binding_declarations
+                .insert(capture.binding, declaration);
+            self.declare_in_scope(capture.binding);
+        }
+        for capture in captures {
+            if capture.consumption == hew_types::ClosureCaptureConsumption::Consumed {
                 let value = self.load_capture(capture.binding, Provenance::Synthesized, true)?;
                 self.capture_places.remove(&capture.binding);
-                self.bindings.insert(capture.binding, value);
-                let declaration = self.source_bindings.len() - 1;
-                self.binding_declarations
-                    .insert(capture.binding, declaration);
-                self.source_bindings[declaration].target = crate::BindingTarget::Value(value);
+                let target = self.acquire_binding_target(value)?;
+                self.bindings.insert(capture.binding, target);
+                let declaration = self.binding_declarations[&capture.binding];
+                self.source_bindings[declaration].target = target;
             }
         }
         Ok(())
@@ -2608,86 +2630,68 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
-        if own == OwnKind::Owned
-            && self
+        if own == OwnKind::Owned {
+            let movable = self
                 .service
                 .checked_facts
                 .rows()
                 .get(&TypeInstanceKey(ty.clone()))
-                .is_some_and(|facts| facts.clone == hew_types::CloneKind::None)
-        {
-            if let Some(value) = self.lower_consuming_projection(expr)? {
-                return Ok(value);
+                .is_some_and(|row| row.clone == hew_types::CloneKind::None);
+            if movable {
+                if let Some(value) = self.lower_consuming_projection(expr)? {
+                    return Ok(value);
+                }
+            }
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &expr.kind
+            {
+                match self.binding_target(*binding)? {
+                    BindingTarget::Place(place) => {
+                        let mut take = movable || binding_use == OwnedBindingUse::Move;
+                        if take {
+                            if let Some((_, field)) = self.capture_field(*binding) {
+                                if field.consumption
+                                    != hew_types::ClosureCaptureConsumption::Consumed
+                                {
+                                    if movable {
+                                        return Err("E_OWN_CONSUME_BORROWED: capture transfer requires consuming access".into());
+                                    }
+                                    take = false;
+                                }
+                            }
+                        }
+                        return self.emit(
+                            expr,
+                            if take {
+                                SemOpKind::LoadTake { place }
+                            } else {
+                                SemOpKind::LoadCopy { place }
+                            },
+                        );
+                    }
+                    BindingTarget::Value(source) => {
+                        return self.emit(
+                            expr,
+                            SemOpKind::CopyValue {
+                                source: Operand { value: source },
+                            },
+                        );
+                    }
+                }
             }
         }
         let source = self.lower_expr_with_binding_use(expr, binding_use)?;
-        if own != OwnKind::Owned {
-            return Ok(source);
-        }
-        if matches!(expr.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. } if self.capture_places.contains_key(&binding))
-        {
-            return Ok(source);
-        }
-        let source_kind = self.value_own_kind(source);
-        match source_kind {
-            Some(OwnKind::Guaranteed) => self.emit(
+        if own == OwnKind::Owned && self.value_own_kind(source) == Some(OwnKind::Guaranteed) {
+            self.emit(
                 expr,
                 SemOpKind::CopyValue {
                     source: Operand { value: source },
                 },
-            ),
-            Some(OwnKind::Owned)
-                if matches!(
-                    expr.kind,
-                    HirExprKind::BindingRef {
-                        resolved: ResolvedRef::Binding(_),
-                        ..
-                    }
-                ) =>
-            {
-                let protected = match &expr.kind {
-                    HirExprKind::BindingRef {
-                        resolved: ResolvedRef::Binding(binding),
-                        ..
-                    } => self.move_protected_bindings.contains(binding),
-                    _ => false,
-                };
-                let binding_use = if self
-                    .service
-                    .checked_facts
-                    .rows()
-                    .get(&TypeInstanceKey(ty.clone()))
-                    .is_some_and(|row| row.clone == hew_types::CloneKind::None)
-                {
-                    OwnedBindingUse::Move
-                } else if protected {
-                    OwnedBindingUse::Copy
-                } else {
-                    binding_use
-                };
-                match binding_use {
-                    OwnedBindingUse::Copy => self.emit(
-                        expr,
-                        SemOpKind::CopyValue {
-                            source: Operand { value: source },
-                        },
-                    ),
-                    OwnedBindingUse::Move => {
-                        self.owned_live.remove(&source);
-                        self.emit(
-                            expr,
-                            SemOpKind::Move {
-                                source: Operand { value: source },
-                            },
-                        )
-                    }
-                }
-            }
-            Some(OwnKind::Owned) => Ok(source),
-            _ => Err(format!(
-                "owned transfer of `{}` has no owning or guaranteed source",
-                ty.user_facing()
-            )),
+            )
+        } else {
+            Ok(source)
         }
     }
 
@@ -2696,6 +2700,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         binding: BindingId,
     ) -> Option<(crate::PlaceId, crate::SemCaptureField)> {
         let place = *self.capture_places.get(&binding)?;
+        let PlaceOrigin::Capture { field, .. } = self.places.get(place.0 as usize)?.origin else {
+            return None;
+        };
         let CallableInstance::Closure(id) = self.callable.instance else {
             return None;
         };
@@ -2703,7 +2710,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .closures
             .get(id.0 as usize)?
             .fields
-            .get(place.0 as usize)
+            .get(field as usize)
             .cloned()
             .map(|field| (place, field))
     }
@@ -2743,65 +2750,47 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let ty = self.ty(&capture.ty);
             let take = capture.acquisition == hew_types::ClosureCaptureAcquisition::Move;
             let provenance = Provenance::Site(expression.site);
-            let value = if self.capture_places.contains_key(&capture.binding) {
-                self.load_capture(capture.binding, provenance, take)?
-            } else {
-                let source = self
-                    .bindings
-                    .get(&capture.binding)
-                    .copied()
-                    .ok_or_else(|| {
-                        "closure construction names an unavailable captured binding".to_string()
-                    })?;
-                if self.value_ty(source).as_ref() != Some(&ty) {
-                    return Err("closure acquisition changes its captured binding type".to_string());
+            let target = self.binding_target(capture.binding)?;
+            if self.target_ty(target)? != ty {
+                return Err("closure acquisition changes its captured binding type".into());
+            }
+            let value = match target {
+                BindingTarget::Place(place) => {
+                    if take {
+                        if let Some((_, field)) = self.capture_field(capture.binding) {
+                            if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
+                                return Err("capture extraction lacks consuming access".into());
+                            }
+                        }
+                    }
+                    self.emit_typed(
+                        provenance,
+                        &ty,
+                        if take {
+                            SemOpKind::LoadTake { place }
+                        } else {
+                            SemOpKind::LoadCopy { place }
+                        },
+                    )?
                 }
-                if OwnKind::of_ty(&ty, self.service.checked_facts.rows())? == OwnKind::Owned {
-                    let kind = if take {
-                        self.owned_live.remove(&source);
-                        SemOpKind::Move {
-                            source: Operand { value: source },
-                        }
+                BindingTarget::Value(source) => {
+                    if OwnKind::of_ty(&ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                        self.emit_typed(
+                            provenance,
+                            &ty,
+                            SemOpKind::CopyValue {
+                                source: Operand { value: source },
+                            },
+                        )?
                     } else {
-                        SemOpKind::CopyValue {
-                            source: Operand { value: source },
-                        }
-                    };
-                    self.emit_typed(provenance, &ty, kind)?
-                } else {
-                    source
+                        source
+                    }
                 }
             };
             self.owned_live.remove(&value);
             fields.push(Operand { value });
         }
         self.emit(expression, SemOpKind::ClosureMake { closure, fields })
-    }
-
-    fn assign_capture(&mut self, binding: BindingId, value: &HirExpr) -> Result<(), String> {
-        let (place, field) = self
-            .capture_field(binding)
-            .ok_or_else(|| "capture assignment has no concrete field".to_string())?;
-        if field.access != hew_types::ClosureCaptureAccess::Var {
-            return Err("capture assignment requires private mutable access".to_string());
-        }
-        let replacement =
-            lower_initial_value_transfer(self, value, "capture assignment", OwnedBindingUse::Copy)?;
-        let replacement =
-            self.coerce_value(replacement, &field.ty, Provenance::Site(value.site))?;
-        self.owned_live.remove(&replacement);
-        let op = SemOp {
-            id: OpId(self.ops),
-            results: Vec::new(),
-            kind: SemOpKind::StoreAssign {
-                place,
-                value: Operand { value: replacement },
-            },
-            provenance: Provenance::Site(value.site),
-        };
-        self.current_block_mut().append_op(op)?;
-        self.ops += 1;
-        Ok(())
     }
 
     fn coerce_value(
@@ -2902,28 +2891,33 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn bind_source_value(&mut self, binding: &HirBinding, value: ValueId) -> Result<(), String> {
+        let target = self.acquire_binding_target(value)?;
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
-                u32::try_from(self.source_bindings.len())
-                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+                u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
             ),
             name: binding.name.clone(),
             span: binding.span.clone(),
             mutable: binding.mutable,
-            target: crate::BindingTarget::Value(value),
+            target,
         });
         self.binding_declarations.insert(binding.id, declaration);
-        self.bindings.insert(binding.id, value);
+        self.bindings.insert(binding.id, target);
+        self.declare_in_scope(binding.id);
         Ok(())
     }
 
     fn mutable_bindings(&self) -> Vec<BindingId> {
-        let mut bindings: Vec<_> = self
+        let mut bindings = self
             .binding_declarations
             .iter()
-            .filter_map(|(binding, &index)| self.source_bindings[index].mutable.then_some(*binding))
-            .collect();
+            .filter_map(|(binding, &index)| {
+                (self.source_bindings[index].mutable
+                    && matches!(self.bindings.get(binding), Some(BindingTarget::Value(_))))
+                .then_some(*binding)
+            })
+            .collect::<Vec<_>>();
         bindings.sort_unstable();
         bindings
     }
@@ -2951,7 +2945,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for value in values.into_iter().rev() {
             self.emit_destroy(value)?;
         }
-        Ok(())
+        self.end_scopes(0)
     }
 
     fn control_state(&self) -> ControlState {
@@ -2960,6 +2954,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings: self.bindings.clone(),
             binding_declarations: self.binding_declarations.clone(),
             owned_live: self.owned_live.clone(),
+            scopes: self.scopes.clone(),
         }
     }
 
@@ -2969,12 +2964,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.binding_declarations
             .clone_from(&state.binding_declarations);
         self.owned_live = state.owned_live.clone();
+        self.scopes.clone_from(&state.scopes);
     }
 
     fn retain_bindings(
-        bindings: &HashMap<BindingId, ValueId>,
+        bindings: &HashMap<BindingId, BindingTarget>,
         retained: &std::collections::HashSet<BindingId>,
-    ) -> HashMap<BindingId, ValueId> {
+    ) -> HashMap<BindingId, BindingTarget> {
         bindings
             .iter()
             .filter(|(binding, _)| retained.contains(binding))
@@ -2987,20 +2983,33 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         root_live: &BTreeMap<ValueId, ResolvedTy>,
         outer_bindings: &std::collections::HashSet<BindingId>,
     ) -> Result<(), String> {
-        let mut keep = root_live
+        let keep = root_live
             .iter()
             .filter(|(value, _)| self.owned_live.contains_key(value))
             .map(|(value, ty)| (*value, ty.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for binding in outer_bindings {
-            let Some(value) = self.bindings.get(binding).copied() else {
-                continue;
-            };
-            if let Some(ty) = self.owned_live.get(&value) {
-                keep.insert(value, ty.clone());
+            .collect();
+        self.destroy_live_since(&keep)?;
+        let leaving = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev())
+            .filter(|binding| !outer_bindings.contains(binding))
+            .copied()
+            .collect::<Vec<_>>();
+        for binding in leaving {
+            if let Some(BindingTarget::Place(place)) = self.bindings.get(&binding).copied() {
+                if self.places[place.0 as usize].origin == PlaceOrigin::Local {
+                    self.emit_place_operation(
+                        SemOpKind::EndLifetime { place },
+                        Provenance::Synthesized,
+                    )?;
+                }
             }
         }
-        self.destroy_live_since(&keep)?;
+        for scope in &mut self.scopes {
+            scope.retain(|binding| outer_bindings.contains(binding));
+        }
         self.bindings = Self::retain_bindings(&self.bindings, outer_bindings);
         self.binding_declarations
             .retain(|binding, _| outer_bindings.contains(binding));
@@ -3021,105 +3030,80 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn join_control_states(
         &mut self,
-        mut states: Vec<ControlState>,
+        states: Vec<ControlState>,
         mut block_args: Vec<BlockArg>,
         mut edge_args: Vec<Vec<Operand>>,
     ) -> Result<(), String> {
-        if states.is_empty() || edge_args.len() != states.len() {
-            return Err("control-flow join has inconsistent predecessor metadata".to_string());
+        let first = states
+            .first()
+            .ok_or_else(|| "control-flow join has no predecessor".to_string())?;
+        if edge_args.len() != states.len() {
+            return Err("control-flow join has inconsistent edge metadata".into());
         }
-        let binding_keys = states[0].bindings.keys().copied().collect::<BTreeSet<_>>();
+        let keys = first.bindings.keys().copied().collect::<BTreeSet<_>>();
+        if states.iter().any(|state| {
+            state.bindings.keys().copied().collect::<BTreeSet<_>>() != keys
+                || state.binding_declarations != first.binding_declarations
+                || state.scopes != first.scopes
+        }) {
+            return Err("control-flow predecessors expose different lexical declarations".into());
+        }
         if states
             .iter()
-            .any(|state| state.bindings.keys().copied().collect::<BTreeSet<_>>() != binding_keys)
+            .any(|state| state.owned_live != first.owned_live)
         {
-            return Err("control-flow predecessors expose different source bindings".to_string());
+            return Err("control-flow predecessors leave different temporary owners live".into());
         }
-        if states
-            .iter()
-            .any(|state| state.binding_declarations != states[0].binding_declarations)
-        {
-            return Err(
-                "control-flow predecessors expose different binding declarations".to_string(),
-            );
-        }
-        let states_binding_declarations = states[0].binding_declarations.clone();
-        self.binding_declarations = states_binding_declarations.clone();
-
-        let mut joined_bindings = states[0].bindings.clone();
-        let mut joined_owners = Vec::new();
+        let mut joined = first.clone();
+        self.binding_declarations
+            .clone_from(&first.binding_declarations);
+        self.bindings.clone_from(&first.bindings);
         for binding in self.mutable_bindings() {
             let values = states
                 .iter()
-                .map(|state| {
-                    state.bindings.get(&binding).copied().ok_or_else(|| {
-                        format!(
-                            "mutable binding `{binding}` is absent from a control-flow predecessor"
-                        )
-                    })
+                .map(|state| match state.bindings[&binding] {
+                    BindingTarget::Value(value) => Ok(value),
+                    BindingTarget::Place(_) => {
+                        Err("scalar join received a place binding".to_string())
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let ty = self.value_ty(values[0]).ok_or_else(|| {
-                format!("mutable binding `{binding}` has no concrete type at its join")
-            })?;
-            if values
-                .iter()
-                .any(|value| self.value_ty(*value).as_ref() != Some(&ty))
-            {
-                return Err(format!(
-                    "mutable binding `{binding}` has mismatched types at its join"
-                ));
+            let ty = self
+                .value_ty(values[0])
+                .ok_or_else(|| "scalar join value has no type".to_string())?;
+            if values.iter().any(|value| {
+                self.value_ty(*value).as_ref() != Some(&ty)
+                    || self.value_own_kind(*value) == Some(OwnKind::Owned)
+            }) {
+                return Err("scalar binding join has inconsistent type or ownership".into());
             }
-            self.service.require_type_facts(&ty)?;
-            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
-            if own == OwnKind::Owned
+            let own = self
+                .value_own_kind(values[0])
+                .ok_or_else(|| "scalar join has no ownership facts".to_string())?;
+            let value = self.fresh_value();
+            block_args.push(BlockArg { value, ty, own });
+            for (args, value) in edge_args.iter_mut().zip(values) {
+                args.push(Operand { value });
+            }
+            joined.bindings.insert(binding, BindingTarget::Value(value));
+            self.record_binding_version(binding, value)?;
+        }
+        for binding in &keys {
+            if matches!(first.bindings[binding], BindingTarget::Place(_))
                 && states
                     .iter()
-                    .zip(&values)
-                    .all(|(state, value)| !state.owned_live.contains_key(value))
+                    .any(|state| state.bindings[binding] != first.bindings[binding])
             {
-                // The source declaration remains useful for diagnostics, but
-                // an already consumed binding supplies no owner to this join.
-                continue;
+                return Err("lexical place identity changed across a control-flow edge".into());
             }
-            let joined = self.fresh_value();
-            block_args.push(BlockArg {
-                value: joined,
-                ty: ty.clone(),
-                own,
-            });
-            for (index, value) in values.into_iter().enumerate() {
-                edge_args[index].push(Operand { value });
-                states[index].owned_live.remove(&value);
-            }
-            joined_bindings.insert(binding, joined);
-            if own == OwnKind::Owned {
-                joined_owners.push((joined, ty));
-            }
-            self.record_binding_version(binding, joined)?;
         }
-
-        let remaining_live = states[0].owned_live.clone();
-        if states
-            .iter()
-            .skip(1)
-            .any(|state| state.owned_live != remaining_live)
-        {
-            return Err(
-                "control-flow predecessors leave different non-binding owners live".to_string(),
-            );
-        }
-
         let join = self.new_block(block_args);
         for (state, args) in states.into_iter().zip(edge_args) {
             self.current = state.block;
             self.set_terminator(SemTerminator::Goto(Edge { target: join, args }))?;
         }
-        self.current = join;
-        self.bindings = joined_bindings;
-        self.binding_declarations = states_binding_declarations;
-        self.owned_live = remaining_live;
-        self.owned_live.extend(joined_owners);
+        joined.block = join;
+        self.restore_control_state(&joined);
         Ok(())
     }
 
@@ -3243,24 +3227,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         block: &HirBlock,
         tail_binding_use: OwnedBindingUse,
     ) -> Result<Option<Operand>, String> {
-        let outer: std::collections::HashSet<_> = self.bindings.keys().copied().collect();
+        let floor = self.scopes.len();
+        self.scopes.push(Vec::new());
         let result = self.lower_block(block, tail_binding_use)?;
         if self.is_open() {
-            let locals: Vec<_> = self
-                .bindings
-                .keys()
-                .filter(|binding| !outer.contains(binding))
-                .copied()
-                .collect();
-            for binding in locals.into_iter().rev() {
-                if let Some(value) = self.bindings.remove(&binding) {
-                    if self.owned_live.contains_key(&value) {
-                        self.emit_destroy(value)?;
-                    }
-                }
-                self.binding_declarations.remove(&binding);
-            }
+            self.end_scopes(floor)?;
         }
+        self.leave_scope();
         Ok(result)
     }
 
@@ -3276,36 +3249,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ..
         } = &target.kind
         else {
-            return Err(
-                "owned SIR assignment currently requires a resolved local binding target"
-                    .to_string(),
-            );
+            return Err("assignment requires a resolved local binding target".into());
         };
-        if self.capture_places.contains_key(binding) {
-            return self.assign_capture(*binding, value);
-        }
-        let binding = *binding;
         let declaration = *self
             .binding_declarations
-            .get(&binding)
-            .ok_or_else(|| format!("assignment target `{binding}` has no source declaration"))?;
+            .get(binding)
+            .ok_or_else(|| "assignment target has no declaration".to_string())?;
         if !self.source_bindings[declaration].mutable {
-            return Err(format!("assignment target `{binding}` is not mutable"));
+            return Err("assignment target is not mutable".into());
         }
-        let old = *self.bindings.get(&binding).ok_or_else(|| {
-            format!("assignment target `{binding}` is not available in the SIR environment")
-        })?;
-        let old_ty = self
-            .value_ty(old)
-            .ok_or_else(|| format!("assignment target `{binding}` has no concrete SIR type"))?;
+        let target = self.binding_target(*binding)?;
+        let ty = self.target_ty(target)?;
         let new =
             lower_initial_value_transfer(self, value, "assignment value", OwnedBindingUse::Copy)?;
-        let new = self.coerce_value(new, &old_ty, Provenance::Site(value.site))?;
-        if self.owned_live.contains_key(&old) {
-            self.emit_destroy(old)?;
+        let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
+        match target {
+            BindingTarget::Place(place) => {
+                self.store_projected(place, new, Provenance::Site(value.site))
+            }
+            BindingTarget::Value(_) => {
+                self.bindings.insert(*binding, BindingTarget::Value(new));
+                self.record_binding_version(*binding, new)
+            }
         }
-        self.bindings.insert(binding, new);
-        self.record_binding_version(binding, new)
     }
 
     /// Assignment and runtime receiver mutation resolve and rebuild the same
@@ -3321,14 +3287,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let replacement =
             self.coerce_value(replacement, &place.leaf_ty, Provenance::Site(value.site))?;
         let provenance = Provenance::Site(target.site);
-        if let Some((projected, _)) = self.owned_projection(&place)? {
+        if let Some(projected) = self.owned_projection(&place)? {
             return self.store_projected(projected, replacement, provenance);
         }
-        let (previous, parents) = self.take_mutable_place(&place, &provenance)?;
-        if self.owned_live.contains_key(&previous) {
-            self.emit_destroy(previous)?;
-        }
-        self.replace_aggregate_leaf(place.binding, replacement, parents, None, &provenance)
+        let (_, parents) = self.take_scalar_place(&place, &provenance)?;
+        self.replace_scalar_aggregate_leaf(place.binding, replacement, parents, &provenance)
     }
 
     fn resolve_mutable_place(&mut self, target: &HirExpr) -> Result<BindingPlace, String> {
@@ -3396,40 +3359,26 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }))
     }
 
-    /// Take the binding version left by argument evaluation. Destructuring
-    /// transfers siblings into the ordinary owned-live relation; it does not
-    /// snapshot the field container or introduce a second cleanup ledger.
-    fn take_mutable_place(
+    /// Extract a scalar leaf and retain its non-owning sibling fields.
+    fn take_scalar_place(
         &mut self,
         place: &BindingPlace,
         provenance: &Provenance,
-    ) -> Result<(ValueId, Vec<AggregateParent>), String> {
-        let mut current = *self
-            .bindings
-            .get(&place.binding)
-            .ok_or_else(|| format!("mutable place root `{}` is unavailable", place.binding))?;
-        if self.value_ty(current).as_ref() != Some(&place.root_ty) {
-            return Err("mutable place root changed its concrete type".into());
-        }
-        if self.value_own_kind(current) == Some(OwnKind::Owned)
-            && !self.owned_live.contains_key(&current)
+    ) -> Result<(ValueId, Vec<ScalarAggregateParent>), String> {
+        let mut current = self.scalar_binding(place.binding)?;
+        if self.value_own_kind(current) != Some(OwnKind::None)
+            || self.value_ty(current).as_ref() != Some(&place.root_ty)
         {
-            return Err("mutable place root has no live owned value".into());
-        }
-        if self.value_own_kind(current) == Some(OwnKind::Guaranteed) {
-            current = self.emit_typed(
-                provenance.clone(),
-                &place.root_ty,
-                SemOpKind::CopyValue {
-                    source: Operand { value: current },
-                },
-            )?;
+            return Err("scalar aggregate update requires a non-owning root".into());
         }
         let mut parents = Vec::new();
         for (ty, shape, index) in &place.projections {
             let fields = self.emit_destructure_value(current, ty, *shape, provenance.clone())?;
+            if fields.iter().any(|field| field.own != OwnKind::None) {
+                return Err("scalar aggregate update cannot acquire ownership".into());
+            }
             current = fields[*index].id;
-            parents.push(AggregateParent {
+            parents.push(ScalarAggregateParent {
                 ty: ty.clone(),
                 shape: *shape,
                 index: *index,
@@ -3439,28 +3388,26 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok((current, parents))
     }
 
-    /// Publish the updated leaf through the same parent reconstruction for
-    /// ordinary field assignment and runtime transforms.
-    fn replace_aggregate_leaf(
+    /// Rebuild a non-owning aggregate after a scalar field assignment.
+    fn replace_scalar_aggregate_leaf(
         &mut self,
         binding: BindingId,
         replacement: ValueId,
-        parents: Vec<AggregateParent>,
-        projected: Option<crate::PlaceId>,
+        parents: Vec<ScalarAggregateParent>,
         provenance: &Provenance,
     ) -> Result<(), String> {
-        if let Some(place) = projected {
-            return self.store_projected(place, replacement, provenance.clone());
+        if self.value_own_kind(replacement) != Some(OwnKind::None) {
+            return Err("scalar aggregate replacement cannot carry ownership".into());
         }
         let mut updated = replacement;
-        for AggregateParent {
+        for ScalarAggregateParent {
             ty,
             shape,
             index,
             fields,
         } in parents.into_iter().rev()
         {
-            let operands: Vec<_> = fields
+            let fields = fields
                 .into_iter()
                 .enumerate()
                 .map(|(position, field)| Operand {
@@ -3470,16 +3417,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             updated = self.emit_typed(
                 provenance.clone(),
                 &ty,
-                SemOpKind::AggregateMake {
-                    shape,
-                    fields: operands.clone(),
-                },
+                SemOpKind::AggregateMake { shape, fields },
             )?;
-            for field in operands {
-                self.owned_live.remove(&field.value);
-            }
         }
-        self.bindings.insert(binding, updated);
+        self.bindings.insert(binding, BindingTarget::Value(updated));
         self.record_binding_version(binding, updated)
     }
 
@@ -3668,17 +3609,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         && field.consumption == hew_types::ClosureCaptureConsumption::Consumed;
                     return self.load_capture(*binding, Provenance::Site(expr.site), take);
                 }
-                let value = self.bindings.get(binding).copied().ok_or_else(|| {
-                    format!("binding `{binding}` is not available in the SIR environment")
-                })?;
-                if self.value_own_kind(value) == Some(OwnKind::Owned)
-                    && !self.owned_live.contains_key(&value)
-                {
-                    return Err(format!(
-                        "binding `{binding}` names a consumed owned SIR value"
-                    ));
+                match self.binding_target(*binding)? {
+                    BindingTarget::Value(value) => Ok(value),
+                    BindingTarget::Place(place) => self.emit(expr, SemOpKind::LoadCopy { place }),
                 }
-                Ok(value)
             }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Item(item),
@@ -4049,20 +3983,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         value: ValueId,
         span: Range<usize>,
     ) -> Result<(), String> {
+        let target = self.acquire_binding_target(value)?;
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
-                u32::try_from(declaration)
-                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+                u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
             ),
             name: binding.name.clone(),
             span,
             mutable: false,
-            target: crate::BindingTarget::Value(value),
+            target,
         });
         self.binding_declarations
             .insert(binding.binding, declaration);
-        self.bindings.insert(binding.binding, value);
+        self.bindings.insert(binding.binding, target);
+        self.declare_in_scope(binding.binding);
         Ok(())
     }
 
@@ -4315,6 +4250,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings,
             binding_declarations,
             owned_live,
+            scopes: self.scopes.clone(),
         })
     }
 
@@ -4472,7 +4408,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self,
             &arm.body,
             "variant match arm result",
-            OwnedBindingUse::Move,
+            OwnedBindingUse::Copy,
         )?;
         let value = self.coerce_value(value, result_ty, Provenance::Site(arm.body.site))?;
         Ok(Some(Operand { value }))
@@ -4631,9 +4567,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .keys()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        let prior_move_protected = self.move_protected_bindings.clone();
-        self.move_protected_bindings
-            .extend(outer_bindings.iter().copied());
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
         let inherited_bindings = self.bindings.clone();
@@ -4668,26 +4601,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     )?);
                 }
                 if let Some(guard) = &arm.guard {
-                    let saved_protected = self.move_protected_bindings.clone();
-                    self.move_protected_bindings
-                        .extend(self.bindings.keys().copied());
                     let guard_live = self.owned_live.clone();
                     let condition = self.lower_read_operand(guard, "match guard")?.value;
-                    let keep_guard_values = self
-                        .bindings
-                        .values()
-                        .filter_map(|value| {
-                            self.owned_live.get(value).map(|ty| (*value, ty.clone()))
-                        })
-                        .chain(
-                            guard_live
-                                .iter()
-                                .filter(|(value, _)| self.owned_live.contains_key(value))
-                                .map(|(value, ty)| (*value, ty.clone())),
-                        )
+                    let keep_guard_values = guard_live
+                        .iter()
+                        .filter(|(value, _)| self.owned_live.contains_key(value))
+                        .map(|(value, ty)| (*value, ty.clone()))
                         .collect::<BTreeMap<_, _>>();
                     self.destroy_live_since(&keep_guard_values)?;
-                    self.move_protected_bindings = saved_protected;
                     failures.push(self.branch_candidate_test(condition)?);
                 }
 
@@ -4697,9 +4618,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self.owned_live.remove(&result.value);
                     }
                     for value in outer_live.keys() {
-                        if !self.owned_live.contains_key(value)
-                            && !inherited_bindings.values().any(|outer| outer == value)
-                        {
+                        if !self.owned_live.contains_key(value) {
                             return Err(format!(
                                 "variant match arm {arm_index} consumes an outer non-binding owner"
                             ));
@@ -4733,7 +4652,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
 
-        self.move_protected_bindings = prior_move_protected;
         self.merge_match_exits(exits, &result_ty)
     }
 
@@ -4747,9 +4665,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let result_ty = self.ty(&whole.ty);
         let outer_bindings = self.bindings.keys().copied().collect();
         let outer_live = self.owned_live.clone();
-        let saved_protected = self.move_protected_bindings.clone();
-        self.move_protected_bindings
-            .extend(self.bindings.keys().copied());
         let mut exits = Vec::new();
         let mut fallthrough = true;
         for arm in arms {
@@ -4840,7 +4755,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::Unreachable)?;
         }
-        self.move_protected_bindings = saved_protected;
         self.merge_match_exits(exits, &result_ty)
     }
 
@@ -5093,7 +5007,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         tuple_expr: &HirExpr,
         index: usize,
     ) -> Result<ValueId, String> {
-        if let Some((place, _)) = self.expression_projection(expr)? {
+        if let Some(place) = self.expression_projection(expr)? {
             return self.emit(expr, SemOpKind::LoadCopy { place });
         }
         let index = self.tuple_projection_index(expr, tuple_expr, index)?;
@@ -5421,7 +5335,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         object: &HirExpr,
         field: &str,
     ) -> Result<ValueId, String> {
-        if let Some((place, _)) = self.expression_projection(expr)? {
+        if let Some(place) = self.expression_projection(expr)? {
             return self.emit(expr, SemOpKind::LoadCopy { place });
         }
         let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
@@ -5458,14 +5372,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
     ) -> Result<Operand, String> {
-        if let Some((place, root)) = self.expression_projection(expr)? {
+        if let Some(place) = self.expression_projection(expr)? {
             let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
                 == OwnKind::Owned;
             let kind = if owning {
-                SemOpKind::LoadBorrow {
-                    place,
-                    environment: Operand { value: root },
-                }
+                SemOpKind::LoadBorrow { place }
             } else {
                 SemOpKind::LoadCopy { place }
             };
@@ -5485,12 +5396,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     let value = self.emit_typed(
                         Provenance::Site(expr.site),
                         &field.ty,
-                        SemOpKind::LoadBorrow {
-                            place,
-                            environment: Operand {
-                                value: self.params[0].value,
-                            },
-                        },
+                        SemOpKind::LoadBorrow { place },
                     )?;
                     loans.push(value);
                     return Ok(Operand { value });
@@ -5615,10 +5521,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_at_call = self.owned_live.clone();
         let argument_temporaries: Vec<_> = live_at_call
             .keys()
-            .filter(|value| {
-                !live_before_arguments.contains(value)
-                    && !self.bindings.values().any(|bound| bound == *value)
-            })
+            .filter(|value| !live_before_arguments.contains(value))
             .copied()
             .collect();
         let raw = self.fresh_value();
@@ -5695,7 +5598,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             if self
                 .bindings
                 .get(binding)
-                .is_some_and(|value| self.value_own_kind(*value) == Some(OwnKind::Guaranteed))
+                .is_some_and(|target| matches!(target, BindingTarget::Value(value) if self.value_own_kind(*value) == Some(OwnKind::Guaranteed)))
             {
                 return Err("E_OWN_CONSUME_BORROWED: a borrowed aggregate field cannot be consumed; acquire an owned aggregate and destructure it first".into());
             }
@@ -5709,7 +5612,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
-        if let Some((place, _)) = self.expression_projection(expression)? {
+        if let Some(place) = self.expression_projection(expression)? {
             return self
                 .emit(expression, SemOpKind::LoadTake { place })
                 .map(Some);
@@ -5827,14 +5730,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let (_, _, capabilities) = crate::callable_parts(&ty)?;
                 let value = if capabilities.call == hew_types::CallableCallMode::Once {
                     self.lower_consuming_value(callee)?
-                } else if matches!(
-                    callee.kind,
-                    HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
-                ) || matches!(callee.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. } if self.capture_places.contains_key(&binding))
-                {
-                    self.lower_borrowed_read(callee, &mut loans)?.value
                 } else {
-                    self.lower_expr(callee)?
+                    self.lower_borrowed_read(callee, &mut loans)?.value
                 };
                 let decision = match capabilities.call {
                     hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,
@@ -5923,10 +5820,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_at_call = self.owned_live.clone();
         let temporaries: Vec<_> = live_at_call
             .keys()
-            .filter(|value| {
-                !live_before_arguments.contains(value)
-                    && !self.bindings.values().any(|bound| bound == *value)
-            })
+            .filter(|value| !live_before_arguments.contains(value))
             .copied()
             .collect();
         let return_ty = &signature.return_ty;
@@ -6106,61 +6000,62 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
 
-        // An argument can be the owning parent of the receiver itself, as
-        // in tree.children.push(tree). Preserve that input before taking the
-        // parent apart, sharing one snapshot across repeated borrowed inputs.
+        // Preserve arguments borrowing the receiver's owner before its take.
+        // Alias identity comes from the same declared place paths as loans.
         if let Some(place) = &transformed_place {
-            let parent = self.bindings.get(&place.binding).copied().ok_or_else(|| {
-                "runtime receiver parent disappeared during argument evaluation".to_string()
-            })?;
-            if !place.projections.is_empty()
-                && self.value_own_kind(parent) == Some(OwnKind::Owned)
-                && lowered_args.iter().any(|arg| arg.operand.value == parent)
-            {
-                let snapshot = self.emit_typed(
-                    Provenance::Site(expr.site),
-                    &place.root_ty,
-                    SemOpKind::CopyValue {
-                        source: Operand { value: parent },
-                    },
-                )?;
-                for arg in &mut lowered_args {
-                    if arg.operand.value == parent {
-                        arg.operand.value = snapshot;
-                    }
+            let selected = self
+                .owned_projection(place)?
+                .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            let (root, _) = crate::projection::place_path(&self.places, selected)?;
+            for argument in &mut lowered_args {
+                let value = argument.operand.value;
+                if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
+                    && self.value_borrow_root(value)? == root
+                {
+                    let ty = self
+                        .value_ty(value)
+                        .ok_or_else(|| "borrowed argument has no type".to_string())?;
+                    argument.operand.value = self.emit_typed(
+                        Provenance::Site(expr.site),
+                        &ty,
+                        SemOpKind::CopyValue {
+                            source: Operand { value },
+                        },
+                    )?;
                 }
             }
+            let related = loans
+                .iter()
+                .copied()
+                .filter_map(|loan| match self.value_borrow_root(loan) {
+                    Ok(owner) if owner == root => Some(Ok(loan)),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.end_call_loans(&related)?;
+            loans.retain(|loan| !related.contains(loan));
         }
 
-        // Classify expression temporaries before extracting retained parent
-        // fields. Those new sibling IDs must survive to reconstruction.
+        // Argument temporaries precede the receiver's actual transfer.
         let argument_temporaries: Vec<_> = self
             .owned_live
             .keys()
-            .filter(|value| {
-                !live_before_arguments.contains(value)
-                    && !self.bindings.values().any(|bound| bound == *value)
-            })
+            .filter(|value| !live_before_arguments.contains(value))
             .copied()
             .collect();
-        let mut retained_parents = Vec::new();
         let mut transformed_projection = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
-            let (source, parents) = if let Some((projected, _)) = self.owned_projection(place)? {
-                transformed_projection = Some(projected);
-                (
-                    self.emit_typed(
-                        provenance.clone(),
-                        &place.leaf_ty,
-                        SemOpKind::LoadTake { place: projected },
-                    )?,
-                    Vec::new(),
-                )
-            } else {
-                self.take_mutable_place(place, &provenance)?
-            };
-            retained_parents = parents;
+            let projected = self
+                .owned_projection(place)?
+                .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            transformed_projection = Some(projected);
+            let source = self.emit_typed(
+                provenance.clone(),
+                &place.leaf_ty,
+                SemOpKind::LoadTake { place: projected },
+            )?;
             self.owned_live.remove(&source);
             let moved = self.emit_typed(
                 provenance,
@@ -6298,8 +6193,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 contract.result,
                 RuntimeResultEffect::UpdatedReceiverAndValue(_)
             ) {
-                let place = transformed_place
-                    .ok_or_else(|| "runtime transform has no mutable source place".to_string())?;
                 let ty = self
                     .value_ty(continuation)
                     .ok_or_else(|| "runtime transform result disappeared".to_string())?;
@@ -6310,25 +6203,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     shape,
                     Provenance::Site(expr.site),
                 )?;
-                self.replace_aggregate_leaf(
-                    place.binding,
+                self.store_projected(
+                    transformed_projection
+                        .ok_or_else(|| "runtime transform has no source place".to_string())?,
                     results[0].id,
-                    retained_parents,
-                    transformed_projection,
-                    &Provenance::Site(expr.site),
+                    Provenance::Site(expr.site),
                 )?;
                 return Ok(Some(results[1].id));
             }
             if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
-                let place = transformed_place.ok_or_else(|| {
-                    format!("runtime family `{family:?}` has no transformed source place")
-                })?;
-                self.replace_aggregate_leaf(
-                    place.binding,
+                self.store_projected(
+                    transformed_projection
+                        .ok_or_else(|| "runtime transform has no source place".to_string())?,
                     continuation,
-                    retained_parents,
-                    transformed_projection,
-                    &Provenance::Site(expr.site),
+                    Provenance::Site(expr.site),
                 )?;
                 return Ok(None);
             }
@@ -6393,27 +6281,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let args = scope
             .carried
             .iter()
-            .map(|binding| {
-                self.bindings
-                    .get(binding)
-                    .copied()
-                    .map(|value| Operand { value })
-                    .ok_or_else(|| {
-                        format!("loop-carried binding `{binding}` is unavailable at its exit")
-                    })
-            })
+            .map(|&binding| self.scalar_binding(binding).map(|value| Operand { value }))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut keep = scope.preserved.clone();
-        keep.extend(args.iter().map(|arg| arg.value));
-        let dead: Vec<_> = self
+        let dead = self
             .owned_live
             .keys()
-            .filter(|value| !keep.contains(value))
+            .filter(|value| !scope.preserved.contains(value))
             .copied()
-            .collect();
+            .collect::<Vec<_>>();
         for value in dead.into_iter().rev() {
             self.emit_destroy(value)?;
         }
+        self.end_scopes(scope.scope_floor)?;
         Ok(Edge { target, args })
     }
 
@@ -6432,52 +6311,33 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, String> {
         let mut state = self.control_state();
         let mut args = Vec::new();
-        for binding in carried {
-            let source = self.bindings[binding];
+        for &binding in carried {
+            let source = self.scalar_binding(binding)?;
             let ty = self
                 .value_ty(source)
-                .ok_or_else(|| format!("loop binding `{binding}` has no type"))?;
-            self.service.require_type_facts(&ty)?;
-            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+                .ok_or_else(|| "scalar loop binding has no type".to_string())?;
+            let own = self
+                .value_own_kind(source)
+                .ok_or_else(|| "scalar loop binding has no ownership facts".to_string())?;
             let value = self.fresh_value();
-            args.push(BlockArg {
-                value,
-                own,
-                ty: ty.clone(),
-            });
-            state.bindings.insert(*binding, value);
-            state.owned_live.remove(&source);
-            if own == OwnKind::Owned {
-                state.owned_live.insert(value, ty);
-            }
-            self.record_binding_version(*binding, value)?;
+            args.push(BlockArg { value, ty, own });
+            state.bindings.insert(binding, BindingTarget::Value(value));
+            self.record_binding_version(binding, value)?;
         }
         state.block = self.new_block(args);
         Ok(state)
     }
 
     fn lower_while(&mut self, condition: &HirExpr, body: &HirBlock) -> Result<(), String> {
-        let carried: Vec<_> = self
-            .mutable_bindings()
-            .into_iter()
-            .filter(|binding| {
-                self.bindings.get(binding).is_some_and(|value| {
-                    self.value_own_kind(*value) != Some(OwnKind::Owned)
-                        || self.owned_live.contains_key(value)
-                })
-            })
-            .collect();
-        let mut preserved: BTreeSet<_> = self.owned_live.keys().copied().collect();
-        for binding in &carried {
-            preserved.remove(&self.bindings[binding]);
-        }
+        let carried = self.mutable_bindings();
         let header = self.loop_join(&carried)?;
         let exit = self.loop_join(&carried)?;
         let scope = LoopScope {
             header: header.block,
             exit: exit.block,
             carried,
-            preserved,
+            preserved: self.owned_live.keys().copied().collect(),
+            scope_floor: self.scopes.len(),
         };
         let entry = self.loop_edge(&scope, header.block)?;
         self.set_terminator(SemTerminator::Goto(entry))?;
@@ -6527,80 +6387,33 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             || self.ty(&end.ty) != ResolvedTy::I64
             || self.ty(&step.ty) != ResolvedTy::I64
         {
-            return Err("initial SIR range loops require checker-resolved i64 bounds".to_string());
+            return Err("SIR range loops require checker-resolved i64 bounds".into());
         }
         if !matches!(step.kind, HirExprKind::Literal(HirLiteral::Integer(1))) {
-            return Err("initial SIR range loops require the default positive step".to_string());
+            return Err("SIR range loops require the default positive step".into());
         }
-        let counter_entry = self.lower_read_operand(start, "range start")?;
+        let initial = self.lower_read_operand(start, "range start")?;
         let bound = self.lower_read_operand(end, "range end")?;
         let step_value = self.lower_read_operand(step, "range step")?;
-        let preheader = self.current;
-        let before_bindings = self.bindings.clone();
-        let mut header_bindings = before_bindings.clone();
-        let mut header_live = self.owned_live.clone();
-        let counter = self.fresh_value();
-        let mut header_args = vec![BlockArg {
-            value: counter,
-            ty: ResolvedTy::I64,
-            own: OwnKind::None,
-        }];
-        let mut entry_args = vec![counter_entry];
-        let mut carried = Vec::new();
-        for binding in self.mutable_bindings() {
-            let Some(&source) = before_bindings.get(&binding) else {
-                continue;
-            };
-            if self.value_own_kind(source) == Some(OwnKind::Owned)
-                && !self.owned_live.contains_key(&source)
-            {
-                continue;
-            }
-            let ty = self.value_ty(source).ok_or_else(|| {
-                format!("mutable binding `{binding}` has no concrete type at its range header")
-            })?;
-            self.service.require_type_facts(&ty)?;
-            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
-            let header_value = self.fresh_value();
-            header_args.push(BlockArg {
-                value: header_value,
-                ty: ty.clone(),
-                own,
-            });
-            entry_args.push(Operand { value: source });
-            header_bindings.insert(binding, header_value);
-            header_live.remove(&source);
-            if own == OwnKind::Owned {
-                header_live.insert(header_value, ty);
-            }
-            carried.push(binding);
-            self.record_binding_version(binding, header_value)?;
-        }
-
-        let loop_declaration = self.source_bindings.len();
-        self.source_bindings.push(Binding {
-            id: crate::BindingId(
-                u32::try_from(loop_declaration)
-                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
-            ),
-            name: loop_binding.name.clone(),
-            span: loop_binding.span.clone(),
-            mutable: false,
-            target: crate::BindingTarget::Value(counter),
-        });
-        self.binding_declarations
-            .insert(loop_binding.id, loop_declaration);
-        header_bindings.insert(loop_binding.id, counter);
-
-        let header = self.new_block(header_args);
-        self.current = preheader;
-        self.set_terminator(SemTerminator::Goto(Edge {
-            target: header,
-            args: entry_args,
-        }))?;
-        self.current = header;
-        self.bindings = header_bindings.clone();
-        self.owned_live = header_live.clone();
+        let outer_floor = self.scopes.len();
+        self.scopes.push(Vec::new());
+        self.bind_source_value(loop_binding, initial.value)?;
+        let mut carried = self.mutable_bindings();
+        carried.push(loop_binding.id);
+        let header = self.loop_join(&carried)?;
+        let increment = self.loop_join(&carried)?;
+        let exit = self.loop_join(&carried)?;
+        let scope = LoopScope {
+            header: increment.block,
+            exit: exit.block,
+            carried,
+            preserved: self.owned_live.keys().copied().collect(),
+            scope_floor: self.scopes.len(),
+        };
+        let entry = self.loop_edge(&scope, header.block)?;
+        self.set_terminator(SemTerminator::Goto(entry))?;
+        self.restore_control_state(&header);
+        let counter = self.scalar_binding(loop_binding.id)?;
         let condition = self.emit_typed(
             Provenance::Synthesized,
             &ResolvedTy::Bool,
@@ -6610,66 +6423,44 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 rhs: bound,
             },
         )?;
+        let exit_edge = self.loop_edge(&scope, exit.block)?;
         let body_block = self.new_block(Vec::new());
-        let exit = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Branch {
             condition: Operand { value: condition },
             then_target: Edge {
                 target: body_block,
                 args: Vec::new(),
             },
-            else_target: Edge {
-                target: exit,
-                args: Vec::new(),
-            },
+            else_target: exit_edge,
         })?;
-
         self.current = body_block;
-        self.bindings = header_bindings.clone();
-        self.owned_live = header_live.clone();
-        self.loops.push(None);
+        self.loops.push(Some(scope.clone()));
         let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
-        self.loops.pop();
         if let Some(tail) = tail {
             if self.owned_live.contains_key(&tail.value) {
                 self.emit_destroy(tail.value)?;
             }
         }
         if self.is_open() {
-            let next = self.lower_checked_binary(
-                step,
-                hew_parser::ast::BinaryOp::Add,
-                Operand { value: counter },
-                step_value,
-            )?;
-            let mut back_args = vec![Operand { value: next }];
-            back_args.extend(
-                carried
-                    .iter()
-                    .map(|binding| {
-                        self.bindings
-                            .get(binding)
-                            .copied()
-                            .map(|value| Operand { value })
-                            .ok_or_else(|| {
-                                format!(
-                                    "range-carried binding `{binding}` is missing on its back edge"
-                                )
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
-            self.set_terminator(SemTerminator::Goto(Edge {
-                target: header,
-                args: back_args,
-            }))?;
+            let edge = self.loop_edge(&scope, increment.block)?;
+            self.set_terminator(SemTerminator::Goto(edge))?;
         }
-
-        self.current = exit;
-        header_bindings.remove(&loop_binding.id);
-        self.bindings = header_bindings;
-        self.binding_declarations.remove(&loop_binding.id);
-        self.owned_live = header_live;
+        self.loops.pop();
+        self.restore_control_state(&increment);
+        let counter = self.scalar_binding(loop_binding.id)?;
+        let next = self.lower_checked_binary(
+            step,
+            hew_parser::ast::BinaryOp::Add,
+            Operand { value: counter },
+            step_value,
+        )?;
+        self.bindings
+            .insert(loop_binding.id, BindingTarget::Value(next));
+        let edge = self.loop_edge(&scope, header.block)?;
+        self.set_terminator(SemTerminator::Goto(edge))?;
+        self.restore_control_state(&exit);
+        self.end_scopes(outer_floor)?;
+        self.leave_scope();
         Ok(())
     }
 
@@ -6696,9 +6487,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             },
         })?;
         let before = self.control_state();
-        let prior_protected = self.move_protected_bindings.clone();
-        self.move_protected_bindings
-            .extend(before.bindings.keys().copied());
         let mut exits = Vec::new();
         for (block, expression) in [(then_block, then_expr), (else_block, else_expr)] {
             self.current = block;
@@ -6729,7 +6517,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 result: Some(Operand { value }),
             });
         }
-        self.move_protected_bindings = prior_protected;
         self.merge_match_exits(exits, &join_ty)?
             .ok_or_else(|| "divergent if expression cannot produce an SSA value".to_string())
     }
@@ -6833,7 +6620,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let value = self.fresh_value();
         self.service.require_type_facts(result_ty)?;
         let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
-        let own = if kind.borrow_parent().is_some() {
+        let own = if let Some(parent) = kind.borrow_parent() {
+            self.borrow_parents.insert(value, parent);
             OwnKind::Guaranteed
         } else {
             own

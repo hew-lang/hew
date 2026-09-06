@@ -152,8 +152,10 @@ fn partition(root: u32, start: u32) -> Vec<sir::PlaceDecl> {
         id: sir::PlaceId(start + u32::try_from(index).unwrap()),
         ty,
         origin: sir::PlaceOrigin::Aggregate {
-            root: sir::ValueId(root),
-            parent,
+            base: parent.map_or(
+                sir::PlaceBase::Value(sir::ValueId(root)),
+                sir::PlaceBase::Place,
+            ),
             shape: sir::AggregateShapeRef::Tuple,
             field,
         },
@@ -248,6 +250,59 @@ pub fn module(case: Case) -> sir::SemModule {
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),
     }
+}
+
+/// Exercise the same partial writes through a function-owned Local allocation.
+pub fn local_module(case: Case) -> sir::SemModule {
+    assert!(matches!(
+        case,
+        Case::MixedReplacement | Case::LiveReplacement | Case::DeadReplacement | Case::Fault
+    ));
+    let mut module = module(case);
+    let function = &mut module.functions[0];
+    for place in &mut function.places {
+        if let sir::PlaceOrigin::Aggregate { base, .. } = &mut place.origin {
+            if *base == sir::PlaceBase::Value(sir::ValueId(0)) {
+                *base = sir::PlaceBase::Place(sir::PlaceId(24));
+            }
+        }
+    }
+    function.places.push(sir::PlaceDecl {
+        id: sir::PlaceId(24),
+        ty: root_ty(),
+        origin: sir::PlaceOrigin::Local,
+    });
+    for block in &mut function.blocks {
+        for operation in &mut block.ops {
+            if matches!(&operation.kind, sir::SemOpKind::DestroyValue { value } if value.value == sir::ValueId(0))
+            {
+                operation.kind = sir::SemOpKind::EndLifetime {
+                    place: sir::PlaceId(24),
+                };
+            }
+        }
+    }
+    function.blocks[0].ops.splice(
+        0..0,
+        [
+            op(
+                2000,
+                sir::SemOpKind::AllocPlace {
+                    place: sir::PlaceId(24),
+                },
+                vec![],
+            ),
+            op(
+                2001,
+                sir::SemOpKind::StoreInit {
+                    place: sir::PlaceId(24),
+                    value: operand(0),
+                },
+                vec![],
+            ),
+        ],
+    );
+    module
 }
 
 fn replacement_blocks(case: Case) -> Vec<sir::SemBlock> {

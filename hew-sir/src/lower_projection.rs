@@ -4,8 +4,8 @@
 use super::{BindingPlace, Builder};
 use crate::ownership::TypeFactTable;
 use crate::{
-    aggregate_field_recipes, AggregateShapeRef, Operand, OwnKind, PlaceDecl, PlaceId, PlaceOrigin,
-    Provenance, SemAggregateShape, SemFunction, SemOp, SemOpKind, ValueId,
+    aggregate_field_recipes, AggregateShapeRef, Operand, OwnKind, OwnerRoot, PlaceBase, PlaceDecl,
+    PlaceId, PlaceOrigin, Provenance, SemAggregateShape, SemFunction, SemOpKind, ValueId,
 };
 use hew_hir::HirExpr;
 use hew_types::ResolvedTy;
@@ -15,7 +15,7 @@ impl Builder<'_, '_> {
     pub(super) fn expression_projection(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<Option<(PlaceId, ValueId)>, String> {
+    ) -> Result<Option<PlaceId>, String> {
         let Some(place) = self.resolve_binding_place(expression)? else {
             return Ok(None);
         };
@@ -25,39 +25,42 @@ impl Builder<'_, '_> {
     pub(super) fn owned_projection(
         &mut self,
         place: &BindingPlace,
-    ) -> Result<Option<(PlaceId, ValueId)>, String> {
-        if place.projections.is_empty() {
-            return Ok(None);
+    ) -> Result<Option<PlaceId>, String> {
+        let target = self.binding_target(place.binding)?;
+        if self.target_ty(target)? != place.root_ty {
+            return Err("aggregate projection changed its exact binding type".into());
         }
-        let Some(&root) = self.bindings.get(&place.binding) else {
-            return Ok(None);
+        let base = match target {
+            super::BindingTarget::Place(place) => PlaceBase::Place(place),
+            super::BindingTarget::Value(root) => {
+                if place.projections.is_empty() || self.value_own_kind(root) != Some(OwnKind::Owned)
+                {
+                    return Ok(None);
+                }
+                if !self.owned_live.contains_key(&root) {
+                    return Err("aggregate projection has no live SSA owner".into());
+                }
+                PlaceBase::Value(root)
+            }
         };
-        if self.value_own_kind(root) != Some(OwnKind::Owned) {
-            return Ok(None);
-        }
-        if self.value_ty(root).as_ref() != Some(&place.root_ty)
-            || !self.owned_live.contains_key(&root)
-        {
-            return Err("aggregate projection has no live, exactly typed binding root".into());
-        }
         let path = place
             .projections
             .iter()
             .map(|(_, shape, field)| {
                 u32::try_from(*field)
                     .map(|field| (*shape, field))
-                    .map_err(|_| "aggregate field index exceeds u32".to_string())
+                    .map_err(|_| "aggregate field exceeds u32".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let selected = declare_path(
+        declare_path(
             &mut self.places,
-            root,
+            base,
             &place.root_ty,
             &path,
             &self.service.aggregate_shapes,
             self.service.checked_facts.rows(),
-        )?;
-        Ok(Some((selected, root)))
+        )
+        .map(Some)
     }
 
     pub(super) fn store_projected(
@@ -66,17 +69,13 @@ impl Builder<'_, '_> {
         value: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
-        let operation = SemOp {
-            id: crate::OpId(self.ops),
-            results: Vec::new(),
-            kind: SemOpKind::StoreAssign {
+        self.emit_place_operation(
+            SemOpKind::StoreAssign {
                 place,
                 value: Operand { value },
             },
             provenance,
-        };
-        self.current_block_mut().append_op(operation)?;
-        self.ops += 1;
+        )?;
         self.owned_live.remove(&value);
         Ok(())
     }
@@ -86,13 +85,12 @@ impl Builder<'_, '_> {
 /// field's availability is derived from its children, never another owner.
 fn declare_path(
     places: &mut Vec<PlaceDecl>,
-    root: ValueId,
+    mut base: PlaceBase,
     root_ty: &ResolvedTy,
     path: &[(AggregateShapeRef, u32)],
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
 ) -> Result<PlaceId, String> {
-    let mut parent = None;
     let mut ty = root_ty.clone();
     for &(shape, selected) in path {
         let recipes = aggregate_field_recipes(shape, &ty, shapes, facts)?;
@@ -102,12 +100,7 @@ fn declare_path(
         let mut selected_place = None;
         for (field, recipe) in recipes.into_iter().enumerate() {
             let field = u32::try_from(field).map_err(|_| "aggregate field exceeds u32")?;
-            let origin = PlaceOrigin::Aggregate {
-                root,
-                parent,
-                shape,
-                field,
-            };
+            let origin = PlaceOrigin::Aggregate { base, shape, field };
             let id = if let Some(existing) = places.iter().find(|place| place.origin == origin) {
                 if existing.ty != recipe.ty {
                     return Err("aggregate projection changed its exact field type".into());
@@ -128,37 +121,14 @@ fn declare_path(
                 ty = recipe.ty;
             }
         }
-        parent = selected_place;
+        base = PlaceBase::Place(
+            selected_place.ok_or_else(|| "aggregate field disappeared".to_string())?,
+        );
     }
-    parent.ok_or_else(|| "aggregate projection has an empty field path".into())
-}
-
-fn place_path(places: &[PlaceDecl], id: PlaceId) -> Result<Vec<(AggregateShapeRef, u32)>, String> {
-    let mut path = Vec::new();
-    let mut current = Some(id);
-    let mut seen = BTreeSet::new();
-    while let Some(id) = current {
-        if !seen.insert(id) {
-            return Err("aggregate projection has a cyclic parent".into());
-        }
-        let place = places
-            .iter()
-            .find(|place| place.id == id)
-            .ok_or_else(|| "aggregate projection parent disappeared".to_string())?;
-        let PlaceOrigin::Aggregate {
-            parent,
-            shape,
-            field,
-            ..
-        } = place.origin
-        else {
-            return Err("aggregate projection has a non-aggregate parent".into());
-        };
-        path.push((shape, field));
-        current = parent;
+    match base {
+        PlaceBase::Place(place) => Ok(place),
+        PlaceBase::Value(_) => Err("SSA aggregate projection has an empty field path".into()),
     }
-    path.reverse();
-    Ok(path)
 }
 
 /// Publish the same structural field partition for every connected SSA root
@@ -210,12 +180,33 @@ pub(super) fn complete_edge_partitions(
     loop {
         let before = function.places.len();
         for &(source, destination) in &edges {
-            let paths = function.places.iter().filter(|place| {
-                matches!(place.origin, PlaceOrigin::Aggregate { root, .. } if root == source)
-            }).map(|place| place_path(&function.places, place.id)).collect::<Result<Vec<_>, _>>()?;
+            let paths = function
+                .places
+                .iter()
+                .filter_map(|place| {
+                    if !matches!(place.origin, PlaceOrigin::Aggregate { .. }) {
+                        return None;
+                    }
+                    match crate::projection::place_path(&function.places, place.id) {
+                        Ok((OwnerRoot::Value(root), path)) if root == source => Some(Ok(path
+                            .into_iter()
+                            .map(|step| (step.shape, step.field))
+                            .collect::<Vec<_>>())),
+                        Ok(_) => None,
+                        Err(error) => Some(Err(error)),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let (_, ty) = &types[&destination];
             for path in paths {
-                declare_path(&mut function.places, destination, ty, &path, shapes, facts)?;
+                declare_path(
+                    &mut function.places,
+                    PlaceBase::Value(destination),
+                    ty,
+                    &path,
+                    shapes,
+                    facts,
+                )?;
             }
         }
         if function.places.len() == before {

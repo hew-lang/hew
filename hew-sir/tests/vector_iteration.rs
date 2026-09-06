@@ -103,17 +103,13 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
                     {
                         return false;
                     }
-                    let hew_sir::SemOpKind::LoadBorrow { place, environment } = &op.kind else {
+                    let hew_sir::SemOpKind::LoadBorrow { place } = &op.kind else {
                         return false;
                     };
-                    let plan = hew_sir::aggregate_projection_plan(
-                        main,
-                        &module.aggregate_shapes,
-                        &module.type_facts,
-                    )
-                    .unwrap();
+                    let plan =
+                        hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts)
+                            .unwrap();
                     let projection = plan.projection(*place).unwrap();
-                    assert_eq!(projection.root, environment.value);
                     let [step] = projection.path.as_slice() else {
                         panic!("cursor field must be direct")
                     };
@@ -134,13 +130,17 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
         }
     }
     assert_eq!(reads, 2, "cursor next needs one length and one item read");
+    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     assert!(
         !operations.iter().any(|op| {
-            matches!(
-                op.kind,
-                hew_sir::SemOpKind::AggregateProjectCopy { .. }
-                    | hew_sir::SemOpKind::LoadCopy { .. }
-            ) && op.results[0].own == hew_sir::OwnKind::Owned
+            let projected_copy = match op.kind {
+                hew_sir::SemOpKind::AggregateProjectCopy { .. } => true,
+                hew_sir::SemOpKind::LoadCopy { place } => {
+                    !plan.projection(place).unwrap().path.is_empty()
+                }
+                _ => false,
+            };
+            projected_copy && op.results[0].own == hew_sir::OwnKind::Owned
         }),
         "cursor traversal must not clone its owning fields"
     );
@@ -263,8 +263,8 @@ fn missing_break_cleanup_is_rejected_by_the_ownership_verifier() {
         .iter()
         .find(|binding| binding.name == "local")
         .unwrap();
-    let hew_sir::BindingTarget::Value(local) = local.target else {
-        panic!("the local must name its owning SSA value");
+    let hew_sir::BindingTarget::Place(local) = local.target else {
+        panic!("the local must name its storage");
     };
     let block = function
         .blocks
@@ -274,14 +274,14 @@ fn missing_break_cleanup_is_rejected_by_the_ownership_verifier() {
                 && block
                     .ops
                     .iter()
-                    .any(|op| matches!(&op.kind, hew_sir::SemOpKind::DestroyValue { value } if value.value == local))
+                    .any(|op| matches!(&op.kind, hew_sir::SemOpKind::EndLifetime { place } if *place == local))
         })
         .expect("the break edge must release iteration-local owners");
     block.ops.retain(
-        |op| !matches!(&op.kind, hew_sir::SemOpKind::DestroyValue { value } if value.value == local),
+        |op| !matches!(&op.kind, hew_sir::SemOpKind::EndLifetime { place } if *place == local),
     );
     assert!(verify_module(&module).iter().any(|diagnostic| matches!(
         diagnostic.kind,
-        hew_sir::SirDiagnosticKind::OwnershipLifetime { .. }
+        hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. } if place == local && reason == "local storage remains active at exit"
     )));
 }

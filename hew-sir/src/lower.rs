@@ -2363,29 +2363,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             argument_receiver_loans: Vec::new(),
         };
         builder.bind_captures(source)?;
-        builder.bind_private_callable_parameters(source_params)?;
+        builder.bind_private_value_parameters(source_params)?;
         Ok(builder)
     }
 
-    /// A mutable value parameter may change its private callable environment,
-    /// while its declared borrowed ABI keeps the caller's environment intact.
-    fn bind_private_callable_parameters(
-        &mut self,
-        parameters: &[HirBinding],
-    ) -> Result<(), String> {
+    /// Mutable value parameters operate on private values. Use the canonical
+    /// copy contract for both direct callables and their aggregate containers;
+    /// the incoming borrowed ABI keeps the caller's value intact.
+    fn bind_private_value_parameters(&mut self, parameters: &[HirBinding]) -> Result<(), String> {
         for parameter in parameters {
             if !parameter.mutable || parameter.is_consume {
                 continue;
             }
             let ty = self.ty(&parameter.ty);
-            let Ok((_, _, capabilities)) = crate::callable_parts(&ty) else {
-                continue;
-            };
-            if capabilities.call != hew_types::CallableCallMode::Var || !capabilities.clone {
-                continue;
-            }
             let source = self.bindings[&parameter.id];
             if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
+                continue;
+            }
+            self.service.require_type_facts(&ty)?;
+            if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(ty.clone())].clone
+                == hew_types::CloneKind::None
+            {
                 continue;
             }
             let copied = self.emit_typed(

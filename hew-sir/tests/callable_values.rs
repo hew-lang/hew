@@ -405,3 +405,34 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     assert!(!consuming.blocks.iter().flat_map(|block| &block.ops)
         .any(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == consuming.params[0].value)));
 }
+
+#[test]
+fn mutable_aggregate_parameters_keep_callable_fields_private_across_control_flow() {
+    lower_source(
+        r#"
+        type Holder { next: fn[var, clone]() -> i64, label: string }
+        fn advance(var holder: Holder, flag: bool) -> i64 {
+            if flag { holder.next(); }
+            println(holder.label);
+            holder.next()
+        }
+        fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
+            for i in 0..2 { pair.0(); }
+            println(pair.1);
+            pair.0()
+        }
+        fn main() -> i64 {
+            let count = 10;
+            var holder = Holder {
+                next: capture(var count) || { count += 1; count },
+                label: "private record",
+            };
+            println(advance(holder, true));
+            println(holder.next());
+            var pair: (fn[var, clone]() -> i64, string) = (holder.next, "private tuple");
+            println(advance_pair(pair));
+            pair.0()
+        }
+        "#,
+    );
+}

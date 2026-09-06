@@ -754,6 +754,7 @@ mod tests {
     /// guards touch matter; the rest are inert nulls/zeros.
     fn exec_test_actor() -> Box<HewActor> {
         Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 1,
             state: ptr::null_mut(),
@@ -1196,6 +1197,7 @@ mod forced_ordering_probe {
 
     fn probe_actor() -> Box<HewActor> {
         Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id: 1,
             state: ptr::null_mut(),

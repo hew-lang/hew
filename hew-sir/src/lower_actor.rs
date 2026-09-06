@@ -1,0 +1,478 @@
+//! Checked actor declarations and exclusive state bindings.
+
+use super::{
+    function_source_origin, lower_initial_value_transfer, Binding, BindingTarget, BlockArg,
+    BodySource, Builder, CallResult, CallUnwind, CallableId, CallableInstance, CallableState,
+    DefId, Edge, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirModule,
+    InstanceService, OpId, Operand, OwnKind, OwnedBindingUse, PlaceId, PlaceOrigin, ResolvedTy,
+    SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemParamPassing, SemSignature,
+    SemTerminator, ValueDef, ValueId,
+};
+use std::collections::BTreeSet;
+
+pub(super) fn declaration<'a>(
+    module: &'a HirModule,
+    ty: &ResolvedTy,
+) -> Option<&'a hew_hir::HirActorDecl> {
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::LocalPid),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let [actor_ty] = args.as_slice() else {
+        return None;
+    };
+    let instance = actor_ty.nominal_instance()?;
+    module.items.iter().find_map(|item| match item {
+        HirItem::Actor(actor)
+            if &actor.declaration == instance.nominal.declaration() && instance.args.is_empty() =>
+        {
+            Some(actor)
+        }
+        _ => None,
+    })
+}
+
+fn actor_overflow(source: &hew_hir::HirActorDecl) -> Result<crate::SemActorOverflow, String> {
+    let overflow = match &source.overflow_policy {
+        None | Some(hew_parser::ast::OverflowPolicy::Block) => crate::SemActorOverflow::Block,
+        Some(hew_parser::ast::OverflowPolicy::DropNew) => crate::SemActorOverflow::DropNew,
+        Some(hew_parser::ast::OverflowPolicy::DropOld) => crate::SemActorOverflow::DropOld,
+        Some(hew_parser::ast::OverflowPolicy::Fail) => crate::SemActorOverflow::Fail,
+        Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => {
+            return Err("coalescing requires a checked key projection".into())
+        }
+    };
+    Ok(overflow)
+}
+
+impl InstanceService<'_> {
+    pub(super) fn require_actor(&mut self, ty: &ResolvedTy) -> Result<crate::ActorId, String> {
+        if let Some(actor) = self.actors.iter().find(|actor| actor.handle_ty == *ty) {
+            return Ok(actor.id);
+        }
+        let source = declaration(self.module, ty)
+            .ok_or("local actor handle lacks its exact declaration")?
+            .clone();
+        if !source.type_params.is_empty()
+            || !source.methods.is_empty()
+            || !source.lifecycle_hooks.is_empty()
+            || source
+                .receive_handlers
+                .iter()
+                .any(|handler| handler.is_generator || handler.every_ns.is_some())
+        {
+            return Err("actor methods, lifecycle hooks and generator receives need their semantic body contracts".into());
+        }
+        let overflow = actor_overflow(&source)?;
+        let fields: Vec<_> = source
+            .state_fields
+            .iter()
+            .map(|field| crate::SemActorField {
+                ty: field.ty.clone(),
+                mutable: field.is_mutable,
+            })
+            .collect();
+        let state_ty = ResolvedTy::Tuple(fields.iter().map(|field| field.ty.clone()).collect());
+        self.require_type_facts(ty)?;
+        self.require_type_facts(&state_ty)?;
+        let id = crate::ActorId(
+            u32::try_from(self.actors.len()).map_err(|_| "actor count exceeds u32")?,
+        );
+        self.actors.push(crate::SemActor {
+            id,
+            declaration: source.declaration.clone(),
+            handle_ty: ty.clone(),
+            state_ty,
+            fields,
+            init: None,
+            handlers: Vec::new(),
+            mailbox_capacity: source.mailbox_capacity,
+            overflow,
+            max_heap_bytes: source.max_heap_bytes,
+        });
+        if let Some(init) = &source.init {
+            let body = self.register_actor_body(
+                id,
+                &source,
+                init.declaration.clone(),
+                &init.state_bindings,
+                &init.params,
+                ResolvedTy::Unit,
+                &init.body,
+                "init",
+            )?;
+            self.actors[id.0 as usize].init = Some(body);
+        }
+        for handler in &source.receive_handlers {
+            let row = source
+                .protocol_descriptor
+                .as_ref()
+                .and_then(|protocol| {
+                    protocol
+                        .handlers
+                        .iter()
+                        .find(|row| row.name == handler.name)
+                })
+                .ok_or("receive body lacks its checker-selected protocol member")?;
+            let params: Vec<_> = handler
+                .params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect();
+            if params != row.param_tys || handler.return_ty != row.return_ty {
+                return Err("actor protocol signature differs from its checked body".into());
+            }
+            let callable = self.register_actor_body(
+                id,
+                &source,
+                handler.declaration.clone(),
+                &handler.state_bindings,
+                &handler.params,
+                handler.return_ty.clone(),
+                &handler.body,
+                &row.symbol,
+            )?;
+            self.actors[id.0 as usize]
+                .handlers
+                .push(crate::SemActorHandler {
+                    declaration: handler.declaration.clone(),
+                    name: handler.name.clone(),
+                    message_id: row.msg_id,
+                    callable,
+                    params,
+                    return_ty: handler.return_ty.clone(),
+                });
+        }
+        Ok(id)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one checked actor body supplies its complete callable contract"
+    )]
+    fn register_actor_body(
+        &mut self,
+        actor: crate::ActorId,
+        source: &hew_hir::HirActorDecl,
+        declaration: DefId,
+        state_bindings: &[HirBinding],
+        params: &[HirBinding],
+        return_ty: ResolvedTy,
+        body: &HirBlock,
+        symbol: &str,
+    ) -> Result<CallableId, String> {
+        let id = CallableId(
+            u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
+        );
+        let function = HirFn {
+            id: source.id,
+            node: body.node,
+            declaration: declaration.clone(),
+            name: symbol.to_string(),
+            type_params: Vec::new(),
+            params: params.to_vec(),
+            var_self_receiver: None,
+            return_ty: return_ty.clone(),
+            body: body.clone(),
+            span: body.span.clone(),
+            is_generator: false,
+            intrinsic_id: None,
+        };
+        let mut signature = SemSignature {
+            params: vec![SemAbiParam {
+                ty: self.actors[actor.0 as usize].state_ty.clone(),
+                passing: SemParamPassing::BorrowMut,
+                caller_visible_projection: true,
+            }],
+            return_ty,
+        };
+        for parameter in params {
+            self.require_type_facts(&parameter.ty)?;
+            signature.params.push(SemAbiParam {
+                ty: parameter.ty.clone(),
+                caller_visible_projection: false,
+                passing: if OwnKind::of_ty(&parameter.ty, self.checked_facts.rows())?
+                    == OwnKind::Owned
+                {
+                    SemParamPassing::Consume
+                } else {
+                    SemParamPassing::ReadOnly
+                },
+            });
+        }
+        self.require_signature_shapes(&signature)?;
+        self.table.callables.push(SemCallable {
+            id,
+            function: source.id,
+            declaration,
+            instance: CallableInstance::Monomorphic,
+            symbol: format!("__hew_actor_{}_{}", actor.0, symbol),
+            source_origin: function_source_origin(self.module, &function),
+            signature,
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewActor(actor),
+        });
+        self.actor_sources
+            .insert(id, (function, state_bindings.to_vec()));
+        self.states.push(CallableState::Unreached);
+        self.statuses.push(None);
+        self.request_body(id);
+        Ok(id)
+    }
+}
+
+impl Builder<'_, '_> {
+    fn actor_arguments(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<(crate::ActorOperation, Vec<HirExpr>, Vec<usize>), String> {
+        match &expression.kind {
+            HirExprKind::Spawn { args, .. } => {
+                let ty = self.ty(&expression.ty);
+                let id = self.service.require_actor(&ty)?;
+                let source = declaration(self.service.module, &ty)
+                    .ok_or("spawn lost its actor declaration")?;
+                let mut values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
+                let mut argument_order = Vec::new();
+                let mut used = BTreeSet::new();
+                for field in &source.state_fields {
+                    if let Some((index, _)) = args
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (name, _))| *name == field.name)
+                    {
+                        argument_order.push(index);
+                        used.insert(index);
+                    } else if let Some(default) = &field.default {
+                        argument_order.push(values.len());
+                        values.push(default.clone());
+                    } else {
+                        return Err(format!(
+                            "actor state field `{}` requires an initialized spawn value",
+                            field.name
+                        ));
+                    }
+                }
+                if let Some(init) = &source.init {
+                    for parameter in &init.params {
+                        let (index, _) = args
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (name, _))| *name == parameter.name)
+                            .ok_or("actor init argument is missing")?;
+                        if !used.insert(index) {
+                            return Err(
+                                "spawn argument cannot initialize both state and an init parameter"
+                                    .into(),
+                            );
+                        }
+                        argument_order.push(index);
+                    }
+                }
+                if used.len() != args.len() {
+                    return Err("spawn carries an unknown actor argument".into());
+                }
+                Ok((crate::ActorOperation::Spawn(id), values, argument_order))
+            }
+            HirExprKind::ActorSend {
+                receiver,
+                method_id,
+                args,
+                checked,
+                blocking,
+            } => {
+                if *checked || *blocking {
+                    return Err(
+                        "bounded actor send requires its selected suspension or rejection result"
+                            .into(),
+                    );
+                }
+                let id = self.service.require_actor(&self.ty(&receiver.ty))?;
+                let handler = self.service.actors[id.0 as usize]
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.declaration.full_path() == method_id.as_str())
+                    .ok_or("send has no exact protocol member")?;
+                Ok((
+                    crate::ActorOperation::Send {
+                        actor: id,
+                        message: handler.message_id,
+                    },
+                    std::iter::once((**receiver).clone())
+                        .chain(args.iter().cloned())
+                        .collect(),
+                    (0..=args.len()).collect(),
+                ))
+            }
+            _ => Err("actor boundary requires a checked spawn or send".into()),
+        }
+    }
+
+    pub(super) fn lower_actor_boundary(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<Option<ValueId>, String> {
+        let (operation, sources, argument_order) = self.actor_arguments(expression)?;
+        let signature = operation.signature(&self.service.actors, |id| {
+            self.service
+                .callable(id)
+                .map(|callable| callable.signature.clone())
+        })?;
+        let mut values = Vec::new();
+        // Evaluate explicit arguments in source order, then defaults. Only the
+        // completed values are rearranged into state and init parameter order.
+        for source in &sources {
+            let value = lower_initial_value_transfer(
+                self,
+                source,
+                "actor message boundary",
+                OwnedBindingUse::Copy,
+            )?;
+            if !self.is_open() {
+                return Ok(None);
+            }
+            values.push(value);
+        }
+        if argument_order.len() != signature.params.len() {
+            return Err("actor argument count differs from its protocol".into());
+        }
+        let mut args = Vec::new();
+        for (index, parameter) in argument_order.into_iter().zip(&signature.params) {
+            if self.ty(&sources[index].ty) != parameter.ty {
+                return Err("actor argument changes its protocol type".into());
+            }
+            let value = values[index];
+            args.push(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision: crate::BoundaryDecision::Move,
+            });
+        }
+        for arg in &args {
+            self.owned_live.remove(&arg.operand.value);
+        }
+        let (result, normal, continuation) = if signature.return_ty == ResolvedTy::Unit {
+            (
+                CallResult::Unit,
+                Edge {
+                    target: self.new_block(Vec::new()),
+                    args: Vec::new(),
+                },
+                None,
+            )
+        } else {
+            let ty = signature.return_ty;
+            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            let raw = self.fresh_value();
+            let continuation = self.fresh_value();
+            let target = self.new_block(vec![BlockArg {
+                value: continuation,
+                ty: ty.clone(),
+                own,
+            }]);
+            (
+                CallResult::Value(ValueDef { id: raw, ty, own }),
+                Edge {
+                    target,
+                    args: vec![Operand { value: raw }],
+                },
+                Some(continuation),
+            )
+        };
+        let failure = self.new_block(Vec::new());
+        let normal_target = normal.target;
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::ActorCall {
+            id,
+            operation,
+            args,
+            result,
+            normal,
+            unwind: CallUnwind::Cleanup(Edge {
+                target: failure,
+                args: Vec::new(),
+            }),
+        })?;
+        let saved = self.control_state();
+        self.current = failure;
+        self.finish_fault_exit()?;
+        self.restore_control_state(&saved);
+        self.current = normal_target;
+        if let Some(value) = continuation {
+            if self.value_own_kind(value) == Some(OwnKind::Owned) {
+                self.owned_live.insert(
+                    value,
+                    self.value_ty(value).ok_or("actor result lacks its type")?,
+                );
+            }
+        }
+        Ok(continuation)
+    }
+
+    pub(super) fn bind_actor_state(&mut self, source: &BodySource) -> Result<(), String> {
+        let BodySource::Actor {
+            actor,
+            state_bindings,
+        } = source
+        else {
+            return Ok(());
+        };
+        let descriptor = self
+            .service
+            .actors
+            .get(actor.0 as usize)
+            .ok_or_else(|| "actor body has no state descriptor".to_string())?
+            .clone();
+        if state_bindings.len() != descriptor.fields.len() {
+            return Err("actor body bindings differ from its complete state".into());
+        }
+        let abi = &self.callable.signature.params[0];
+        if abi.ty != descriptor.state_ty || abi.passing != SemParamPassing::BorrowMut {
+            return Err("actor body requires its exclusive state receiver".into());
+        }
+        self.params.insert(
+            0,
+            BlockArg {
+                value: ValueId(0),
+                ty: abi.ty.clone(),
+                own: OwnKind::Guaranteed,
+            },
+        );
+        for (index, (binding, field)) in state_bindings.iter().zip(&descriptor.fields).enumerate() {
+            if binding.ty != field.ty {
+                return Err("actor field binding changes its declared type".into());
+            }
+            let place =
+                PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
+            self.places.push(crate::PlaceDecl {
+                id: place,
+                ty: field.ty.clone(),
+                origin: PlaceOrigin::ActorState {
+                    actor: *actor,
+                    state: ValueId(0),
+                    field: u32::try_from(index).map_err(|_| "state field count exceeds u32")?,
+                },
+            });
+            self.bindings
+                .insert(binding.id, BindingTarget::Place(place));
+            let declaration = self.source_bindings.len();
+            self.source_bindings.push(Binding {
+                id: crate::BindingId(
+                    u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
+                ),
+                name: binding.name.clone(),
+                span: binding.span.clone(),
+                mutable: field.mutable || descriptor.init == Some(self.callable.id),
+                target: BindingTarget::Place(place),
+            });
+            self.binding_declarations.insert(binding.id, declaration);
+            // The actor owns these seats beyond this body's lexical scope.
+            // No EndLifetime or implicit extraction belongs to the handler.
+        }
+        Ok(())
+    }
+}

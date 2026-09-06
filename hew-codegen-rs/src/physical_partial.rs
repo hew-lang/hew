@@ -25,6 +25,31 @@ pub(super) fn allocate_storage<'ctx>(
             if matches!(storage.origin, StorageOrigin::Aggregate(_)) {
                 return Ok(None);
             }
+            if let StorageOrigin::ActorState { state, field } = storage.origin {
+                let index = function
+                    .parameters
+                    .iter()
+                    .position(|id| *id == state)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("actor state is not a receiver parameter".into())
+                    })?;
+                let incoming = value
+                    .get_nth_param(u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed("receiver index exceeds u32".into())
+                    })?)
+                    .ok_or_else(|| CodegenError::FailClosed("missing actor state receiver".into()))?
+                    .into_pointer_value();
+                return builder
+                    .build_struct_gep(
+                        llvm_type(module.ctx, &signature.params[index].layout.repr)?
+                            .into_struct_type(),
+                        incoming,
+                        field,
+                        "actor.state.field",
+                    )
+                    .llvm_ctx("address exclusive actor state field")
+                    .map(Some);
+            }
             if matches!(storage.origin, StorageOrigin::Capture { .. }) {
                 return callable::capture_parameter_slot(
                     module, function, signature, value, builder, storage,

@@ -298,6 +298,12 @@ pub enum OwnerRoot {
 pub enum PlaceOrigin {
     Local,
     Runtime,
+    /// Initialized state protected by the enclosing strict actor turn.
+    ActorState {
+        actor: crate::ActorId,
+        state: ValueId,
+        field: u32,
+    },
     /// An initialized field of this closure body's explicit receiver.
     Capture {
         environment: ValueId,

@@ -870,6 +870,8 @@ pub mod actor_balance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod actor_group;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod actor_native;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod arena;
 #[cfg(target_arch = "wasm32")]
 #[path = "arena_wasm.rs"]

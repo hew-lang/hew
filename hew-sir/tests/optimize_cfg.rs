@@ -75,6 +75,7 @@ fn module(function: SemFunction) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        actors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
         value_capabilities: BTreeMap::new(),
@@ -880,6 +881,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
     invalid.callable = CallableId(1);
 
     let mut module = SemModule {
+        actors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
         value_capabilities: BTreeMap::new(),

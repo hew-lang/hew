@@ -399,6 +399,7 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         SemTerminator::Call { .. }
         | SemTerminator::ValueCall { .. }
         | SemTerminator::IndirectCall { .. }
+        | SemTerminator::ActorCall { .. }
         | SemTerminator::RtCall { .. } => {
             dump_call_terminator(out, module, term);
         }
@@ -477,6 +478,20 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             ..
         } => (
             format!("value.call{{{capability:?} {}}}", ty.user_facing()),
+            args,
+            result,
+            normal,
+            unwind,
+        ),
+        SemTerminator::ActorCall {
+            operation,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("actor.call{{{operation:?}}}"),
             args,
             result,
             normal,

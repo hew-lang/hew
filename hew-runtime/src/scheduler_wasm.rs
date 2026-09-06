@@ -157,6 +157,8 @@ pub struct HewActor {
     // native-only, so this slot is never read or written on WASM — it exists
     // purely to preserve the layout parity this module asserts.
     pub parked_ask_channel: AtomicPtr<c_void>,
+    // Payload ownership contract; mirrors the canonical actor tail.
+    pub dispatch_ownership: crate::actor::HewDispatchOwnership,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -238,6 +240,7 @@ const _: () = {
     assert!(offset_of!(W, state_drop_consumed) == offset_of!(N, state_drop_consumed));
     assert!(offset_of!(W, state_drop_borrowed) == offset_of!(N, state_drop_borrowed));
     assert!(offset_of!(W, parked_ask_channel) == offset_of!(N, parked_ask_channel));
+    assert!(offset_of!(W, dispatch_ownership) == offset_of!(N, dispatch_ownership));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -2724,6 +2727,7 @@ mod tests {
     /// Build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
         HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 1,
             state: ptr::null_mut(),
@@ -7629,6 +7633,7 @@ mod tests {
         assert!(!mailbox.is_null(), "mailbox allocation must succeed");
 
         let actor = Box::into_raw(Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 99,
             state: ptr::null_mut(),

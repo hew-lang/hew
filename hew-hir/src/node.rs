@@ -550,6 +550,8 @@ impl HirActorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorInit {
     pub declaration: DefId,
+    /// State bindings in declaration order, distinct from init parameters.
+    pub state_bindings: Vec<HirBinding>,
     pub params: Vec<HirBinding>,
     pub body: HirBlock,
 }
@@ -558,6 +560,8 @@ pub struct HirActorInit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorReceiveFn {
     pub declaration: DefId,
+    /// Exact body bindings for the enclosing actor's declaration-order fields.
+    pub state_bindings: Vec<HirBinding>,
     pub name: String,
     pub is_generator: bool,
     pub params: Vec<HirBinding>,
@@ -599,6 +603,7 @@ pub enum HirActorStateGuard {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorMethod {
     pub declaration: DefId,
+    pub state_bindings: Vec<HirBinding>,
     pub name: String,
     pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
@@ -614,6 +619,7 @@ pub struct HirActorMethod {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLifecycleHook {
     pub declaration: DefId,
+    pub state_bindings: Vec<HirBinding>,
     pub kind: HirLifecycleHookKind,
     pub name: String,
     pub params: Vec<HirBinding>,

@@ -314,6 +314,7 @@ fn wasm_message_drop_count() -> usize {
 
 fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
     Box::new(HewActor {
+        dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
         sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
         id: 1,
         state: std::ptr::null_mut(),

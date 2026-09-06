@@ -15375,12 +15375,13 @@ impl LowerCtx {
             .collect();
 
         let init = decl.init.as_ref().map(|init| {
-            let (params, body) =
+            let (state_bindings, params, body) =
                 self.lower_actor_body(&state_fields, &init.params, &init.body, &ResolvedTy::Unit);
             HirActorInit {
                 declaration: init_declaration
                     .clone()
                     .expect("actor init identity preflighted above"),
+                state_bindings,
                 params,
                 body,
             }
@@ -15448,25 +15449,28 @@ impl LowerCtx {
         params: &[Param],
         body: &Block,
         expected_ty: &ResolvedTy,
-    ) -> (Vec<HirBinding>, HirBlock) {
+    ) -> (Vec<HirBinding>, Vec<HirBinding>, HirBlock) {
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
         self.push_scope();
-        for field in state_fields {
-            self.bind(
-                field.name.clone(),
-                field.ty.clone(),
-                true,
-                field.span.clone(),
-            );
-        }
+        let state_bindings = state_fields
+            .iter()
+            .map(|field| {
+                self.bind(
+                    field.name.clone(),
+                    field.ty.clone(),
+                    true,
+                    field.span.clone(),
+                )
+            })
+            .collect();
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
             ctx.lower_block(body, expected_ty)
         });
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
-        (params, body)
+        (state_bindings, params, body)
     }
 
     /// Lower a `receive gen fn` handler body into a generator-shell block.
@@ -15485,12 +15489,13 @@ impl LowerCtx {
         body: &Block,
         yield_ty: ResolvedTy,
         span: &Span,
-    ) -> (Vec<HirBinding>, HirBlock) {
+    ) -> (Vec<HirBinding>, Vec<HirBinding>, HirBlock) {
         let gen_return_ty = ResolvedTy::Unit;
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
         self.push_scope();
         let mut state_field_bindings: HashSet<BindingId> = HashSet::new();
+        let mut state_bindings = Vec::with_capacity(state_fields.len());
         for field in state_fields {
             let binding = self.bind(
                 field.name.clone(),
@@ -15499,6 +15504,7 @@ impl LowerCtx {
                 field.span.clone(),
             );
             state_field_bindings.insert(binding.id);
+            state_bindings.push(binding);
         }
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
 
@@ -15559,7 +15565,7 @@ impl LowerCtx {
             ty: generator_ty,
             span: span.clone(),
         };
-        (params, wrapped)
+        (state_bindings, params, wrapped)
     }
 
     fn lower_actor_receive_fn(
@@ -15577,7 +15583,7 @@ impl LowerCtx {
         } else {
             return_ty.clone()
         };
-        let (params, body) = if rf.is_generator {
+        let (state_bindings, params, body) = if rf.is_generator {
             // A `receive gen fn` lowers its body through the same `GenBlock`
             // generator-shell path a standalone `gen fn` uses
             // (`lower_generator_fn_body`): the declared `-> T` is the Yield
@@ -15624,6 +15630,7 @@ impl LowerCtx {
             .and_then(AttributeArg::as_duration_ns);
         HirActorReceiveFn {
             declaration,
+            state_bindings,
             name: rf.name.clone(),
             is_generator: rf.is_generator,
             params,
@@ -15654,7 +15661,7 @@ impl LowerCtx {
                 .return_type
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-            let (params, body) =
+            let (state_bindings, params, body) =
                 self.lower_actor_body(state_fields, &method.params, &method.body, &return_ty);
             let hook_attr = method.attributes.iter().find(|a| a.name == "on");
             let hook_kind = hook_attr
@@ -15671,6 +15678,7 @@ impl LowerCtx {
             match hook_kind {
                 Some(kind) => hooks.push(HirLifecycleHook {
                     declaration: declaration.clone(),
+                    state_bindings,
                     kind,
                     name: method.name.clone(),
                     params,
@@ -15680,6 +15688,7 @@ impl LowerCtx {
                 }),
                 None => plain.push(HirActorMethod {
                     declaration: declaration.clone(),
+                    state_bindings,
                     name: method.name.clone(),
                     params,
                     return_ty,

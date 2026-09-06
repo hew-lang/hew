@@ -509,6 +509,7 @@ mod tests {
             let arena = crate::arena::hew_arena_new();
             let id = NEXT_TEST_ACTOR_ID.fetch_add(1, Ordering::Relaxed);
             let actor = Box::into_raw(Box::new(HewActor {
+                dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
                 state: counter.cast(),

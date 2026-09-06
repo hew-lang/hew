@@ -1545,6 +1545,7 @@ mod tests {
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
             state: std::ptr::null_mut(),

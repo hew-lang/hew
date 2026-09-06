@@ -114,6 +114,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         }
+        | PhysicalTerminator::TaskSelect {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
         | PhysicalTerminator::TaskAwait {
             normal,
             cancel,
@@ -302,6 +308,7 @@ pub(super) fn verify_calls(
                 }
             }
             PhysicalTerminator::Sleep { .. }
+            | PhysicalTerminator::TaskSelect { .. }
             | PhysicalTerminator::TaskAwait { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }
             | PhysicalTerminator::IndirectCall { .. }

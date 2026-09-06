@@ -23,6 +23,9 @@ mod defer;
 mod defer_tests;
 #[path = "physical_partial.rs"]
 mod partial;
+#[cfg(test)]
+#[path = "physical_select_tests.rs"]
+mod select_tests;
 
 #[path = "physical_suspend.rs"]
 mod suspend;
@@ -819,6 +822,14 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    TaskSelect {
+        tasks: Vec<ArgumentTransfer>,
+        timeout: Option<StorageId>,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     TaskAwait {
         task: ArgumentTransfer,
         result: Option<StorageId>,
@@ -2523,6 +2534,36 @@ impl FunctionLowerer<'_> {
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Select { has_timeout },
+                inputs,
+                result,
+                resumes,
+                cancel,
+                unwind,
+            } => {
+                let (tasks, timeout) = if *has_timeout {
+                    let (duration, tasks) = inputs.split_last().ok_or_else(|| {
+                        PhysicalError::new("timed selection lacks its duration input")
+                    })?;
+                    (tasks, Some(self.value(duration.operand.value)?))
+                } else {
+                    (inputs.as_slice(), None)
+                };
+                let CallResult::Value(result) = result else {
+                    return Err(PhysicalError::new(
+                        "selection lacks its source index result",
+                    ));
+                };
+                Ok(PhysicalTerminator::TaskSelect {
+                    tasks: self.argument_transfers(tasks)?,
+                    timeout,
+                    result: self.value(result.id)?,
+                    normal: self.lower_edge(&resumes[0])?,
+                    cancel: self.lower_edge(cancel)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Sleep,
                 inputs,
@@ -4850,6 +4891,45 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::TaskSelect {
+            tasks,
+            timeout,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            for task in tasks {
+                let ArgumentTransfer::Borrow(task) = task else {
+                    return Err(PhysicalError::new("selection must borrow its task handles"));
+                };
+                initialized(function, &state, *task, block, "selected task")?;
+            }
+            if let Some(timeout) = timeout {
+                initialized(function, &state, *timeout, block, "selection timeout")?;
+            }
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "selection cannot replace an active fault",
+                ));
+            }
+            let mut completed = state.clone();
+            define(
+                function,
+                &mut completed,
+                *result,
+                block,
+                "selected source index",
+            )?;
+            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
         PhysicalTerminator::TaskAwait {
             task,
             result,
@@ -5283,6 +5363,47 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::TaskSelect {
+            tasks,
+            timeout,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            if tasks.is_empty() && timeout.is_none() {
+                return Err(PhysicalError::new("selection requires a task or timeout"));
+            }
+            for task in tasks {
+                let ArgumentTransfer::Borrow(task) = task else {
+                    return Err(PhysicalError::new(
+                        "selection requires borrowed task handles",
+                    ));
+                };
+                if !matches!(slot(*task)?.ty, ResolvedTy::Task(_)) {
+                    return Err(PhysicalError::new(
+                        "selection input must have an exact Task type",
+                    ));
+                }
+            }
+            if let Some(timeout) = timeout {
+                if slot(*timeout)?.ty != ResolvedTy::Duration
+                    || slot(*timeout)?.own != OwnKind::None
+                {
+                    return Err(PhysicalError::new(
+                        "selection timeout must be a trivial duration",
+                    ));
+                }
+            }
+            if slot(*result)?.ty != ResolvedTy::I64 || slot(*result)?.own != OwnKind::None {
+                return Err(PhysicalError::new(
+                    "selection result must be a trivial source index",
+                ));
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
         PhysicalTerminator::TaskAwait {
             task,
             result,

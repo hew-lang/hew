@@ -19,6 +19,8 @@ mod partial;
 
 #[path = "physical_coro.rs"]
 mod coro;
+#[path = "physical_select.rs"]
+mod select;
 #[path = "physical_suspend.rs"]
 mod suspend;
 #[path = "physical_tasks.rs"]
@@ -2502,6 +2504,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::TaskSelect {
+                tasks,
+                timeout,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_task_select(tasks, *timeout, *result, normal, cancel, unwind),
             PhysicalTerminator::TaskAwait {
                 task,
                 result,

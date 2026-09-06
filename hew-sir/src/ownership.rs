@@ -463,9 +463,15 @@ pub enum SuspendKind {
     StreamNext,
     StreamSend,
     CallClosure,
-    Select,
+    /// Borrowed task observations, followed by an optional copied duration.
+    Select {
+        has_timeout: bool,
+    },
     Timeout,
-    Join { scope: TaskScopeId, cancel: bool },
+    Join {
+        scope: TaskScopeId,
+        cancel: bool,
+    },
     ScopeDeadline,
     Yield,
     Sleep,

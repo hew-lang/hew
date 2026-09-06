@@ -2,19 +2,7 @@
 
 use crate::support;
 
-use hew_hir::{lower_program_host_target, HirDiagnostic, HirDiagnosticKind, ResolutionCtx};
-
-fn non_send_capture_names(diagnostics: &[HirDiagnostic]) -> Vec<&str> {
-    diagnostics
-        .iter()
-        .filter_map(|d| match &d.kind {
-            HirDiagnosticKind::SpawnedClosureNonSendCapture { capture_name, .. } => {
-                Some(capture_name.as_str())
-            }
-            _ => None,
-        })
-        .collect()
-}
+use hew_hir::{lower_program_host_target, HirDiagnosticKind, ResolutionCtx};
 
 #[test]
 fn forked_closure_accepts_checked_send_capture() {
@@ -92,40 +80,13 @@ fn forked_closure_rejects_checked_non_send_capture() {
             scope { let task = fork (move || { let _ = r; })(); };
         }
         ";
-    let (parsed, tco) = support::checker_pipeline::typecheck_source(source);
+    let (_, tco) = support::checker_pipeline::typecheck_source(source);
     assert!(
-        tco.errors.is_empty(),
-        "Rc capture fixture must typecheck cleanly: {:#?}",
         tco.errors
-    );
-
-    assert!(tco.errors.is_empty(), "{:?}", tco.errors);
-    let captures: Vec<_> = tco
-        .closure_capture_facts
-        .values()
-        .flat_map(|facts| facts.iter())
-        .filter(|fact| fact.name == "r")
-        .collect();
-    assert!(
-        !captures.is_empty(),
-        "checker must produce capture facts for `r`: {:#?}",
-        tco.closure_capture_facts
-    );
-    assert!(
-        captures.iter().any(|fact| !fact.is_send),
-        "`Rc<i64>` capture must be recorded as non-Send: {captures:#?}"
-    );
-
-    let output = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
-    let capture_names = non_send_capture_names(&output.diagnostics);
-    assert!(
-        !capture_names.is_empty() && capture_names.iter().all(|name| *name == "r"),
-        "SpawnedClosureNonSendCapture must report the captured binding name: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.into_result().is_err(),
-        "non-Send spawned closure capture must make lowering fatal"
+            .iter()
+            .any(|error| matches!(error.kind, hew_types::error::TypeErrorKind::InvalidSend)),
+        "non-Send child capture must be rejected by the checker: {:?}",
+        tco.errors
     );
 }
 

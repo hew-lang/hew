@@ -1006,7 +1006,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
                     | crate::HirDiagnosticKind::SpawnedClosureSignatureUnsupported { .. }
-                    | crate::HirDiagnosticKind::SpawnedClosureNonSendCapture { .. }
                     | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
@@ -7659,6 +7658,7 @@ struct LowerCtx {
     result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
+    select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -8461,6 +8461,7 @@ impl LowerCtx {
             result_return_coercions: tc_output.result_return_coercions.clone(),
             recovery_kinds: tc_output.recovery_kinds.clone(),
             checked_call_effects: tc_output.suspension_effects.calls.clone(),
+            select_sources: tc_output.select_sources.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -8633,6 +8634,7 @@ impl LowerCtx {
                 tc_output.resolved_expr_types.clone(),
             ),
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
+            std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
             std::mem::replace(
                 &mut self.checked_call_effects,
                 tc_output.suspension_effects.calls.clone(),
@@ -8659,6 +8661,7 @@ impl LowerCtx {
             self.expr_types,
             self.resolved_expr_types,
             self.recovery_kinds,
+            self.select_sources,
             self.checked_call_effects,
             self.record_init_type_args,
         ) = saved;
@@ -16274,19 +16277,6 @@ impl LowerCtx {
         )
     }
 
-    /// True when the method call at `key` is a channel `recv` (the
-    /// checker-resolved descriptor family is `ChannelRecvLayout`). The
-    /// element type is carried
-    /// by the checker-resolved `Receiver<T>` receiver type, not by the
-    /// symbol name.
-    fn is_channel_recv_rewrite(&self, key: &SpanKey) -> bool {
-        matches!(
-            self.method_call_rewrites.get(key),
-            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
-                if d.family() == hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout
-        )
-    }
-
     /// True when the `await`'s inner expression is a suspending typed-stream
     /// `send()` over any describable `Sink<T>` — i.e. the checker-resolved
     /// descriptor's family classifies as [`AsyncSuspendKind::SinkSend`]
@@ -20312,19 +20302,8 @@ impl LowerCtx {
         }
     }
 
-    /// Lower a parsed `select { ... }` expression to HIR.
-    ///
-    /// Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive:
-    ///   1. `pat from next(<stream-expr>) => body`
-    ///   2. `pat from <actor-expr>.<method>(<args>) => body`   (actor ask)
-    ///   3. `pat from await <task-expr> => body`
-    ///   4. `after <duration-expr> => body`                    (timer)
-    ///
-    /// Any other arm source shape is rejected with
-    /// `SelectArmNotSealedForm`. Body-type disagreement is rejected
-    /// with `SelectArmTypeMismatch`. Empty selects and multiple-after
-    /// arms are rejected with `SelectNoArms` and
-    /// `SelectMultipleAfterArms` respectively.
+    /// Lower selection using the checker's source-arm classifications.
+    /// Preparation preserves task handles; the selected edge consumes its task.
     #[allow(
         clippy::too_many_lines,
         reason = "sealed select lowering keeps arm scope publication, binding, and result-type checks in one auditable pass"
@@ -20358,9 +20337,17 @@ impl LowerCtx {
         let mut expected_ty: Option<ResolvedTy> = None;
         let mut first_after_span: Option<std::ops::Range<usize>> = None;
 
-        for arm in arms {
+        let checked_sources = self.select_sources.get(&self.mk_key(&span)).cloned();
+        for (arm_index, arm) in arms.iter().enumerate() {
             let binding_name = self.pattern_name(&arm.binding);
-            let kind = self.recognize_sealed_arm_source(&arm.source);
+            let checked_source = checked_sources
+                .as_ref()
+                .and_then(|sources| sources.get(arm_index));
+            let kind = self.lower_checked_select_source(&arm.source, checked_source);
+            let binding_span = match &arm.source.0 {
+                Expr::Await(inner) => &inner.1,
+                _ => &arm.source.1,
+            };
             if matches!(kind, HirSelectArmKind::AfterTimer { .. }) {
                 if first_after_span.is_some() {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -20387,7 +20374,7 @@ impl LowerCtx {
             let previous_scope_id =
                 arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
             let binding_id = if let Some(ref name) = binding_name {
-                self.select_arm_binding_ty(&kind, &arm.source.1)
+                self.select_arm_binding_ty(&kind, binding_span)
                     .map(|binding_ty| {
                         self.bind(name.clone(), binding_ty, false, arm.binding.1.clone())
                             .id
@@ -21206,138 +21193,75 @@ impl LowerCtx {
         captures
     }
 
-    /// Recognise the sealed-form discriminator for a `select` arm
-    /// source expression. Emits a `SelectArmNotSealedForm` /
-    /// `SelectStreamNextSurface` / `SelectStreamNextArity` diagnostic
-    /// on miss and returns a placeholder `AfterTimer` arm kind (the
-    /// callers tolerate the placeholder because the diagnostic has
-    /// already been emitted; MIR lowering treats any select with HIR
-    /// diagnostics as fail-closed downstream).
-    fn recognize_sealed_arm_source(&mut self, source: &Spanned<Expr>) -> HirSelectArmKind {
-        let span = source.1.clone();
-        match &source.0 {
-            // Form 1: `next(<stream-expr>)` — a call where the callee
-            // is the bare identifier `next`. `next` is not a lexer
-            // keyword; the sealed-form discriminator is the callee
-            // name.
-            Expr::Call { function, args, .. } => {
-                if let Expr::Identifier(name) = &function.0 {
-                    if name == "next" {
-                        if args.len() != 1 {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::SelectStreamNextArity {
-                                    arg_count: args.len(),
-                                },
-                                span.clone(),
-                                "next(<stream>) takes exactly one argument",
-                            ));
-                            return HirSelectArmKind::StreamNext {
-                                stream: Box::new(
-                                    self.unsupported_expr(span, "stream-next arity mismatch"),
-                                ),
-                            };
-                        }
-                        let stream = self.lower_expr(args[0].expr(), IntentKind::Read);
-                        return HirSelectArmKind::StreamNext {
-                            stream: Box::new(stream),
-                        };
-                    }
-                }
-                // Some other function call — not a sealed form.
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SelectArmNotSealedForm {
-                        source_shape: "function call".into(),
-                    },
-                    span.clone(),
-                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
-                ));
-                HirSelectArmKind::StreamNext {
-                    stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
-                }
+    fn lower_checked_select_source(
+        &mut self,
+        source: &Spanned<Expr>,
+        checked: Option<&hew_types::check::CheckedSelectSource>,
+    ) -> HirSelectArmKind {
+        use hew_types::check::CheckedSelectSource;
+        // Retain the diagnostic for malformed synthetic trees containing an
+        // arm-position timer; parsed timers use the dedicated timeout clause.
+        if let Expr::Timeout { duration, .. } = &source.0 {
+            return HirSelectArmKind::AfterTimer {
+                duration: Box::new(self.lower_expr(duration, IntentKind::Read)),
+            };
+        }
+        let operand = match &source.0 {
+            Expr::Await(inner) => inner.as_ref(),
+            _ => source,
+        };
+        let key = self.mk_key(&operand.1);
+        match checked {
+            Some(CheckedSelectSource::TaskAwait {
+                operand: checked_key,
+            }) if checked_key == &key && matches!(source.0, Expr::Await(_)) => {
+                return HirSelectArmKind::TaskAwait {
+                    task: Box::new(self.lower_expr(operand, IntentKind::Read)),
+                };
             }
-            // Form 2: `<actor>.<method>(<args>)` — method call on an
-            // actor expression. Per HEW-SPEC-2026 §4.11.1 this is the
-            // actor-ask arm. `ask` is reserved as a future syntactic
-            // marker (see HEW-FUTURE) but is not lexer-recognised in
-            // edition 2026; the sealed-form discriminator is the
-            // method-call surface.
-            Expr::MethodCall {
-                receiver,
-                method,
-                args,
-            } => {
-                // NEW-4: `pat from rx.recv()` — a std/channel receive arm. The
-                // checker recorded the runtime rewrite (hew_channel_recv_layout)
-                // on this method-call span; recognise it as a ChannelRecv arm
-                // before the generic actor-ask interpretation. The element
-                // type rides the checker-resolved `Receiver<T>` receiver type.
-                if method == "recv" && self.is_channel_recv_rewrite(&self.mk_key(&span)) {
-                    let recv = self.lower_expr(receiver, IntentKind::Read);
-                    return HirSelectArmKind::ChannelRecv {
-                        receiver: Box::new(recv),
+            Some(CheckedSelectSource::ActorAsk { call }) if call == &key => {
+                if let Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                } = &operand.0
+                {
+                    let actor = self.lower_expr(receiver, IntentKind::Read);
+                    let args = args
+                        .iter()
+                        .map(|arg| {
+                            let arg = arg.expr();
+                            self.lower_expr(arg, self.actor_message_arg_intent(&arg.1))
+                        })
+                        .collect();
+                    return HirSelectArmKind::ActorAsk {
+                        actor: Box::new(actor),
+                        method: method.clone(),
+                        args,
                     };
                 }
-                let actor = self.lower_expr(receiver, IntentKind::Read);
-                // A select arm source is SEQUENTIAL setup: every arm's ask is
-                // issued before dispatch picks a winner, so an owned argument
-                // handed to two arms is a real double transfer. MIR lowers each
-                // arm's args through `lower_value_for_move`; stamp the matching
-                // intent so the dataflow checker sees the consume.
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| {
-                        let spanned = arg.expr();
-                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
-                    })
-                    .collect();
-                HirSelectArmKind::ActorAsk {
-                    actor: Box::new(actor),
-                    method: method.clone(),
-                    args: lowered_args,
+            }
+            Some(CheckedSelectSource::ChannelReceive { call }) if call == &key => {
+                if let Expr::MethodCall { receiver, .. } = &operand.0 {
+                    return HirSelectArmKind::ChannelRecv {
+                        receiver: Box::new(self.lower_expr(receiver, IntentKind::Read)),
+                    };
                 }
             }
-            // Form 3: `await <task-expr>` — explicit await keyword.
-            Expr::Await(task_expr) => {
-                let task = self.lower_expr(task_expr, IntentKind::Read);
-                HirSelectArmKind::TaskAwait {
-                    task: Box::new(task),
-                }
-            }
-            // Form 4 (arm-position): `after <duration>` written as an
-            // arm source rather than the dedicated `timeout` field.
-            // Recognised here so the `lower_select` multiple-after check
-            // can fire; the duplicate check in `lower_select` emits the
-            // diagnostic when this arm coexists with another after arm.
-            Expr::Timeout { duration, .. } => {
-                let dur = self.lower_expr(duration, IntentKind::Read);
-                HirSelectArmKind::AfterTimer {
-                    duration: Box::new(dur),
-                }
-            }
-            // Method-call dressed up as `stream.next()` — sealed
-            // surface is `next(stream)`. Diagnose specifically so the
-            // user can fix the form.
-            // (Already handled by the MethodCall arm above as a
-            // generic actor-ask. The dedicated diagnostic for the
-            // `.next()` shape would shadow the actor-ask recognition;
-            // we keep the more general actor-ask interpretation and
-            // rely on the SelectStreamNextSurface diagnostic only if
-            // we later choose to special-case it. For now, `s.next()`
-            // is recognised as an actor-ask of the `next` method on
-            // `s`, which is the lower-noise default.)
-            other => {
-                let shape = describe_select_source_shape(other);
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SelectArmNotSealedForm {
-                        source_shape: shape,
-                    },
-                    span.clone(),
-                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
-                ));
-                HirSelectArmKind::StreamNext {
-                    stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
-                }
-            }
+            _ => {}
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "select source".to_string(),
+                reason: "missing or inconsistent checked source-arm classification".to_string(),
+            },
+            source.1.clone(),
+            "select source requires checker-owned classification",
+        ));
+        HirSelectArmKind::TaskAwait {
+            task: Box::new(
+                self.unsupported_expr(source.1.clone(), "invalid checked select source"),
+            ),
         }
     }
 
@@ -30558,10 +30482,6 @@ impl LowerCtx {
     /// Lower a checked call as a task-producing expression.
     fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
         let span = expr.1.clone();
-        if let Expr::Call { function, .. } = &expr.0 {
-            self.validate_task_spawn_captures(function, &span);
-        }
-
         let call_hir = self.lower_expr(expr, IntentKind::Consume);
         let call_site = call_hir.site;
 
@@ -30605,37 +30525,6 @@ impl LowerCtx {
                 task_ty,
             },
             span,
-        }
-    }
-
-    fn validate_task_spawn_captures(&mut self, function: &Spanned<Expr>, span: &Span) {
-        if !matches!(function.0, Expr::Lambda { .. }) {
-            return;
-        }
-        let closure_span_key = self.mk_key(&function.1);
-        if let Some(captures) = self.closure_capture_facts.get(&closure_span_key) {
-            for capture in captures {
-                if !capture.is_send {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SpawnedClosureNonSendCapture {
-                            site: self.ids.site(),
-                            capture_name: capture.name.clone(),
-                        },
-                        span.clone(),
-                        format!("spawned closure captures non-Send value '{}'", capture.name),
-                    ));
-                }
-            }
-        } else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "closure literal".to_string(),
-                    reason: "closure_capture_facts has no record for closure literal span"
-                        .to_string(),
-                },
-                span.clone(),
-                "closure literal reached HIR without checker capture metadata",
-            ));
         }
     }
 }

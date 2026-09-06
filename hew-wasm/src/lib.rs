@@ -742,7 +742,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::TaskSpawnSignatureUnsupported { .. } => "TaskSpawnSignatureUnsupported",
         K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
         K::SpawnedClosureSignatureUnsupported { .. } => "SpawnedClosureSignatureUnsupported",
-        K::SpawnedClosureNonSendCapture { .. } => "SpawnedClosureNonSendCapture",
         K::ForkBlockBodyUnsupported { .. } => "ForkBlockBodyUnsupported",
         K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
         K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",

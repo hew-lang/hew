@@ -1940,3 +1940,16 @@ aggregate ownership transfer; no local partial-move machinery is introduced.
 
 The focused codegen execution controls pass. SIR ownership has been handed back
 to integration after the consuming-projection guard checkpoint.
+
+## Verify definite private parameter replacement
+
+Borrowed callable parameter provenance now follows replacements through the
+existing source ownership snapshots. Replacement on every reaching branch, or
+on the only branch that continues, permits private mutable invocation. A mutable
+Clone+Once parameter consumes its entry copy while leaving the caller reusable.
+The native fixture passes at O0/O2 with paired generated/runtime ASan/LSan.
+
+The full type-checker suite passes. Full lint completed with passing Rust
+diagnostics; the existing JobState record lowering, starts_with operation and
+standard-library grammar gates remain unresolved. Ordinary partial-field
+consumption is a separate implementation and is not claimed by this checkpoint.

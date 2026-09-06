@@ -37696,8 +37696,8 @@ impl Widget {
             let p = spawn Pinger;
             let c = spawn Counter;
             let result = select {
-                reply from p.ping() => reply,
-                verdict from c.count() => verdict,
+                reply = await p.ping() => reply,
+                verdict = await c.count() => verdict,
             };
         }
     ";
@@ -37761,13 +37761,19 @@ impl Widget {
             lowered.diagnostics
         );
 
+        let diagnostics = crate::verify::verify_hir(&lowered.module);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let select_expr = main_select_expr(&lowered);
         let resolved = find_binding_ref_in_arm(select_expr, 0, "reply")
             .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
 
-        assert!(
-            matches!(resolved, ResolvedRef::Binding(_)),
-            "arm 0 body 'reply' must resolve to Binding, got {resolved:?}"
+        let HirExprKind::Select(select) = &select_expr.kind else {
+            panic!("expected select");
+        };
+        assert_eq!(
+            resolved,
+            &ResolvedRef::Binding(select.arms[0].binding_id.expect("reply binding")),
+            "the arm body must reference its own reply binding"
         );
     }
 
@@ -37786,8 +37792,8 @@ impl Widget {
                 let p = spawn Pinger;
                 let c = spawn Checker;
                 let result = select {
-                    reply from p.ping() => reply,
-                    _verdict from c.check() => reply,
+                    reply = await p.ping() => reply,
+                    _verdict = await c.check() => reply,
                 };
             }
         ";
@@ -37802,6 +37808,14 @@ impl Widget {
         // Type errors are expected (reply is unresolved in arm 1 context);
         // we proceed to HIR lowering regardless.
         let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "the out-of-scope reply must be rejected by the checker: {:?}",
+            tco.errors
+        );
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
@@ -37825,7 +37839,7 @@ impl Widget {
             fn main() {
                 let p = spawn Pinger;
                 let result = select {
-                    reply from p.ping() => reply,
+                    reply = await p.ping() => reply,
                 };
                 let late = reply;
             }
@@ -37839,6 +37853,14 @@ impl Widget {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "the out-of-scope reply must be rejected by the checker: {:?}",
+            tco.errors
+        );
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
@@ -37862,6 +37884,8 @@ impl Widget {
             lowered.diagnostics
         );
 
+        let diagnostics = crate::verify::verify_hir(&lowered.module);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let select_expr = main_select_expr(&lowered);
         let reply_ref = find_binding_ref_in_arm(select_expr, 0, "reply")
             .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
@@ -37875,10 +37899,44 @@ impl Widget {
             panic!("arm 1 'verdict' must be Binding, got {verdict_ref:?}");
         };
 
+        let HirExprKind::Select(select) = &select_expr.kind else {
+            panic!("expected select");
+        };
+        assert_eq!(Some(*reply_id), select.arms[0].binding_id);
+        assert_eq!(Some(*verdict_id), select.arms[1].binding_id);
         assert_ne!(
             reply_id, verdict_id,
             "distinct arm bindings must have distinct BindingIds"
         );
+    }
+
+    #[test]
+    fn select_sources_missing_or_stale_are_rejected() {
+        let (program, checked, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        for stale in [false, true] {
+            let mut damaged = checked.clone();
+            if stale {
+                // Both entries are valid actor asks, but belong to the other arm.
+                damaged
+                    .select_sources
+                    .values_mut()
+                    .next()
+                    .expect("checked select")
+                    .swap(0, 1);
+            } else {
+                damaged.select_sources.clear();
+            }
+            let output = lower_program(&program, &damaged, &ResolutionCtx, TargetArch::host());
+            assert!(output.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "select source"
+            )), "invalid select source facts must be rejected: {:?}", output.diagnostics);
+            assert!(
+                output.into_result().is_err(),
+                "invalid select source facts must make lowering fatal"
+            );
+        }
     }
 
     fn function_named<'a>(output: &'a LowerOutput, name: &str) -> &'a HirFn {

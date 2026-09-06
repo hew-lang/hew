@@ -610,14 +610,14 @@ fn select_non_await_sources_are_rejected() {
         "fn main() { let task = fork { 42 }; let result = select { value = task => 1, }; }",
         "fn main() { let result = select { value = 42 => 1, }; }",
     ] {
-        let output = lower(source);
+        let (_, checked) = support::checker_pipeline::typecheck_source(source);
         assert!(
-            output
-                .diagnostics
+            checked
+                .errors
                 .iter()
-                .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmNotSealedForm { .. })),
+                .any(|error| { error.kind == hew_types::error::TypeErrorKind::InvalidOperation }),
             "{:?}",
-            output.diagnostics
+            checked.errors
         );
     }
 }

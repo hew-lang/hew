@@ -2967,6 +2967,8 @@ pub struct Checker {
     /// child specs whose runtime spawn path cannot arm periodic timers.
     pub(super) actors_with_periodic_handlers: HashMap<String, String>,
     pub(super) current_return_type: Option<Ty>,
+    /// Return constraints collected while a lambda's result type is inferred.
+    pub(super) inferred_lambda_returns: Option<Vec<Ty>>,
     pub(super) current_fails: bool,
     pub(super) in_generator: bool,
     /// Set to `true` for the duration of synthesizing the inner expression of
@@ -3835,6 +3837,7 @@ impl Checker {
             reported_actor_bound_violations: HashSet::new(),
             actors_with_periodic_handlers: HashMap::new(),
             current_return_type: None,
+            inferred_lambda_returns: None,
             current_fails: false,
             in_generator: false,
             inside_await_expr: false,

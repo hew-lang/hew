@@ -34,9 +34,9 @@ impl Parser<'_> {
                         CallableCallMode::Once
                     };
                 }
-                Some(Token::Identifier("Clone")) => {
+                Some(Token::Identifier("clone")) => {
                     if capabilities.clone {
-                        self.error_at("duplicate callable `Clone` qualifier".into(), span);
+                        self.error_at("duplicate callable `clone` qualifier".into(), span);
                         return None;
                     }
                     self.advance();
@@ -44,7 +44,7 @@ impl Parser<'_> {
                 }
                 _ => {
                     self.error_at(
-                        "expected callable qualifier `var`, `once` or `Clone`".into(),
+                        "expected callable qualifier `var`, `once` or `clone`".into(),
                         span,
                     );
                     return None;

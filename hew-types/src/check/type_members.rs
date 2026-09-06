@@ -26,6 +26,65 @@ pub(super) enum DottedTypeMemberUse<'a> {
 }
 
 impl Checker {
+    /// Resolve a contextual builtin constructor from its expected type identity.
+    /// Use the same member contract as an explicit Option/Result type head.
+    pub(super) fn dispatch_context_builtin_variant(
+        &mut self,
+        expected: &Ty,
+        context: &hew_parser::ast::ContextVariantExpr,
+        usage: &DottedTypeMemberUse<'_>,
+    ) -> Option<Ty> {
+        let Ty::Named {
+            name,
+            builtin: Some(builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result)),
+            ..
+        } = self.subst.resolve(expected)
+        else {
+            return None;
+        };
+        let span = match usage {
+            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
+                *span
+            }
+        };
+        let Some(variant) = builtin.enum_variant(&context.name) else {
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                format!(
+                    "E_PATH_MEMBER_NOT_FOUND: type `{name}` has no variant `{}`",
+                    context.name
+                ),
+            );
+            return Some(Ty::Error);
+        };
+        let call = matches!(usage, DottedTypeMemberUse::Call { .. });
+        if context.record.is_some() || call != (variant.payload_arity > 0) {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                format!(
+                    "E_PATH_KIND_MISMATCH: variant `{name}.{}` does not use this constructor form",
+                    context.name
+                ),
+            );
+            return Some(Ty::Error);
+        }
+        let head = ResolvedDottedTypeHead {
+            canonical_type: name,
+            builtin: Some(builtin),
+            type_args: None,
+            span: span.clone(),
+        };
+        let actual = self
+            .dispatch_builtin_variant_member(&head, &context.name, usage)
+            .expect("validated builtin variant has a member contract");
+        self.expect_type(expected, &actual, span);
+        let actual = self.subst.resolve(&actual);
+        self.record_type(span, &actual);
+        Some(actual)
+    }
+
     /// Resolve a dotted expression head to the declaration identity selected
     /// by the checker. Value bindings win before this path, and every accepted
     /// module/type spelling comes from a declaration or builtin authority.

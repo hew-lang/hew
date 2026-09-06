@@ -16486,7 +16486,16 @@ impl LowerCtx {
                             "a `Task<T>` handle cannot escape via `return`; \
                              await it inside the `scope{}` body with `await name`",
                         ));
-                    } else if expr.ty != return_ty && return_ty != ResolvedTy::Unit {
+                    } else if expr.ty != return_ty
+                        && return_ty != ResolvedTy::Unit
+                        && !(expr.ty.to_ty().contains_callable()
+                            && hew_types::unify::coerce(
+                                &mut hew_types::ty::Substitution::new(),
+                                &return_ty.to_ty(),
+                                &expr.ty.to_ty(),
+                            )
+                            .is_ok())
+                    {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ReturnTypeMismatch {
                                 expected: return_ty,
@@ -16566,6 +16575,7 @@ impl LowerCtx {
                     }
                 });
                 let if_ty = if_branch_result_ty(&then_ty, else_expr.as_ref().map(|e| &e.ty));
+                let if_ty = self.callable_join_type(&span, if_ty);
                 let if_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -18563,6 +18573,7 @@ impl LowerCtx {
                 // unannotated `let x = if c { v } else { return … }` would carry
                 // the else's `Never` and break a later `x + 1` at MIR lowering.
                 let ty = if_branch_result_ty(&then_expr.ty, else_expr.as_ref().map(|e| &e.ty));
+                let ty = self.callable_join_type(&span, ty);
                 (
                     HirExprKind::If {
                         condition: Box::new(condition),
@@ -21741,6 +21752,16 @@ impl LowerCtx {
         )
     }
 
+    /// Callable joins carry the guarantee intersection selected by the checker.
+    /// Arm order cannot select the ownership contract of the resulting value.
+    fn callable_join_type(&mut self, span: &Span, inferred: ResolvedTy) -> ResolvedTy {
+        if !inferred.to_ty().contains_callable() {
+            return inferred;
+        }
+        self.checker_expr_ty(span, "callable join")
+            .unwrap_or(ResolvedTy::Unit)
+    }
+
     fn checker_expr_ty(&mut self, span: &Span, label: &str) -> Option<ResolvedTy> {
         let key = self.mk_key(span);
         let Some(ty) = self.expr_types.get(&key).cloned() else {
@@ -21750,7 +21771,7 @@ impl LowerCtx {
                     reason: "missing expr_types entry".to_string(),
                 },
                 span.clone(),
-                "checker-authoritative expression type is required for unary lowering",
+                "checker-authoritative expression type is required for lowering",
             ));
             return None;
         };
@@ -21763,7 +21784,7 @@ impl LowerCtx {
                         reason: err.to_string(),
                     },
                     span.clone(),
-                    "checker-authoritative unary type failed boundary conversion",
+                    "checker-authoritative expression type failed boundary conversion",
                 ));
                 None
             }
@@ -21824,7 +21845,7 @@ impl LowerCtx {
                         reason: "missing expr_types entry".to_string(),
                     },
                     operand.1.clone(),
-                    "checker-authoritative expression type is required for unary lowering",
+                    "checker-authoritative expression type is required for lowering",
                 ));
                 None
             }
@@ -30718,7 +30739,7 @@ impl LowerCtx {
             );
         }
 
-        let ty = result_ty.unwrap_or(ResolvedTy::Unit);
+        let ty = self.callable_join_type(span, result_ty.unwrap_or(ResolvedTy::Unit));
         (
             HirExprKind::Match {
                 scrutinee: Box::new(scrutinee_hir),

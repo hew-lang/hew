@@ -11,6 +11,70 @@ use crate::{
 };
 
 impl Checker {
+    /// Record invocation-time consumption when an owned value leaves a place.
+    /// SIR authors the actual transfer; the checker uses the same class facts
+    /// to determine capture capabilities and reject later source uses.
+    pub(super) fn record_callable_value_transfer(&mut self, expr: &Expr, span: &Span) {
+        let Some((root, _)) = self.expr_place(expr) else {
+            return;
+        };
+        let key = super::SpanKey::in_module(span, self.current_module_idx);
+        let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
+            return;
+        };
+        let is_capture = self.lambda_capture_depth.is_some_and(|capture_depth| {
+            self.env
+                .lookup_ref_with_depth(&root)
+                .is_some_and(|(depth, _)| depth < capture_depth)
+        });
+        if !is_capture && !ty.contains_callable() {
+            return;
+        }
+        let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+            return;
+        };
+        let declarations = self.class_declarations();
+        let context = crate::value_class::ClassContext::new(&declarations);
+        if matches!(
+            crate::value_class::classify_ty(&resolved, &context),
+            Ok((_, crate::type_facts::CloneKind::None))
+        ) {
+            self.mark_expr_moved(expr, span);
+        }
+    }
+
+    pub(super) fn infer_lambda_result(&mut self, body: &Spanned<Expr>) -> Ty {
+        let inferred = Ty::Var(crate::ty::TypeVar::fresh());
+        self.current_return_type = Some(inferred.clone());
+        self.inferred_lambda_returns = Some(Vec::new());
+        let tail = self.synthesize(&body.0, &body.1);
+        let mut returns = self
+            .inferred_lambda_returns
+            .take()
+            .expect("inferred lambda return context");
+        returns.push(tail);
+        let mut result = Ty::Never;
+        for ty in returns {
+            let ty = self.subst.resolve(&ty);
+            if matches!(ty, Ty::Never | Ty::Error) {
+                continue;
+            }
+            if result == Ty::Never {
+                result = ty;
+            } else if (result == Ty::Unit) != (ty == Ty::Unit) {
+                self.expect_type(&result, &ty, &body.1);
+            } else {
+                result = self.unify_branches(&result, &ty, &body.1);
+            }
+        }
+        self.expect_type(&inferred, &result, &body.1);
+        if result == Ty::Never {
+            result
+        } else {
+            self.subst.resolve(&inferred)
+        }
+    }
+
     pub(super) fn resolve_private_captures(
         &mut self,
         captures: &[Spanned<String>],
@@ -141,7 +205,7 @@ impl Checker {
             return None;
         }
         Some(TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
-            format!("capture `{name}` is an immutable snapshot; add `[var {name}]` before the lambda to mutate its private field")))
+            format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` before the lambda to mutate its private field")))
     }
 
     pub(super) fn check_callable_receiver(&mut self, ty: &Ty, callee: &Spanned<Expr>) {

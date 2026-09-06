@@ -5,7 +5,7 @@
 //! name matching, error display, and `bind` edge cases.
 
 use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
-use hew_types::unify::{bind, unify, UnifyError};
+use hew_types::unify::{bind, coerce, unify, UnifyError};
 
 // ---------------------------------------------------------------------------
 // Helper: fresh substitution
@@ -453,8 +453,8 @@ fn unify_functions_return_type_mismatch() {
 }
 
 #[test]
-fn unify_function_with_closure_resolves_var() {
-    // Function on the left, Closure on the right.
+fn closure_erasure_coercion_resolves_signature_variable() {
+    // Erasure resolves signature variables without equating environment types.
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let func = Ty::Function {
@@ -468,8 +468,11 @@ fn unify_function_with_closure_resolves_var() {
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
     };
-    assert!(unify(&mut subst, &func, &closure).is_ok());
+    assert!(unify(&mut subst, &func, &closure).is_err());
+    assert_eq!(subst.resolve(&Ty::Var(v)), Ty::Var(v));
+    assert!(coerce(&mut subst, &func, &closure).is_ok());
     assert_eq!(subst.resolve(&Ty::Var(v)), Ty::F32);
+    assert!(coerce(&mut subst, &closure, &func).is_err());
 }
 
 // ===========================================================================

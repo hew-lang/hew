@@ -800,6 +800,13 @@ impl Parser<'_> {
                 self.advance();
                 Expr::Identifier(name)
             }
+            Token::Identifier("capture")
+                if self.peek_at(self.pos + 1) == Some(&Token::LeftParen)
+                    && self.peek_at(self.pos + 2) == Some(&Token::Var) =>
+            {
+                let captures = self.parse_private_capture_prefix()?;
+                self.parse_pipe_lambda(false, start, captures)?
+            }
             Token::Identifier(name)
                 if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
             {
@@ -1015,10 +1022,6 @@ impl Parser<'_> {
                     }
                     Expr::Tuple(exprs)
                 }
-            }
-            Token::LeftBracket if self.peek_at(self.pos + 1) == Some(&Token::Var) => {
-                let captures = self.parse_private_capture_prefix()?;
-                self.parse_pipe_lambda(false, start, captures)?
             }
             Token::LeftBracket => {
                 self.advance();
@@ -1270,7 +1273,7 @@ impl Parser<'_> {
             }
             Token::Move => {
                 self.advance();
-                if self.peek() == Some(&Token::LeftBracket) {
+                if self.peek() == Some(&Token::Identifier("capture")) {
                     let captures = self.parse_private_capture_prefix()?;
                     self.parse_pipe_lambda(true, start, captures)?
                 } else if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
@@ -1609,7 +1612,8 @@ impl Parser<'_> {
     }
 
     fn parse_private_capture_prefix(&mut self) -> Option<Vec<Spanned<String>>> {
-        self.expect(&Token::LeftBracket)?;
+        self.expect(&Token::Identifier("capture"))?;
+        self.expect(&Token::LeftParen)?;
         let mut captures: Vec<Spanned<String>> = Vec::new();
         loop {
             self.expect(&Token::Var)?;
@@ -1620,11 +1624,11 @@ impl Parser<'_> {
                 return None;
             }
             captures.push((name, span));
-            if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBracket) {
+            if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightParen) {
                 break;
             }
         }
-        self.expect(&Token::RightBracket)?;
+        self.expect(&Token::RightParen)?;
         Some(captures)
     }
 

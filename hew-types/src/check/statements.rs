@@ -516,11 +516,13 @@ impl Checker {
             // armed state. `check_against` is the type-directed propagation site
             // that performs the actual Ok-wrap.
             self.tail_ok_armed = tail_ok_armed;
-            if let Some(exp) = expected {
+            let ty = if let Some(exp) = expected {
                 self.check_against(&expr.0, &expr.1, exp)
             } else {
                 self.synthesize(&expr.0, &expr.1)
-            }
+            };
+            self.record_callable_value_transfer(&expr.0, &expr.1);
+            ty
         } else {
             Ty::Unit
         };
@@ -604,6 +606,18 @@ impl Checker {
     /// The return *type* of the construct itself is always `Ty::Never` (a
     /// `return` diverges); callers assign that directly.
     pub(super) fn check_return_operand(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
+        if self.inferred_lambda_returns.is_some() {
+            let ty = value.map_or(Ty::Unit, |(expr, span)| self.synthesize(expr, span));
+            self.inferred_lambda_returns
+                .as_mut()
+                .expect("inferred return context")
+                .push(ty);
+            if let Some((expr, span)) = value {
+                self.record_callable_value_transfer(expr, span);
+            }
+            self.recheck_return_edge_defers();
+            return;
+        }
         if let Some(expected) = self.current_return_type.clone() {
             // Inside a gen{} body, `current_return_type` is shaped as
             // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
@@ -639,6 +653,9 @@ impl Checker {
                     Some((val, vs)) => {
                         self.check_against(val, vs, &effective_expected);
                     }
+                    None if matches!(self.subst.resolve(&effective_expected), Ty::Var(_)) => {
+                        self.expect_type(&effective_expected, &Ty::Unit, span);
+                    }
                     None if effective_expected != Ty::Unit => {
                         self.errors.push(TypeError::return_type_mismatch(
                             span.clone(),
@@ -649,6 +666,9 @@ impl Checker {
                     _ => {}
                 }
             }
+        }
+        if let Some((value, span)) = value {
+            self.record_callable_value_transfer(value, span);
         }
         self.recheck_return_edge_defers();
         // M-4: a `return CrashAction::…;` inside a `#[on(crash)]` hook is now
@@ -946,6 +966,9 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                if let Some((value, span)) = value {
+                    self.record_callable_value_transfer(value, span);
+                }
                 self.pending_let_closure_name = prev_pending;
                 let val_ty = if ty.is_none() {
                     self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
@@ -1322,6 +1345,9 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                if let Some((value, span)) = value {
+                    self.record_callable_value_transfer(value, span);
+                }
                 let generic_sig = self.last_lambda_generic_sig.take();
                 let val_ty = if ty.is_none() {
                     self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
@@ -1329,8 +1355,10 @@ impl Checker {
                 } else {
                     val_ty
                 };
-                if let Some((_, vs)) = value {
-                    self.record_type(vs, &val_ty);
+                if !val_ty.contains_callable() {
+                    if let Some((_, vs)) = value {
+                        self.record_type(vs, &val_ty);
+                    }
                 }
                 let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
                     matches!(
@@ -1616,6 +1644,7 @@ impl Checker {
                     self.env.mark_written(name);
                 }
                 let value_ty = self.check_against(&value.0, &value.1, &target_ty);
+                self.record_callable_value_transfer(&value.0, &value.1);
                 // An unannotated literal binding (`var best = 0`) carries a
                 // literal-defaulting `Ty::Var` that `check_against` cannot
                 // promote: it resolves the expected type first, materializing

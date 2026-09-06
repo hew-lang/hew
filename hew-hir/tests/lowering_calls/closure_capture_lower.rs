@@ -90,6 +90,12 @@ fn find_closure_in_expr(expr: &hew_hir::HirExpr) -> Option<&hew_hir::HirExpr> {
         } => find_closure_in_expr(condition)
             .or_else(|| find_closure_in_expr(then_expr))
             .or_else(|| else_expr.as_deref().and_then(find_closure_in_expr)),
+        HirExprKind::MachineVariantCtor {
+            payload: Some(fields),
+            ..
+        } => fields
+            .iter()
+            .find_map(|(_, value)| find_closure_in_expr(value)),
         HirExprKind::Binary { left, right, .. } => {
             find_closure_in_expr(left).or_else(|| find_closure_in_expr(right))
         }
@@ -294,4 +300,90 @@ fn closure_capture_binding_id_is_stable_across_lowering() {
         cap.binding, k_binding_id,
         "capture binding id must match the outer `let k` binding id"
     );
+}
+
+#[test]
+fn callable_joins_preserve_checker_guarantees_in_either_order() {
+    for choice in [
+        "if flag { a } else { b }",
+        "if flag { b } else { a }",
+        "match flag { true => a, false => b }",
+        "match flag { true => b, false => a }",
+    ] {
+        let source = format!("fn choose(a: fn[clone]() -> i64, b: fn[once, clone]() -> i64, flag: bool) {{ let f = {choice}; }}");
+        let output = typecheck_and_lower(&source);
+        assert!(
+            output.diagnostics.is_empty(),
+            "{choice}: {:?}",
+            output.diagnostics
+        );
+        let function = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(f) if f.name == "choose" => Some(f),
+                _ => None,
+            })
+            .unwrap();
+        let value = function
+            .body
+            .statements
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                HirStmtKind::Let(_, Some(value)) => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            matches!(value.ty, ResolvedTy::Function { capabilities, .. } if capabilities.call == hew_types::CallableCallMode::Once && capabilities.clone),
+            "{choice}: {:?}",
+            value.ty
+        );
+    }
+}
+
+#[test]
+fn callable_return_erasure_preserves_concrete_closure_type() {
+    let output =
+        typecheck_and_lower("fn make() -> fn[once]() -> i64 { let n: i64 = 7; return || n; }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let function = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(f) if f.name == "make" => Some(f),
+            _ => None,
+        })
+        .unwrap();
+    let returned = function
+        .body
+        .statements
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            HirStmtKind::Return(Some(value)) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(returned.ty, ResolvedTy::Closure { capabilities, .. } if capabilities.call == hew_types::CallableCallMode::Read && capabilities.clone),
+        "{:?}",
+        returned.ty
+    );
+}
+
+#[test]
+fn contextual_option_result_preserves_nested_callable_storage() {
+    let output = typecheck_and_lower("fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> { let count: i64 = 0; if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) } }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let closure = find_closure_in_fn(&output, "choose")
+        .expect("closure retained in nested constructor payloads");
+    assert!(
+        matches!(closure.ty, ResolvedTy::Closure { capabilities, .. } if capabilities.call == hew_types::CallableCallMode::Var && capabilities.clone)
+    );
+    let HirExprKind::Closure { captures, .. } = &closure.kind else {
+        panic!("closure")
+    };
+    assert_eq!(captures[0].access, hew_types::ClosureCaptureAccess::Var);
 }

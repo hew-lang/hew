@@ -3167,12 +3167,12 @@ impl<'a> Formatter<'a> {
                     self.write("move ");
                 }
                 if !private_captures.is_empty() {
-                    self.write("[");
+                    self.write("capture(");
                     self.comma_sep(private_captures, |f, (name, _)| {
                         f.write("var ");
                         f.write(name);
                     });
-                    self.write("] ");
+                    self.write(") ");
                 }
                 if type_params.is_some() {
                     self.format_opt_type_params(type_params.as_ref());

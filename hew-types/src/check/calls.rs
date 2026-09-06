@@ -469,6 +469,19 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
+        if let Expr::ContextVariant(context) = &func.0 {
+            if let Some(result) = self.dispatch_context_builtin_variant(
+                expected,
+                context,
+                &super::type_members::DottedTypeMemberUse::Call {
+                    args,
+                    expected: Some(expected),
+                    span,
+                },
+            ) {
+                return Some(result);
+            }
+        }
         // Resolve the function name first so we can route turbofish for
         // `Vec.new` before the blanket early-return for other constructors.
         let mut contextual_name = None;
@@ -743,6 +756,7 @@ impl Checker {
                         let (expr, arg_span) = arg.expr();
                         let expected_ty = param_ty.substitute_named_params_parallel(&subst_map);
                         self.check_against(expr, arg_span, &expected_ty);
+                        self.record_callable_value_transfer(expr, arg_span);
                     }
                 }
             }
@@ -780,6 +794,7 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, &inner_ty);
+                    self.record_callable_value_transfer(expr, arg_span);
                 }
                 let result_ty = Ty::option(self.subst.resolve(&inner_ty));
                 self.record_type(span, &result_ty);
@@ -791,6 +806,7 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, ok_ty);
+                    self.record_callable_value_transfer(expr, arg_span);
                 }
                 self.record_builtin_result_output_type_args(span, ok_ty, err_ty);
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
@@ -803,6 +819,7 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, err_ty);
+                    self.record_callable_value_transfer(expr, arg_span);
                 }
                 self.record_builtin_result_output_type_args(span, ok_ty, err_ty);
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
@@ -1612,6 +1629,7 @@ impl Checker {
                             param_ty.substitute_named_params_parallel(&subst_map)
                         };
                         self.check_against(expr, span, &expected_ty);
+                        self.record_callable_value_transfer(expr, span);
                     }
                 }
             }

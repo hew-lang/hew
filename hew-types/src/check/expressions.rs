@@ -474,7 +474,14 @@ impl Checker {
                 if elems.is_empty() {
                     Ty::Unit
                 } else {
-                    let tys: Vec<_> = elems.iter().map(|(e, s)| self.synthesize(e, s)).collect();
+                    let tys: Vec<_> = elems
+                        .iter()
+                        .map(|(e, s)| {
+                            let ty = self.synthesize(e, s);
+                            self.record_callable_value_transfer(e, s);
+                            ty
+                        })
+                        .collect();
                     Ty::Tuple(tys)
                 }
             }
@@ -1204,8 +1211,10 @@ impl Checker {
             Ty::Var(TypeVar::fresh())
         } else {
             let first_ty = self.synthesize(&elems[0].0, &elems[0].1);
+            self.record_callable_value_transfer(&elems[0].0, &elems[0].1);
             for elem in &elems[1..] {
                 self.check_against(&elem.0, &elem.1, &first_ty);
+                self.record_callable_value_transfer(&elem.0, &elem.1);
             }
             first_ty
         };
@@ -3288,6 +3297,13 @@ impl Checker {
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         match (expr, expected) {
             (Expr::ContextVariant(context), _) => {
+                if let Some(result) = self.dispatch_context_builtin_variant(
+                    expected,
+                    context,
+                    &super::type_members::DottedTypeMemberUse::Reference { span },
+                ) {
+                    return result;
+                }
                 let Some(owner) = self.context_variant_expected_owner(expected, span) else {
                     return Ty::Error;
                 };
@@ -3580,6 +3596,7 @@ impl Checker {
                 for elem in elems {
                     let (expr, sp) = (&elem.0, &elem.1);
                     self.check_against(expr, sp, &elem_ty);
+                    self.record_callable_value_transfer(expr, sp);
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -3613,6 +3630,7 @@ impl Checker {
 
                 for elem in elems {
                     self.check_against(&elem.0, &elem.1, elem_ty);
+                    self.record_callable_value_transfer(&elem.0, &elem.1);
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -3780,11 +3798,18 @@ impl Checker {
 
             // Tuple literal coercion: propagate expected element types
             (Expr::Tuple(elems), Ty::Tuple(expected_tys)) if elems.len() == expected_tys.len() => {
-                for (elem, expected_ty) in elems.iter().zip(expected_tys.iter()) {
-                    self.check_against(&elem.0, &elem.1, expected_ty);
-                }
-                self.record_type(span, expected);
-                expected.clone()
+                let elements = elems
+                    .iter()
+                    .zip(expected_tys.iter())
+                    .map(|(elem, expected_ty)| {
+                        let actual = self.check_against(&elem.0, &elem.1, expected_ty);
+                        self.record_callable_value_transfer(&elem.0, &elem.1);
+                        actual
+                    })
+                    .collect();
+                let actual = Ty::Tuple(elements);
+                self.record_type(span, &actual);
+                actual
             }
 
             // Module-qualified struct init coercion: a bare construction name
@@ -3956,6 +3981,7 @@ impl Checker {
                                 let field_expected =
                                     declared_ty.substitute_named_params_parallel(&type_arg_map);
                                 let actual = self.check_against(fexpr, fs, &field_expected);
+                                self.record_callable_value_transfer(fexpr, fs);
 
                                 // Still infer any remaining unbound type params
                                 for tp in &td.type_params {
@@ -4120,6 +4146,7 @@ impl Checker {
                                         let field_expected = declared_ty
                                             .substitute_named_params_parallel(&type_arg_map);
                                         let actual = self.check_against(fexpr, fs, &field_expected);
+                                        self.record_callable_value_transfer(fexpr, fs);
                                         // Bind any remaining unbound type params
                                         for tp in &type_params {
                                             if !type_arg_map.contains_key(tp)
@@ -7527,7 +7554,7 @@ impl Checker {
 
             self.tail_ok_armed = tail_ok_armed;
             let arm_ty = if let Some(expected) = &result_ty {
-                if expected.contains_callable() {
+                if expected.contains_callable() && resolved_expected.is_none() {
                     self.synthesize(&arm.body.0, &arm.body.1)
                 } else {
                     self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
@@ -7535,6 +7562,7 @@ impl Checker {
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
+            self.record_callable_value_transfer(&arm.body.0, &arm.body.1);
             arm_exits.push(BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
                 diverges: guard_diverges || Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
@@ -7691,6 +7719,7 @@ impl Checker {
         let prev_return_type = self.current_return_type.take();
         let prev_fails = std::mem::replace(&mut self.current_fails, false);
 
+        let previous_inferred_returns = self.inferred_lambda_returns.take();
         let ret_ty = if let Some(annotation) = return_type {
             let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
             // Unify the annotated return type against the contextual expected return
@@ -7716,11 +7745,10 @@ impl Checker {
             self.check_against(&body.0, &body.1, expected_ret);
             expected_ret.clone()
         } else {
-            // Return type is fully inferred: leave current_return_type as None
-            // (already taken above) so `?` is not validated against a stale
-            // outer return type during synthesis.
-            self.synthesize(&body.0, &body.1)
+            self.infer_lambda_result(body)
         };
+        self.inferred_lambda_returns = previous_inferred_returns;
+        self.record_callable_value_transfer(&body.0, &body.1);
 
         self.current_return_type = prev_return_type;
         self.current_fails = prev_fails;
@@ -8351,6 +8379,7 @@ impl Checker {
                     } else {
                         self.check_against(expr, es, &expected)
                     };
+                    self.record_callable_value_transfer(expr, es);
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
@@ -8498,6 +8527,7 @@ impl Checker {
                     } else {
                         self.check_against(expr, es, &expected)
                     };
+                    self.record_callable_value_transfer(expr, es);
 
                     // Bind bare type params from this field's declared type
                     for tp in &enum_type_params {

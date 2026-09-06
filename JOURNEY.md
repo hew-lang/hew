@@ -1687,3 +1687,32 @@ Source tests verify escaped string snapshots, repeated captured calls and exact
 literal/body identity alongside function values. The complete SIR Make suite
 passes. Native execution and broader capture combinations remain integration
 work; no native closure acceptance is claimed at this checkpoint.
+
+## Final callable surface and transfer facts
+
+Applied the approved surface: lowercase fn[clone] qualifiers and the contextual
+capture(var name, ...) prefix. Removed the provisional capture and qualifier
+spellings. Parser and formatter examples cover move acquisition, private
+mutation, nested callable types, ordinary functions named capture, and rejected
+aliases and malformed prefixes. Updated the language specification and syntax
+metadata; downstream editor grammar propagation remains pending.
+
+Value materialization now records non-duplicable capture consumption using the
+shared type-class authority. Returns, locals, assignments, tuples, arrays and
+record/enum payloads feed the same capture facts. Inferred lambda returns join
+callable guarantees independently of return order. HIR retains checker-selected
+join types and concrete callable return expressions; explicit var annotations
+retain their destination type without overwriting initializer facts.
+
+The conditional Result/Option example exposed missing builtin context in dotted
+variant shorthand. Contextual constructors now reuse the existing proven-builtin
+member contract, retaining shape and payload diagnostics and ordinary user enum
+resolution. No synthetic prelude declarations were added.
+
+The native compiler build and focused parser/type/HIR checks passed through
+Make. The complete component suite found an older equality test for closure
+erasure; it now tests directional coercion and preserves exact/reverse refusal.
+Lexer syntax-metadata validation passed through Make.
+Generic function-value instantiation and editor grammar propagation remain for
+the next source checkpoint. Native invocation and runtime lifetime acceptance
+remain integration work.

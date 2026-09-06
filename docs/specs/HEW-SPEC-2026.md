@@ -2351,6 +2351,47 @@ let sum = numbers.reduce(|a, b| a + b, 0);
 let checked = |x: i64| -> i64 { x + 1 };
 ```
 
+Captured values are independent immutable snapshots. To mutate private capture
+state, name existing bindings in a `capture(var name, ...)` prefix:
+
+```hew
+let count: i64 = 0;
+var next = capture(var count) || { count = count + 1; count };
+var independent = next;
+```
+
+The original binding may be immutable. The prefix grants mutation only to the
+closure's private field; invoking a mutable closure requires a mutable callable
+place. Duplicate capture names, capture initializers, aliases and names that
+conflict with lambda parameters are errors. `capture` remains an ordinary
+identifier outside this prefix.
+
+`move` precedes the capture prefix (`move capture(var count) || ...`) and
+transfers captured ownership. It does not itself grant mutation or require
+call-once invocation. A capture without an independent snapshot operation
+requires `move`. Consuming a captured owner during invocation, including
+returning it or transferring it into another value, requires call-once.
+
+Written function types specify invocation and duplication guarantees:
+
+| Type | Invocation | Independent copies |
+|---|---|---|
+| `fn(...) -> T` | Repeated, read-only | Not guaranteed |
+| `fn[clone](...) -> T` | Repeated, read-only | Guaranteed |
+| `fn[var](...) -> T` | Repeated, mutable place | Not guaranteed |
+| `fn[var, clone](...) -> T` | Repeated, mutable place | Guaranteed |
+| `fn[once](...) -> T` | Consumes the callable | Not guaranteed |
+| `fn[once, clone](...) -> T` | Each copy is consumed by its call | Guaranteed |
+
+Qualifiers are lowercase. `clone` refers to independent logical duplication,
+not bitwise copying or shared mutable state. Resource-bearing captures cannot
+claim it. Value coercion may weaken read-only invocation to mutable invocation
+to consuming invocation, and may forget `clone`; it cannot invent guarantees.
+Parameter and result signatures remain invariant, and coercion cannot erase
+linear ownership duties. Unannotated expressions retain proved guarantees.
+Explicit annotations, assignments, arguments, returns and conditional joins
+use the same directional rules, including nested `Option` and `Result` types.
+
 **Untyped parameters when context provides types:**
 
 ```hew

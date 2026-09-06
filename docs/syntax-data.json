@@ -188,7 +188,9 @@
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
-    "clone": "Prefix clone operator (clone <operand>) when immediately followed by an operand; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "capture": "Private closure capture prefix capture(var name, ...) before pipe parameters; an ordinary identifier outside that prefix.",
+    "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
     "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
     "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
     "error": "Explicit error return: return error expression; an ordinary identifier elsewhere.",

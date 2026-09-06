@@ -976,7 +976,7 @@ mod for_loop_iterable_fail_closed {
             r"
             fn main() {
                 var xs: Vec<i32> = Vec.new();
-                let f = [var xs] || xs.push(1);
+                let f = capture(var xs) || xs.push(1);
                 let _ = f;
             }
             ",
@@ -1001,7 +1001,7 @@ mod for_loop_iterable_fail_closed {
             r"
             fn main() {
                 var xs: Vec<i32> = Vec.new();
-                let f = [var xs] || { xs[0] = 1; };
+                let f = capture(var xs) || { xs[0] = 1; };
                 let _ = f;
             }
             ",

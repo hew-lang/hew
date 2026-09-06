@@ -1464,7 +1464,7 @@ impl Ty {
 
     /// Whether this value type contains a callable guarantee that erasure must preserve.
     #[must_use]
-    pub(crate) fn contains_callable(&self) -> bool {
+    pub fn contains_callable(&self) -> bool {
         matches!(self, Self::Function { .. } | Self::Closure { .. })
             || self.any_child(&Self::contains_callable)
     }

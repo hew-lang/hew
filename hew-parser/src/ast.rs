@@ -52,7 +52,7 @@ impl std::fmt::Display for CallableCapabilities {
             if self.call != CallableCallMode::Read {
                 write!(f, ", ")?;
             }
-            write!(f, "Clone")?;
+            write!(f, "clone")?;
         }
         write!(f, "]")
     }

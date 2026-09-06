@@ -900,6 +900,8 @@ pub mod reply_channel_wasm;
 pub mod semaphore;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod async_io;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking_pool;
@@ -909,6 +911,8 @@ pub mod task_scope;
 pub mod timer_periodic;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod timer_periodic_wasm;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod wake;
 // timer_wheel compiles on every target: native uses it with the background
 // ticker thread (timer_periodic); WASM uses it with a host-driven tick
 // (scheduler_wasm + timer_periodic_wasm).

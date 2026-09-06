@@ -68,6 +68,9 @@ use crate::transport::{
     tcp_listener_set_nonblocking, AcceptOutcome, ActiveReadOutcome, HewActorRef,
 };
 
+mod async_io;
+pub(crate) use async_io::{reactor_await_async_io, reactor_detach_async_io};
+
 /// How long each readiness wait blocks before the reactor wakes to drain the
 /// pending add/remove queue and re-check the stop flag. Bounded so a fresh
 /// registration from a worker is honoured within this window even though the
@@ -110,6 +113,12 @@ enum Pending {
 ///
 /// NEW-2 (async HTTP/connection client) instantiates `Resume` without rework.
 enum RegMode {
+    /// Owned coroutine I/O with a retained generic readiness target. No actor
+    /// or frame address is needed for this one-shot registration.
+    AsyncIo {
+        operation: crate::async_io::IoProducer,
+        accept: bool,
+    },
     /// Active-mode auto-send to the actor's `on_data` / `on_close` handlers.
     AutoSend {
         /// `msg_type` index for `on_data(bytes)` delivery.
@@ -211,6 +220,7 @@ impl Drop for Registration {
     /// for reuse while its stale unregister can still be queued after a new add.
     fn drop(&mut self) {
         match &self.mode {
+            RegMode::AsyncIo { .. } => {}
             RegMode::AutoSend { .. } => {
                 crate::transport::tcp_close_reactor_owned_conn(self.conn);
             }
@@ -440,6 +450,7 @@ pub(crate) fn drain_is_idle() -> bool {
     }
 
     if REACTOR_STATE.access(|state| owns_resumable_work(state))
+        || async_io::in_flight()
         || PROMOTING_ACTOR.is_set()
         || DELIVERING_ACTOR.is_set()
     {
@@ -594,9 +605,13 @@ fn drain_pending(poller: *mut HewIoPoller) {
             if let Pending::Add { reg, .. } = &req {
                 PROMOTING_ACTOR.publish(reg.actor);
             }
-            Some(req)
+            let async_flight = matches!(&req, Pending::Add { reg, .. } if matches!(reg.mode, RegMode::AsyncIo { .. }))
+                .then(async_io::Flight::new);
+            Some((req, async_flight))
         });
-        let Some(req) = next else { break };
+        let Some((req, _async_flight)) = next else {
+            break;
+        };
         match req {
             Pending::Add { fd, reg } => apply_add(poller, fd, reg),
             Pending::Remove { conn } => apply_remove_by_conn(poller, conn),
@@ -613,6 +628,10 @@ fn drain_pending(poller: *mut HewIoPoller) {
 /// owning actor is freed.
 fn apply_add(poller: *mut HewIoPoller, fd: c_int, reg: Registration) {
     let conn = reg.conn;
+    if !async_io::admit_registration(fd, &reg) {
+        PROMOTING_ACTOR.clear();
+        return;
+    }
     // SAFETY: poller is reactor-owned and valid; fd is a live socket fd. The
     // registered actor pointer is never dereferenced by the poller in the
     // readiness-reporting path (we pass a null actor + dummy msg_type because
@@ -626,11 +645,22 @@ fn apply_add(poller: *mut HewIoPoller, fd: c_int, reg: Registration) {
         PROMOTING_ACTOR.clear();
         return;
     }
-    REACTOR_STATE.access(|state| {
+    let mut registration = Some(reg);
+    let published = REACTOR_STATE.access(|state| {
+        if let RegMode::AsyncIo { operation, .. } = &registration.as_ref().unwrap().mode {
+            if !operation.is_pending() {
+                return false;
+            }
+        }
         state.conn_to_fd.insert(conn, fd);
-        state.registry.insert(fd, reg);
+        state.registry.insert(fd, registration.take().unwrap());
+        true
     });
-    crate::observe::record_reactor_registration();
+    if published {
+        crate::observe::record_reactor_registration();
+    } else {
+        apply_unregister_fd(poller, fd);
+    }
     // Registration is now in the registry where `reactor_detach_actor` phase 1
     // can find it; release the promotion guard.
     PROMOTING_ACTOR.clear();
@@ -661,11 +691,11 @@ fn unregister_fd(poller: *mut HewIoPoller, fd: c_int) {
         hew_io_poller_unregister(poller, fd);
     }
     let removed = REACTOR_STATE.access(|state| {
-        let removed = state.registry.remove(&fd).is_some();
+        let removed = state.registry.remove(&fd);
         state.conn_to_fd.retain(|_, mapped| *mapped != fd);
         removed
     });
-    if removed {
+    if removed.is_some() {
         crate::observe::record_reactor_unregistration(1);
     }
 }
@@ -675,6 +705,11 @@ fn unregister_fd(poller: *mut HewIoPoller, fd: c_int) {
 /// resume-mode slot pointer by value so the lock is not held across the
 /// deposit+wake.
 enum ReadyMode {
+    AsyncIo {
+        operation: crate::async_io::IoProducer,
+        accept: bool,
+        _flight: async_io::Flight,
+    },
     AutoSend {
         on_data_type: i32,
         on_close_type: i32,
@@ -750,7 +785,7 @@ impl ShutdownWait {
     fn new(registration: Registration) -> Self {
         let read_slot = match registration.mode {
             RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => read_slot,
-            RegMode::AutoSend { .. } => {
+            RegMode::AutoSend { .. } | RegMode::AsyncIo { .. } => {
                 unreachable!("shutdown sweep only snapshots parked waits")
             }
         };
@@ -770,7 +805,9 @@ impl ShutdownWait {
     fn read_slot(&self) -> *mut crate::read_slot::HewReadSlot {
         match self.registration.mode {
             RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => read_slot,
-            RegMode::AutoSend { .. } => unreachable!("shutdown wait must carry a read slot"),
+            RegMode::AutoSend { .. } | RegMode::AsyncIo { .. } => {
+                unreachable!("shutdown wait must carry a read slot")
+            }
         }
     }
 
@@ -855,6 +892,11 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
             actor_local: actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>(),
             actor: reg.actor,
             mode: match &reg.mode {
+                RegMode::AsyncIo { operation, accept } => ReadyMode::AsyncIo {
+                    operation: operation.clone(),
+                    accept: *accept,
+                    _flight: async_io::Flight::new(),
+                },
                 RegMode::AutoSend {
                     on_data_type,
                     on_close_type,
@@ -900,6 +942,14 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     };
     crate::observe::record_reactor_ready_event();
 
+    if let ReadyMode::AsyncIo {
+        operation, accept, ..
+    } = &snap.mode
+    {
+        async_io::handle_ready(poller, fd, snap.conn, events, *accept, operation);
+        return;
+    }
+
     // Bind the in-flight slot ref to an RAII guard so it is released on EVERY
     // exit from here on (the retain was taken under the lock in the snapshot
     // closure above). Active-mode snapshots carry no slot, so no guard is bound.
@@ -907,7 +957,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         ReadyMode::Resume { read_slot } | ReadyMode::Accept { read_slot } => {
             Some(InflightSlotRef(*read_slot))
         }
-        ReadyMode::AutoSend { .. } => None,
+        ReadyMode::AutoSend { .. } | ReadyMode::AsyncIo { .. } => None,
     };
 
     // Publish the in-flight target BEFORE re-validating + sending (Dekker
@@ -986,7 +1036,9 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         }
         // Handled above (before the connected-stream read) — the listener fd is
         // never read as a stream.
-        ReadyMode::Accept { .. } => unreachable!("accept readiness dispatched above"),
+        ReadyMode::Accept { .. } | ReadyMode::AsyncIo { .. } => {
+            unreachable!("non-read readiness dispatched above")
+        }
     }
 
     // Delivery (if any) is complete; release the in-flight guard so a waiting
@@ -1358,6 +1410,12 @@ fn deliver_close_once(
 fn deliver_orphan_close(reg: &Registration) {
     let actor_local = actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>();
     match reg.mode {
+        RegMode::AsyncIo { ref operation, .. } => {
+            operation.complete(Err(crate::async_io::IoFailure::from_io(
+                "register TCP readiness",
+                &std::io::Error::other("I/O poller rejected registration"),
+            )));
+        }
         RegMode::AutoSend { on_close_type, .. } => {
             if actor_local.is_null() {
                 return;
@@ -1487,7 +1545,7 @@ fn shutdown_waits_quiescent(cancelled_actors: &HashSet<ActorIncarnation>) -> boo
 /// The returned count lets immediate shutdown run a bounded re-drain only when
 /// the sweep actually made actors runnable.
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
-    let mut swept = 0;
+    let mut swept = async_io::cancel_all();
     let mut cancelled_actors = HashSet::new();
     loop {
         let waits = take_shutdown_waits();
@@ -1963,7 +2021,7 @@ pub(crate) fn reactor_detach_read_slot(read_slot: *mut crate::read_slot::HewRead
                 RegMode::Resume { read_slot: slot } | RegMode::Accept { read_slot: slot } => {
                     slot != read_slot
                 }
-                RegMode::AutoSend { .. } => true,
+                RegMode::AutoSend { .. } | RegMode::AsyncIo { .. } => true,
             },
             _ => true,
         });
@@ -2053,6 +2111,7 @@ pub(crate) fn reactor_shutdown() {
     if let Some(handle) = handle {
         crate::util::report_join_panic("hew I/O reactor thread", handle.join());
     }
+    async_io::cancel_all();
     REACTOR_RUNNING.store(false, Ordering::SeqCst);
     REACTOR_STOP.store(false, Ordering::SeqCst);
     // The reactor thread has been joined, so no promotion can be in flight;

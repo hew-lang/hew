@@ -161,13 +161,17 @@ pub extern "C" fn hew_json_last_error() -> *mut HewString {
 ///
 /// Returns an owned managed string. The caller must release
 /// it with [`hew_json_string_free`]. Returns null on error.
+/// Success clears this actor's JSON error slot; every failure sets a nonempty
+/// diagnostic available through [`hew_json_last_error`]. Read that diagnostic
+/// immediately after encoding instead of inferring failure from empty text.
 ///
 /// # Safety
 ///
-/// `val` must be a valid pointer to a [`HewJsonValue`].
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null (an error).
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_stringify(val: *const HewJsonValue) -> *mut HewString {
     if val.is_null() {
+        set_parse_last_error("json stringify failed: invalid value handle");
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
@@ -240,6 +244,24 @@ pub unsafe extern "C" fn hew_json_get_int(val: *const HewJsonValue) -> i64 {
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
     v.inner.as_i64().unwrap_or(0)
+}
+
+/// Get the exact unsigned integer, or zero if it is not representable as `u64`.
+///
+/// Check [`hew_json_int_status`] first: 0 is an unsigned integer above
+/// `i64::MAX`; 1 is valid only when [`hew_json_get_int`] is nonnegative.
+/// Status -1 is a wrong kind. This accessor does not convert floats.
+///
+/// # Safety
+///
+/// `val` must be a valid [`HewJsonValue`] pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_get_u64(val: *const HewJsonValue) -> u64 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is non-null and valid per caller contract.
+    unsafe { &*val }.inner.as_u64().unwrap_or(0)
 }
 
 /// Report whether [`hew_json_get_int`] can return this value truthfully.
@@ -932,6 +954,12 @@ pub extern "C" fn hew_json_from_int(val: i64) -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Number(serde_json::Number::from(val)))
 }
 
+/// Create a [`HewJsonValue`] containing an exact unsigned integer.
+#[no_mangle]
+pub extern "C" fn hew_json_from_u64(val: u64) -> *mut HewJsonValue {
+    boxed_value(serde_json::Value::Number(serde_json::Number::from(val)))
+}
+
 /// Create a [`HewJsonValue`] containing a float.
 ///
 /// Returns null if the float is NaN or infinity (not representable in JSON).
@@ -992,6 +1020,85 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { hew_json_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn unsigned_integer_boundaries_are_exact() {
+        let baseline = live_value_boxes();
+        for (number, text, status) in [
+            (0, "0", 1),
+            (9_007_199_254_740_992, "9007199254740992", 1),
+            (9_007_199_254_740_993, "9007199254740993", 1),
+            (9_223_372_036_854_775_807, "9223372036854775807", 1),
+            (9_223_372_036_854_775_808, "9223372036854775808", 0),
+            (u64::MAX, "18446744073709551615", 0),
+        ] {
+            let value = hew_json_from_u64(number);
+            let parsed = parse(text);
+            // SAFETY: all values are live independent owners.
+            unsafe {
+                assert_eq!(hew_json_int_status(value), status);
+                assert_eq!(hew_json_get_u64(value), number);
+                assert_eq!(hew_json_get_u64(parsed), number);
+                assert_eq!(hew_json_eq(value, parsed), 1);
+                let copy = hew_json_clone(value);
+                hew_json_free(value);
+                assert_eq!(hew_json_get_u64(copy), number);
+                let encoded = read_and_free_string(hew_json_stringify(copy));
+                assert_eq!(encoded.trim(), text);
+                let reparsed = parse(&encoded);
+                assert_eq!(hew_json_eq(copy, reparsed), 1);
+                hew_json_free(reparsed);
+                hew_json_free(parsed);
+                hew_json_free(copy);
+            }
+        }
+        for (text, status) in [
+            ("-1", 1),
+            ("-9223372036854775808", 1),
+            ("1.0", -1),
+            ("true", -1),
+            ("\"7\"", -1),
+            ("null", -1),
+            ("[]", -1),
+            ("{}", -1),
+        ] {
+            let value = parse(text);
+            // SAFETY: value is a live owner.
+            unsafe {
+                assert_eq!(hew_json_int_status(value), status);
+                if status == 1 {
+                    assert!(hew_json_get_int(value) < 0);
+                }
+                assert_eq!(hew_json_get_u64(value), 0);
+                hew_json_free(value);
+            }
+        }
+        // SAFETY: null is a permitted invalid handle.
+        unsafe {
+            assert_eq!(hew_json_get_u64(std::ptr::null()), 0);
+            assert_eq!(hew_json_int_status(std::ptr::null()), -1);
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn stringify_invalid_handle_sets_error_and_success_clears_it() {
+        let baseline = live_value_boxes();
+        let value = parse("null");
+        set_parse_last_error("stale parse error");
+        // SAFETY: null is handled as invalid; value is a live owner.
+        unsafe {
+            assert!(hew_json_stringify(std::ptr::null()).is_null());
+            let error = read_and_free_string(hew_json_last_error());
+            assert!(error.contains("json stringify"));
+            assert!(error.contains("invalid value"));
+            let text = read_and_free_string(hew_json_stringify(value));
+            assert_eq!(text.trim(), "null");
+            assert!(read_and_free_string(hew_json_last_error()).is_empty());
+            hew_json_free(value);
+        }
+        assert_eq!(live_value_boxes(), baseline);
     }
 
     #[test]

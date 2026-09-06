@@ -268,27 +268,38 @@ pub extern "C" fn hew_yaml_last_error() -> *mut HewString {
 ///
 /// Returns an owned managed string. The caller must release
 /// it with [`hew_yaml_string_free`]. Returns null on error.
+/// Success clears this actor's YAML error slot; every failure sets a nonempty
+/// diagnostic available through [`hew_yaml_last_error`]. Read that diagnostic
+/// immediately after encoding instead of inferring failure from empty text.
 ///
 /// # Safety
 ///
-/// `val` must be a valid pointer to a [`HewYamlValue`].
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null (an error).
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_stringify(val: *const HewYamlValue) -> *mut HewString {
     if val.is_null() {
+        set_parse_last_error("yaml stringify failed: invalid value handle");
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     match serde_yaml::to_string(&v.inner) {
-        Ok(s) => string_from_str(&s),
-        Err(_) => std::ptr::null_mut(),
+        Ok(s) => {
+            clear_parse_last_error();
+            string_from_str(&s)
+        }
+        Err(err) => {
+            set_parse_last_error(format!("yaml stringify failed: {err}"));
+            std::ptr::null_mut()
+        }
     }
 }
 
 /// Return the type tag of a [`HewYamlValue`].
 ///
 /// Type codes: 0=null, 1=bool, 2=number\_int, 3=number\_float, 4=string,
-/// 5=sequence, 6=mapping. Returns -1 if `val` is null.
+/// 5=sequence, 6=mapping, 7=tagged. Reports the outer kind without unwrapping
+/// tags. Returns -1 if `val` is null.
 ///
 /// # Safety
 ///
@@ -313,15 +324,7 @@ pub unsafe extern "C" fn hew_yaml_type(val: *const HewYamlValue) -> i32 {
         serde_yaml::Value::String(_) => 4,
         serde_yaml::Value::Sequence(_) => 5,
         serde_yaml::Value::Mapping(_) => 6,
-        serde_yaml::Value::Tagged(t) => {
-            // Unwrap tagged values to their inner type.
-            let inner_wrapper = HewYamlValue {
-                inner: t.value.clone(),
-            };
-            let inner_ptr: *const HewYamlValue = std::ptr::addr_of!(inner_wrapper);
-            // SAFETY: inner_ptr points to a valid local HewYamlValue.
-            unsafe { hew_yaml_type(inner_ptr) }
-        }
+        serde_yaml::Value::Tagged(_) => 7,
     }
 }
 
@@ -355,6 +358,28 @@ pub unsafe extern "C" fn hew_yaml_get_int(val: *const HewYamlValue) -> i64 {
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     v.inner.as_i64().unwrap_or(0)
+}
+
+/// Get the exact unsigned integer, or zero if it is not representable as `u64`.
+///
+/// Check [`hew_yaml_int_status`] first: 0 is an unsigned integer above
+/// `i64::MAX`; 1 is valid only when [`hew_yaml_get_int`] is nonnegative.
+/// Status -1 is a wrong kind, including tagged values. This accessor does not
+/// unwrap tags or convert floats.
+///
+/// # Safety
+///
+/// `val` must be a valid [`HewYamlValue`] pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_get_u64(val: *const HewYamlValue) -> u64 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is non-null and valid per caller contract.
+    match &unsafe { &*val }.inner {
+        serde_yaml::Value::Number(n) => n.as_u64().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 fn yaml_int_status_of(value: &serde_yaml::Value) -> i32 {
@@ -1039,6 +1064,12 @@ pub extern "C" fn hew_yaml_from_int(val: i64) -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
 }
 
+/// Create a [`HewYamlValue`] containing an exact unsigned integer.
+#[no_mangle]
+pub extern "C" fn hew_yaml_from_u64(val: u64) -> *mut HewYamlValue {
+    boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
+}
+
 /// Create a [`HewYamlValue`] wrapping a float.
 ///
 /// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
@@ -1101,6 +1132,154 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { hew_yaml_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn unsigned_integer_boundaries_are_exact() {
+        let baseline = live_value_boxes();
+        for (number, text, status) in [
+            (0, "0", 1),
+            (9_007_199_254_740_992, "9007199254740992", 1),
+            (9_007_199_254_740_993, "9007199254740993", 1),
+            (9_223_372_036_854_775_807, "9223372036854775807", 1),
+            (9_223_372_036_854_775_808, "9223372036854775808", 0),
+            (u64::MAX, "18446744073709551615", 0),
+        ] {
+            let value = hew_yaml_from_u64(number);
+            let parsed = parse(text);
+            // SAFETY: all values are live independent owners.
+            unsafe {
+                assert_eq!(hew_yaml_int_status(value), status);
+                assert_eq!(hew_yaml_get_u64(value), number);
+                assert_eq!(hew_yaml_get_u64(parsed), number);
+                assert_eq!(hew_yaml_eq(value, parsed), 1);
+                let copy = hew_yaml_clone(value);
+                hew_yaml_free(value);
+                assert_eq!(hew_yaml_get_u64(copy), number);
+                let encoded = read_and_free_string(hew_yaml_stringify(copy));
+                assert_eq!(encoded.trim(), text);
+                let reparsed = parse(&encoded);
+                assert_eq!(hew_yaml_eq(copy, reparsed), 1);
+                hew_yaml_free(reparsed);
+                hew_yaml_free(parsed);
+                hew_yaml_free(copy);
+            }
+        }
+        for (text, status) in [
+            ("-1", 1),
+            ("-9223372036854775808", 1),
+            ("1.0", -1),
+            ("true", -1),
+            ("\"7\"", -1),
+            ("null", -1),
+            ("[]", -1),
+            ("{}", -1),
+        ] {
+            let value = parse(text);
+            // SAFETY: value is a live owner.
+            unsafe {
+                assert_eq!(hew_yaml_int_status(value), status);
+                if status == 1 {
+                    assert!(hew_yaml_get_int(value) < 0);
+                }
+                assert_eq!(hew_yaml_get_u64(value), 0);
+                hew_yaml_free(value);
+            }
+        }
+        // SAFETY: null is a permitted invalid handle.
+        unsafe {
+            assert_eq!(hew_yaml_get_u64(std::ptr::null()), 0);
+            assert_eq!(hew_yaml_int_status(std::ptr::null()), -1);
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn stringify_invalid_handle_sets_error_and_success_clears_it() {
+        let baseline = live_value_boxes();
+        let value = parse("null");
+        set_parse_last_error("stale parse error");
+        // SAFETY: null is handled as invalid; value is a live owner.
+        unsafe {
+            assert!(hew_yaml_stringify(std::ptr::null()).is_null());
+            let error = read_and_free_string(hew_yaml_last_error());
+            assert!(error.contains("yaml stringify"));
+            assert!(error.contains("invalid value"));
+            let text = read_and_free_string(hew_yaml_stringify(value));
+            assert_eq!(text.trim(), "null");
+            assert!(read_and_free_string(hew_yaml_last_error()).is_empty());
+            hew_yaml_free(value);
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn tagged_outer_kinds_survive_copy_and_encoding() {
+        let baseline = live_value_boxes();
+        let key = ManagedString::new("enabled");
+        for source in [
+            "!Config {enabled: true}",
+            "!Items [1, 2]",
+            "!Count 18446744073709551615",
+            "!Status queued",
+        ] {
+            let value = parse(source);
+            // SAFETY: values are live independent owners; key is borrowed.
+            unsafe {
+                assert_eq!(hew_yaml_type(value), 7);
+                assert_eq!(hew_yaml_int_status(value), -1);
+                assert_eq!(hew_yaml_get_u64(value), 0);
+                assert!(hew_yaml_get_field(value, key.as_ptr()).is_null());
+                assert!(hew_yaml_array_get(value, 0).is_null());
+                assert_eq!(hew_yaml_array_len(value), -1);
+                let copy = hew_yaml_clone(value);
+                assert_eq!(hew_yaml_eq(value, copy), 1);
+                hew_yaml_free(value);
+                assert_eq!(hew_yaml_type(copy), 7);
+                let encoded = read_and_free_string(hew_yaml_stringify(copy));
+                assert!(get_parse_last_error().is_empty());
+                let reparsed = parse(&encoded);
+                assert_eq!(hew_yaml_type(reparsed), 7);
+                assert_eq!(hew_yaml_eq(copy, reparsed), 1);
+                hew_yaml_free(copy);
+                hew_yaml_free(reparsed);
+            }
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn stringify_nested_tags_reports_serializer_failure_then_clears_error() {
+        use serde_yaml::value::{Tag, TaggedValue};
+        let baseline = live_value_boxes();
+        // Construct the serde value directly: parsing rejects nested tags, but
+        // the runtime must report a serializer failure without losing its cause.
+        let invalid = boxed_value(serde_yaml::Value::Tagged(Box::new(TaggedValue {
+            tag: Tag::new("Outer"),
+            value: serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("Inner"),
+                value: serde_yaml::Value::Null,
+            })),
+        })));
+        let valid = parse("!Config {7: !Status queued}");
+        // SAFETY: both values are live owners.
+        unsafe {
+            let copy = hew_yaml_clone(invalid);
+            assert!(hew_yaml_stringify(invalid).is_null());
+            let error = read_and_free_string(hew_yaml_last_error());
+            assert!(error.contains("yaml stringify"));
+            assert!(error.contains("nested enum"), "{error}");
+            assert_eq!(hew_yaml_eq(invalid, copy), 1);
+            let encoded = read_and_free_string(hew_yaml_stringify(valid));
+            assert!(read_and_free_string(hew_yaml_last_error()).is_empty());
+            let reparsed = parse(&encoded);
+            assert_eq!(hew_yaml_eq(valid, reparsed), 1);
+            hew_yaml_free(reparsed);
+            hew_yaml_free(copy);
+            hew_yaml_free(invalid);
+            hew_yaml_free(valid);
+        }
+        assert_eq!(live_value_boxes(), baseline);
     }
 
     #[test]

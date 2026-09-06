@@ -2202,3 +2202,19 @@ fields nor pointer identity can supply it, and Hash remains unavailable. Types
 tests cover these decisions and the source-provenance boundary. Public wrapper
 migration, runtime operation descriptors and native clone/drop realization still
 need integration; these checker facts alone do not admit native encoding values.
+
+## Preserve unsigned encoding values and report encoding failures
+
+JSON and YAML now construct and read exact unsigned integers through `u64::MAX`.
+The existing signed integer status distinguishes wrong kinds, signed values and
+unsigned values above `i64::MAX`; unsigned access also rejects negative values.
+YAML reports tagged values as their own outer kind, keeping container checks
+consistent with the existing lookup and insertion operations. Copy, equality
+and encoding preserve tags and arbitrary mapping keys.
+
+Both encoders clear their error slot on success and retain a diagnostic on
+failure, including an invalid handle. YAML serializer errors now reach callers
+instead of being discarded. The runtime suites pass normally and under address
+and leak sanitizers, covering integer boundaries, tagged containers and scalars,
+and an actual nested-tag serialization failure followed by a successful encode.
+Source wrapper integration remains separate.

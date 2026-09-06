@@ -115,6 +115,119 @@ fn success(status: i32, fault: *mut c_void) {
     assert!(fault.is_null());
 }
 
+fn unit_member_module() -> hew_sir::SemModule {
+    use hew_sir::{
+        AggregateShapeRef, BoundaryDecision, BoundaryOperand, OwnKind, SemBlock, SemOpKind,
+        SemTerminator,
+    };
+    let tuple = ResolvedTy::Tuple(vec![ResolvedTy::Unit, fixture::value(FORMAT)]);
+    let mut semantic = fixture::skeleton(vec![fixture::value(FORMAT)], tuple.clone());
+    semantic.functions[0].blocks = vec![SemBlock {
+        id: hew_sir::BlockId(0),
+        args: vec![],
+        ops: vec![
+            fixture::op(
+                0,
+                SemOpKind::ConstUnit,
+                vec![fixture::result(1, ResolvedTy::Unit, OwnKind::None)],
+            ),
+            fixture::op(
+                1,
+                SemOpKind::AggregateMake {
+                    shape: AggregateShapeRef::Tuple,
+                    fields: vec![fixture::operand(1), fixture::operand(0)],
+                },
+                vec![fixture::result(2, tuple.clone(), OwnKind::Owned)],
+            ),
+            fixture::op(
+                2,
+                SemOpKind::CopyValue {
+                    source: fixture::operand(2),
+                },
+                vec![fixture::result(3, tuple.clone(), OwnKind::Owned)],
+            ),
+            fixture::op(
+                3,
+                SemOpKind::DestroyValue {
+                    value: fixture::operand(2),
+                },
+                vec![],
+            ),
+            fixture::op(
+                4,
+                SemOpKind::Destructure {
+                    shape: AggregateShapeRef::Tuple,
+                    aggregate: fixture::operand(3),
+                },
+                vec![
+                    fixture::result(4, ResolvedTy::Unit, OwnKind::None),
+                    fixture::result(5, fixture::value(FORMAT), OwnKind::Owned),
+                ],
+            ),
+            fixture::op(
+                5,
+                SemOpKind::AggregateMake {
+                    shape: AggregateShapeRef::Tuple,
+                    fields: vec![fixture::operand(4), fixture::operand(5)],
+                },
+                vec![fixture::result(6, tuple, OwnKind::Owned)],
+            ),
+        ],
+        terminator: SemTerminator::Return {
+            value: Some(BoundaryOperand {
+                operand: fixture::operand(6),
+                decision: BoundaryDecision::Move,
+            }),
+        },
+    }];
+    hew_sir::check_module(&semantic).unwrap();
+    semantic
+}
+
+#[test]
+fn unit_member_preserves_recursive_encoding_glue_and_aggregate_return_at_o0_o2() {
+    let semantic = unit_member_module();
+    for optimized in [false, true] {
+        for invalid in [false, true] {
+            let original = if invalid {
+                std::ptr::null_mut()
+            } else {
+                register(raw_from_u64(u64::MAX))
+            };
+            let mut copy = std::ptr::null_mut();
+            let mut fault = std::ptr::null_mut();
+            type Pair = unsafe extern "C" fn(*mut Value, *mut *mut Value, *mut *mut c_void) -> i32;
+            call_body(&semantic, optimized, |engine, name| {
+                // SAFETY: native (Unit, Value) is an empty field followed by one
+                // pointer, returned indirectly through the private result slot.
+                success(
+                    unsafe {
+                        engine.get_function::<Pair>(name).unwrap().call(
+                            original,
+                            &raw mut copy,
+                            &raw mut fault,
+                        )
+                    },
+                    fault,
+                );
+            });
+            assert_eq!(copy.is_null(), invalid);
+            if !invalid {
+                assert_ne!(copy, original);
+                // SAFETY: the tuple result owns this independent copied value.
+                assert_eq!(unsafe { raw_get_u64(copy) }, u64::MAX);
+            }
+            TRACE.with_borrow(|trace| {
+                assert_eq!(trace.clones, 1);
+                assert_eq!(trace.drops, [original as usize]);
+            });
+            // SAFETY: Unit needs no release; the test owns the returned value field.
+            unsafe { trace_free(copy) };
+            finish();
+        }
+    }
+}
+
 #[test]
 fn copies_mutate_independently_and_transfer_children_once_at_o0_o2() {
     for optimized in [false, true] {

@@ -36,7 +36,7 @@ pub fn result(id: u32, ty: ResolvedTy, own: sir::OwnKind) -> sir::ValueDef {
     }
 }
 
-fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModule {
+pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModule {
     let mut facts = TypeFactService::new(TypeFactContext::default(), BTreeMap::new());
     for ty in params.iter().chain([&return_ty]) {
         facts.require(ty).unwrap();

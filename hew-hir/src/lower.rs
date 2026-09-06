@@ -2891,8 +2891,9 @@ pub fn lower_program_with_mono_cap(
         }
     }
     ctx.seed_stdlib_fn_registry();
+    let builtin_declarations = builtin_callable_impl_program();
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
-        match builtin_callable_impl_program() {
+        match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
@@ -4739,124 +4740,108 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
-    let scope_failure = if ctx
-        .recovery_kinds
-        .values()
-        .any(|kind| matches!(kind, hew_types::check::RecoveryKind::Scope { .. }))
-    {
-        builtin_callable_impl_program.as_ref().and_then(|builtins| {
-            let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+    // Prelude declarations must precede lazy body checking, independently of
+    // whether their executable methods are needed or have checked successfully.
+    let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
+        let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
+            Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+            _ => None,
+        })?;
+        let canonical_name = "std.builtins.ScopeFailure";
+        let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned() else {
+            ctx.unsupported(
+                span.clone(),
+                "scope failure declaration identity",
+                "checker-boundary",
+            );
+            return None;
+        };
+        let mut source = source.clone();
+        source.name = canonical_name.to_string();
+        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+        ctx.type_classes
+            .insert(canonical_name.to_string(), (decl.marker, None));
+        ctx.type_member_tys.insert(
+            canonical_name.to_string(),
+            decl.variants
+                .iter()
+                .flat_map(hew_hir_variant_field_tys)
+                .collect(),
+        );
+        ctx.enum_variants_by_name
+            .insert(canonical_name.to_string(), decl.variants.clone());
+        ctx.enum_type_params
+            .insert(canonical_name.to_string(), decl.type_params.clone());
+        ctx.enum_item_ids
+            .insert(canonical_name.to_string(), decl.id);
+        for (index, variant) in decl.variants.iter().enumerate() {
+            ctx.machine_ctor_registry.insert(
+                format!("{canonical_name}::{}", variant.name),
+                (canonical_name.to_string(), index),
+            );
+        }
+        Some(decl)
+    });
+    let mut delivery_declarations = Vec::new();
+    if let Some(builtins) = builtin_declarations.as_ref() {
+        for name in hew_types::actor_delivery::DECLARATIONS {
+            let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
+                Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
                 _ => None,
-            })?;
-            let canonical_name = "std.builtins.ScopeFailure";
-            let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned()
+            }) else {
+                continue;
+            };
+            let canonical_name = format!("std.builtins.{name}");
+            let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
             else {
                 ctx.unsupported(
                     span.clone(),
-                    "scope failure declaration identity",
+                    "actor delivery declaration identity",
                     "checker-boundary",
                 );
-                return None;
+                continue;
             };
             let mut source = source.clone();
-            source.name = canonical_name.to_string();
+            source.name.clone_from(&canonical_name);
             let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
             ctx.type_classes
-                .insert(canonical_name.to_string(), (decl.marker, None));
+                .insert(canonical_name.clone(), (decl.marker, None));
             ctx.type_member_tys.insert(
-                canonical_name.to_string(),
-                decl.variants
+                canonical_name.clone(),
+                decl.fields
                     .iter()
-                    .flat_map(hew_hir_variant_field_tys)
+                    .map(|field| field.ty.clone())
+                    .chain(decl.variants.iter().flat_map(hew_hir_variant_field_tys))
                     .collect(),
             );
-            ctx.enum_variants_by_name
-                .insert(canonical_name.to_string(), decl.variants.clone());
-            ctx.enum_type_params
-                .insert(canonical_name.to_string(), decl.type_params.clone());
-            ctx.enum_item_ids
-                .insert(canonical_name.to_string(), decl.id);
-            for (index, variant) in decl.variants.iter().enumerate() {
-                ctx.machine_ctor_registry.insert(
-                    format!("{canonical_name}::{}", variant.name),
-                    (canonical_name.to_string(), index),
-                );
-            }
-            Some(decl)
-        })
-    } else {
-        None
-    };
-    let mut delivery_declarations = Vec::new();
-    if !ctx.actor_delivery_calls.is_empty()
-        || ctx
-            .actor_method_dispatch
-            .values()
-            .any(|kind| matches!(kind, ActorMethodKind::Message { .. }))
-    {
-        if let Some(builtins) = builtin_callable_impl_program.as_ref() {
-            for name in hew_types::actor_delivery::DECLARATIONS {
-                let Some((source, span)) =
-                    builtins.items.iter().find_map(|(item, span)| match item {
-                        Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
-                        _ => None,
-                    })
-                else {
-                    continue;
-                };
-                let canonical_name = format!("std.builtins.{name}");
-                let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
-                else {
-                    ctx.unsupported(
-                        span.clone(),
-                        "actor delivery declaration identity",
-                        "checker-boundary",
-                    );
-                    continue;
-                };
-                let mut source = source.clone();
-                source.name.clone_from(&canonical_name);
-                let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
-                ctx.type_classes
-                    .insert(canonical_name.clone(), (decl.marker, None));
-                ctx.type_member_tys.insert(
+            if decl.kind == HirTypeDeclKind::Struct {
+                ctx.record_registry.insert(
                     canonical_name.clone(),
-                    decl.fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .chain(decl.variants.iter().flat_map(hew_hir_variant_field_tys))
-                        .collect(),
+                    RecordEntry {
+                        id: decl.id,
+                        type_params: decl.type_params.clone(),
+                        fields: decl
+                            .fields
+                            .iter()
+                            .map(|field| (field.name.clone(), field.ty.clone()))
+                            .collect(),
+                    },
                 );
-                if decl.kind == HirTypeDeclKind::Struct {
-                    ctx.record_registry.insert(
-                        canonical_name.clone(),
-                        RecordEntry {
-                            id: decl.id,
-                            type_params: decl.type_params.clone(),
-                            fields: decl
-                                .fields
-                                .iter()
-                                .map(|field| (field.name.clone(), field.ty.clone()))
-                                .collect(),
-                        },
+            }
+            if decl.kind == HirTypeDeclKind::Enum {
+                ctx.enum_variants_by_name
+                    .insert(canonical_name.clone(), decl.variants.clone());
+                ctx.enum_type_params
+                    .insert(canonical_name.clone(), decl.type_params.clone());
+                ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
+                for (index, variant) in decl.variants.iter().enumerate() {
+                    ctx.machine_ctor_registry.insert(
+                        format!("{canonical_name}::{}", variant.name),
+                        (canonical_name.clone(), index),
                     );
                 }
-                if decl.kind == HirTypeDeclKind::Enum {
-                    ctx.enum_variants_by_name
-                        .insert(canonical_name.clone(), decl.variants.clone());
-                    ctx.enum_type_params
-                        .insert(canonical_name.clone(), decl.type_params.clone());
-                    ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
-                    for (index, variant) in decl.variants.iter().enumerate() {
-                        ctx.machine_ctor_registry.insert(
-                            format!("{canonical_name}::{}", variant.name),
-                            (canonical_name.clone(), index),
-                        );
-                    }
-                }
-                delivery_declarations.push(decl);
             }
+            delivery_declarations.push(decl);
         }
     }
     let mut items: Vec<HirItem> = Vec::new();
@@ -19173,122 +19158,11 @@ impl LowerCtx {
                     let source = self.lower_expr(inner, intent);
                     return self.subsumed_value(site, &span, intent, source);
                 }
-                // Unwrap a bare block wrapping a single trailing method call
-                // (`await { method() }`) to recover the effective inner expression
-                // and its span for the dispatch-map lookup.  The checker recorded
-                // the `ActorMethodKind::Ask` entry under the method call's span,
-                // not the surrounding block's span.
-                let (effective_inner_expr, effective_inner_span): (&Spanned<Expr>, &Span) =
-                    match &inner.0 {
-                        Expr::Block(block)
-                            if block.stmts.is_empty()
-                                && block
-                                    .trailing_expr
-                                    .as_deref()
-                                    .is_some_and(|(e, _)| matches!(e, Expr::MethodCall { .. })) =>
-                        {
-                            let trailing = block.trailing_expr.as_deref().unwrap();
-                            (trailing, &trailing.1)
-                        }
-                        _ => (inner, &inner.1),
-                    };
-
-                if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
-                    .actor_method_dispatch
-                    .get(&self.mk_key(effective_inner_span))
-                    .cloned()
-                {
-                    // Lower the inner ask expression (type = raw reply_ty) then
-                    // upgrade its HIR type to `Result<reply_ty, AskError>` so
-                    // that downstream HIR consumers (PostfixTry, MIR lowering)
-                    // see the unified result type.  The MIR `lower_actor_ask`
-                    // reads `expr.ty` to allocate the `result_dest` slot.
-                    let ask_error_ty =
-                        hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
-                            .expect("generated builtin enum catalog must contain AskError");
-                    let result_ty = match ResolvedTy::from_ty(&reply_ty) {
-                        Ok(r) => ResolvedTy::Named {
-                            name: "Result".to_string(),
-                            // Owner-qualify the reply record identity to the
-                            // asked actor's declaring module when it collides,
-                            // so the `Result<reply, AskError>` layout field and
-                            // the qualified handler-return value the ask
-                            // produces agree (#2208).
-                            args: vec![
-                                Self::actor_module_short_of_method_id(&method_id).map_or_else(
-                                    || r.clone(),
-                                    |module_short| {
-                                        self.qualify_colliding_module_record_ty(&r, module_short)
-                                    },
-                                ),
-                                ask_error_ty,
-                            ],
-                            builtin: Some(BuiltinType::Result),
-                            is_opaque: false,
-                        },
-                        Err(_) => {
-                            // Fallback: return raw expr if reply_ty doesn't resolve;
-                            // the checker already emitted an error in this case.
-                            let source = self.lower_expr(inner, intent);
-                            return self.subsumed_value(site, &span, intent, source);
-                        }
-                    };
-                    // Register the `Result<reply_ty, AskError>` instantiation at
-                    // the ask site itself, independent of surrounding context.
-                    // Local asks usually get the layout registered by their
-                    // consumer (match scrutinee, `let ?` binding, return-type
-                    // walk), but an IMPORTED actor's ask has no such guarantee:
-                    // without this seed the importing crate's
-                    // `enum_layout_registry` lacks `Result$$<reply>$AskError`
-                    // and codegen-front fails closed (registration-mismatch).
-                    // The registry dedups by `EnumMonoKey`, so the double
-                    // registration on the local path is a no-op. Mirrors the
-                    // `ResolvedImplCall` / `RewriteToFunction` /
-                    // `RemoteActorAsk` sibling arms.
-                    self.try_register_enum_instantiation_ty(&result_ty, &span);
-                    let ask_expr = self.lower_expr(effective_inner_expr, intent);
-                    let HirExpr { kind: ask_kind, .. } = ask_expr;
-                    if let HirExprKind::ActorAsk {
-                        receiver,
-                        method_id,
-                        args,
-                        reply_ty,
-                        deadline_ns,
-                    } = ask_kind
-                    {
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ActorAsk {
-                                receiver,
-                                method_id,
-                                args,
-                                reply_ty,
-                                deadline_ns,
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "await actor ask".to_string(),
-                            reason: "checker actor dispatch did not lower to one direct ActorAsk"
-                                .to_string(),
-                        },
-                        span.clone(),
-                        "await actor ask must retain its consumed method-call occurrence",
-                    ));
-                    return self.unsupported_expr(span, "malformed awaited actor ask");
-                }
                 // `await actor.close()` — lambda-actor (Duplex) close is awaitable
                 // in statement position at any scope depth.  The checker-resolved
                 // descriptor's family classifies as `AsyncSuspendKind::DuplexClose`
                 // (`hew_duplex_close`); the `await` is stripped and the inner close
-                // call is lowered directly, matching the existing
-                // `ActorMethodKind::Ask` path above.
+                // call is lowered directly.
                 if matches!(
                     self.method_call_rewrites.get(&self.mk_key(&inner.1)),
                     Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
@@ -20282,17 +20156,61 @@ impl LowerCtx {
         inner
     }
 
+    /// Preserve the checked call result separately from the raw actor reply ABI.
+    fn checked_actor_ask_result_ty(&mut self, span: &Span, method_id: &str) -> Option<ResolvedTy> {
+        let result = self
+            .expr_types
+            .get(&self.mk_key(span))
+            .ok_or_else(|| "missing checker expression type".to_string())
+            .and_then(|ty| ResolvedTy::from_ty(ty).map_err(|err| err.to_string()));
+        let result_ty = match result {
+            Ok(
+                ty @ ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Result),
+                    ..
+                },
+            ) => ty,
+            Ok(ty) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor ask result".to_string(),
+                        reason: format!("expected checked Result, found {ty}"),
+                    },
+                    span.clone(),
+                    "actor ask calls must preserve their checked error result",
+                ));
+                return None;
+            }
+            Err(reason) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor ask result".to_string(),
+                        reason,
+                    },
+                    span.clone(),
+                    "actor ask result must cross the checker/HIR boundary exactly",
+                ));
+                return None;
+            }
+        };
+        let result_ty = Self::actor_module_short_of_method_id(method_id).map_or_else(
+            || result_ty.clone(),
+            |module| self.qualify_colliding_module_record_ty(&result_ty, module),
+        );
+        self.try_register_enum_instantiation_ty(&result_ty, span);
+        Some(result_ty)
+    }
+
     /// Derive the HIR binding type for a select arm's named pattern.
     ///
-    /// For `ActorAsk` arms the reply type comes from the checker-authoritative
-    /// `actor_method_dispatch` table keyed on the arm source expression's span.
+    /// For `ActorAsk` arms the full result comes from the checked call type,
+    /// keyed on the arm source expression's span.
     /// The source expression's checker-resolved builtin discriminator is the
     /// sole authority for channel and stream carriers. A malformed carrier
     /// returns `None` after recording a boundary diagnostic; it must never be
     /// represented as `Unit`, because MIR would otherwise treat that placeholder
     /// as a real runtime layout witness.
     #[expect(
-        clippy::too_many_lines,
         clippy::single_match_else,
         reason = "each sealed select carrier has a distinct exact-type diagnostic"
     )]
@@ -20308,37 +20226,9 @@ impl LowerCtx {
                     .get(&self.mk_key(source_span))
                     .cloned()
                 {
-                    Some(ActorMethodKind::Ask(_, reply_ty)) => {
-                        // W4.047 P1.2: the actor-ask reply type comes from the
-                        // checker-authoritative `actor_method_dispatch` table
-                        // (materialized at the checker boundary), not from
-                        // `expr_types`. The fail-open `.unwrap_or(Unit)` below
-                        // would silently install the *wrong* reply-channel ABI
-                        // if `from_ty` ever failed. Prove it cannot for a
-                        // concrete reply type: a conversion failure is only
-                        // admissible for a covered generic var (resolved at
-                        // monomorphization). No behaviour change.
-                        debug_assert!(
-                            ResolvedTy::from_ty(&reply_ty).is_ok() || reply_ty.has_inference_var(),
-                            "W4.047 totality: actor-ask reply type {reply_ty:?} fails \
-                             ResolvedTy::from_ty without being a covered generic var — \
-                             the fail-open .unwrap_or(Unit) would install the wrong \
-                             reply-channel ABI"
-                        );
-                        match ResolvedTy::from_ty(&reply_ty) {
-                            Ok(ty) => Some(ty),
-                            Err(err) => {
-                                self.diagnostics.push(HirDiagnostic::new(
-                                    HirDiagnosticKind::CheckerBoundaryViolation {
-                                        name: "select actor-ask reply".to_string(),
-                                        reason: err.to_string(),
-                                    },
-                                    source_span.clone(),
-                                    "select reply type must cross the checker/HIR boundary exactly",
-                                ));
-                                None
-                            }
-                        }
+                    Some(ActorMethodKind::Ask(method_id, _)) => {
+                        let method_id = self.qualify_imported_actor_method_id(method_id);
+                        self.checked_actor_ask_result_ty(source_span, &method_id)
                     }
                     // A `receive gen fn` dispatch never reaches a `select`
                     // ActorAsk arm — `for await` is its only consumer surface.
@@ -26848,6 +26738,13 @@ impl LowerCtx {
                 }
                 ActorMethodKind::Ask(method_id, reply_ty) => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
+                    let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id)
+                    else {
+                        return (
+                            HirExprKind::Unsupported("actor ask has no checked result".to_string()),
+                            ResolvedTy::Unit,
+                        );
+                    };
                     match ResolvedTy::from_ty(&reply_ty) {
                         Ok(reply_ty) => {
                             // Owner-qualify the ask-reply record identity to the
@@ -26877,7 +26774,7 @@ impl LowerCtx {
                                     reply_ty: reply_ty.clone(),
                                     deadline_ns: None,
                                 },
-                                reply_ty,
+                                result_ty,
                             )
                         }
                         Err(err) => {
@@ -29672,11 +29569,20 @@ impl LowerCtx {
         );
         if is_local_ask {
             let mut ask_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ActorAsk {
-                deadline_ns: slot, ..
-            } = &mut ask_expr.kind
-            {
-                *slot = Some(deadline_ns);
+            let mut ask_source = &mut ask_expr;
+            let updated = loop {
+                match &mut ask_source.kind {
+                    HirExprKind::SubsumedValue { source } => ask_source = source,
+                    HirExprKind::ActorAsk {
+                        deadline_ns: slot, ..
+                    } => {
+                        *slot = Some(deadline_ns);
+                        break true;
+                    }
+                    _ => break false,
+                }
+            };
+            if updated {
                 return ask_expr;
             }
             // The await lowered to something other than a local `ActorAsk` (e.g. a

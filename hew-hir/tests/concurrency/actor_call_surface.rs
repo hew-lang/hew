@@ -400,7 +400,20 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
     };
     assert_eq!(binding.name, "v");
 
-    let (method_id, reply_ty) = match &value.kind {
+    assert_eq!(value.ty, binding.ty);
+    assert!(matches!(
+        &value.ty,
+        hew_types::ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Result),
+            args,
+            ..
+        } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
+    ));
+    let HirExprKind::SubsumedValue { source } = &value.kind else {
+        panic!("await must preserve its checked call occurrence: {value:#?}");
+    };
+    assert_eq!(source.ty, value.ty);
+    let (method_id, reply_ty) = match &source.kind {
         HirExprKind::ActorAsk {
             method_id,
             reply_ty,

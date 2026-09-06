@@ -806,6 +806,11 @@ pub enum PhysicalTerminator {
         normal: PhysicalEdge,
         failure: Option<PhysicalEdge>,
     },
+    /// Copy the borrowed message into the active fault, then enter cleanup.
+    Panic {
+        message: ArgumentTransfer,
+        cleanup: PhysicalEdge,
+    },
     Trap(TrapKind),
     /// Propagate the currently owned fault and non-zero status through this
     /// function's private `fault_out` and status result.
@@ -2215,6 +2220,10 @@ impl FunctionLowerer<'_> {
                     unwind: self.lower_edge(unwind)?,
                 })
             }
+            SemTerminator::Panic { message, cleanup } => Ok(PhysicalTerminator::Panic {
+                message: self.argument_transfers(std::slice::from_ref(message))?[0],
+                cleanup: self.lower_edge(cleanup)?,
+            }),
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
@@ -4525,6 +4534,19 @@ fn terminator_successors(
             }
             Ok(successors)
         }
+        PhysicalTerminator::Panic { message, cleanup } => {
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "physical panic cannot overwrite an active fault",
+                ));
+            }
+            let ArgumentTransfer::Borrow(source) = message else {
+                return Err(PhysicalError::new("physical panic must borrow its message"));
+            };
+            initialized(function, &state, *source, block, "panic message")?;
+            state.fault = FaultState::Active;
+            Ok(vec![apply_edge(function, cleanup, state, block)?])
+        }
         PhysicalTerminator::Trap(_) => {
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(format!(
@@ -5064,6 +5086,15 @@ fn verify_terminator(
                 edge(failure)?;
             }
             Ok(())
+        }
+        PhysicalTerminator::Panic { message, cleanup } => {
+            let ArgumentTransfer::Borrow(source) = message else {
+                return Err(PhysicalError::new("physical panic must borrow its message"));
+            };
+            if slot(*source)?.ty != ResolvedTy::String {
+                return Err(PhysicalError::new("physical panic message must be String"));
+            }
+            edge(cleanup)
         }
         PhysicalTerminator::Trap(_)
         | PhysicalTerminator::PropagateFault

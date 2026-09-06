@@ -344,6 +344,16 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         | SemTerminator::RtCall { .. } => {
             dump_call_terminator(out, module, term);
         }
+        SemTerminator::Panic { message, cleanup } => {
+            writeln!(
+                out,
+                "    panic {} cleanup bb{}{}",
+                boundary_operand(message),
+                cleanup.target.0,
+                edge_args(cleanup)
+            )
+            .expect("write to String");
+        }
         SemTerminator::Trap { kind } => {
             writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
         }

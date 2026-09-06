@@ -124,6 +124,7 @@ fn canonicalize_verified_function(
             | SemTerminator::IndirectCall { .. }
             | SemTerminator::Goto(_)
             | SemTerminator::Trap { .. }
+            | SemTerminator::Panic { .. }
             | SemTerminator::Suspend { .. }
             | SemTerminator::ResumeUnwind
             | SemTerminator::Unreachable => None,

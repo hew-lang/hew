@@ -187,7 +187,7 @@ fn is_cleanup(kind: &SemOpKind) -> bool {
 /// A least fixed point admits only cleanup suffixes with a finite trap exit.
 /// A cycle cannot justify itself, and an ordinary operation cannot enter the
 /// region merely because a later terminator happens to trap.
-fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usize> {
+pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usize> {
     let mut suffixes = BTreeMap::new();
     loop {
         let before = suffixes.len();
@@ -589,6 +589,12 @@ impl<'a> Flow<'a> {
         self.boundary_inputs(id, &block.terminator, &mut state, emit);
         let mut successors = Vec::new();
         match &block.terminator {
+            SemTerminator::Panic { cleanup, .. } => {
+                Self::require_fault(id, DEAD, &state, emit);
+                state.fault = LIVE;
+                mark_trap(&mut state);
+                successors.extend(self.edge(id, cleanup, state, emit));
+            }
             SemTerminator::Call { normal, unwind, .. }
             | SemTerminator::RtCall { normal, unwind, .. }
             | SemTerminator::ValueCall { normal, unwind, .. }

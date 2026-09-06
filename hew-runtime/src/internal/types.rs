@@ -662,6 +662,9 @@ pub const HEW_TRAP_WIRE_DECODE_FAILED: i32 = 210;
 /// imports this constant so a renumber here fails the codegen build closed.
 pub const HEW_TRAP_JOIN_BRANCH_FAILED: i32 = 211;
 
+/// Explicit user panic carried by the private logical-fault ABI.
+pub const HEW_TRAP_USER_PANIC: i32 = 212;
+
 // ── Reply-failure classification ─────────────────────────────────────────
 //
 // Discriminants recorded on a reply channel (`HewReplyChannel.fail_reason`,
@@ -718,7 +721,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH
         | HEW_TRAP_MODULE_INIT_REGEX_FAILED
         | HEW_TRAP_WIRE_DECODE_FAILED
-        | HEW_TRAP_JOIN_BRANCH_FAILED => Some(code),
+        | HEW_TRAP_JOIN_BRANCH_FAILED
+        | HEW_TRAP_USER_PANIC => Some(code),
         _ => None,
     }
 }
@@ -772,6 +776,8 @@ pub enum ExitReason {
     /// diagnostic before the trap fires. Reachable whenever a joined actor
     /// dies mid-join — an environmental failure, not a producer regression.
     JoinBranchFailed,
+    /// Explicit user panic (logical error code 212).
+    UserPanic,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -802,6 +808,7 @@ impl ExitReason {
             ExitReason::ModuleInitRegexFailed => "ModuleInitRegexFailed",
             ExitReason::WireDecodeFailed => "WireDecodeFailed",
             ExitReason::JoinBranchFailed => "JoinBranchFailed",
+            ExitReason::UserPanic => "UserPanic",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -825,6 +832,7 @@ impl ExitReason {
             HEW_TRAP_MODULE_INIT_REGEX_FAILED => ExitReason::ModuleInitRegexFailed,
             HEW_TRAP_WIRE_DECODE_FAILED => ExitReason::WireDecodeFailed,
             HEW_TRAP_JOIN_BRANCH_FAILED => ExitReason::JoinBranchFailed,
+            HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -832,7 +840,7 @@ impl ExitReason {
     /// Project this runtime `ExitReason` into the link-cascade `CrashKind`
     /// surfaced to a linked actor.
     ///
-    /// This is the M-6 projection: the runtime distinguishes 13 exit reasons,
+    /// This is the M-6 projection: the runtime distinguishes individual exit reasons,
     /// but a linked actor only observes the coarse CLASS of a peer's failure
     /// (`std/failure.hew::CrashKind`), never the peer's private trap details.
     ///
@@ -871,6 +879,7 @@ impl ExitReason {
             | ExitReason::ModuleInitRegexFailed
             | ExitReason::WireDecodeFailed
             | ExitReason::JoinBranchFailed
+            | ExitReason::UserPanic
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
         }
@@ -966,6 +975,7 @@ mod crash_kind_projection_tests {
             HEW_TRAP_MODULE_INIT_REGEX_FAILED,
             HEW_TRAP_WIRE_DECODE_FAILED,
             HEW_TRAP_JOIN_BRANCH_FAILED,
+            HEW_TRAP_USER_PANIC,
         ] {
             assert_eq!(
                 CrashKind::tag_from_error_code(code),
@@ -1004,6 +1014,7 @@ mod crash_kind_projection_tests {
             ExitReason::ModuleInitRegexFailed,
             ExitReason::WireDecodeFailed,
             ExitReason::JoinBranchFailed,
+            ExitReason::UserPanic,
             ExitReason::Signal(-1),
             ExitReason::Normal,
         ];

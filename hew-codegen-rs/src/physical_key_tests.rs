@@ -207,6 +207,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         callable::hew_callable_clone,
         callable::hew_callable_drop,
         fault::hew_fault_new,
+        fault::hew_fault_new_panic,
         fault::hew_fault_drop,
         fault::hew_fault_report,
     );

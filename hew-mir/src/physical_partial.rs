@@ -425,8 +425,8 @@ pub(super) fn verify_cleanup_site(
 }
 
 /// Check that mutable physical control flow still realizes SIR's certificate.
-/// This never assigns a cleanup mode: only already-certified Trap operations
-/// seed the walk. Every continuation must remain cleanup-only and finish in a
+/// This never assigns a cleanup mode: certified Trap operations and explicit
+/// panic cleanup edges seed the walk. Every continuation must remain cleanup-only and finish in a
 /// trap or fault propagation; a cycle cannot establish that obligation.
 pub(super) fn verify_trap_cleanup_refinement(
     function: &PhysicalFunction,
@@ -443,13 +443,23 @@ pub(super) fn verify_trap_cleanup_refinement(
         PhysicalOp::Destroy { cleanup, .. } | PhysicalOp::StorageDead { cleanup, .. }
         if cleanup.mode() == hew_sir::CleanupMode::Trap)
     };
-    let seeds = function.blocks.iter().filter_map(|block| {
-        block
-            .ops
-            .iter()
-            .position(certified)
-            .map(|index| (block.id, index))
-    });
+    let seeds = function
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            block
+                .ops
+                .iter()
+                .position(certified)
+                .map(|index| (block.id, index))
+        })
+        .chain(function.blocks.iter().filter_map(|block| {
+            if let PhysicalTerminator::Panic { cleanup, .. } = &block.terminator {
+                Some((cleanup.target, 0))
+            } else {
+                None
+            }
+        }));
     let invalid =
         || PhysicalError::new("physical CFG no longer realizes its certified trap cleanup region");
     let mut complete = BTreeSet::new();

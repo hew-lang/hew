@@ -765,6 +765,7 @@ pub(crate) fn verify_cfg_discard_safety(
             SemTerminator::CheckedBinary { .. }
                 | SemTerminator::SwitchVariant { .. }
                 | SemTerminator::Trap { .. }
+                | SemTerminator::Panic { .. }
         ) {
             diagnostics.push(cfg_discard_diag(
                 original,
@@ -3230,6 +3231,7 @@ fn failure_cfg_matches_exit(
                 )
             }
             SemTerminator::Return { .. }
+            | SemTerminator::Panic { .. }
             | SemTerminator::CheckedBinary { .. }
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
@@ -3538,6 +3540,29 @@ fn verify_terminator_shape(
         }
         call @ SemTerminator::ValueCall { .. } => {
             verify_value_call_terminator(function, call, types, blocks, diagnostics);
+        }
+        SemTerminator::Panic { message, cleanup } => {
+            if types.get(&message.operand.value) != Some(&ResolvedTy::String)
+                || message.decision != crate::BoundaryDecision::Borrow
+            {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: "panic requires one borrowed String message".into(),
+                    },
+                ));
+            }
+            if !failure_cfg_matches_exit(cleanup, None, blocks)
+                || crate::lifetime::cleanup_suffixes(function).get(&cleanup.target) != Some(&0)
+            {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: "panic requires finite cleanup that propagates its original fault"
+                            .into(),
+                    },
+                ));
+            }
         }
         SemTerminator::RtCall {
             id,

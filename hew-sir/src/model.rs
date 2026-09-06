@@ -1470,6 +1470,13 @@ pub enum SemTerminator {
         normal: Edge,
         unwind: CallUnwind,
     },
+    /// Copy a borrowed string into an owned logical panic fault, then enter
+    /// the explicit cleanup region. There is no result or successful edge.
+    /// The message occupies operand slot zero; cleanup arguments follow it.
+    Panic {
+        message: BoundaryOperand,
+        cleanup: Edge,
+    },
     /// A language-visible trap (§1.6). Unlike [`Self::Unreachable`] this is a
     /// reachable endpoint the program can take.
     Trap {
@@ -1519,6 +1526,7 @@ impl SemTerminator {
     /// `u32` operand-slot range can represent.
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
         match self {
+            Self::Panic { message, .. } => visit(OperandSlot(0), message),
             Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
             Self::Call { args, .. } | Self::RtCall { args, .. } | Self::ValueCall { args, .. } => {
                 for (index, argument) in args.iter().enumerate() {
@@ -1607,6 +1615,7 @@ impl SemTerminator {
                 result: CallResult::Unit,
                 ..
             }
+            | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::Suspend { .. }
             | Self::ResumeUnwind
@@ -1624,6 +1633,10 @@ impl SemTerminator {
     ///
     /// Panics only when a branch carries more operands than the module-local
     /// `u32` operand-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive terminator operand visitor"
+    )]
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         let argument_start = if let Self::IndirectCall { callee, .. } = self {
             visit(OperandSlot(0), &callee.operand);
@@ -1632,6 +1645,19 @@ impl SemTerminator {
             0
         };
         match self {
+            Self::Panic { message, cleanup } => {
+                visit(OperandSlot(0), &message.operand);
+                cleanup.visit_operands(|slot, operand| {
+                    visit(
+                        OperandSlot(
+                            slot.0
+                                .checked_add(1)
+                                .expect("SIR panic operand count exceeds u32"),
+                        ),
+                        operand,
+                    );
+                });
+            }
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &value.operand),
             Self::Goto(edge) => edge.visit_operands(visit),
             Self::Branch {
@@ -1725,6 +1751,10 @@ impl SemTerminator {
     ///
     /// Panics only when a branch carries more operands than the module-local
     /// `u32` operand-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive terminator operand visitor"
+    )]
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         let argument_start = if let Self::IndirectCall { callee, .. } = self {
             visit(OperandSlot(0), &mut callee.operand);
@@ -1733,6 +1763,19 @@ impl SemTerminator {
             0
         };
         match self {
+            Self::Panic { message, cleanup } => {
+                visit(OperandSlot(0), &mut message.operand);
+                cleanup.visit_operands_mut(|slot, operand| {
+                    visit(
+                        OperandSlot(
+                            slot.0
+                                .checked_add(1)
+                                .expect("SIR panic operand count exceeds u32"),
+                        ),
+                        operand,
+                    );
+                });
+            }
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &mut value.operand),
             Self::Goto(edge) => edge.visit_operands_mut(visit),
             Self::Branch {
@@ -1834,7 +1877,7 @@ impl SemTerminator {
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
             Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
-            Self::Goto(edge) => visit(SuccessorSlot(0), edge),
+            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
@@ -1904,7 +1947,7 @@ impl SemTerminator {
     ) {
         match self {
             Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
-            Self::Goto(edge) => visit(SuccessorSlot(0), edge),
+            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
@@ -1974,7 +2017,9 @@ impl SemTerminator {
     #[must_use]
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
-            Self::Goto(edge) if slot == SuccessorSlot(0) => Some(edge),
+            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } if slot == SuccessorSlot(0) => {
+                Some(edge)
+            }
             Self::Branch {
                 then_target,
                 else_target,
@@ -2014,6 +2059,7 @@ impl SemTerminator {
                 .nth(usize::try_from(slot.0).ok()?),
             Self::Return { .. }
             | Self::Goto(_)
+            | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
             | Self::Unreachable => None,
@@ -2024,7 +2070,9 @@ impl SemTerminator {
     #[must_use]
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
-            Self::Goto(edge) if slot == SuccessorSlot(0) => Some(edge),
+            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } if slot == SuccessorSlot(0) => {
+                Some(edge)
+            }
             Self::Branch {
                 then_target,
                 else_target,
@@ -2064,6 +2112,7 @@ impl SemTerminator {
                 .nth(usize::try_from(slot.0).ok()?),
             Self::Return { .. }
             | Self::Goto(_)
+            | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
             | Self::Unreachable => None,
@@ -2093,6 +2142,8 @@ impl SemTerminator {
     #[must_use]
     pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
         match self {
+            Self::Panic { .. } if slot.0 == 0 => "panic message",
+            Self::Panic { .. } => "panic cleanup-edge argument",
             Self::Return { .. } => "return value",
             Self::Goto(_) => "goto edge argument",
             Self::Branch { then_target, .. } if slot.0 == 0 => "branch condition",

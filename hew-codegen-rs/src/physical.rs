@@ -34,7 +34,7 @@ use hew_mir::{
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_runtime::internal::types::{
     HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
-    HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::collection_type_arguments;
@@ -2392,6 +2392,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 failure,
             } => self.emit_runtime_call(*action, args, *result, normal, failure.as_ref()),
+            PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
             PhysicalTerminator::Trap(kind) => {
                 let code = match kind {
                     TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
@@ -4224,6 +4225,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_propagate_fault()
     }
 
+    fn emit_panic(&self, message: ArgumentTransfer, cleanup: &PhysicalEdge) -> CodegenResult<()> {
+        let ArgumentTransfer::Borrow(source) = message else {
+            return Err(CodegenError::FailClosed(
+                "physical panic must borrow its message".into(),
+            ));
+        };
+        let constructor = external_unary_ptr(self.ctx, self.llvm, "hew_fault_new_panic")?;
+        let message = self.load(source, "panic.message")?;
+        let fault = self.runtime_call_value(constructor, &[message.into()], "panic.fault")?;
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(cleanup)
+    }
+
     fn initialize_active_fault(&self, code: i32) -> CodegenResult<()> {
         let function = external_fault_new(self.ctx, self.llvm)?;
         let fault = self
@@ -4237,6 +4251,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("fault constructor returned void".into()))?;
+        self.store_active_fault(fault, code)
+    }
+
+    fn store_active_fault(&self, fault: BasicValueEnum<'ctx>, code: i32) -> CodegenResult<()> {
         self.builder
             .build_store(self.active_fault, fault)
             .llvm_ctx("store physical trap fault")?;

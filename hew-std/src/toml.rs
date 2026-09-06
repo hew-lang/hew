@@ -1311,10 +1311,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_type_tag_prefix_matches_issue_1321() {
-        // #1321: lock the shared 0..6 prefix documented in
-        // std/encoding/wire/value_trait.hew; TOML reserves 0 for null and only
-        // emits the shared bool/int/float/string/array/object(table) prefix here.
+    fn runtime_type_tags_match_format_wrapper() {
+        // Keep the runtime tags used by the TOML wrapper stable.
         // SAFETY: every handle below is allocated by boxed_value and freed once
         // by hew_toml_free in the same scope.
         unsafe {

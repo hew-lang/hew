@@ -2376,3 +2376,11 @@ and reject work inserted after cleanup, including an observable print call.
 A finite branching cleanup region remains valid, while a returning successor
 or an escaping cycle is refused. The physical and LLVM suites continue to
 execute the Local ownership and allocated-capture witnesses at O0 and O2.
+
+## Align encoding references with the owning value API
+
+Wire documentation now describes format-specific JSON and YAML values and
+TOML's independent resource carrier. Runtime tag checks retain the same ABI
+assertions while naming the actual format wrapper contract. The obsolete JSON
+supertrait-import lint fixture is removed with its deleted import; independent
+generic supertrait coverage remains in place.

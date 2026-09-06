@@ -59,9 +59,9 @@
 //! This file also carries the substrate this doc comment used to describe:
 //! the legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
 //! `validate_header`) were removed when the CBOR envelope substrate
-//! (`hew-runtime/src/envelope.rs`) became the sole internode encoding. The
-//! opaque `Value` contract for user-facing stdlib encoding modules lives in
-//! `value_trait.hew` and remains active.
+//! (`hew-runtime/src/envelope.rs`) became the sole internode encoding.
+//! JSON and YAML expose their own owning value APIs; no shared opaque-value
+//! trait is required by this wire codec surface.
 
 /// Encode any admitted `Serializable` value as binary CBOR.
 pub fn encode<T: Serializable>(value: T) -> bytes {

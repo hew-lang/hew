@@ -2556,9 +2556,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_type_tag_prefix_matches_issue_1321() {
-        // #1321: lock the shared 0..6 prefix documented in
-        // std/encoding/wire/value_trait.hew so JSON stays aligned with YAML/TOML.
+    fn runtime_type_tags_match_format_wrapper() {
+        // Keep the runtime tags used by the JSON wrapper stable.
         // SAFETY: every handle below is allocated by boxed_value and freed once
         // by hew_json_free in the same scope.
         unsafe {

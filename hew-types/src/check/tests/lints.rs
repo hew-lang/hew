@@ -2930,21 +2930,6 @@ fn no_warn_used_import() {
 }
 
 #[test]
-fn stdlib_json_supertrait_import_does_not_warn_value_trait_unused() {
-    let source = "import std.encoding.json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
-    let result = hew_parser::parse(source);
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&result.program);
-    assert!(
-        !output.warnings.iter().any(|w| {
-            w.kind == TypeErrorKind::UnusedImport && w.message.contains("value_trait")
-        }),
-        "json's CanonicalValueMethods supertrait use must consume its value_trait import: {:?}",
-        output.warnings
-    );
-}
-
-#[test]
 fn no_warn_named_import_type_used_bare() {
     // A named import (`::{ T }`) of a type used only as a bare type reference
     // must mark the module used — qualified-by-default routes bare references

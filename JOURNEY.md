@@ -1554,3 +1554,10 @@ rewrite slot and both continuation roles; the focused SIR suite passes.
 This is a model checkpoint. The verifier and physical lowerer explicitly reject
 indirect execution until the callable capability, environment and receiver
 contracts are connected. No source closure or indirect native support is claimed.
+
+## Shared callable capability vocabulary
+
+Introduce the shared callable invocation and duplication capabilities and the
+three independent capture axes: acquisition, private access and consumption.
+This prerequisite defines the vocabulary only; parser and checker integration
+follow separately. No callable behaviour changes in this checkpoint.

@@ -8,6 +8,56 @@ pub type Span = std::ops::Range<usize>;
 /// A value with an associated source span.
 pub type Spanned<T> = (T, Span);
 
+/// How invocation may access an owned callable's environment.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum CallableCallMode {
+    #[default]
+    Read,
+    Var,
+    Once,
+}
+
+/// Callable guarantees preserved when its concrete environment is erased.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct CallableCapabilities {
+    pub call: CallableCallMode,
+    /// Independent value duplication, not necessarily bitwise `Copy`.
+    pub clone: bool,
+}
+
+impl CallableCapabilities {
+    /// A plain function item has no captured state and can be duplicated.
+    pub const FUNCTION_ITEM: Self = Self {
+        call: CallableCallMode::Read,
+        clone: true,
+    };
+}
+
+impl std::fmt::Display for CallableCapabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == Self::default() {
+            return Ok(());
+        }
+        write!(f, "[")?;
+        match self.call {
+            CallableCallMode::Read => {}
+            CallableCallMode::Var => write!(f, "var")?,
+            CallableCallMode::Once => write!(f, "once")?,
+        }
+        if self.clone {
+            if self.call != CallableCallMode::Read {
+                write!(f, ", ")?;
+            }
+            write!(f, "Clone")?;
+        }
+        write!(f, "]")
+    }
+}
+
 /// A dotted syntactic path whose segments have not yet been resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Path {

@@ -40,6 +40,10 @@ pub mod value_class;
 pub mod vec_authority;
 mod wasm_capabilities_generated;
 
+mod callable;
+pub use callable::{ClosureCaptureAccess, ClosureCaptureAcquisition, ClosureCaptureConsumption};
+pub use hew_parser::ast::{CallableCallMode, CallableCapabilities};
+
 pub use actor_protocol::{
     compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
     ActorProtocolCollision, ActorProtocolDescriptor,

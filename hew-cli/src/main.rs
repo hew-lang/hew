@@ -33,7 +33,6 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod help;
-mod jit;
 mod link;
 mod machine;
 mod native_link;

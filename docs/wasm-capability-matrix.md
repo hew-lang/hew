@@ -59,6 +59,11 @@ failures for the post-M7/native-runtime milestones.
 single-threaded cooperative actor scheduler and provides a meaningful subset of
 the native runtime capabilities.
 
+Native `hew eval` compiles each submission ahead of time and executes a child
+process. Hew-managed JIT execution is outside the current product targets and
+roadmap. Native AOT remains primary, with WASI runtime and browser sandbox
+execution retained in the product scope.
+
 For CLI eval, `hew eval --target wasm32-wasi <expr>` and
 `hew eval --target wasm32-wasi -f <file>` run through Tier 2. Interactive REPL
 mode (`hew eval --target wasm32-wasi` with no file or expression) is rejected,

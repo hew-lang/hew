@@ -1990,6 +1990,19 @@ The affected test binaries and the full SIR component pass. This validates
 semantic lowering and verification; native partial-field realization remains a
 separate integration requirement.
 
+## Verify definite private parameter replacement
+
+Borrowed callable parameter provenance now follows replacements through the
+existing source ownership snapshots. Replacement on every reaching branch, or
+on the only branch that continues, permits private mutable invocation. A mutable
+Clone+Once parameter consumes its entry copy while leaving the caller reusable.
+The native fixture passes at O0/O2 with paired generated/runtime ASan/LSan.
+
+The full type-checker suite passes. Full lint completed with passing Rust
+diagnostics; the existing JobState record lowering, starts_with operation and
+standard-library grammar gates remain unresolved. Ordinary partial-field
+consumption is a separate implementation and is not claimed by this checkpoint.
+
 ## AOT evaluation
 
 Removed the dormant CLI JIT modes and the unavailable ORCv2 adapter. Native
@@ -2093,3 +2106,19 @@ controls already passed. With the fix, all paths pass at both optimization
 levels. The complete physical MIR and codegen library suites pass through Make,
 as does scoped Rust lint. These count-based runtime checks complement the paired
 generated/runtime sanitizer acceptance cases.
+
+## Validate partial aggregate ownership end to end
+
+The full native acceptance suite now passes at O0 and O2, including captured
+partial records, mutable sibling fields and callable branch joins. The full
+paired generated/runtime ASan/LSan suite also passes after normal-edge result
+initialization repaired the recursive-carrier leak. Focused vector and map
+controls establish exact field copying and release on success and untouched
+result storage on failure. Combined compiler-layer tests pass; the earlier HIR
+assertion now preserves both source and HIR duplicate-release refusals.
+
+Integration preserves the published callable and AOT evaluation history with an
+identical compiler, runtime, test and specification tree to the validated partial
+ownership checkpoint. A whole callable consumed before a loop exit still needs
+function-owned local storage with lexical cleanup. Cross-platform execution of
+this partial-ownership checkpoint and the revised AOT timeout control is pending.

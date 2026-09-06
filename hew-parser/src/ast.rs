@@ -327,7 +327,7 @@ pub enum Expr {
     ForkBlock {
         body: Block,
     },
-    /// Scope deadline clause inside a `scope { ... }` block: `after(duration) { ... }`.
+    /// A value-producing lexical child scope: `scope within duration { ... }`.
     ScopeDeadline {
         duration: Box<Spanned<Expr>>,
         body: Block,

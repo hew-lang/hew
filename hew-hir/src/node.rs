@@ -1597,11 +1597,8 @@ pub enum HirExprKind {
         object: Box<HirExpr>,
         field: String,
     },
-    /// A `scope { stmts }` block. Every statement-call inside the body is a
-    /// child-task spawn (TI-1). Named bindings (`fork name = call(...)`)
-    /// produce `Ty::Task(call_ret)` typed bindings (TI-2). The block joins
-    /// all anonymous children implicitly at block exit. `scope` is the
-    /// structured-concurrency lifetime boundary; `fork` is the child-start verb.
+    /// A value-producing lexical lifetime boundary for child tasks.
+    /// Normal exits join children before publishing the body's result.
     Scope {
         body: HirBlock,
     },
@@ -1635,8 +1632,7 @@ pub enum HirExprKind {
         /// HIR lowering.
         captures: Vec<HirClosureCapture>,
     },
-    /// `after(duration) { ... }` inside a scope. The clause is the lexical
-    /// deadline edge that later MIR slices lower to scope-token cancellation.
+    /// A value-producing lexical child scope with a checked duration budget.
     ScopeDeadline {
         duration: Box<HirExpr>,
         body: HirBlock,

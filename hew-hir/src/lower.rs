@@ -18878,11 +18878,16 @@ impl LowerCtx {
                 }
             }
             Expr::Scope { body } => {
-                // Explicit scopes shorten the lifetime of their child tasks.
+                let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
+                    return self.unsupported_expr(span, "scope has no checked result type");
+                };
+                let Ok(result_ty) = ResolvedTy::from_ty(checked_ty) else {
+                    return self.unsupported_expr(span, "scope result type is unresolved");
+                };
                 self.scope_depth += 1;
-                let hir_body = self.lower_block(body, &ResolvedTy::Unit);
+                let hir_body = self.lower_block(body, &result_ty);
                 self.scope_depth -= 1;
-                (HirExprKind::Scope { body: hir_body }, ResolvedTy::Unit)
+                (HirExprKind::Scope { body: hir_body }, result_ty)
             }
             Expr::ForkChild { expr } => {
                 if let Expr::Array(branches) | Expr::Tuple(branches) = &expr.0 {
@@ -18946,28 +18951,23 @@ impl LowerCtx {
                 )
             }
             Expr::ScopeDeadline { duration, body } => {
-                if self.scope_depth == 0 || !in_stmt_position {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::AwaitOutOfPosition,
-                        span.clone(),
-                        "`after(duration) { ... }` deadline clauses are only legal as statements inside a `scope{}` body",
-                    ));
-                    (
-                        HirExprKind::Unsupported(
-                            "`after(duration) { ... }` outside scope statement".to_string(),
-                        ),
-                        ResolvedTy::Unit,
-                    )
-                } else {
-                    let duration = self.lower_expr(duration, IntentKind::Read);
-                    (
-                        HirExprKind::ScopeDeadline {
-                            duration: Box::new(duration),
-                            body: self.lower_cancellation_clause_block(body),
-                        },
-                        ResolvedTy::Unit,
-                    )
-                }
+                let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
+                    return self.unsupported_expr(span, "scope has no checked result type");
+                };
+                let Ok(result_ty) = ResolvedTy::from_ty(checked_ty) else {
+                    return self.unsupported_expr(span, "scope result type is unresolved");
+                };
+                let duration = self.lower_expr(duration, IntentKind::Read);
+                self.scope_depth += 1;
+                let body = self.lower_block(body, &result_ty);
+                self.scope_depth -= 1;
+                (
+                    HirExprKind::ScopeDeadline {
+                        duration: Box::new(duration),
+                        body,
+                    },
+                    result_ty,
+                )
             }
             Expr::AwaitRestart(inner) => {
                 // `await_restart sup.child` — suspend until the static supervised
@@ -29676,14 +29676,6 @@ impl LowerCtx {
         self.scopes.pop();
     }
 
-    fn lower_cancellation_clause_block(&mut self, block: &Block) -> HirBlock {
-        let saved_scope_depth = self.scope_depth;
-        self.scope_depth = 0;
-        let lowered = self.lower_block(block, &ResolvedTy::Unit);
-        self.scope_depth = saved_scope_depth;
-        lowered
-    }
-
     /// Lower the NEW-6b `await <op> | after <duration>` deadline combinator.
     ///
     /// Only `await <actor>.<askmethod>(...) | after <DurationLiteral>` is wired:
@@ -33141,12 +33133,6 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
             scan_block_for_task_gates(body, ctx, program);
         }
         Expr::ScopeDeadline { duration, body } => {
-            // A NON-EMPTY `after(...)` timeout body is now lowered: an
-            // execution-context caller emits the `SuspendingScopeDeadline` carrier
-            // (the after-body is the timer-fired edge), and a contextless caller
-            // fails closed at MIR (`scope deadline body` NYI). The body-shape gate
-            // that previously rejected non-empty bodies at HIR is therefore
-            // retired; MIR owns the call-conv decision.
             scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
             scan_block_for_task_gates(body, ctx, program);
         }

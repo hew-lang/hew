@@ -492,7 +492,7 @@ fn fmt_totality_expr_fork_block() {
 #[test]
 fn fmt_totality_expr_scope_deadline() {
     assert_roundtrip(
-        "fn f() {\n    scope {\n        after(5s) {\n            cancel();\n        }\n    }\n}\n",
+        "fn f() {\n    scope {\n        scope within 5s {\n            cancel();\n        }\n    }\n}\n",
     );
 }
 

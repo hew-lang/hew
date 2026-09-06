@@ -1422,20 +1422,19 @@ impl Parser<'_> {
                 })
             }
             Token::Scope => {
-                // `scope` is not a `Primary` (HEW-SPEC-2026 §4.2). Reaching it
-                // here means a value was expected — a `let` initialiser, a call
-                // argument, a match-arm body, an operand, a block's trailing
-                // expression — and `scope { .. }` produces none. Naming that
-                // beats the generic "expected expression, found scope", which
-                // reads as though the keyword were unknown. The statement
-                // spelling lives in `parse_stmt`.
-                self.error_with_hint(
-                    "E_SCOPE_IS_STATEMENT: `scope` cannot be used as a value; \
-                     `scope { .. }` is a statement that produces nothing"
-                        .to_string(),
-                    "use `join { .. }` for a value-producing fan-out",
-                );
-                return None;
+                self.advance();
+                let duration = if matches!(self.peek(), Some(Token::Identifier(word)) if *word == "within")
+                {
+                    self.advance();
+                    Some(Box::new(self.parse_cond_expr()?))
+                } else {
+                    None
+                };
+                let body = self.parse_block()?;
+                match duration {
+                    Some(duration) => Expr::ScopeDeadline { duration, body },
+                    None => Expr::Scope { body },
+                }
             }
             Token::Fork => {
                 self.advance();
@@ -1459,24 +1458,11 @@ impl Parser<'_> {
                 }
             }
             Token::After if self.looks_like_scope_deadline() => {
-                let after_span = self.peek_span();
-                if self.scope_expr_depth == 0 {
-                    self.error_at(
-                        "`after(duration) { ... }` deadline clauses are only valid inside `scope { ... }`"
-                            .to_string(),
-                        after_span,
-                    );
-                    return None;
-                }
-                self.advance();
-                self.expect(&Token::LeftParen)?;
-                let duration = self.parse_expr()?;
-                self.expect(&Token::RightParen)?;
-                let body = self.parse_block()?;
-                Expr::ScopeDeadline {
-                    duration: Box::new(duration),
-                    body,
-                }
+                self.error_with_hint(
+                    "deadline clauses have been replaced by a deadline on the scope".to_string(),
+                    "use `scope within duration { ... }`",
+                );
+                return None;
             }
             Token::Try => {
                 self.error(

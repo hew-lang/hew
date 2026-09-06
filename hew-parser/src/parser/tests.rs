@@ -3203,17 +3203,6 @@ fn parse_let_expr(source: &str) -> Expr {
     expr.clone()
 }
 
-/// Parses a statement-position `scope { .. };` inside `fn main` and returns the
-/// scope block's own body. `scope` is not a `Primary`, so a scope body is only
-/// reachable through a statement.
-fn parse_scope_stmt_body(source: &str) -> Block {
-    let body = parse_main_body(source);
-    let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[0].0 else {
-        panic!("expected scope statement: {:?}", body.stmts[0]);
-    };
-    inner.clone()
-}
-
 fn parse_main_body(source: &str) -> Block {
     let full = format!("fn main() {{ {source} }}");
     let result = parse(&full);
@@ -3466,8 +3455,6 @@ fn parse_block_still_works() {
 
 #[test]
 fn scope_statement_emits_scope_ast_variant() {
-    // `scope { .. }` is a statement, so the AST variant is reached through a
-    // statement-expression, never a `let` initialiser (HEW-SPEC-2026 §4.2).
     let body = parse_main_body("scope { 1 };");
     let Stmt::Expression((expr, _)) = &body.stmts[0].0 else {
         panic!("expected statement-expression: {:?}", body.stmts[0]);
@@ -3479,18 +3466,16 @@ fn scope_statement_emits_scope_ast_variant() {
 }
 
 #[test]
-fn scope_in_let_initialiser_is_refused() {
-    // Negative control for the test above: `scope` out of `Primary` means the
-    // value position is closed, not that the statement spelling moved.
-    let result = parse("fn main() { let r = scope { 1 }; }");
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("E_SCOPE_IS_STATEMENT")),
-        "expected E_SCOPE_IS_STATEMENT, got: {:?}",
-        result.errors
-    );
+fn scope_is_an_ordinary_value_expression() {
+    for source in [
+        "let result = scope { 1 };",
+        "consume(scope { 1 });",
+        "scope within 2s { let child = fork run(); await child }",
+        "let result = scope within budget { scope { 42 } };",
+    ] {
+        let result = parse(&format!("fn main() {{ {source} }}"));
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+    }
 }
 
 #[test]
@@ -3526,22 +3511,18 @@ fn fork_special_binding_syntax_is_removed() {
 }
 
 #[test]
-fn parse_scope_fork_block_after_deadline() {
-    let body = parse_scope_stmt_body("scope { fork { long_op(); } after(5s) { } };");
-    assert_eq!(body.stmts.len(), 2, "expected fork block and deadline");
-    let Stmt::Expression((Expr::ForkBlock { body: fork_body }, _)) = &body.stmts[0].0 else {
-        panic!("expected fork block: {:?}", body.stmts[0]);
+fn parse_scope_deadline_preserves_duration_and_result() {
+    let Expr::ScopeDeadline { duration, body } = parse_let_expr("scope within 5s { 42 }") else {
+        panic!("expected scope deadline");
     };
-    assert_eq!(fork_body.stmts.len(), 1);
-    let Stmt::Expression((Expr::ScopeDeadline { duration, body }, _)) = &body.stmts[1].0 else {
-        panic!("expected scope deadline: {:?}", body.stmts[1]);
-    };
-    assert!(
-        matches!(duration.0, Expr::Literal(Literal::Duration(5_000_000_000))),
-        "deadline duration should be parsed as 5s duration literal: {:?}",
-        duration.0
-    );
-    assert!(body.stmts.is_empty(), "deadline body should be empty");
+    assert!(matches!(
+        duration.0,
+        Expr::Literal(Literal::Duration(5_000_000_000))
+    ));
+    assert!(body.trailing_expr.is_some());
+    assert!(!parse("fn main() { scope { after(5s) {} } }")
+        .errors
+        .is_empty());
 }
 
 #[test]

@@ -3826,6 +3826,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .ok_or_else(|| "actor spawn lacks its handle result".into()),
             HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
+            HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {

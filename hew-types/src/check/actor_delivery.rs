@@ -160,7 +160,7 @@ impl Checker {
         ))
     }
 
-    pub(super) fn finish_actor_message_description(
+    pub(super) fn finish_actor_receive_call(
         &mut self,
         receiver: &Spanned<Expr>,
         args: &[CallArg],
@@ -168,10 +168,14 @@ impl Checker {
         result: Ty,
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
-        let Some(ActorMethodKind::Message { method_id, .. }) =
-            self.actor_method_dispatch.get(&key).cloned()
-        else {
-            return result;
+        let (method_id, reply_ty) = match self.actor_method_dispatch.get(&key).cloned() {
+            Some(ActorMethodKind::Message { method_id, .. }) => (method_id, None),
+            Some(ActorMethodKind::Ask {
+                method_id,
+                reply_ty,
+                ..
+            }) => (method_id, Some(reply_ty)),
+            _ => return result,
         };
         let Some(receiver_ty) = self
             .expr_types
@@ -214,6 +218,17 @@ impl Checker {
             );
             return Ty::Error;
         };
+        if let Some(reply_ty) = reply_ty {
+            self.actor_method_dispatch.insert(
+                key,
+                ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty,
+                    argument_order,
+                },
+            );
+            return result;
+        }
         let payload = argument_order
             .iter()
             .map(|index| {

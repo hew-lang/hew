@@ -138,7 +138,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     /// Checked owners cancel and resume until terminal before destroying a
     /// frame. A raw destruction of pending task work violates that ABI.
-    fn reject_pending_destroy(&self) -> CodegenResult<()> {
+    pub(super) fn reject_pending_destroy(&self) -> CodegenResult<()> {
         let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
         self.builder
             .build_call(abort, &[], "")

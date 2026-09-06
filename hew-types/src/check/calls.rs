@@ -2605,7 +2605,7 @@ impl Checker {
         }
         if matches!(
             self.actor_method_dispatch.get(&key),
-            Some(ActorMethodKind::Ask(..))
+            Some(ActorMethodKind::Ask { .. })
         ) || matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::RemoteActorAsk)

@@ -2112,7 +2112,11 @@ pub enum ActorMethodKind {
         argument_order: Vec<usize>,
     },
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
-    Ask(String, Ty),
+    Ask {
+        method_id: String,
+        reply_ty: Ty,
+        argument_order: Vec<usize>,
+    },
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
     /// `Stream<T>` whose producer runs inside the actor. The carried `Ty` is
     /// the stream's element type (the handler's declared `-> T`), recorded

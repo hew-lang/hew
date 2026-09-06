@@ -722,7 +722,7 @@ impl Checker {
                 // there (#1739). Do not add a Send/handle rejection here; this
                 // pass runs after type-checking and only graduates the
                 // side-table to a validated contract.
-                ActorMethodKind::Ask(_, reply_ty) => {
+                ActorMethodKind::Ask { reply_ty, .. } => {
                     !reply_ty.has_inference_var() && !reply_ty.contains_error()
                 }
                 // Same output-contract pruning as `Ask`: retain only when the

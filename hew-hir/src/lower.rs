@@ -20227,7 +20227,7 @@ impl LowerCtx {
                     .get(&self.mk_key(source_span))
                     .cloned()
                 {
-                    Some(ActorMethodKind::Ask(method_id, _)) => {
+                    Some(ActorMethodKind::Ask { method_id, .. }) => {
                         let method_id = self.qualify_imported_actor_method_id(method_id);
                         self.checked_actor_ask_result_ty(source_span, &method_id)
                     }
@@ -20562,7 +20562,7 @@ impl LowerCtx {
             args,
         } = call_expr
         {
-            if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
+            if let Some(ActorMethodKind::Ask { reply_ty, .. }) = self
                 .actor_method_dispatch
                 .get(&self.mk_key(call_span))
                 .cloned()
@@ -26737,7 +26737,11 @@ impl LowerCtx {
                         ty,
                     )
                 }
-                ActorMethodKind::Ask(method_id, reply_ty) => {
+                ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty,
+                    argument_order,
+                } => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
                     let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id)
                     else {
@@ -26772,6 +26776,7 @@ impl LowerCtx {
                                     receiver: Box::new(lowered_receiver),
                                     method_id,
                                     args: lowered_args,
+                                    argument_order,
                                     reply_ty: reply_ty.clone(),
                                     deadline_ns: None,
                                 },
@@ -29566,7 +29571,7 @@ impl LowerCtx {
         let inner_key = self.mk_key(&await_inner.1);
         let is_local_ask = matches!(
             self.actor_method_dispatch.get(&inner_key),
-            Some(ActorMethodKind::Ask(_, _))
+            Some(ActorMethodKind::Ask { .. })
         );
         if is_local_ask {
             let mut ask_expr = self.lower_expr(inner, intent);

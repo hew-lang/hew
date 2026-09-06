@@ -2281,3 +2281,14 @@ and reject work inserted after cleanup, including an observable print call.
 A finite branching cleanup region remains valid, while a returning successor
 or an escaping cycle is refused. The physical and LLVM suites continue to
 execute the Local ownership and allocated-capture witnesses at O0 and O2.
+
+## Retain private parameter replacements in Local storage
+
+Replacing a non-copyable borrowed parameter now stores each fresh owner in
+one initially empty parameter-scope Local. Reads before replacement retain
+the incoming borrow; both-branch replacement and replacement opposite an
+early return converge on the same private storage. Every exit ends that
+declaration, including faults before initialization. Branch lowering restores
+the full lexical context so nested-match declarations cannot leak into sibling
+paths. Mixed borrowed and replaced paths remain explicitly unsupported by SIR;
+the checker still rejects mutations without definite private replacement.

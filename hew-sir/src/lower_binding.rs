@@ -49,6 +49,18 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
+    pub(super) fn allocate_local(&mut self, ty: ResolvedTy) -> Result<PlaceId, String> {
+        let place =
+            PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
+        self.places.push(PlaceDecl {
+            id: place,
+            ty,
+            origin: PlaceOrigin::Local,
+        });
+        self.emit_place_operation(SemOpKind::AllocPlace { place }, Provenance::Synthesized)?;
+        Ok(place)
+    }
+
     pub(super) fn acquire_binding_target(
         &mut self,
         value: ValueId,
@@ -59,14 +71,7 @@ impl Builder<'_, '_> {
         let ty = self
             .value_ty(value)
             .ok_or_else(|| "binding initializer has no type".to_string())?;
-        let place =
-            PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
-        self.places.push(PlaceDecl {
-            id: place,
-            ty,
-            origin: PlaceOrigin::Local,
-        });
-        self.emit_place_operation(SemOpKind::AllocPlace { place }, Provenance::Synthesized)?;
+        let place = self.allocate_local(ty)?;
         self.emit_place_operation(
             SemOpKind::StoreInit {
                 place,
@@ -85,6 +90,19 @@ impl Builder<'_, '_> {
             .push(binding);
     }
 
+    pub(super) fn end_binding_scope(&mut self, binding: BindingId) -> Result<(), String> {
+        let declaration = self.binding_declarations[&binding];
+        if let BindingTarget::Place(place) = self.source_bindings[declaration].target {
+            if self.places[place.0 as usize].origin == PlaceOrigin::Local {
+                self.emit_place_operation(
+                    SemOpKind::EndLifetime { place },
+                    Provenance::Synthesized,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Emit an exit without changing the declaration context used to generate
     /// another successor. `EndLifetime` itself determines initialized contents.
     pub(super) fn end_scopes(&mut self, floor: usize) -> Result<(), String> {
@@ -95,14 +113,7 @@ impl Builder<'_, '_> {
             .copied()
             .collect::<Vec<_>>();
         for binding in bindings {
-            if let Some(BindingTarget::Place(place)) = self.bindings.get(&binding).copied() {
-                if self.places[place.0 as usize].origin == PlaceOrigin::Local {
-                    self.emit_place_operation(
-                        SemOpKind::EndLifetime { place },
-                        Provenance::Synthesized,
-                    )?;
-                }
-            }
+            self.end_binding_scope(binding)?;
         }
         Ok(())
     }

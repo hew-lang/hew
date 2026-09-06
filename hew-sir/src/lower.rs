@@ -2378,10 +2378,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         builder.bind_private_value_parameters(source_params)?;
         for parameter in source_params {
             if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
-                let target = builder.acquire_binding_target(value)?;
-                builder.bindings.insert(parameter.id, target);
-                let declaration = builder.binding_declarations[&parameter.id];
-                builder.source_bindings[declaration].target = target;
+                if builder.value_own_kind(value) == Some(OwnKind::Owned) {
+                    let target = builder.acquire_binding_target(value)?;
+                    builder.bindings.insert(parameter.id, target);
+                    let declaration = builder.binding_declarations[&parameter.id];
+                    builder.source_bindings[declaration].target = target;
+                }
             }
             builder.declare_in_scope(parameter.id);
         }
@@ -2407,6 +2409,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(ty.clone())].clone
                 == hew_types::CloneKind::None
             {
+                // Replacements own one parameter-scope slot. The incoming
+                // borrow remains the readable value until this path assigns.
+                let place = self.allocate_local(ty)?;
+                let declaration = self.binding_declarations[&parameter.id];
+                self.source_bindings[declaration].target = BindingTarget::Place(place);
                 continue;
             }
             let copied = self.emit_typed(
@@ -2998,14 +3005,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .copied()
             .collect::<Vec<_>>();
         for binding in leaving {
-            if let Some(BindingTarget::Place(place)) = self.bindings.get(&binding).copied() {
-                if self.places[place.0 as usize].origin == PlaceOrigin::Local {
-                    self.emit_place_operation(
-                        SemOpKind::EndLifetime { place },
-                        Provenance::Synthesized,
-                    )?;
-                }
-            }
+            self.end_binding_scope(binding)?;
         }
         for scope in &mut self.scopes {
             scope.retain(|binding| outer_bindings.contains(binding));
@@ -3054,6 +3054,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         {
             return Err("control-flow predecessors leave different temporary owners live".into());
         }
+        for binding in &keys {
+            if states
+                .iter()
+                .any(|state| matches!(state.bindings[binding], BindingTarget::Place(_)))
+                && states
+                    .iter()
+                    .any(|state| state.bindings[binding] != first.bindings[binding])
+            {
+                return Err("lexical place identity changed across a control-flow edge".into());
+            }
+        }
         let mut joined = first.clone();
         self.binding_declarations
             .clone_from(&first.binding_declarations);
@@ -3087,15 +3098,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             joined.bindings.insert(binding, BindingTarget::Value(value));
             self.record_binding_version(binding, value)?;
-        }
-        for binding in &keys {
-            if matches!(first.bindings[binding], BindingTarget::Place(_))
-                && states
-                    .iter()
-                    .any(|state| state.bindings[binding] != first.bindings[binding])
-            {
-                return Err("lexical place identity changed across a control-flow edge".into());
-            }
         }
         let join = self.new_block(block_args);
         for (state, args) in states.into_iter().zip(edge_args) {
@@ -3268,6 +3270,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.store_projected(place, new, Provenance::Site(value.site))
             }
             BindingTarget::Value(_) => {
+                if self.value_own_kind(new) == Some(OwnKind::Owned) {
+                    let BindingTarget::Place(place) = self.source_bindings[declaration].target
+                    else {
+                        return Err("owned assignment has no lexical storage declaration".into());
+                    };
+                    self.store_projected(place, new, Provenance::Site(value.site))?;
+                    self.bindings.insert(*binding, BindingTarget::Place(place));
+                    return Ok(());
+                }
                 self.bindings.insert(*binding, BindingTarget::Value(new));
                 self.record_binding_version(*binding, new)
             }
@@ -4346,16 +4357,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 ));
             }
         };
-        let inherited_bindings = self.bindings.clone();
-        let inherited_declarations = self.binding_declarations.clone();
+        let inherited = self.control_state();
         let branches = self.emit_variant_switch(shape, &descriptor, probe)?;
         let mut failures = Vec::new();
         let mut success = None;
         for branch in branches {
+            self.restore_control_state(&inherited);
             self.current = branch.block;
-            self.bindings.clone_from(&inherited_bindings);
-            self.binding_declarations
-                .clone_from(&inherited_declarations);
             self.owned_live = branch.owned_live;
             if branch.variant == predicate.variant_idx {
                 self.bind_match_fields(&predicate.bindings, &branch.fields, span)?;
@@ -4569,16 +4577,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect::<std::collections::HashSet<_>>();
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
-        let inherited_bindings = self.bindings.clone();
-        let inherited_declarations = self.binding_declarations.clone();
+        let inherited = self.control_state();
         let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
         let mut exits = Vec::new();
 
         for branch in branches {
+            self.restore_control_state(&inherited);
             self.current = branch.block;
-            self.bindings.clone_from(&inherited_bindings);
-            self.binding_declarations
-                .clone_from(&inherited_declarations);
             self.owned_live = branch.owned_live;
             let root_live = self.owned_live.clone();
             let branch_candidates = &candidates[usize::try_from(branch.variant)
@@ -4816,8 +4821,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .keys()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        let inherited_bindings = self.bindings.clone();
-        let inherited_declarations = self.binding_declarations.clone();
+        let inherited = self.control_state();
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
         let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
@@ -4825,10 +4829,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut success = None;
 
         for branch in branches {
+            self.restore_control_state(&inherited);
             self.current = branch.block;
-            self.bindings.clone_from(&inherited_bindings);
-            self.binding_declarations
-                .clone_from(&inherited_declarations);
             self.owned_live = branch.owned_live;
             if branch.variant != success_variant {
                 self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
@@ -6489,11 +6491,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let before = self.control_state();
         let mut exits = Vec::new();
         for (block, expression) in [(then_block, then_expr), (else_block, else_expr)] {
+            self.restore_control_state(&before);
             self.current = block;
-            self.bindings.clone_from(&before.bindings);
-            self.binding_declarations
-                .clone_from(&before.binding_declarations);
-            self.owned_live = before.owned_live.clone();
             if matches!(
                 self.ty(&expression.ty),
                 ResolvedTy::Unit | ResolvedTy::Never

@@ -1210,6 +1210,7 @@ pub enum RuntimeCallFamily {
     StringByteLen,
     StringConcat,
     StringEquals,
+    StringStartsWith,
     StructuralFormat,
     StringFind,
     StringGet,
@@ -1497,6 +1498,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         family: Some(RuntimeCallFamily::StringByteLen),
         params: EMPTY,
         result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::starts_with",
+        symbol: "hew_string_starts_with",
+        family: Some(RuntimeCallFamily::StringStartsWith),
+        params: STRING,
+        result: CanonicalExternTy::Bool,
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
@@ -1928,6 +1937,7 @@ impl RuntimeCallFamily {
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
             Self::StringEquals => "hew_string_equals",
+            Self::StringStartsWith => "hew_string_starts_with",
             Self::StructuralFormat => "hew_structural_format",
             Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
@@ -2300,6 +2310,7 @@ impl RuntimeCallFamily {
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
             "hew_string_equals" => Self::StringEquals,
+            "hew_string_starts_with" => Self::StringStartsWith,
             "hew_structural_format" => Self::StructuralFormat,
             "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
@@ -2937,7 +2948,7 @@ impl RuntimeCallFamily {
         }
 
         Some(match self {
-            Self::StringEquals => {
+            Self::StringEquals | Self::StringStartsWith => {
                 runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
             }
             Self::StringConcat => {
@@ -3316,6 +3327,7 @@ impl RuntimeCallFamily {
             | F::StringByteLen
             | F::StringConcat
             | F::StringEquals
+            | F::StringStartsWith
             | F::StructuralFormat
             | F::StringFind
             | F::StringGet
@@ -4339,6 +4351,7 @@ mod tests {
                 "bytes::push",
                 "bytes::set",
                 "string::byte_len",
+                "string::starts_with",
                 "string::find",
                 "string::char_at",
                 "string::get",

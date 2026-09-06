@@ -2149,3 +2149,12 @@ At the published partial-aggregate baseline, all fixtures reach SIR and fail its
 ownership verifier on the conditional whole-owner join. They are pending
 acceptance cases for function-owned Local storage; native execution and paired
 sanitizer validation are not yet claimed.
+
+## Admit the canonical string-prefix predicate
+
+String prefix checks now have an exact stdlib declaration and typed runtime
+contract: both strings are borrowed, the result is a boolean and the operation
+has no logical failure edge. This fills the native contract missing from the
+MIR benchmark's quoting helper. The existing runtime retains its length-aware
+Unicode and embedded-NUL behaviour. Runtime-contract tests pass; physical
+realization and source execution follow as separate validation steps.

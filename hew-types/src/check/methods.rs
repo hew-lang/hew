@@ -3260,6 +3260,7 @@ impl Checker {
             }
             _ => return None,
         };
+        self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
         if args.len() != params.len() {
             self.report_error(
                 TypeErrorKind::ArityMismatch,

@@ -1,8 +1,8 @@
 //! Suspension contracts inferred from checked declaration and callable identities.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use hew_parser::ast::{Expr, Pattern, Span, Stmt};
+use hew_parser::ast::{Expr, Pattern, Span, Spanned, Stmt};
 
 use super::{CallTarget, Checker, SpanKey};
 use crate::{env::TypeBindingId, DefId};
@@ -13,6 +13,20 @@ pub enum EffectBody {
     Declaration(DefId),
     /// Also identifies the lifted body of a fork block.
     Closure(SpanKey),
+}
+
+/// A projection selected against a checked receiver type.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CallableProjection {
+    Field { declaration: DefId, index: usize },
+    TupleIndex(usize),
+}
+
+/// A callable reached through one function parameter.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallableParameter {
+    pub index: usize,
+    pub projection: Vec<CallableProjection>,
 }
 
 /// The checker-owned contract consumed by lowering.
@@ -27,7 +41,7 @@ pub enum SuspensionEffect {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SuspensionContract {
     pub intrinsic: bool,
-    pub parameters: BTreeSet<usize>,
+    pub parameters: BTreeSet<CallableParameter>,
 }
 
 impl SuspensionContract {
@@ -61,11 +75,63 @@ pub struct SuspensionEffects {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CallableOrigin {
     Unknown,
+    Typed(crate::Ty),
     Synchronous,
     Suspending,
-    Parameter { owner: EffectBody, index: usize },
+    Parameter {
+        owner: EffectBody,
+        parameter: CallableParameter,
+    },
+    Aggregate(BTreeMap<CallableProjection, CallableOrigin>),
+    Binding {
+        binding: TypeBindingId,
+        projection: Vec<CallableProjection>,
+    },
     Body(EffectBody),
     Target(CallTarget),
+}
+
+impl CallableOrigin {
+    fn merge_at(&mut self, path: &[CallableProjection], value: Self) {
+        if let Some((projection, rest)) = path.split_first() {
+            if let Self::Aggregate(fields) = self {
+                fields
+                    .entry(projection.clone())
+                    .or_insert(Self::Unknown)
+                    .merge_at(rest, value);
+            } else {
+                *self = Self::Unknown;
+            }
+        } else if *self != value {
+            *self = Self::Unknown;
+        }
+    }
+
+    fn project(&self, projection: &CallableProjection) -> Option<Self> {
+        match self {
+            Self::Aggregate(fields) => fields.get(projection).cloned(),
+            Self::Binding {
+                binding,
+                projection: path,
+            } => {
+                let mut path = path.clone();
+                path.push(projection.clone());
+                Some(Self::Binding {
+                    binding: *binding,
+                    projection: path,
+                })
+            }
+            Self::Parameter { owner, parameter } => {
+                let mut parameter = parameter.clone();
+                parameter.projection.push(projection.clone());
+                Some(Self::Parameter {
+                    owner: owner.clone(),
+                    parameter,
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +139,7 @@ struct Invocation {
     owner: Option<EffectBody>,
     origin: Option<CallableOrigin>,
     arguments: Vec<Option<CallableOrigin>>,
+    argument_names: Vec<Option<String>>,
     explicit: bool,
     deferred: bool,
     source_module: Option<String>,
@@ -83,13 +150,39 @@ pub(super) struct EffectGraph {
     pub builtin_suspensions: HashSet<CallTarget>,
     pub current_body: Option<EffectBody>,
     pub bodies: HashMap<EffectBody, bool>,
+    pub parameter_names: HashMap<EffectBody, Vec<String>>,
     calls: HashMap<SpanKey, Invocation>,
     values: HashMap<SpanKey, CallableOrigin>,
     bindings: HashMap<TypeBindingId, CallableOrigin>,
     submission_effects: HashMap<SpanKey, bool>,
+    fork_transfers: Vec<(SpanKey, crate::Ty, Option<CallableOrigin>, Option<String>)>,
 }
 
 impl Checker {
+    pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &crate::Ty) {
+        let ty = self.subst.resolve(ty);
+        let origin = self.infer_expression_callable_origin(expr, span);
+        self.effect_graph.fork_transfers.push((
+            SpanKey::in_module(span, self.current_module_idx),
+            ty.clone(),
+            origin,
+            self.current_module.clone(),
+        ));
+        if matches!(ty, crate::Ty::Borrow { .. }) {
+            self.report_error(
+                crate::error::TypeErrorKind::InvalidSend,
+                span,
+                "fork cannot retain a borrowed view in its owning task environment".to_string(),
+            );
+        } else if !self
+            .registry
+            .implements_marker(&ty, crate::traits::MarkerTrait::Copy)
+            && !self.reject_borrowed_consumption(expr, span)
+        {
+            self.mark_expr_moved(expr, span);
+        }
+    }
+
     pub(super) fn record_callable_parameter(&mut self, name: &str, index: usize) {
         let Some(owner) = self.effect_graph.current_body.clone() else {
             return;
@@ -97,14 +190,80 @@ impl Checker {
         let Some(binding) = self.env.lookup_ref(name) else {
             return;
         };
-        if matches!(
-            self.subst.resolve(&binding.ty),
-            crate::Ty::Function { .. } | crate::Ty::Closure { .. }
-        ) {
-            self.effect_graph
-                .bindings
-                .insert(binding.id, CallableOrigin::Parameter { owner, index });
+        self.effect_graph.bindings.insert(
+            binding.id,
+            CallableOrigin::Parameter {
+                owner,
+                parameter: CallableParameter {
+                    index,
+                    projection: Vec::new(),
+                },
+            },
+        );
+    }
+
+    fn checked_callable_projection(
+        &self,
+        ty: &crate::Ty,
+        field: &str,
+    ) -> Option<CallableProjection> {
+        match self.subst.resolve(ty) {
+            crate::Ty::Tuple(elements) => {
+                let index: usize = field.parse().ok()?;
+                (index < elements.len()).then_some(CallableProjection::TupleIndex(index))
+            }
+            crate::Ty::Named { name, .. } => {
+                let declaration = self.identity.declaration_by_path(&name)?.clone();
+                let index = self
+                    .type_defs
+                    .get(&name)?
+                    .field_order
+                    .iter()
+                    .position(|candidate| candidate == field)?;
+                Some(CallableProjection::Field { declaration, index })
+            }
+            _ => None,
         }
+    }
+
+    fn checked_callable_place(
+        &self,
+        expr: &Expr,
+    ) -> Option<(TypeBindingId, Vec<CallableProjection>)> {
+        let (name, fields) = self.expr_place(expr)?;
+        let binding = self.env.lookup_ref(&name)?;
+        let mut ty = self.subst.resolve(&binding.ty);
+        let mut path = Vec::new();
+        for field in fields {
+            path.push(self.checked_callable_projection(&ty, &field)?);
+            ty = match ty {
+                crate::Ty::Tuple(elements) => elements.get(field.parse::<usize>().ok()?)?.clone(),
+                crate::Ty::Named { name, args, .. } => {
+                    let definition = self.type_defs.get(&name)?;
+                    Self::instantiate_type_def_member(
+                        definition.fields.get(&field)?,
+                        &definition.type_params,
+                        &args,
+                    )
+                }
+                _ => return None,
+            };
+            ty = self.subst.resolve(&ty);
+        }
+        Some((binding.id, path))
+    }
+
+    fn projected_callable_origin(
+        &self,
+        object: &Spanned<Expr>,
+        field: &str,
+    ) -> Option<CallableOrigin> {
+        let ty = self
+            .expr_types
+            .get(&SpanKey::in_module(&object.1, self.current_module_idx))?;
+        let projection = self.checked_callable_projection(ty, field)?;
+        self.expression_callable_origin(&object.0, &object.1)?
+            .project(&projection)
     }
 
     fn expression_callable_origin(&self, expr: &Expr, span: &Span) -> Option<CallableOrigin> {
@@ -112,8 +271,11 @@ impl Checker {
             Expr::Identifier(name) => self
                 .env
                 .lookup_ref(name)
-                .and_then(|binding| self.effect_graph.bindings.get(&binding.id))
-                .cloned(),
+                .filter(|binding| self.effect_graph.bindings.contains_key(&binding.id))
+                .map(|binding| CallableOrigin::Binding {
+                    binding: binding.id,
+                    projection: Vec::new(),
+                }),
             _ => None,
         }
         .or_else(|| {
@@ -139,17 +301,70 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {
+    fn infer_expression_callable_origin(&self, expr: &Expr, span: &Span) -> Option<CallableOrigin> {
         let key = SpanKey::in_module(span, self.current_module_idx);
-        let origin = match expr {
+        match expr {
             Expr::Identifier(name) => self
                 .env
                 .lookup_ref(name)
-                .and_then(|binding| self.effect_graph.bindings.get(&binding.id))
-                .cloned(),
+                .filter(|binding| self.effect_graph.bindings.contains_key(&binding.id))
+                .map(|binding| CallableOrigin::Binding {
+                    binding: binding.id,
+                    projection: Vec::new(),
+                }),
             Expr::Lambda { .. } | Expr::ForkBlock { .. } => {
                 Some(CallableOrigin::Body(EffectBody::Closure(key.clone())))
             }
+            Expr::Tuple(elements) => Some(CallableOrigin::Aggregate(
+                elements
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let origin = self
+                            .expression_callable_origin(&value.0, &value.1)
+                            .unwrap_or_else(|| {
+                                CallableOrigin::Typed(
+                                    self.expr_types
+                                        .get(&SpanKey::in_module(&value.1, self.current_module_idx))
+                                        .cloned()
+                                        .unwrap_or(crate::Ty::Error),
+                                )
+                            });
+                        (CallableProjection::TupleIndex(index), origin)
+                    })
+                    .collect(),
+            )),
+            Expr::StructInit { fields, base, .. } => {
+                // A spread can contain fields whose callable or transfer facts
+                // are not available at this expression. Keep that uncertainty.
+                if base.is_some() {
+                    return None;
+                }
+                let mut entries = BTreeMap::new();
+                if let Some(ty) = self.expr_types.get(&key) {
+                    for (name, value) in fields {
+                        if let Some(projection) = self.checked_callable_projection(ty, name) {
+                            entries.insert(
+                                projection,
+                                self.expression_callable_origin(&value.0, &value.1)
+                                    .unwrap_or_else(|| {
+                                        CallableOrigin::Typed(
+                                            self.expr_types
+                                                .get(&SpanKey::in_module(
+                                                    &value.1,
+                                                    self.current_module_idx,
+                                                ))
+                                                .cloned()
+                                                .unwrap_or(crate::Ty::Error),
+                                        )
+                                    }),
+                            );
+                        }
+                    }
+                }
+                Some(CallableOrigin::Aggregate(entries))
+            }
+            Expr::FieldAccess { object, field } => self.projected_callable_origin(object, field),
             _ => None,
         }
         .or_else(|| {
@@ -158,7 +373,16 @@ impl Checker {
                 .flatten()
                 .cloned()
                 .map(CallableOrigin::Target)
-        });
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "checked invocation and mutation effects share expression identity"
+    )]
+    pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let origin = self.infer_expression_callable_origin(expr, span);
         if let Some(origin) = origin {
             self.effect_graph.values.insert(key.clone(), origin);
         }
@@ -172,9 +396,12 @@ impl Checker {
                 Expr::Call { function, .. } => {
                     self.expression_callable_origin(&function.0, &function.1)
                 }
+                Expr::MethodCall {
+                    receiver, method, ..
+                } => self.projected_callable_origin(receiver, method),
                 _ => None,
             };
-            let arguments = match expr {
+            let mut arguments: Vec<_> = match expr {
                 Expr::Call { args, .. } | Expr::MethodCall { args, .. } => args
                     .iter()
                     .map(|arg| {
@@ -184,17 +411,61 @@ impl Checker {
                     .collect(),
                 _ => Vec::new(),
             };
+            let mut argument_names: Vec<_> = match expr {
+                Expr::Call { args, .. } | Expr::MethodCall { args, .. } => args
+                    .iter()
+                    .map(|arg| arg.name().map(str::to_string))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if let Expr::MethodCall { receiver, .. } = expr {
+                let has_receiver = matches!(
+                    self.method_call_rewrites.get(&key),
+                    Some(
+                        super::MethodCallRewrite::RewriteToFunction { .. }
+                            | super::MethodCallRewrite::StaticTraitDispatch { .. }
+                    )
+                ) || self.resolved_calls.get(&key).is_some_and(|call| {
+                    matches!(call.target, CallTarget::User(_) | CallTarget::ImplMethod(_))
+                });
+                if has_receiver {
+                    arguments.insert(0, self.expression_callable_origin(&receiver.0, &receiver.1));
+                    argument_names.insert(0, None);
+                }
+            }
             self.effect_graph.calls.insert(
                 key.clone(),
                 Invocation {
                     owner: self.effect_graph.current_body.clone(),
                     origin,
                     arguments,
+                    argument_names,
                     explicit: self.suspension_operands.contains(&key),
                     deferred: self.deferred_body.is_some(),
                     source_module: self.current_module.clone(),
                 },
             );
+        }
+        if let Expr::MethodCall { receiver, .. } = expr {
+            let mutates_receiver = matches!(
+                self.method_call_rewrites.get(&key),
+                Some(
+                    super::MethodCallRewrite::RewriteToFunction {
+                        requires_mutable_receiver: true,
+                        ..
+                    } | super::MethodCallRewrite::StaticTraitDispatch {
+                        requires_mutable_receiver: true,
+                        ..
+                    }
+                )
+            );
+            if mutates_receiver {
+                if let Some((binding, path)) = self.checked_callable_place(&receiver.0) {
+                    if let Some(origin) = self.effect_graph.bindings.get_mut(&binding) {
+                        origin.merge_at(&path, CallableOrigin::Unknown);
+                    }
+                }
+            }
         }
         // Task joins and structured child teardown suspend independently of
         // the child callable's own effect. Awaiting an ordinary call instead
@@ -217,6 +488,22 @@ impl Checker {
     }
 
     pub(super) fn record_statement_effect_binding(&mut self, stmt: &Stmt) {
+        if let Stmt::Assign { target, value, .. } = stmt {
+            if let Some((binding, path)) = self.checked_callable_place(&target.0) {
+                let origin = self
+                    .expression_callable_origin(&value.0, &value.1)
+                    .unwrap_or(CallableOrigin::Unknown);
+                if let Some(existing) = self.effect_graph.bindings.get_mut(&binding) {
+                    existing.merge_at(&path, origin);
+                } else {
+                    self.effect_graph
+                        .bindings
+                        .insert(binding, CallableOrigin::Unknown);
+                }
+            }
+            return;
+        }
+
         let pair = match stmt {
             Stmt::Let {
                 pattern: (Pattern::Identifier(name), _),
@@ -228,10 +515,6 @@ impl Checker {
                 value: Some(value),
                 ..
             } => Some((name, value)),
-            Stmt::Assign { target, value, .. } => match &target.0 {
-                Expr::Identifier(name) => Some((name, value)),
-                _ => None,
-            },
             _ => None,
         };
         let Some((name, value)) = pair else { return };
@@ -254,12 +537,60 @@ impl Checker {
         }
     }
 
+    fn callable_origin_is_send(
+        &self,
+        origin: Option<&CallableOrigin>,
+        graph: &EffectGraph,
+        seen: &mut HashSet<EffectBody>,
+    ) -> bool {
+        let origin = resolve_binding_origin(origin, &graph.bindings, &mut HashSet::new());
+        match origin {
+            Some(CallableOrigin::Typed(ty)) => self
+                .registry
+                .implements_marker(&self.subst.resolve(&ty), crate::traits::MarkerTrait::Send),
+            Some(CallableOrigin::Body(body @ EffectBody::Closure(_))) => {
+                if !seen.insert(body.clone()) {
+                    return false;
+                }
+                let EffectBody::Closure(key) = &body else {
+                    unreachable!()
+                };
+                let send = self.closure_capture_facts.get(key).is_some_and(|captures| {
+                    captures.iter().all(|capture| {
+                        capture.is_send
+                            || self.callable_origin_is_send(
+                                graph.bindings.get(&capture.binding_id),
+                                graph,
+                                seen,
+                            )
+                    })
+                });
+                seen.remove(&body);
+                send
+            }
+            Some(
+                CallableOrigin::Body(EffectBody::Declaration(_))
+                | CallableOrigin::Target(
+                    CallTarget::User(_)
+                    | CallTarget::ImplMethod(_)
+                    | CallTarget::Extern { .. }
+                    | CallTarget::Builtin { .. }
+                    | CallTarget::Runtime(_),
+                ),
+            ) => true,
+            Some(CallableOrigin::Aggregate(fields)) => fields
+                .values()
+                .all(|origin| self.callable_origin_is_send(Some(origin), graph, seen)),
+            _ => false,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "fixed point and source diagnostics share invocation contracts"
     )]
     pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
-        let graph = std::mem::take(&mut self.effect_graph);
+        let mut graph = std::mem::take(&mut self.effect_graph);
         let mut contracts: HashMap<_, _> = graph
             .bodies
             .iter()
@@ -297,18 +628,53 @@ impl Checker {
                         _ => None,
                     });
                 let origin = match target {
-                    None if self.method_call_rewrites.contains_key(key) => {
-                        Some(CallableOrigin::Synchronous)
-                    }
-                    Some(CallTarget::IndirectFunctionValue) | None => invocation.origin.clone(),
+                    Some(CallTarget::IndirectFunctionValue) => invocation.origin.clone(),
                     Some(target) if graph.builtin_suspensions.contains(target) => {
                         Some(CallableOrigin::Suspending)
                     }
                     Some(target) => Some(CallableOrigin::Target(target.clone())),
+                    None => self.method_call_rewrites.get(key).map_or_else(
+                        || invocation.origin.clone(),
+                        |rewrite| rewrite_callable_origin(rewrite, invocation),
+                    ),
                 };
                 (key.clone(), origin)
             })
             .collect();
+        for (key, invocation) in &mut graph.calls {
+            if !invocation.argument_names.iter().any(Option::is_some) {
+                continue;
+            }
+            let body = match targets[key].as_ref() {
+                Some(CallableOrigin::Body(body)) => Some(body.clone()),
+                Some(CallableOrigin::Target(CallTarget::User(id) | CallTarget::ImplMethod(id))) => {
+                    Some(EffectBody::Declaration(id.clone()))
+                }
+                _ => None,
+            };
+            if let Some(names) = body
+                .as_ref()
+                .and_then(|body| graph.parameter_names.get(body))
+            {
+                let mut arguments = vec![None; names.len()];
+                let mut positional = 0;
+                for (argument, name) in invocation.arguments.iter().zip(&invocation.argument_names)
+                {
+                    let index = name
+                        .as_ref()
+                        .and_then(|name| names.iter().position(|candidate| candidate == name))
+                        .unwrap_or_else(|| {
+                            let index = positional;
+                            positional += 1;
+                            index
+                        });
+                    if let Some(slot) = arguments.get_mut(index) {
+                        slot.clone_from(argument);
+                    }
+                }
+                invocation.arguments = arguments;
+            }
+        }
         // Monotone least fixed point handles recursive declarations and
         // substitutes callable argument effects at each checked invocation.
         loop {
@@ -321,6 +687,7 @@ impl Checker {
                             &invocation.arguments,
                             invocation.owner.as_ref(),
                             &contracts,
+                            &graph.bindings,
                         )
                     },
                     |intrinsic| SuspensionContract {
@@ -343,14 +710,15 @@ impl Checker {
         for (body, contract) in &contracts {
             output.bodies.insert(body.clone(), contract.effect());
         }
-        for (key, invocation) in graph.calls {
-            let contract = graph.submission_effects.get(&key).map_or_else(
+        for (key, invocation) in &graph.calls {
+            let contract = graph.submission_effects.get(key).map_or_else(
                 || {
                     invocation_contract(
-                        targets[&key].as_ref(),
+                        targets[key].as_ref(),
                         &invocation.arguments,
                         invocation.owner.as_ref(),
                         &contracts,
+                        &graph.bindings,
                     )
                 },
                 |intrinsic| SuspensionContract {
@@ -371,7 +739,25 @@ impl Checker {
                     key.start..key.end,
                     message,
                 );
-                error.source_module = invocation.source_module;
+                error.source_module.clone_from(&invocation.source_module);
+                self.errors.push(error);
+            }
+        }
+        for (key, ty, origin, source_module) in &graph.fork_transfers {
+            if !self
+                .registry
+                .implements_marker(&self.subst.resolve(ty), crate::traits::MarkerTrait::Send)
+                && !self.callable_origin_is_send(origin.as_ref(), &graph, &mut HashSet::new())
+            {
+                let mut error = crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidSend,
+                    key.start..key.end,
+                    format!(
+                        "fork cannot transfer `{}`: the value is not proven Send",
+                        ty.user_facing()
+                    ),
+                );
+                error.source_module.clone_from(source_module);
                 self.errors.push(error);
             }
         }
@@ -380,21 +766,78 @@ impl Checker {
     }
 }
 
+fn rewrite_callable_origin(
+    rewrite: &super::MethodCallRewrite,
+    invocation: &Invocation,
+) -> Option<CallableOrigin> {
+    use super::MethodCallRewrite as R;
+    match rewrite {
+        R::RewriteToFunction { target, .. }
+        | R::RewriteModuleQualifiedToFunction { target, .. }
+        | R::StaticTraitDispatch { target, .. } => Some(CallableOrigin::Target(target.clone())),
+        R::RecordFnFieldCall { .. } => invocation.origin.clone(),
+        R::BuiltinVecHigherOrder { .. } => invocation.arguments.first().cloned().flatten(),
+        R::RemoteActorAsk => Some(CallableOrigin::Suspending),
+        R::GeneratorNext { .. } => Some(CallableOrigin::Unknown),
+        R::RcIntrinsic { .. }
+        | R::GenericMathIntrinsic { .. }
+        | R::DeferToLowering
+        | R::BuiltinOptionResult { .. }
+        | R::CancellationTokenIsCancelled
+        | R::BuiltinVecIntoIter
+        | R::BuiltinVecIter
+        | R::BuiltinHashMapIntoIter { .. }
+        | R::BuiltinVecIterNext
+        | R::VecFrom
+        | R::WireCodec { .. }
+        | R::GenericWireCodec { .. }
+        | R::RecordCloneInplace { .. }
+        | R::CopyCloneNoop => Some(CallableOrigin::Synchronous),
+    }
+}
+
+fn resolve_binding_origin(
+    origin: Option<&CallableOrigin>,
+    bindings: &HashMap<TypeBindingId, CallableOrigin>,
+    seen: &mut HashSet<TypeBindingId>,
+) -> Option<CallableOrigin> {
+    let origin = origin?;
+    if let CallableOrigin::Binding {
+        binding,
+        projection,
+    } = origin
+    {
+        if !seen.insert(*binding) {
+            return Some(CallableOrigin::Unknown);
+        }
+        let mut value = resolve_binding_origin(bindings.get(binding), bindings, seen)?;
+        for step in projection {
+            value = resolve_binding_origin(value.project(step).as_ref(), bindings, seen)?;
+        }
+        Some(value)
+    } else {
+        Some(origin.clone())
+    }
+}
+
 fn invocation_contract(
     origin: Option<&CallableOrigin>,
     arguments: &[Option<CallableOrigin>],
     owner: Option<&EffectBody>,
     contracts: &HashMap<EffectBody, SuspensionContract>,
+    bindings: &HashMap<TypeBindingId, CallableOrigin>,
 ) -> SuspensionContract {
+    let resolved = resolve_binding_origin(origin, bindings, &mut HashSet::new());
+    let origin = resolved.as_ref();
     let body = match origin {
         Some(CallableOrigin::Parameter {
             owner: parameter_owner,
-            index,
+            parameter,
         }) => {
             return if owner == Some(parameter_owner) {
                 SuspensionContract {
                     intrinsic: false,
-                    parameters: BTreeSet::from([*index]),
+                    parameters: BTreeSet::from([parameter.clone()]),
                 }
             } else {
                 SuspensionContract::unknown()
@@ -436,12 +879,20 @@ fn invocation_contract(
         intrinsic: callee.intrinsic,
         parameters: BTreeSet::new(),
     };
-    for index in &callee.parameters {
+    for parameter in &callee.parameters {
+        let mut argument = arguments
+            .get(parameter.index)
+            .and_then(Option::as_ref)
+            .cloned();
+        for projection in &parameter.projection {
+            argument = argument.and_then(|origin| origin.project(projection));
+        }
         result.merge(invocation_contract(
-            arguments.get(*index).and_then(Option::as_ref),
+            argument.as_ref(),
             &[],
             owner,
             contracts,
+            bindings,
         ));
     }
     result

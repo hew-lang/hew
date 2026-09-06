@@ -124,6 +124,10 @@ fn canonicalize_verified_function(
             | SemTerminator::IndirectCall { .. }
             | SemTerminator::Goto(_)
             | SemTerminator::Trap { .. }
+            | SemTerminator::EnterDefer { .. }
+            | SemTerminator::FinishDefer { .. }
+            | SemTerminator::CleanupDispatch { .. }
+            | SemTerminator::CheckedRaiseFault { .. }
             | SemTerminator::Panic { .. }
             | SemTerminator::Suspend { .. }
             | SemTerminator::ResumeUnwind

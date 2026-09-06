@@ -515,6 +515,14 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
     let mut declarations = HashSet::new();
     for function in &module.functions {
         verify_required_value_capabilities(module, function, &mut diagnostics);
+        if let Err(reason) = crate::defer::verify_calls(module, function) {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: reason.into(),
+                },
+            ));
+        }
         if !names.insert(function.name.clone()) {
             diagnostics.push(diag(
                 function,
@@ -641,6 +649,14 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_required_value_capabilities(module, function, &mut diagnostics);
+    if let Err(reason) = crate::defer::verify_calls(module, function) {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: reason.into(),
+            },
+        ));
+    }
     diagnostics.extend(verify_function_with_context(
         function,
         Some(&callables),
@@ -671,6 +687,14 @@ pub fn place_lifetimes(
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_required_value_capabilities(module, function, &mut diagnostics);
+    if let Err(reason) = crate::defer::verify_calls(module, function) {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: reason.into(),
+            },
+        ));
+    }
     let (function_diagnostics, lifetimes) = check_function_with_context(
         function,
         Some(&callables),
@@ -757,7 +781,9 @@ pub(crate) fn verify_cfg_discard_safety(
             }
         }
         for operation in &block.ops {
-            if operation.kind.effects().may_trap() {
+            if operation.kind.effects().may_trap()
+                || matches!(operation.kind, SemOpKind::RegisterDefer { .. })
+            {
                 diagnostics.push(cfg_discard_diag(
                     original,
                     block.id,
@@ -796,7 +822,11 @@ pub(crate) fn verify_cfg_discard_safety(
         }
         if matches!(
             block.terminator,
-            SemTerminator::CheckedBinary { .. }
+            SemTerminator::EnterDefer { .. }
+                | SemTerminator::FinishDefer { .. }
+                | SemTerminator::CleanupDispatch { .. }
+                | SemTerminator::CheckedRaiseFault { .. }
+                | SemTerminator::CheckedBinary { .. }
                 | SemTerminator::SwitchVariant { .. }
                 | SemTerminator::Trap { .. }
                 | SemTerminator::Panic { .. }
@@ -852,6 +882,14 @@ fn check_function_with_context(
     variant_shapes: &[SemVariantShape],
 ) -> (Vec<SirDiagnostic>, Option<CheckedFunction>) {
     let mut diagnostics = Vec::new();
+    if let Err(reason) = crate::defer::plan(function) {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: reason.into(),
+            },
+        ));
+    }
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
     if let Err(reason) = verify_capture_places(function, callable_context) {
         diagnostics.push(diag(
@@ -1090,7 +1128,7 @@ fn check_function_with_context(
         });
         verify_terminator_shape(
             function,
-            &block.terminator,
+            block,
             &types,
             &blocks,
             callable_context,
@@ -2161,7 +2199,8 @@ fn verify_operation_shape(
     }
     let expected_results = usize::from(!matches!(
         operation.kind,
-        SemOpKind::DestroyValue { .. }
+        SemOpKind::RegisterDefer { .. }
+            | SemOpKind::DestroyValue { .. }
             | SemOpKind::AllocPlace { .. }
             | SemOpKind::EndBorrow { .. }
             | SemOpKind::StoreInit { .. }
@@ -2191,7 +2230,10 @@ fn verify_operation_shape(
         }
         return;
     }
-    if matches!(operation.kind, SemOpKind::EndBorrow { .. }) {
+    if matches!(
+        operation.kind,
+        SemOpKind::RegisterDefer { .. } | SemOpKind::EndBorrow { .. }
+    ) {
         // The lifetime relation requires an active local loan and proves
         // that every projection depending on it has already ended.
         return;
@@ -2207,6 +2249,7 @@ fn verify_operation_shape(
     }
     let result = &operation.results[0];
     match &operation.kind {
+        SemOpKind::RegisterDefer { .. } => unreachable!("result-free marker handled above"),
         SemOpKind::ConstUnit => {
             if result.ty != ResolvedTy::Unit || result.own != crate::OwnKind::None {
                 invalid_operation(
@@ -3221,6 +3264,105 @@ fn verify_checked_binary_terminator(
     }
 }
 
+pub(crate) fn defer_drain_suffix(
+    block: BlockId,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    visiting: &mut BTreeSet<BlockId>,
+) -> bool {
+    if !visiting.insert(block) {
+        return false;
+    }
+    let Some(body) = blocks.get(&block) else {
+        return false;
+    };
+    if body.ops.iter().any(|op| {
+        !matches!(
+            op.kind,
+            SemOpKind::EndBorrow { .. }
+                | SemOpKind::DestroyValue { .. }
+                | SemOpKind::EndLifetime { .. }
+        )
+    }) {
+        return false;
+    }
+    let valid = match &body.terminator {
+        SemTerminator::EnterDefer { .. }
+        | SemTerminator::FinishDefer { .. }
+        | SemTerminator::CleanupDispatch { .. } => true,
+        SemTerminator::Goto(edge) => defer_drain_suffix(edge.target, blocks, visiting),
+        SemTerminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => {
+            defer_drain_suffix(then_target.target, blocks, visiting)
+                && defer_drain_suffix(else_target.target, blocks, visiting)
+        }
+        _ => false,
+    };
+    visiting.remove(&block);
+    valid
+}
+
+fn checked_raise_origin(
+    target: BlockId,
+    kind: crate::TrapKind,
+    function: &SemFunction,
+    visiting: &mut BTreeSet<BlockId>,
+) -> bool {
+    if target == function.entry || !visiting.insert(target) {
+        return false;
+    }
+    let mut found = false;
+    for block in &function.blocks {
+        let mut incoming = Vec::new();
+        block.terminator.visit_successors_with_slots(|slot, edge| {
+            if edge.target == target {
+                incoming.push(slot);
+            }
+        });
+        for slot in incoming {
+            found = true;
+            let valid = match &block.terminator {
+                SemTerminator::CheckedBinary { failures, .. } => {
+                    slot.0 > 0
+                        && failures
+                            .get((slot.0 - 1) as usize)
+                            .is_some_and(|failure| failure.kind == kind)
+                }
+                SemTerminator::RtCall {
+                    family,
+                    unwind: crate::CallUnwind::Cleanup(_),
+                    ..
+                } => {
+                    slot.0 == 1
+                        && family.semantic_contract().is_some_and(|contract| {
+                            contract.failures.iter().all(|failure| {
+                                crate::runtime_failure_trap_kind(*failure) == Some(kind)
+                            }) && !contract.failures.is_empty()
+                        })
+                }
+                SemTerminator::Goto(_) | SemTerminator::Branch { .. } => {
+                    block.ops.iter().all(|op| {
+                        matches!(
+                            op.kind,
+                            SemOpKind::EndBorrow { .. }
+                                | SemOpKind::DestroyValue { .. }
+                                | SemOpKind::EndLifetime { .. }
+                        )
+                    }) && checked_raise_origin(block.id, kind, function, visiting)
+                }
+                _ => false,
+            };
+            if !valid {
+                return false;
+            }
+        }
+    }
+    visiting.remove(&target);
+    found
+}
+
 fn failure_cfg_matches_exit(
     edge: &crate::Edge,
     expected: Option<crate::TrapKind>,
@@ -3242,7 +3384,25 @@ fn failure_cfg_matches_exit(
         let Some(block) = blocks.get(&block_id) else {
             return false;
         };
+        if block.ops.iter().any(|op| {
+            !matches!(
+                op.kind,
+                SemOpKind::EndBorrow { .. }
+                    | SemOpKind::DestroyValue { .. }
+                    | SemOpKind::EndLifetime { .. }
+            )
+        }) {
+            return false;
+        }
         let valid = match &block.terminator {
+            SemTerminator::EnterDefer { .. } | SemTerminator::FinishDefer { .. } => {
+                expected.is_none()
+            }
+            SemTerminator::CheckedRaiseFault { kind, .. } => expected == Some(*kind),
+            SemTerminator::CleanupDispatch { fault, .. } => {
+                expected.is_none()
+                    && reaches_only_matching_exits(fault.target, None, blocks, visiting, complete)
+            }
             SemTerminator::Trap { kind } => Some(*kind) == expected,
             SemTerminator::ResumeUnwind => expected.is_none(),
             SemTerminator::Goto(next) => {
@@ -3472,14 +3632,51 @@ fn verify_variant_switch_arm(
 )]
 fn verify_terminator_shape(
     function: &SemFunction,
-    terminator: &SemTerminator,
+    block: &crate::SemBlock,
     types: &HashMap<ValueId, ResolvedTy>,
     blocks: &BTreeMap<BlockId, &crate::SemBlock>,
     callable_context: Option<&CallableContext<'_>>,
     variants: &VariantVerifyContext<'_>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
+    let terminator = &block.terminator;
     match terminator {
+        SemTerminator::FinishDefer { next, .. } => {
+            if !defer_drain_suffix(next.target, blocks, &mut BTreeSet::new()) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason:
+                            "defer finish must advance through finite cleanup to the next boundary"
+                                .into(),
+                    },
+                ));
+            }
+        }
+        SemTerminator::CleanupDispatch { fault, .. } => {
+            if !failure_cfg_matches_exit(fault, None, blocks) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: "cleanup dispatch fault edge must continue bounded fault cleanup"
+                            .into(),
+                    },
+                ));
+            }
+        }
+        SemTerminator::CheckedRaiseFault { kind, cleanup } => {
+            if !checked_raise_origin(block.id, *kind, function, &mut BTreeSet::new()) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: "checked raise does not match its producing failure edge".into(),
+                    },
+                ));
+            }
+            if !failure_cfg_matches_exit(cleanup, None, blocks) {
+                diagnostics.push(diag(function, SirDiagnosticKind::InvalidTerminator { reason: "checked raise requires bounded cleanup preserving its materialized fault".into() }));
+            }
+        }
         SemTerminator::Return { value: Some(value) } if function.return_ty == ResolvedTy::Unit => {
             diagnostics.push(diag(
                 function,
@@ -3621,7 +3818,8 @@ fn verify_terminator_shape(
             variants,
             diagnostics,
         ),
-        SemTerminator::Return { .. }
+        SemTerminator::EnterDefer { .. }
+        | SemTerminator::Return { .. }
         | SemTerminator::Goto(_)
         | SemTerminator::Trap { .. }
         | SemTerminator::ResumeUnwind

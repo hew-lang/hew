@@ -688,3 +688,77 @@ fn checked_module_rejects_duplicate_identities_and_missing_literal_pool_entries(
         });
     }
 }
+
+#[test]
+fn parked_fault_preserves_trap_only_linear_cleanup() {
+    use hew_sir::{BoundaryDecision, BoundaryOperand, DeferId, DeferScopeId, FaultParkId};
+    let mut module = linear();
+    module
+        .string_literals
+        .insert(hew_sir::StringLiteralId(0), "body".into());
+    let function = probe(&mut module);
+    let mut registration = end(0);
+    registration.kind = SemOpKind::RegisterDefer {
+        defer: DeferId(0),
+        scope: DeferScopeId(0),
+        dependencies: vec![PlaceId(0)],
+    };
+    let mut message = end(0);
+    message.kind = SemOpKind::ConstStr(hew_sir::StringLiteralId(0));
+    message.results = vec![ValueDef {
+        id: ValueId(2),
+        ty: ResolvedTy::String,
+        own: OwnKind::Owned,
+    }];
+    function.blocks = vec![
+        block(
+            0,
+            vec![alloc(0), init(0, 0), registration, message],
+            SemTerminator::Panic {
+                message: BoundaryOperand {
+                    operand: Operand { value: ValueId(2) },
+                    decision: BoundaryDecision::Borrow,
+                },
+                cleanup: edge(1),
+            },
+        ),
+        block(
+            1,
+            vec![destroy(2)],
+            SemTerminator::EnterDefer {
+                defer: DeferId(0),
+                park: FaultParkId(0),
+                body: edge(2),
+            },
+        ),
+        block(
+            2,
+            vec![end(0)],
+            SemTerminator::FinishDefer {
+                defer: DeferId(0),
+                park: FaultParkId(0),
+                next: edge(3),
+            },
+        ),
+        block(
+            3,
+            vec![],
+            SemTerminator::CleanupDispatch {
+                normal: edge(4),
+                fault: edge(5),
+            },
+        ),
+        block(4, vec![], done()),
+        block(5, vec![], SemTerminator::ResumeUnwind),
+    ];
+    valid(&mut module);
+    let function = probe(&mut module).clone();
+    assert_eq!(
+        place_lifetimes(&module, &function)
+            .unwrap()
+            .cleanup(function.blocks[2].ops[0].id),
+        Some(CleanupMode::Trap)
+    );
+    probe(&mut module).blocks[0].terminator = SemTerminator::Goto(edge(1));
+    refuses(&mut module, "linear contents require an explicit consume");
+}

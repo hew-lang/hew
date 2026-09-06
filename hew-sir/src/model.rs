@@ -20,6 +20,15 @@ pub struct BlockId(pub u32);
 pub struct ValueId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpId(pub u32);
+/// Static identity of a deferred action within a function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeferId(pub u32);
+/// Lexical cleanup boundary; nested active boundaries use distinct parks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeferScopeId(pub u32);
+/// Linear optional fault carrier, separate from source values and places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultParkId(pub u32);
 /// Stable, module-local identity for a SIR direct-call target.
 ///
 /// IDs are assigned from the deterministic [`SemModule::callables`] order;
@@ -934,6 +943,12 @@ pub struct CheckedFailure {
 /// ordinary SSA operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemOpKind {
+    /// Reserve the exact free places for an action, without borrowing them.
+    RegisterDefer {
+        defer: DeferId,
+        scope: DeferScopeId,
+        dependencies: Vec<PlaceId>,
+    },
     /// Create a callable value for an exact demanded function, with no captures.
     FunctionMake {
         callable: CallableId,
@@ -1118,7 +1133,8 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::FunctionMake { .. }
+            Self::RegisterDefer { .. }
+            | Self::FunctionMake { .. }
             | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
@@ -1189,7 +1205,8 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::FunctionMake { .. }
+            Self::RegisterDefer { .. }
+            | Self::FunctionMake { .. }
             | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
@@ -1255,6 +1272,9 @@ impl SemOpKind {
     /// Visit the declared storage locations directly addressed by this operation.
     pub fn visit_places(&self, mut visit: impl FnMut(PlaceId)) {
         match self {
+            Self::RegisterDefer { dependencies, .. } => {
+                dependencies.iter().copied().for_each(visit);
+            }
             Self::AllocPlace { place }
             | Self::LoadCopy { place }
             | Self::LoadTake { place }
@@ -1321,7 +1341,8 @@ impl SemOpKind {
             // values: two `copy_value`s of one value are two retains and must
             // never be common-subexpression-eliminated into one, and a
             // `destroy_value` or a place write is observable.
-            Self::ClosureMake { .. }
+            Self::RegisterDefer { .. }
+            | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::CopyValue { .. }
             | Self::DestroyValue { .. }
@@ -1368,7 +1389,8 @@ impl SemOpKind {
     pub const fn transfers_obligation(&self) -> bool {
         matches!(
             self,
-            Self::ClosureMake { .. }
+            Self::RegisterDefer { .. }
+                | Self::ClosureMake { .. }
                 | Self::CallableCoerce { .. }
                 | Self::DestroyValue { .. }
                 | Self::Move { .. }
@@ -1394,6 +1416,28 @@ impl SemOpKind {
 /// [`Provenance`] model rather than collapsing that attribution during a pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemTerminator {
+    /// Pop the pending action and park the optional active fault before entry.
+    EnterDefer {
+        defer: DeferId,
+        park: FaultParkId,
+        body: Edge,
+    },
+    /// Combine owned faults after body-local cleanup, then continue the drain.
+    FinishDefer {
+        defer: DeferId,
+        park: FaultParkId,
+        next: Edge,
+    },
+    /// Refine optional fault presence; only the normal edge may resume success.
+    CleanupDispatch {
+        normal: Edge,
+        fault: Edge,
+    },
+    /// Materialize the original checked failure before any effectful cleanup.
+    CheckedRaiseFault {
+        kind: TrapKind,
+        cleanup: Edge,
+    },
     Return {
         value: Option<BoundaryOperand>,
     },
@@ -1560,7 +1604,11 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::Return { value: None }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::CleanupDispatch { .. }
+            | Self::Return { value: None }
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::SwitchVariant { .. }
@@ -1598,7 +1646,11 @@ impl SemTerminator {
                     }
                 }
             }
-            Self::Return { .. }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::CleanupDispatch { .. }
+            | Self::Return { .. }
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::Call {
@@ -1647,6 +1699,19 @@ impl SemTerminator {
             0
         };
         match self {
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge) => edge.visit_operands(visit),
+            Self::CleanupDispatch { normal, fault } => {
+                let mut index = 0;
+                for operand in normal.args.iter().chain(fault.args.iter()) {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("terminator operand count exceeds u32");
+                }
+            }
             Self::Panic { message, cleanup } => {
                 visit(OperandSlot(0), &message.operand);
                 cleanup.visit_operands(|slot, operand| {
@@ -1661,7 +1726,6 @@ impl SemTerminator {
                 });
             }
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &value.operand),
-            Self::Goto(edge) => edge.visit_operands(visit),
             Self::Branch {
                 condition,
                 then_target,
@@ -1765,6 +1829,19 @@ impl SemTerminator {
             0
         };
         match self {
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge) => edge.visit_operands_mut(visit),
+            Self::CleanupDispatch { normal, fault } => {
+                let mut index = 0;
+                for operand in normal.args.iter_mut().chain(fault.args.iter_mut()) {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("terminator operand count exceeds u32");
+                }
+            }
             Self::Panic { message, cleanup } => {
                 visit(OperandSlot(0), &mut message.operand);
                 cleanup.visit_operands_mut(|slot, operand| {
@@ -1779,7 +1856,6 @@ impl SemTerminator {
                 });
             }
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &mut value.operand),
-            Self::Goto(edge) => edge.visit_operands_mut(visit),
             Self::Branch {
                 condition,
                 then_target,
@@ -1878,8 +1954,16 @@ impl SemTerminator {
     /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
+            Self::CleanupDispatch { normal, fault } => {
+                visit(SuccessorSlot(0), normal);
+                visit(SuccessorSlot(1), fault);
+            }
             Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
-            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
@@ -1948,8 +2032,16 @@ impl SemTerminator {
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
+            Self::CleanupDispatch { normal, fault } => {
+                visit(SuccessorSlot(0), normal);
+                visit(SuccessorSlot(1), fault);
+            }
             Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
-            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
@@ -2019,7 +2111,18 @@ impl SemTerminator {
     #[must_use]
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
-            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } if slot == SuccessorSlot(0) => {
+            Self::CleanupDispatch { normal, fault } => match slot.0 {
+                0 => Some(normal),
+                1 => Some(fault),
+                _ => None,
+            },
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. }
+                if slot == SuccessorSlot(0) =>
+            {
                 Some(edge)
             }
             Self::Branch {
@@ -2059,7 +2162,10 @@ impl SemTerminator {
                 .iter()
                 .chain(std::iter::once(cancel))
                 .nth(usize::try_from(slot.0).ok()?),
-            Self::Return { .. }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::Return { .. }
             | Self::Goto(_)
             | Self::Panic { .. }
             | Self::Trap { .. }
@@ -2072,7 +2178,18 @@ impl SemTerminator {
     #[must_use]
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
-            Self::Goto(edge) | Self::Panic { cleanup: edge, .. } if slot == SuccessorSlot(0) => {
+            Self::CleanupDispatch { normal, fault } => match slot.0 {
+                0 => Some(normal),
+                1 => Some(fault),
+                _ => None,
+            },
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. }
+                if slot == SuccessorSlot(0) =>
+            {
                 Some(edge)
             }
             Self::Branch {
@@ -2112,7 +2229,10 @@ impl SemTerminator {
                 .iter_mut()
                 .chain(std::iter::once(cancel))
                 .nth(usize::try_from(slot.0).ok()?),
-            Self::Return { .. }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::Return { .. }
             | Self::Goto(_)
             | Self::Panic { .. }
             | Self::Trap { .. }
@@ -2206,6 +2326,10 @@ impl SemTerminator {
                 "suspend input"
             }
             Self::Suspend { .. } => "suspend edge argument",
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::CleanupDispatch { .. } => "cleanup edge operand",
             Self::Trap { .. } => "trap terminator operand",
             Self::ResumeUnwind => "resume-unwind terminator operand",
             Self::Unreachable => "unreachable terminator operand",

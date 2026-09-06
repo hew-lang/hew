@@ -142,6 +142,18 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
     }
     match &op.kind {
+        SemOpKind::RegisterDefer {
+            defer,
+            scope,
+            dependencies,
+        } => {
+            writeln!(
+                out,
+                "register_defer #{} scope #{} {:?}",
+                defer.0, scope.0, dependencies
+            )
+            .expect("write to String");
+        }
         SemOpKind::FunctionMake { callable } => {
             writeln!(out, "function.make @{}", callable.0).expect("write to String");
         }
@@ -297,8 +309,54 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the closed terminator formatting match together"
+)]
 fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
     match term {
+        SemTerminator::EnterDefer { defer, park, body } => {
+            writeln!(
+                out,
+                "    enter_defer #{} park #{} bb{}{}",
+                defer.0,
+                park.0,
+                body.target.0,
+                edge_args(body)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::FinishDefer { defer, park, next } => {
+            writeln!(
+                out,
+                "    finish_defer #{} park #{} bb{}{}",
+                defer.0,
+                park.0,
+                next.target.0,
+                edge_args(next)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::CleanupDispatch { normal, fault } => {
+            writeln!(
+                out,
+                "    cleanup_dispatch bb{}{} fault bb{}{}",
+                normal.target.0,
+                edge_args(normal),
+                fault.target.0,
+                edge_args(fault)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::CheckedRaiseFault { kind, cleanup } => {
+            writeln!(
+                out,
+                "    checked_raise {kind:?} bb{}{}",
+                cleanup.target.0,
+                edge_args(cleanup)
+            )
+            .expect("write to String");
+        }
         SemTerminator::Return { value: Some(value) } => {
             writeln!(out, "    return {}", boundary_operand(value)).expect("write to String");
         }

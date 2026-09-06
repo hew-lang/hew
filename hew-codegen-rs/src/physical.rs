@@ -676,6 +676,7 @@ struct FunctionEmitter<'a, 'ctx> {
     fault_out: PointerValue<'ctx>,
     active_fault: PointerValue<'ctx>,
     active_status: PointerValue<'ctx>,
+    fault_parks: BTreeMap<hew_mir::physical::FaultParkId, (PointerValue<'ctx>, PointerValue<'ctx>)>,
     functions: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     value_callbacks: &'a key::CallbackTable<'ctx>,
 }
@@ -1703,6 +1704,29 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_store(active_status, ctx.i32_type().const_zero())
             .llvm_ctx("initialize active status")?;
 
+        let mut fault_parks = BTreeMap::new();
+        for block in &function.blocks {
+            if let PhysicalTerminator::EnterDefer { park, .. } = block.terminator {
+                if let std::collections::btree_map::Entry::Vacant(entry) = fault_parks.entry(park) {
+                    let pointer = builder
+                        .build_alloca(
+                            ctx.ptr_type(AddressSpace::default()),
+                            &format!("park.{}.fault", park.0),
+                        )
+                        .llvm_ctx("allocate defer fault park")?;
+                    let status = builder
+                        .build_alloca(ctx.i32_type(), &format!("park.{}.status", park.0))
+                        .llvm_ctx("allocate defer status park")?;
+                    builder
+                        .build_store(pointer, ctx.ptr_type(AddressSpace::default()).const_null())
+                        .llvm_ctx("initialize defer fault park")?;
+                    builder
+                        .build_store(status, ctx.i32_type().const_zero())
+                        .llvm_ctx("initialize defer status park")?;
+                    entry.insert((pointer, status));
+                }
+            }
+        }
         let mut param_index = 0u32;
         for ((parameter, storage_id), physical_param) in value
             .get_params()
@@ -1770,6 +1794,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             fault_out,
             active_fault,
             active_status,
+            fault_parks,
             functions: &module.functions,
             value_callbacks: &module.value_callbacks,
         })
@@ -1834,6 +1859,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     )]
     fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
+            PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
             PhysicalOp::ClosureMake {
                 dest,
@@ -2401,6 +2427,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::EnterDefer { park, body, .. } => self.emit_enter_defer(*park, body),
+            PhysicalTerminator::FinishDefer { park, next, .. } => {
+                self.emit_finish_defer(*park, next)
+            }
+            PhysicalTerminator::CleanupDispatch { normal, fault } => {
+                self.emit_cleanup_dispatch(normal, fault)
+            }
+            PhysicalTerminator::CheckedRaiseFault { kind, cleanup } => {
+                self.initialize_active_fault(trap_code(*kind))?;
+                self.emit_edge(cleanup)
+            }
             PhysicalTerminator::IndirectCall {
                 callee,
                 signature,
@@ -2476,13 +2513,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } => self.emit_runtime_call(*action, args, *result, normal, failure.as_ref()),
             PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
             PhysicalTerminator::Trap(kind) => {
-                let code = match kind {
-                    TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
-                    TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
-                    TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
-                    TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
-                    TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
-                };
+                let code = trap_code(*kind);
                 self.emit_new_fault(code)
             }
             PhysicalTerminator::PropagateFault => self.emit_propagate_fault(),
@@ -4326,6 +4357,152 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_propagate_fault()
     }
 
+    fn emit_enter_defer(
+        &self,
+        park: hew_mir::physical::FaultParkId,
+        body: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let (park_fault, park_status) = self.fault_parks[&park];
+        let fault = self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                self.active_fault,
+                "defer.primary",
+            )
+            .llvm_ctx("load optional active fault")?;
+        let status = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                self.active_status,
+                "defer.primary.status",
+            )
+            .llvm_ctx("load optional active status")?;
+        self.builder
+            .build_store(park_fault, fault)
+            .llvm_ctx("park fault owner")?;
+        self.builder
+            .build_store(park_status, status)
+            .llvm_ctx("park fault status")?;
+        self.clear_fault_pair(self.active_fault, self.active_status)?;
+        self.emit_edge(body)
+    }
+
+    fn clear_fault_pair(
+        &self,
+        fault: PointerValue<'ctx>,
+        status: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        self.builder
+            .build_store(
+                fault,
+                self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .llvm_ctx("clear consumed fault owner")?;
+        self.builder
+            .build_store(status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("clear consumed fault status")?;
+        Ok(())
+    }
+
+    fn emit_finish_defer(
+        &self,
+        park: hew_mir::physical::FaultParkId,
+        next: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let (park_fault, park_status) = self.fault_parks[&park];
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let primary = self
+            .builder
+            .build_load(pointer, park_fault, "defer.parked")
+            .llvm_ctx("load parked primary")?
+            .into_pointer_value();
+        let secondary = self
+            .builder
+            .build_load(pointer, self.active_fault, "defer.secondary")
+            .llvm_ctx("load deferred fault")?;
+        let primary_status = self
+            .builder
+            .build_load(self.ctx.i32_type(), park_status, "defer.parked.status")
+            .llvm_ctx("load parked primary status")?;
+        let secondary_status = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                self.active_status,
+                "defer.secondary.status",
+            )
+            .llvm_ctx("load deferred status")?;
+        let present = self
+            .builder
+            .build_is_not_null(primary, "defer.primary.present")
+            .llvm_ctx("test parked primary")?;
+        let status = self
+            .builder
+            .build_select(
+                present,
+                primary_status,
+                secondary_status,
+                "defer.combined.status",
+            )
+            .llvm_ctx("preserve first fault status")?;
+        // Each pair transfers one distinct optional owner. Emptying both slots
+        // before the consuming helper prevents accidental reuse on later edges.
+        self.clear_fault_pair(park_fault, park_status)?;
+        self.clear_fault_pair(self.active_fault, self.active_status)?;
+        let combine = get_or_declare_external(
+            self.llvm,
+            "hew_fault_combine",
+            pointer.fn_type(&[pointer.into(), pointer.into()], false),
+        )?;
+        let fault = self.runtime_call_value(
+            combine,
+            &[primary.into(), secondary.into()],
+            "defer.combined",
+        )?;
+        self.builder
+            .build_store(self.active_fault, fault)
+            .llvm_ctx("install combined fault owner")?;
+        self.builder
+            .build_store(self.active_status, status)
+            .llvm_ctx("install combined fault status")?;
+        self.emit_edge(next)
+    }
+
+    fn emit_cleanup_dispatch(
+        &self,
+        normal: &PhysicalEdge,
+        fault: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let active = self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                self.active_fault,
+                "cleanup.fault",
+            )
+            .llvm_ctx("load cleanup fault")?
+            .into_pointer_value();
+        let present = self
+            .builder
+            .build_is_not_null(active, "cleanup.failed")
+            .llvm_ctx("test cleanup fault")?;
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "cleanup.fault.edge");
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "cleanup.normal.edge");
+        self.builder
+            .build_conditional_branch(present, failed, success)
+            .llvm_ctx("dispatch cleanup outcome")?;
+        self.builder.position_at_end(failed);
+        self.emit_edge(fault)?;
+        self.builder.position_at_end(success);
+        self.emit_edge(normal)
+    }
+
     fn emit_panic(&self, message: ArgumentTransfer, cleanup: &PhysicalEdge) -> CodegenResult<()> {
         let ArgumentTransfer::Borrow(source) = message else {
             return Err(CodegenError::FailClosed(
@@ -4602,6 +4779,16 @@ const fn argument_source(transfer: &ArgumentTransfer) -> StorageId {
         | ArgumentTransfer::BorrowMut(source)
         | ArgumentTransfer::Move(source) => *source,
         ArgumentTransfer::Clone { source, .. } => *source,
+    }
+}
+
+fn trap_code(kind: TrapKind) -> i32 {
+    match kind {
+        TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
+        TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
+        TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+        TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
+        TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
     }
 }
 

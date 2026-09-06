@@ -16,6 +16,8 @@ mod locals;
 #[path = "physical_partial_tests.rs"]
 mod partial;
 
+#[path = "physical_defer_tests.rs"]
+mod defer;
 #[path = "physical_panic_tests.rs"]
 mod panic;
 
@@ -211,6 +213,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         callable::hew_callable_drop,
         fault::hew_fault_new,
         fault::hew_fault_new_panic,
+        fault::hew_fault_combine,
         fault::hew_fault_drop,
         fault::hew_fault_report,
     );

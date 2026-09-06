@@ -14,6 +14,11 @@ pub use capability::{PhysicalValueCapability, PhysicalValueMethod};
 use hew_parser::ast::{BinaryOp, UnaryOp};
 #[path = "physical_callable.rs"]
 mod callable;
+#[path = "physical_defer.rs"]
+mod defer;
+#[cfg(test)]
+#[path = "physical_defer_tests.rs"]
+mod defer_tests;
 #[path = "physical_partial.rs"]
 mod partial;
 pub use partial::{
@@ -50,7 +55,10 @@ use hew_sir::{
     AggregateShapeRef, BoundaryDecision, CallResult, CallUnwind, Edge, SemFunction, SemModule,
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
-pub use hew_sir::{BlockId, CallableId, ClosureId, OwnKind, SemParamPassing, TrapKind};
+pub use hew_sir::{
+    BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, SemParamPassing,
+    TrapKind,
+};
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
 use hew_types::{
@@ -542,6 +550,12 @@ impl PhysicalSetOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
+    /// Static scheduling marker; dependencies alias existing storage.
+    RegisterDefer {
+        defer: DeferId,
+        scope: DeferScopeId,
+        dependencies: Vec<StorageId>,
+    },
     FunctionMake {
         dest: StorageId,
         callee: CallableId,
@@ -778,6 +792,24 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    EnterDefer {
+        defer: DeferId,
+        park: FaultParkId,
+        body: PhysicalEdge,
+    },
+    FinishDefer {
+        defer: DeferId,
+        park: FaultParkId,
+        next: PhysicalEdge,
+    },
+    CleanupDispatch {
+        normal: PhysicalEdge,
+        fault: PhysicalEdge,
+    },
+    CheckedRaiseFault {
+        kind: TrapKind,
+        cleanup: PhysicalEdge,
+    },
     IndirectCall {
         callee: ArgumentTransfer,
         signature: PhysicalCallSignature,
@@ -1754,6 +1786,21 @@ fn lower_function(
         .iter()
         .filter(|block| cfg.reachable().contains(&block.id))
         .map(|block| {
+            if !lowerer.lifetimes.is_reachable(block.id) {
+                // Fault dispatch can prove one structurally present edge
+                // impossible. Preserve its target identity without inventing
+                // ownership certificates for code that cannot execute.
+                return Ok(PhysicalBlock {
+                    id: block.id,
+                    arguments: block
+                        .args
+                        .iter()
+                        .map(|arg| lowerer.value(arg.value))
+                        .collect::<Result<_, _>>()?,
+                    ops: vec![],
+                    terminator: PhysicalTerminator::Unreachable,
+                });
+            }
             let arguments = block
                 .args
                 .iter()
@@ -1940,6 +1987,21 @@ impl FunctionLowerer<'_> {
         }
         let one = |op| Ok(vec![op]);
         match &operation.kind {
+            SemOpKind::RegisterDefer {
+                defer,
+                scope,
+                dependencies,
+            } => {
+                Self::no_results(operation)?;
+                one(PhysicalOp::RegisterDefer {
+                    defer: *defer,
+                    scope: *scope,
+                    dependencies: dependencies
+                        .iter()
+                        .map(|p| self.place(*p))
+                        .collect::<Result<_, _>>()?,
+                })
+            }
             SemOpKind::ConstI64(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::I64(*value),
@@ -2211,11 +2273,39 @@ impl FunctionLowerer<'_> {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep the exhaustive semantic-to-physical terminator mapping together"
+    )]
     fn lower_terminator(
         &self,
         terminator: &SemTerminator,
     ) -> Result<PhysicalTerminator, PhysicalError> {
         match terminator {
+            SemTerminator::EnterDefer { defer, park, body } => Ok(PhysicalTerminator::EnterDefer {
+                defer: *defer,
+                park: *park,
+                body: self.lower_edge(body)?,
+            }),
+            SemTerminator::FinishDefer { defer, park, next } => {
+                Ok(PhysicalTerminator::FinishDefer {
+                    defer: *defer,
+                    park: *park,
+                    next: self.lower_edge(next)?,
+                })
+            }
+            SemTerminator::CleanupDispatch { normal, fault } => {
+                Ok(PhysicalTerminator::CleanupDispatch {
+                    normal: self.lower_edge(normal)?,
+                    fault: self.lower_edge(fault)?,
+                })
+            }
+            SemTerminator::CheckedRaiseFault { kind, cleanup } => {
+                Ok(PhysicalTerminator::CheckedRaiseFault {
+                    kind: *kind,
+                    cleanup: self.lower_edge(cleanup)?,
+                })
+            }
             SemTerminator::Return { value } => Ok(PhysicalTerminator::Return {
                 value: value
                     .as_ref()
@@ -3126,6 +3216,10 @@ fn verify_variant_glue(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep per-function ABI, storage and cleanup contracts together"
+)]
 fn verify_physical_function(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -3223,13 +3317,16 @@ fn verify_physical_function(
         }
         verify_terminator(module, function, &block_ids, &block.terminator)?;
     }
-    verify_initialization(module, function)?;
+    // Compute the suffix facts once, retaining any error. Initialization keeps
+    // its existing diagnostic priority over stale physical cleanup sites.
+    let needs_fault = partial::verify_trap_cleanup_refinement(function);
+    verify_initialization(module, function, needs_fault.as_ref().ok())?;
     for block in &function.blocks {
         for (index, operation) in block.ops.iter().enumerate() {
             partial::verify_cleanup_site(function, operation, (block.id, index))?;
         }
     }
-    partial::verify_trap_cleanup_refinement(function)
+    needs_fault.map(|_| ())
 }
 
 fn storage(function: &PhysicalFunction, id: StorageId) -> Result<&PhysicalStorage, PhysicalError> {
@@ -3753,6 +3850,11 @@ fn verify_operation_storage(
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
     match operation {
+        PhysicalOp::RegisterDefer { dependencies, .. } => {
+            for dependency in dependencies {
+                storage(function, *dependency)?;
+            }
+        }
         operation @ (PhysicalOp::FunctionMake { .. }
         | PhysicalOp::ClosureMake { .. }
         | PhysicalOp::CallableCoerce { .. }) => {
@@ -3997,6 +4099,8 @@ struct FlowState {
     slots: Vec<InitState>,
     active: Vec<InitState>,
     fault: FaultState,
+    exit: u8,
+    defers: defer::State,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4009,7 +4113,10 @@ enum FaultState {
 fn verify_initialization(
     module: &PhysicalModule,
     function: &PhysicalFunction,
+    cleanup_needs_fault: Option<&BTreeSet<BlockId>>,
 ) -> Result<(), PhysicalError> {
+    let defer_plan = defer::verify_regions(function)?;
+    defer::verify_calls(module, function, &defer_plan)?;
     let blocks = function
         .blocks
         .iter()
@@ -4019,6 +4126,8 @@ fn verify_initialization(
         slots: vec![InitState::Uninitialized; function.storage.len()],
         active: vec![InitState::Uninitialized; function.storage.len()],
         fault: FaultState::None,
+        exit: defer::ORDINARY,
+        defers: defer::State::default(),
     };
     for parameter in &function.parameters {
         *entry.slots.get_mut(parameter.0 as usize).ok_or_else(|| {
@@ -4032,30 +4141,51 @@ fn verify_initialization(
             entry.slots[slot.id.0 as usize] = InitState::Initialized;
         }
     }
-    let mut incoming = BTreeMap::from([(function.entry, entry)]);
+    let mut incoming = BTreeMap::from([(function.entry, vec![entry])]);
     let mut pending = vec![function.entry];
     while let Some(block_id) = pending.pop() {
         let block = blocks.get(&block_id).ok_or_else(|| {
             PhysicalError::new(format!("physical CFG has no block {}", block_id.0))
         })?;
-        let mut state = incoming
-            .get(&block_id)
-            .cloned()
-            .expect("pending physical block always has an incoming state");
-        for operation in &block.ops {
-            apply_operation(module, function, operation, &mut state, block_id)?;
-        }
-        for (target, successor) in
-            terminator_successors(function, &block.terminator, state, block_id)?
-        {
-            let changed = if let Some(existing) = incoming.get_mut(&target) {
-                merge_flow(existing, &successor)
-            } else {
-                incoming.insert(target, successor);
-                true
-            };
-            if changed {
-                pending.push(target);
+        for mut state in incoming[&block_id].clone() {
+            defer::verify_entry_phase(&defer_plan, block_id, &state)?;
+            for operation in &block.ops {
+                if cleanup_needs_fault.is_some_and(|blocks| blocks.contains(&block_id))
+                    && state.exit != defer::TRAP
+                    && matches!(operation, PhysicalOp::Destroy { cleanup, .. } | PhysicalOp::StorageDead { cleanup, .. }
+                        if cleanup.mode() == hew_sir::CleanupMode::Trap)
+                {
+                    return Err(PhysicalError::new(
+                        "physical trap-only cleanup lost its fault exit cause",
+                    ));
+                }
+                apply_operation(module, function, operation, &mut state, block_id)?;
+            }
+            for (target, successor) in
+                terminator_successors(function, &block.terminator, state, block_id, &defer_plan)?
+            {
+                let alternatives = incoming.entry(target).or_default();
+                if alternatives
+                    .iter()
+                    .any(|old| !old.defers.same_phase(&successor.defers))
+                {
+                    return Err(PhysicalError::new(
+                        "physical CFG joins incompatible defer phases",
+                    ));
+                }
+                let changed = if let Some(existing) = alternatives.iter_mut().find(|old| {
+                    old.fault == successor.fault
+                        && old.exit == successor.exit
+                        && old.defers.same_faults(&successor.defers)
+                }) {
+                    merge_flow(existing, &successor)
+                } else {
+                    alternatives.push(successor);
+                    true
+                };
+                if changed {
+                    pending.push(target);
+                }
             }
         }
     }
@@ -4184,6 +4314,7 @@ fn consume_if_owned(
     state: &mut FlowState,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
+    defer::require_unreserved(function, state, id)?;
     if let Some(entry) = function.place_storage.get(&id) {
         require_no_live_borrows(function, state, id)?;
         if entry.root == id {
@@ -4218,6 +4349,21 @@ fn apply_operation(
     block: BlockId,
 ) -> Result<(), PhysicalError> {
     match operation {
+        PhysicalOp::RegisterDefer {
+            defer,
+            scope,
+            dependencies,
+        } => {
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "physical registration would abandon an active fault",
+                ));
+            }
+            for dependency in dependencies {
+                initialized(function, state, *dependency, block, "defer dependency")?;
+            }
+            state.defers.register(*defer, *scope, dependencies)?;
+        }
         PhysicalOp::FunctionMake { dest, .. } | PhysicalOp::Const { dest, .. } => {
             define(function, state, *dest, block, "constant")?;
         }
@@ -4294,6 +4440,7 @@ fn apply_operation(
         PhysicalOp::Destroy {
             source, cleanup, ..
         } => {
+            defer::require_unreserved(function, state, *source)?;
             partial::require_root(function, state, *source, block, "destroy")?;
             partial::require_droppable(module, function, state, *source, cleanup.mode())?;
             require_no_live_borrows(function, state, *source)?;
@@ -4323,6 +4470,7 @@ fn apply_operation(
             cleanup,
             ..
         } => {
+            defer::require_unreserved(function, state, *id)?;
             partial::require_root(function, state, *id, block, "end-lifetime")?;
             partial::require_droppable(module, function, state, *id, cleanup.mode())?;
             require_no_live_borrows(function, state, *id)?;
@@ -4419,6 +4567,7 @@ fn call_successors(
             failure_state.slots[result.0 as usize] = InitState::Uninitialized;
         }
         failure_state.fault = FaultState::Active;
+        failure_state.exit = defer::TRAP;
         successors.push(apply_edge(function, unwind, failure_state, block)?);
     }
     Ok(successors)
@@ -4433,7 +4582,29 @@ fn terminator_successors(
     terminator: &PhysicalTerminator,
     mut state: FlowState,
     block: BlockId,
+    defer_plan: &defer::Plan,
 ) -> Result<Vec<(BlockId, FlowState)>, PhysicalError> {
+    if matches!(
+        terminator,
+        PhysicalTerminator::EnterDefer { .. }
+            | PhysicalTerminator::FinishDefer { .. }
+            | PhysicalTerminator::CleanupDispatch { .. }
+            | PhysicalTerminator::CheckedRaiseFault { .. }
+    ) {
+        return defer::successors(function, defer_plan, terminator, state, block);
+    }
+    if matches!(
+        terminator,
+        PhysicalTerminator::Return { .. }
+            | PhysicalTerminator::PropagateFault
+            | PhysicalTerminator::Trap(_)
+            | PhysicalTerminator::Unreachable
+    ) && (!state.defers.pending.is_empty() || !state.defers.active.is_empty())
+    {
+        return Err(PhysicalError::new(
+            "physical exit leaves pending actions or live fault parks",
+        ));
+    }
     if matches!(
         terminator,
         PhysicalTerminator::Return { .. }
@@ -4463,6 +4634,12 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::EnterDefer { .. }
+        | PhysicalTerminator::FinishDefer { .. }
+        | PhysicalTerminator::CleanupDispatch { .. }
+        | PhysicalTerminator::CheckedRaiseFault { .. } => {
+            unreachable!("defer boundary handled above")
+        }
         PhysicalTerminator::IndirectCall {
             callee,
             args,
@@ -4487,6 +4664,11 @@ fn terminator_successors(
 
         PhysicalTerminator::Return { value } => {
             callable::verify_capture_return(function, &state)?;
+            if state.exit != defer::ORDINARY {
+                return Err(PhysicalError::new(
+                    "physical trap cleanup cannot return normally",
+                ));
+            }
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(format!(
                     "physical bb{} returns normally while owning an active fault",
@@ -4551,7 +4733,9 @@ fn terminator_successors(
             )?;
             let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
             for failure in failures {
-                successors.push(apply_edge(function, &failure.edge, state.clone(), block)?);
+                let mut failed = state.clone();
+                failed.exit = defer::TRAP;
+                successors.push(apply_edge(function, &failure.edge, failed, block)?);
             }
             Ok(successors)
         }
@@ -4633,6 +4817,7 @@ fn terminator_successors(
             }
             let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
             if let Some(failure) = failure {
+                state.exit = defer::TRAP;
                 if action
                     .semantic_family()
                     .semantic_contract()
@@ -4658,6 +4843,7 @@ fn terminator_successors(
             };
             initialized(function, &state, *source, block, "panic message")?;
             state.fault = FaultState::Active;
+            state.exit = defer::TRAP;
             Ok(vec![apply_edge(function, cleanup, state, block)?])
         }
         PhysicalTerminator::Trap(_) => {
@@ -4704,7 +4890,10 @@ fn terminator_successors(
 }
 
 fn merge_flow(existing: &mut FlowState, incoming: &FlowState) -> bool {
-    let mut changed = false;
+    let mut changed = existing.defers.join(&incoming.defers);
+    let exit = existing.exit | incoming.exit;
+    changed |= exit != existing.exit;
+    existing.exit = exit;
     for (left, right) in existing
         .slots
         .iter_mut()
@@ -4773,6 +4962,13 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::EnterDefer { body, .. }
+        | PhysicalTerminator::FinishDefer { next: body, .. }
+        | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. } => edge(body),
+        PhysicalTerminator::CleanupDispatch { normal, fault } => {
+            edge(normal)?;
+            edge(fault)
+        }
         PhysicalTerminator::IndirectCall {
             callee,
             signature,
@@ -7860,9 +8056,17 @@ mod tests {
             slots: vec![InitState::Initialized; function.storage.len()],
             active: vec![InitState::Uninitialized; function.storage.len()],
             fault: FaultState::None,
+            exit: defer::ORDINARY,
+            defers: defer::State::default(),
         };
-        let successors =
-            terminator_successors(function, &block.terminator, state, block.id).unwrap();
+        let successors = terminator_successors(
+            function,
+            &block.terminator,
+            state,
+            block.id,
+            &defer::verify_regions(function).unwrap(),
+        )
+        .unwrap();
         let failed = &successors
             .iter()
             .find(|(id, _)| *id == failure.target)
@@ -7966,10 +8170,18 @@ mod tests {
                 slots: vec![InitState::Initialized; function.storage.len()],
                 active: vec![InitState::Uninitialized; function.storage.len()],
                 fault: FaultState::None,
+                exit: defer::ORDINARY,
+                defers: defer::State::default(),
             };
             state.slots[result.0 as usize] = InitState::Uninitialized;
-            let successors =
-                terminator_successors(function, &block.terminator, state, block.id).unwrap();
+            let successors = terminator_successors(
+                function,
+                &block.terminator,
+                state,
+                block.id,
+                &defer::verify_regions(function).unwrap(),
+            )
+            .unwrap();
             for (edge, outcome) in successors {
                 assert_eq!(
                     outcome.slots[result.0 as usize],

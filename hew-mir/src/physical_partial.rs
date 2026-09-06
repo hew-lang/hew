@@ -430,7 +430,7 @@ pub(super) fn verify_cleanup_site(
 /// trap or fault propagation; a cycle cannot establish that obligation.
 pub(super) fn verify_trap_cleanup_refinement(
     function: &PhysicalFunction,
-) -> Result<(), PhysicalError> {
+) -> Result<BTreeSet<BlockId>, PhysicalError> {
     use super::{PhysicalOp, PhysicalTerminator};
 
     let blocks: BTreeMap<_, _> = function
@@ -454,7 +454,9 @@ pub(super) fn verify_trap_cleanup_refinement(
                 .map(|index| (block.id, index))
         })
         .chain(function.blocks.iter().filter_map(|block| {
-            if let PhysicalTerminator::Panic { cleanup, .. } = &block.terminator {
+            if let PhysicalTerminator::Panic { cleanup, .. }
+            | PhysicalTerminator::CheckedRaiseFault { cleanup, .. } = &block.terminator
+            {
                 Some((cleanup.target, 0))
             } else {
                 None
@@ -462,17 +464,29 @@ pub(super) fn verify_trap_cleanup_refinement(
         }));
     let invalid =
         || PhysicalError::new("physical CFG no longer realizes its certified trap cleanup region");
-    let mut complete = BTreeSet::new();
+    let mut complete = BTreeMap::new();
     for seed in seeds {
         let mut visiting = BTreeSet::new();
         let mut pending = vec![(seed, false)];
         while let Some((site, leaving)) = pending.pop() {
             if leaving {
                 visiting.remove(&site);
-                complete.insert(site);
+                let needs_incoming_fault = match &blocks[&site.0].terminator {
+                    PhysicalTerminator::Trap(_) | PhysicalTerminator::CheckedRaiseFault { .. } => {
+                        false
+                    }
+                    PhysicalTerminator::Goto(edge) => complete[&(edge.target, 0)],
+                    PhysicalTerminator::Branch {
+                        then_target,
+                        else_target,
+                        ..
+                    } => complete[&(then_target.target, 0)] || complete[&(else_target.target, 0)],
+                    _ => true,
+                };
+                complete.insert(site, needs_incoming_fault);
                 continue;
             }
-            if complete.contains(&site) {
+            if complete.contains_key(&site) {
                 continue;
             }
             if !visiting.insert(site) {
@@ -486,7 +500,14 @@ pub(super) fn verify_trap_cleanup_refinement(
             }
             pending.push((site, true));
             match &block.terminator {
-                PhysicalTerminator::Trap(_) | PhysicalTerminator::PropagateFault => {}
+                PhysicalTerminator::Trap(_)
+                | PhysicalTerminator::PropagateFault
+                | PhysicalTerminator::EnterDefer { .. }
+                | PhysicalTerminator::FinishDefer { .. }
+                | PhysicalTerminator::CheckedRaiseFault { .. } => {}
+                PhysicalTerminator::CleanupDispatch { fault, .. } => {
+                    pending.push(((fault.target, 0), false));
+                }
                 PhysicalTerminator::Goto(edge) => pending.push(((edge.target, 0), false)),
                 PhysicalTerminator::Branch {
                     then_target,
@@ -500,7 +521,13 @@ pub(super) fn verify_trap_cleanup_refinement(
             }
         }
     }
-    Ok(())
+    // A terminal trap can justify an ordinary predecessor's certified cleanup
+    // through a finite diamond. Deferred boundaries instead need an existing
+    // fault exit cause; parking that fault must preserve this fact.
+    Ok(complete
+        .into_iter()
+        .filter_map(|((block, _), needs_fault)| needs_fault.then_some(block))
+        .collect())
 }
 
 pub(super) fn require_local(

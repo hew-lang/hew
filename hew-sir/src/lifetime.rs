@@ -33,6 +33,7 @@ struct State {
     places: Vec<u8>,
     locals: Vec<u8>,
     exit: u8,
+    defers: crate::defer::Schedule,
 }
 
 const ORDINARY: u8 = 1;
@@ -54,13 +55,21 @@ pub enum CleanupMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaceLifetimes {
     operations: BTreeMap<crate::OpId, CleanupMode>,
+    reachable: BTreeSet<BlockId>,
 }
 
 impl PlaceLifetimes {
     fn new() -> Self {
         Self {
             operations: BTreeMap::new(),
+            reachable: BTreeSet::new(),
         }
+    }
+
+    /// Whether some verified fault/park alternative reaches this block.
+    #[must_use]
+    pub fn is_reachable(&self, block: BlockId) -> bool {
+        self.reachable.contains(&block)
     }
 
     /// The checked disposition of a reachable end-lifetime or destroy operation.
@@ -75,6 +84,10 @@ pub(crate) struct Analysis {
     pub lifetimes: PlaceLifetimes,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep availability convergence and final diagnostics together"
+)]
 pub(crate) fn verify(
     function: &SemFunction,
     projections: &crate::PlacePlan,
@@ -92,6 +105,7 @@ pub(crate) fn verify(
         values: vec![DEAD; flow.values.len()],
         fault: DEAD,
         exit: ORDINARY,
+        defers: crate::defer::Schedule::default(),
         locals: vec![DEAD; flow.local_indices.len()],
         places: flow
             .places
@@ -115,56 +129,107 @@ pub(crate) fn verify(
             }
         }
     }
-    let mut incoming = BTreeMap::from([(function.entry, initial)]);
+    // Availability is joined only within one active/parked fault alternative.
+    // Otherwise an absent saved return on the body-fault path would poison the
+    // no-fault continuation, or a refinement could incorrectly invent a value.
+    let mut incoming = BTreeMap::from([(function.entry, vec![initial])]);
     let mut queue = VecDeque::from([function.entry]);
     let mut queued = BTreeSet::from([function.entry]);
     while let Some(block) = queue.pop_front() {
         queued.remove(&block);
-        for (target, state) in
-            flow.block(block, incoming[&block].clone(), &mut |_| {}, &mut lifetimes)
-        {
-            let changed = if let Some(previous) = incoming.get_mut(&target) {
-                let joined_fault = previous.fault | state.fault;
-                let mut changed = joined_fault != previous.fault;
-                previous.fault = joined_fault;
-                let exit = previous.exit | state.exit;
-                changed |= exit != previous.exit;
-                previous.exit = exit;
-                for (before, after) in previous.locals.iter_mut().zip(state.locals) {
-                    let joined = *before | after;
-                    changed |= joined != *before;
-                    *before = joined;
+        for alternative in incoming[&block].clone() {
+            let cleanup_exit = alternative.exit;
+            for (target, mut state) in flow.block(
+                block,
+                alternative,
+                cleanup_exit,
+                &mut |_| {},
+                &mut lifetimes,
+            ) {
+                let alternatives = incoming.entry(target).or_default();
+                let incompatible = alternatives
+                    .iter()
+                    .any(|old| !old.defers.same_phase(&state.defers));
+                let mut changed = false;
+                if incompatible {
+                    state.defers.invalid_join = true;
+                    for old in alternatives.iter_mut() {
+                        changed |= !old.defers.invalid_join;
+                        old.defers.invalid_join = true;
+                    }
                 }
-                for (before, after) in previous.values.iter_mut().zip(state.values) {
-                    let joined = *before | after;
-                    changed |= joined != *before;
-                    *before = joined;
+                if let Some(previous) = alternatives.iter_mut().find(|old| {
+                    old.fault == state.fault
+                        && old.exit == state.exit
+                        && old.defers.same_faults(&state.defers)
+                }) {
+                    changed |= previous.defers.join(&state.defers);
+                    for (before, after) in previous
+                        .locals
+                        .iter_mut()
+                        .zip(state.locals)
+                        .chain(previous.values.iter_mut().zip(state.values))
+                        .chain(previous.places.iter_mut().zip(state.places))
+                    {
+                        let joined = *before | after;
+                        changed |= joined != *before;
+                        *before = joined;
+                    }
+                } else {
+                    alternatives.push(state);
+                    changed = true;
                 }
-                for (before, after) in previous.places.iter_mut().zip(state.places) {
-                    let joined = *before | after;
-                    changed |= joined != *before;
-                    *before = joined;
+                if changed && queued.insert(target) {
+                    queue.push_back(target);
                 }
-                changed
-            } else {
-                incoming.insert(target, state);
-                true
-            };
-            if changed && queued.insert(target) {
-                queue.push_back(target);
             }
         }
     }
     // Diagnose the fixed point, not a transient partial predecessor set.
     let mut violations = Vec::new();
     lifetimes.operations.clear();
-    for (block, state) in incoming {
-        flow.block(block, state, &mut |v| violations.push(v), &mut lifetimes);
+    lifetimes.reachable.extend(incoming.keys().copied());
+    for (block, alternatives) in incoming {
+        // Cleanup has one disposition per operation. Keep the exit-cause
+        // certainty common to all alternatives without merging their owners.
+        let cleanup_exit = alternatives
+            .iter()
+            .fold(0, |causes, state| causes | state.exit);
+        for state in alternatives {
+            flow.block(
+                block,
+                state,
+                cleanup_exit,
+                &mut |v| violations.push(v),
+                &mut lifetimes,
+            );
+        }
     }
     Analysis {
         violations,
         lifetimes,
     }
+}
+
+fn combine_fault(primary: u8, secondary: u8) -> u8 {
+    (if primary & LIVE != 0 || secondary & LIVE != 0 {
+        LIVE
+    } else {
+        0
+    }) | (if primary & DEAD != 0 && secondary & DEAD != 0 {
+        DEAD
+    } else {
+        0
+    })
+}
+
+fn combine_exit(primary: u8, secondary: u8) -> u8 {
+    (primary | secondary) & !ORDINARY
+        | if primary & ORDINARY != 0 && secondary & ORDINARY != 0 {
+            ORDINARY
+        } else {
+            0
+        }
 }
 
 fn mark_trap(state: &mut State) {
@@ -188,6 +253,7 @@ fn is_cleanup(kind: &SemOpKind) -> bool {
 /// A cycle cannot justify itself, and an ordinary operation cannot enter the
 /// region merely because a later terminator happens to trap.
 pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usize> {
+    let boundaries = crate::defer::plan(function).ok();
     let mut suffixes = BTreeMap::new();
     loop {
         let before = suffixes.len();
@@ -197,6 +263,9 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
             }
             let terminal = match &block.terminator {
                 SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind => true,
+                SemTerminator::EnterDefer { .. }
+                | SemTerminator::FinishDefer { .. }
+                | SemTerminator::CheckedRaiseFault { .. } => boundaries.is_some(),
                 SemTerminator::Goto(edge) => suffixes.get(&edge.target) == Some(&0),
                 SemTerminator::Branch {
                     then_target,
@@ -224,6 +293,7 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
 }
 
 struct Flow<'a> {
+    defers: crate::defer::Plan,
     blocks: BTreeMap<BlockId, &'a crate::SemBlock>,
     indices: BTreeMap<ValueId, usize>,
     values: Vec<ValueId>,
@@ -349,6 +419,7 @@ impl<'a> Flow<'a> {
             .map(|(index, (place, _))| (*place, index))
             .collect();
         Self {
+            defers: crate::defer::plan(function).unwrap_or_default(),
             blocks: function
                 .blocks
                 .iter()
@@ -407,6 +478,7 @@ impl<'a> Flow<'a> {
             });
         }
         if consume {
+            self.require_unreserved(block, PlaceBase::Value(value), state, emit);
             self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
             state.values[index] = DEAD;
             for (index, (_, owner)) in self.places.iter().enumerate() {
@@ -577,19 +649,116 @@ impl<'a> Flow<'a> {
         Some((edge.target, state))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep ownership and fault transitions in one exhaustive terminator match"
+    )]
     fn block(
         &self,
         id: BlockId,
         mut state: State,
+        cleanup_exit: u8,
         emit: &mut impl FnMut(Violation),
         lifetimes: &mut PlaceLifetimes,
     ) -> Vec<(BlockId, State)> {
         let block = self.blocks[&id];
-        self.operations(id, &block.ops, &mut state, emit, lifetimes);
+        if state.defers.invalid_join {
+            Self::defer_error(
+                id,
+                "incompatible defer phases or pending actions at CFG join",
+                emit,
+            );
+        }
+        for (entry, region) in &self.defers.regions {
+            if region.blocks.contains(&id) && !state.defers.active.iter().any(|f| {
+                matches!(self.blocks[entry].terminator, SemTerminator::EnterDefer { defer, .. } if defer == f.defer)
+            }) {
+                Self::defer_error(id, "defer body entered without its region boundary", emit);
+            }
+        }
+        self.operations(id, &block.ops, &mut state, cleanup_exit, emit, lifetimes);
         self.boundary_inputs(id, &block.terminator, &mut state, emit);
         let mut successors = Vec::new();
         match &block.terminator {
-            SemTerminator::Panic { cleanup, .. } => {
+            SemTerminator::EnterDefer { defer, park, body } => {
+                if let Some(registration) = self.defers.registrations.get(defer) {
+                    let frame = crate::defer::Frame {
+                        defer: *defer,
+                        scope: registration.scope,
+                        park: *park,
+                        entry: id,
+                        pending_base: state.defers.pending.len().saturating_sub(1),
+                        fault: state.fault,
+                        exit: state.exit,
+                    };
+                    if let Err(reason) = state.defers.enter(frame) {
+                        Self::defer_error(id, reason, emit);
+                    }
+                    state.fault = DEAD;
+                    // Keep the exit cause while parked: a pre-existing trap
+                    // still permits trap-only destruction of linear contents.
+                    successors.extend(self.edge(id, body, state, emit));
+                }
+            }
+            SemTerminator::FinishDefer { defer, park, next } => {
+                if let Some(frame) = state.defers.active.last() {
+                    if let Some(region) = self.defers.regions.get(&frame.entry) {
+                        for place in &region.locals {
+                            if self
+                                .local_indices
+                                .get(place)
+                                .is_some_and(|i| state.locals[*i] & LIVE != 0)
+                            {
+                                Self::defer_error(
+                                    id,
+                                    "defer finish leaves body-local storage active",
+                                    emit,
+                                );
+                            }
+                        }
+                        for value in &region.values {
+                            if self
+                                .indices
+                                .get(value)
+                                .is_some_and(|i| state.values[*i] & LIVE != 0)
+                            {
+                                Self::defer_error(
+                                    id,
+                                    "defer finish leaves a body-local owner or loan live",
+                                    emit,
+                                );
+                            }
+                        }
+                    }
+                }
+                match state.defers.finish(*defer, *park) {
+                    Ok(frame) => {
+                        // The result is absent only if BOTH optional carriers
+                        // are absent. A join must never forget a first fault.
+                        state.fault = combine_fault(frame.fault, state.fault);
+                        state.exit = combine_exit(frame.exit, state.exit);
+                    }
+                    Err(reason) => Self::defer_error(id, reason, emit),
+                }
+                successors.extend(self.edge(id, next, state, emit));
+            }
+            SemTerminator::CleanupDispatch { normal, fault } => {
+                if state.fault & DEAD != 0 {
+                    let mut success = state.clone();
+                    success.fault = DEAD;
+                    // An enclosing parked fault retains the exit disposition
+                    // of its body even though this nested boundary succeeded.
+                    success.exit = success.defers.active.last().map_or(ORDINARY, |f| f.exit);
+                    successors.extend(self.edge(id, normal, success, emit));
+                }
+                if state.fault & LIVE != 0 {
+                    state.fault = LIVE;
+                    mark_trap(&mut state);
+                    successors.extend(self.edge(id, fault, state, emit));
+                }
+            }
+            SemTerminator::CheckedRaiseFault { cleanup, .. }
+            | SemTerminator::Panic { cleanup, .. } => {
                 Self::require_fault(id, DEAD, &state, emit);
                 state.fault = LIVE;
                 mark_trap(&mut state);
@@ -670,6 +839,9 @@ impl<'a> Flow<'a> {
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
+        if !state.defers.pending.is_empty() || !state.defers.active.is_empty() {
+            Self::defer_error(id, "exit leaves pending actions or live fault parks", emit);
+        }
         for (&place, &index) in &self.local_indices {
             if state.locals[index] & LIVE != 0 {
                 emit(Violation {
@@ -720,16 +892,34 @@ impl<'a> Flow<'a> {
         id: BlockId,
         operations: &[crate::SemOp],
         state: &mut State,
+        cleanup_exit: u8,
         emit: &mut impl FnMut(Violation),
         lifetimes: &mut PlaceLifetimes,
     ) {
         for (index, op) in operations.iter().enumerate() {
+            if let SemOpKind::RegisterDefer {
+                defer,
+                scope,
+                dependencies,
+            } = &op.kind
+            {
+                Self::require_fault(id, DEAD, state, emit);
+                for place in dependencies {
+                    self.require_dependency(id, *place, state, emit);
+                }
+                if let Err(reason) = state.defers.register(*defer, *scope) {
+                    Self::defer_error(id, reason, emit);
+                }
+            }
+            if let SemOpKind::LoadTake { place } | SemOpKind::EndLifetime { place } = &op.kind {
+                self.require_unreserved(id, PlaceBase::Place(*place), state, emit);
+            }
             let cleanup = if self
                 .cleanup_suffixes
                 .get(&id)
                 .is_some_and(|&start| index >= start)
-                && (state.exit == TRAP
-                    || (state.exit == ORDINARY
+                && (cleanup_exit == TRAP
+                    || (cleanup_exit == ORDINARY
                         && matches!(self.blocks[&id].terminator, SemTerminator::Trap { .. })))
             {
                 CleanupMode::Trap
@@ -740,7 +930,15 @@ impl<'a> Flow<'a> {
                 op.kind,
                 SemOpKind::EndLifetime { .. } | SemOpKind::DestroyValue { .. }
             ) {
-                lifetimes.operations.insert(op.id, cleanup);
+                lifetimes
+                    .operations
+                    .entry(op.id)
+                    .and_modify(|mode| {
+                        if cleanup == CleanupMode::Ordinary {
+                            *mode = CleanupMode::Ordinary;
+                        }
+                    })
+                    .or_insert(cleanup);
             }
             self.local_lifetime(id, &op.kind, cleanup, state, emit);
             if let SemOpKind::DestroyValue { value } = &op.kind {
@@ -763,6 +961,103 @@ impl<'a> Flow<'a> {
             });
             for result in &op.results {
                 self.define(id, result.id, state, emit);
+            }
+        }
+    }
+
+    fn defer_error(block: BlockId, reason: &'static str, emit: &mut impl FnMut(Violation)) {
+        emit(Violation {
+            block,
+            value: None,
+            place: None,
+            reason,
+        });
+    }
+
+    fn require_dependency(
+        &self,
+        block: BlockId,
+        place: crate::PlaceId,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if let Some(projection) = self.projections.projection(place) {
+            match projection.root {
+                OwnerRoot::Local(root) => self.require_active(block, root, state, emit),
+                OwnerRoot::Value(root) => {
+                    if self
+                        .indices
+                        .get(&root)
+                        .is_some_and(|i| state.values[*i] != LIVE)
+                    {
+                        Self::defer_error(block, "defer dependency owner is unavailable", emit);
+                    }
+                }
+            }
+            if projection
+                .leaves
+                .iter()
+                .any(|leaf| state.places[self.place_indices[leaf]] != LIVE)
+            {
+                Self::defer_error(
+                    block,
+                    "defer dependency is not initialized on every incoming path",
+                    emit,
+                );
+            }
+        } else if self
+            .place_indices
+            .get(&place)
+            .is_none_or(|i| state.places[*i] != LIVE)
+        {
+            Self::defer_error(block, "defer dependency has no available typed place", emit);
+        }
+    }
+
+    fn require_unreserved(
+        &self,
+        block: BlockId,
+        base: PlaceBase,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        for defer in &state.defers.pending {
+            let Some(registration) = self.defers.registrations.get(defer) else {
+                continue;
+            };
+            for dependency in &registration.dependencies {
+                let overlap = match base {
+                    PlaceBase::Value(value) => {
+                        self.places
+                            .iter()
+                            .any(|(p, root)| *p == *dependency && *root == OwnerRoot::Value(value))
+                            || self
+                                .projections
+                                .projection(*dependency)
+                                .is_some_and(|p| p.root == OwnerRoot::Value(value))
+                    }
+                    PlaceBase::Place(place) => {
+                        place == *dependency
+                            || match (
+                                self.projections.projection(place),
+                                self.projections.projection(*dependency),
+                            ) {
+                                (Some(a), Some(b)) => {
+                                    a.root == b.root
+                                        && a.leaves.iter().any(|leaf| b.leaves.contains(leaf))
+                                }
+                                _ => false,
+                            }
+                    }
+                };
+                if overlap {
+                    Self::defer_error(
+                        block,
+                        "consume or end would invalidate a pending defer dependency",
+                        emit,
+                    );
+                    return;
+                }
             }
         }
     }

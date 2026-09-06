@@ -70,6 +70,15 @@ pub struct SuspensionEffects {
     pub contracts: HashMap<EffectBody, SuspensionContract>,
     pub bodies: HashMap<EffectBody, SuspensionEffect>,
     pub calls: HashMap<SpanKey, SuspensionEffect>,
+    pub fork_transfers: HashMap<SpanKey, ForkTransferFact>,
+}
+
+/// Proven capture capabilities and acquisition at a fork operand boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForkTransferFact {
+    pub is_send: bool,
+    pub is_sync: bool,
+    pub acquisition: crate::ClosureCaptureAcquisition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +154,15 @@ struct Invocation {
     source_module: Option<String>,
 }
 
+#[derive(Debug)]
+struct PendingForkTransfer {
+    key: SpanKey,
+    ty: crate::Ty,
+    origin: Option<CallableOrigin>,
+    source_module: Option<String>,
+    acquisition: crate::ClosureCaptureAcquisition,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct EffectGraph {
     pub builtin_suspensions: HashSet<CallTarget>,
@@ -155,28 +173,40 @@ pub(super) struct EffectGraph {
     values: HashMap<SpanKey, CallableOrigin>,
     bindings: HashMap<TypeBindingId, CallableOrigin>,
     submission_effects: HashMap<SpanKey, bool>,
-    fork_transfers: Vec<(SpanKey, crate::Ty, Option<CallableOrigin>, Option<String>)>,
+    fork_transfers: Vec<PendingForkTransfer>,
 }
 
 impl Checker {
     pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &crate::Ty) {
         let ty = self.subst.resolve(ty);
         let origin = self.infer_expression_callable_origin(expr, span);
-        self.effect_graph.fork_transfers.push((
-            SpanKey::in_module(span, self.current_module_idx),
-            ty.clone(),
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let promote_borrow = self
+            .expr_place(expr)
+            .is_some_and(|(root, path)| self.env.place_borrows_parameter(&root, &path))
+            && !matches!(ty, crate::Ty::Borrow { .. })
+            && self.parameter_has_independent_clone(&ty);
+        self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            key,
+            ty: ty.clone(),
             origin,
-            self.current_module.clone(),
-        ));
+            source_module: self.current_module.clone(),
+            acquisition: if promote_borrow {
+                crate::ClosureCaptureAcquisition::Snapshot
+            } else {
+                crate::ClosureCaptureAcquisition::Move
+            },
+        });
         if matches!(ty, crate::Ty::Borrow { .. }) {
             self.report_error(
                 crate::error::TypeErrorKind::InvalidSend,
                 span,
                 "fork cannot retain a borrowed view in its owning task environment".to_string(),
             );
-        } else if !self
-            .registry
-            .implements_marker(&ty, crate::traits::MarkerTrait::Copy)
+        } else if !promote_borrow
+            && !self
+                .registry
+                .implements_marker(&ty, crate::traits::MarkerTrait::Copy)
             && !self.reject_borrowed_consumption(expr, span)
         {
             self.mark_expr_moved(expr, span);
@@ -537,17 +567,18 @@ impl Checker {
         }
     }
 
-    fn callable_origin_is_send(
+    fn callable_origin_has_marker(
         &self,
         origin: Option<&CallableOrigin>,
         graph: &EffectGraph,
         seen: &mut HashSet<EffectBody>,
+        marker: crate::traits::MarkerTrait,
     ) -> bool {
         let origin = resolve_binding_origin(origin, &graph.bindings, &mut HashSet::new());
         match origin {
             Some(CallableOrigin::Typed(ty)) => self
                 .registry
-                .implements_marker(&self.subst.resolve(&ty), crate::traits::MarkerTrait::Send),
+                .implements_marker(&self.subst.resolve(&ty), marker),
             Some(CallableOrigin::Body(body @ EffectBody::Closure(_))) => {
                 if !seen.insert(body.clone()) {
                     return false;
@@ -557,12 +588,16 @@ impl Checker {
                 };
                 let send = self.closure_capture_facts.get(key).is_some_and(|captures| {
                     captures.iter().all(|capture| {
-                        capture.is_send
-                            || self.callable_origin_is_send(
-                                graph.bindings.get(&capture.binding_id),
-                                graph,
-                                seen,
-                            )
+                        (if marker == crate::traits::MarkerTrait::Sync {
+                            capture.is_sync
+                        } else {
+                            capture.is_send
+                        }) || self.callable_origin_has_marker(
+                            graph.bindings.get(&capture.binding_id),
+                            graph,
+                            seen,
+                            marker,
+                        )
                     })
                 });
                 seen.remove(&body);
@@ -580,7 +615,7 @@ impl Checker {
             ) => true,
             Some(CallableOrigin::Aggregate(fields)) => fields
                 .values()
-                .all(|origin| self.callable_origin_is_send(Some(origin), graph, seen)),
+                .all(|origin| self.callable_origin_has_marker(Some(origin), graph, seen, marker)),
             _ => false,
         }
     }
@@ -743,12 +778,41 @@ impl Checker {
                 self.errors.push(error);
             }
         }
-        for (key, ty, origin, source_module) in &graph.fork_transfers {
-            if !self
+        for PendingForkTransfer {
+            key,
+            ty,
+            origin,
+            source_module,
+            acquisition,
+        } in &graph.fork_transfers
+        {
+            let is_send = self
                 .registry
                 .implements_marker(&self.subst.resolve(ty), crate::traits::MarkerTrait::Send)
-                && !self.callable_origin_is_send(origin.as_ref(), &graph, &mut HashSet::new())
-            {
+                || self.callable_origin_has_marker(
+                    origin.as_ref(),
+                    &graph,
+                    &mut HashSet::new(),
+                    crate::traits::MarkerTrait::Send,
+                );
+            let is_sync = self
+                .registry
+                .implements_marker(&self.subst.resolve(ty), crate::traits::MarkerTrait::Sync)
+                || self.callable_origin_has_marker(
+                    origin.as_ref(),
+                    &graph,
+                    &mut HashSet::new(),
+                    crate::traits::MarkerTrait::Sync,
+                );
+            output.fork_transfers.insert(
+                key.clone(),
+                ForkTransferFact {
+                    is_send,
+                    is_sync,
+                    acquisition: *acquisition,
+                },
+            );
+            if !is_send {
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidSend,
                     key.start..key.end,

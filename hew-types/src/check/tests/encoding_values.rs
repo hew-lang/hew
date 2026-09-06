@@ -523,7 +523,39 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
             .parent()
             .unwrap()
             .join(format!("std/encoding/{format}/{format}.hew"))];
-        let output = check_items(items);
+        let imported = import.resolved_items.clone().unwrap();
+        let source_paths = import.resolved_source_paths.clone();
+        let root = ModuleId::root();
+        let module = ModuleId::new(vec![
+            "std".to_string(),
+            "encoding".to_string(),
+            format.to_string(),
+        ]);
+        let mut graph = ModuleGraph::new(root.clone());
+        for node in [
+            Module {
+                id: module.clone(),
+                items: imported,
+                imports: vec![],
+                source_paths,
+                doc: None,
+            },
+            Module {
+                id: root.clone(),
+                items: items.clone(),
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            },
+        ] {
+            graph.add_module(node).unwrap();
+        }
+        graph.topo_order = vec![module, root];
+        let output = Checker::default().check_program(&Program {
+            items,
+            module_graph: Some(graph),
+            module_doc: None,
+        });
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let expected = encoding_ty(kind);
         for (call, function, container) in [

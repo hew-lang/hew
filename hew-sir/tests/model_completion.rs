@@ -336,3 +336,73 @@ fn snapshot_boundary_decisions_are_visible_to_the_terminator_visitor() {
         ]
     );
 }
+
+#[test]
+fn indirect_callee_rewrites_without_shifting_arguments_or_result_edges() {
+    let mut call = SemTerminator::IndirectCall {
+        id: hew_sir::OpId(4),
+        callee: boundary(ValueId(9), BoundaryDecision::Borrow),
+        signature: hew_sir::SemSignature {
+            params: vec![hew_sir::SemAbiParam {
+                ty: ResolvedTy::I64,
+                passing: hew_sir::SemParamPassing::ReadOnly,
+                caller_visible_projection: false,
+            }],
+            return_ty: ResolvedTy::I64,
+        },
+        args: vec![boundary(ValueId(7), BoundaryDecision::Copy)],
+        result: CallResult::Value(ValueDef {
+            id: ValueId(8),
+            ty: ResolvedTy::I64,
+            own: OwnKind::None,
+        }),
+        normal: Edge {
+            target: BlockId(1),
+            args: vec![Operand { value: ValueId(8) }],
+        },
+        unwind: CallUnwind::Cleanup(Edge {
+            target: BlockId(2),
+            args: vec![Operand { value: ValueId(6) }],
+        }),
+    };
+    let mut uses = Vec::new();
+    call.visit_operands(|slot, operand| uses.push((slot.0, operand.value.0)));
+    assert_eq!(uses, [(0, 9), (1, 7), (2, 8), (3, 6)]);
+    assert_eq!(call.operand_context(OperandSlot(0)), "indirect callee");
+    assert_eq!(call.operand_context(OperandSlot(1)), "call argument");
+    assert_eq!(
+        call.operand_context(OperandSlot(2)),
+        "call normal-edge argument"
+    );
+    assert_eq!(
+        call.operand_context(OperandSlot(3)),
+        "call unwind-edge argument"
+    );
+    call.visit_operands_mut(|slot, operand| {
+        if slot == OperandSlot(0) {
+            operand.value = ValueId(19);
+        }
+    });
+    let mut boundaries = Vec::new();
+    call.visit_boundary_operands(|slot, operand| {
+        boundaries.push((slot.0, operand.operand.value.0, operand.decision));
+    });
+    assert_eq!(
+        boundaries,
+        [
+            (0, 19, BoundaryDecision::Borrow),
+            (1, 7, BoundaryDecision::Copy)
+        ]
+    );
+    let mut results = Vec::new();
+    call.visit_results(|result| results.push(result.id));
+    assert_eq!(results, [ValueId(8)]);
+    assert_eq!(
+        call.successor(SuccessorSlot(0)).unwrap().args[0].value,
+        ValueId(8)
+    );
+    assert_eq!(
+        call.successor(SuccessorSlot(1)).unwrap().args[0].value,
+        ValueId(6)
+    );
+}

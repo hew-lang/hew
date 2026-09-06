@@ -288,7 +288,8 @@ impl<'a> Flow<'a> {
         match &block.terminator {
             SemTerminator::Call { normal, unwind, .. }
             | SemTerminator::RtCall { normal, unwind, .. }
-            | SemTerminator::ValueCall { normal, unwind, .. } => {
+            | SemTerminator::ValueCall { normal, unwind, .. }
+            | SemTerminator::IndirectCall { normal, unwind, .. } => {
                 Self::require_fault(id, DEAD, &state, emit);
                 let mut returned = state.clone();
                 block
@@ -297,7 +298,9 @@ impl<'a> Flow<'a> {
                 successors.extend(self.edge(id, normal, returned, emit));
                 if let CallUnwind::Cleanup(edge) = unwind {
                     let transfers_fault = match &block.terminator {
-                        SemTerminator::Call { .. } | SemTerminator::ValueCall { .. } => true,
+                        SemTerminator::Call { .. }
+                        | SemTerminator::ValueCall { .. }
+                        | SemTerminator::IndirectCall { .. } => true,
                         SemTerminator::RtCall { family, .. } => family
                             .semantic_contract()
                             .is_some_and(hew_types::RuntimeSemanticContract::propagates_fault),
@@ -450,6 +453,7 @@ impl<'a> Flow<'a> {
                     SemTerminator::Call { .. }
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
+                        | SemTerminator::IndirectCall { .. }
                 ) && operand.decision == BoundaryDecision::Borrow;
                 if !scoped_call_borrow {
                     emit(Violation {

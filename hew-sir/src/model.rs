@@ -1342,6 +1342,18 @@ pub enum SemTerminator {
         normal: Edge,
         unwind: CallUnwind,
     },
+    /// Invoke an evaluated callable value through its exact semantic signature.
+    /// The callee is the first boundary operand, followed by source arguments.
+    /// Its boundary distinguishes read, exclusive and consuming invocation.
+    IndirectCall {
+        id: OpId,
+        callee: BoundaryOperand,
+        signature: SemSignature,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
     /// Execute the exact checker-selected value method from the module's
     /// capability table. Arguments borrow values; the scalar result exists
     /// only on the normal edge. The cleanup edge owns a propagated fault.
@@ -1424,6 +1436,16 @@ impl SemTerminator {
                     );
                 }
             }
+            Self::IndirectCall { callee, args, .. } => {
+                for (index, argument) in std::iter::once(callee).chain(args).enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR boundary operand count exceeds u32"),
+                        ),
+                        argument,
+                    );
+                }
+            }
             Self::Suspend { inputs, .. } => {
                 for (index, input) in inputs.iter().enumerate() {
                     visit(
@@ -1456,6 +1478,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::IndirectCall {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::ValueCall {
                 result: CallResult::Value(result),
                 ..
@@ -1476,6 +1502,10 @@ impl SemTerminator {
                 ..
             }
             | Self::RtCall {
+                result: CallResult::Unit,
+                ..
+            }
+            | Self::IndirectCall {
                 result: CallResult::Unit,
                 ..
             }
@@ -1501,6 +1531,12 @@ impl SemTerminator {
     /// Panics only when a branch carries more operands than the module-local
     /// `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
+        let argument_start = if let Self::IndirectCall { callee, .. } = self {
+            visit(OperandSlot(0), &callee.operand);
+            1
+        } else {
+            0
+        };
         match self {
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &value.operand),
             Self::Goto(edge) => edge.visit_operands(visit),
@@ -1551,28 +1587,14 @@ impl SemTerminator {
                 normal,
                 unwind,
                 ..
+            }
+            | Self::IndirectCall {
+                args,
+                normal,
+                unwind,
+                ..
             } => {
-                let mut next = 0_u32;
-                for argument in args {
-                    visit(OperandSlot(next), &argument.operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                for operand in &normal.args {
-                    visit(OperandSlot(next), operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                if let CallUnwind::Cleanup(edge) = unwind {
-                    for operand in &edge.args {
-                        visit(OperandSlot(next), operand);
-                        next = next
-                            .checked_add(1)
-                            .expect("SIR call operand count exceeds u32");
-                    }
-                }
+                visit_call_operands(args, normal, unwind, argument_start, visit);
             }
             Self::Suspend {
                 inputs,
@@ -1610,6 +1632,12 @@ impl SemTerminator {
     /// Panics only when a branch carries more operands than the module-local
     /// `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
+        let argument_start = if let Self::IndirectCall { callee, .. } = self {
+            visit(OperandSlot(0), &mut callee.operand);
+            1
+        } else {
+            0
+        };
         match self {
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &mut value.operand),
             Self::Goto(edge) => edge.visit_operands_mut(visit),
@@ -1660,28 +1688,14 @@ impl SemTerminator {
                 normal,
                 unwind,
                 ..
+            }
+            | Self::IndirectCall {
+                args,
+                normal,
+                unwind,
+                ..
             } => {
-                let mut next = 0_u32;
-                for argument in args {
-                    visit(OperandSlot(next), &mut argument.operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                for operand in &mut normal.args {
-                    visit(OperandSlot(next), operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                if let CallUnwind::Cleanup(edge) = unwind {
-                    for operand in &mut edge.args {
-                        visit(OperandSlot(next), operand);
-                        next = next
-                            .checked_add(1)
-                            .expect("SIR call operand count exceeds u32");
-                    }
-                }
+                visit_call_operands_mut(args, normal, unwind, argument_start, visit);
             }
             Self::Suspend {
                 inputs,
@@ -1762,7 +1776,8 @@ impl SemTerminator {
             }
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
-            | Self::ValueCall { normal, unwind, .. } => {
+            | Self::ValueCall { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
                     visit(SuccessorSlot(1), edge);
@@ -1831,7 +1846,8 @@ impl SemTerminator {
             }
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
-            | Self::ValueCall { normal, unwind, .. } => {
+            | Self::ValueCall { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
                     visit(SuccessorSlot(1), edge);
@@ -1879,7 +1895,8 @@ impl SemTerminator {
                 .map(|arm| &arm.target),
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
-            | Self::ValueCall { normal, unwind, .. } => match slot.0 {
+            | Self::ValueCall { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. } => match slot.0 {
                 0 => Some(normal),
                 1 => match unwind {
                     CallUnwind::NotApplicable => None,
@@ -1928,7 +1945,8 @@ impl SemTerminator {
                 .map(|arm| &mut arm.target),
             Self::Call { normal, unwind, .. }
             | Self::RtCall { normal, unwind, .. }
-            | Self::ValueCall { normal, unwind, .. } => match slot.0 {
+            | Self::ValueCall { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. } => match slot.0 {
                 0 => Some(normal),
                 1 => match unwind {
                     CallUnwind::NotApplicable => None,
@@ -2004,6 +2022,18 @@ impl SemTerminator {
                 }
             }
             Self::CheckedBinary { .. } => "checked-binary failure-edge argument",
+            Self::IndirectCall { .. } if slot.0 == 0 => "indirect callee",
+            Self::IndirectCall { args, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot <= args.len()) =>
+            {
+                "call argument"
+            }
+            Self::IndirectCall { args, normal, .. }
+                if usize::try_from(slot.0)
+                    .is_ok_and(|slot| slot <= args.len() + normal.args.len()) =>
+            {
+                "call normal-edge argument"
+            }
             Self::Call { args, normal, .. }
             | Self::RtCall { args, normal, .. }
             | Self::ValueCall { args, normal, .. }
@@ -2019,9 +2049,10 @@ impl SemTerminator {
             {
                 "call normal-edge argument"
             }
-            Self::Call { .. } | Self::RtCall { .. } | Self::ValueCall { .. } => {
-                "call unwind-edge argument"
-            }
+            Self::Call { .. }
+            | Self::RtCall { .. }
+            | Self::ValueCall { .. }
+            | Self::IndirectCall { .. } => "call unwind-edge argument",
             Self::Suspend { inputs, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < inputs.len()) =>
             {
@@ -2126,5 +2157,53 @@ fn visit_variant_switch_operands_mut(
                 .checked_add(1)
                 .expect("SIR variant-switch operand count exceeds u32");
         }
+    }
+}
+
+fn visit_call_operands(
+    args: &[BoundaryOperand],
+    normal: &Edge,
+    unwind: &CallUnwind,
+    mut next: u32,
+    mut visit: impl FnMut(OperandSlot, &Operand),
+) {
+    let failure = match unwind {
+        CallUnwind::Cleanup(edge) => edge.args.as_slice(),
+        CallUnwind::NotApplicable => &[],
+    };
+    for operand in args
+        .iter()
+        .map(|arg| &arg.operand)
+        .chain(&normal.args)
+        .chain(failure)
+    {
+        visit(OperandSlot(next), operand);
+        next = next
+            .checked_add(1)
+            .expect("SIR call operand count exceeds u32");
+    }
+}
+
+fn visit_call_operands_mut(
+    args: &mut [BoundaryOperand],
+    normal: &mut Edge,
+    unwind: &mut CallUnwind,
+    mut next: u32,
+    mut visit: impl FnMut(OperandSlot, &mut Operand),
+) {
+    let failure = match unwind {
+        CallUnwind::Cleanup(edge) => edge.args.as_mut_slice(),
+        CallUnwind::NotApplicable => &mut [],
+    };
+    for operand in args
+        .iter_mut()
+        .map(|arg| &mut arg.operand)
+        .chain(&mut normal.args)
+        .chain(failure)
+    {
+        visit(OperandSlot(next), operand);
+        next = next
+            .checked_add(1)
+            .expect("SIR call operand count exceeds u32");
     }
 }

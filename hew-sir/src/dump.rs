@@ -324,6 +324,7 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         } => dump_checked_binary(out, *op, lhs, rhs, result, normal, failures),
         SemTerminator::Call { .. }
         | SemTerminator::ValueCall { .. }
+        | SemTerminator::IndirectCall { .. }
         | SemTerminator::RtCall { .. } => {
             dump_call_terminator(out, module, term);
         }
@@ -357,6 +358,20 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             );
             (format!("call @{target}"), args, result, normal, unwind)
         }
+        SemTerminator::IndirectCall {
+            callee,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("indirect.call {}", boundary_operand(callee)),
+            args,
+            result,
+            normal,
+            unwind,
+        ),
         SemTerminator::ValueCall {
             ty,
             capability,

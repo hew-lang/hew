@@ -1541,3 +1541,16 @@ passes for Windows x64 and macOS arm64; native platform execution of this equali
 milestone remains pending. Their preceding collection milestone c7683edaf passed
 native, runtime, C ABI and stdlib suites. Its bare-WASM C ABI libc compile failure
 is retained separately for sandbox work.
+
+## Explicit indirect-call operand model — 2026-09-05
+
+SIR now carries the evaluated callable as the first boundary operand of an
+IndirectCall, with its exact semantic signature, ordinary argument transfers,
+normal-only result and cleanup edge. SSA visitors, operand rewriting, dominance
+intervals, fault flow and CFG traversal retain that first operand independently
+of the arguments and result edges. The model regression checks the callee's
+rewrite slot and both continuation roles; the focused SIR suite passes.
+
+This is a model checkpoint. The verifier and physical lowerer explicitly reject
+indirect execution until the callable capability, environment and receiver
+contracts are connected. No source closure or indirect native support is claimed.

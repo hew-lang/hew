@@ -799,6 +799,7 @@ pub(crate) fn verify_function_with_context(
         if let SemTerminator::Call { id, .. }
         | SemTerminator::RtCall { id, .. }
         | SemTerminator::ValueCall { id, .. }
+        | SemTerminator::IndirectCall { id, .. }
         | SemTerminator::CheckedBinary { id, .. }
         | SemTerminator::SwitchVariant { id, .. } = &block.terminator
         {
@@ -2609,6 +2610,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::ValueCall { .. }
+            | SemTerminator::IndirectCall { .. }
             | SemTerminator::Suspend { .. }
             | SemTerminator::Unreachable => false,
         };
@@ -2897,6 +2899,12 @@ fn verify_terminator_shape(
             blocks,
             diagnostics,
         ),
+        SemTerminator::IndirectCall { id, .. } => invalid_operation(
+            function,
+            *id,
+            "indirect calls require verified callable capability and receiver contracts".into(),
+            diagnostics,
+        ),
         call @ SemTerminator::ValueCall { .. } => {
             verify_value_call_terminator(function, call, types, blocks, diagnostics);
         }
@@ -3096,6 +3104,10 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
         | SemTerminator::RtCall { args, normal, .. }
         | SemTerminator::ValueCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()
+        }
+        SemTerminator::IndirectCall { args, normal, .. } => {
+            let start = 1 + args.len();
+            start..start + normal.args.len()
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
         SemTerminator::SwitchVariant { arms, .. } => {

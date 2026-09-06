@@ -121,6 +121,7 @@ fn canonicalize_verified_function(
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::ValueCall { .. }
+            | SemTerminator::IndirectCall { .. }
             | SemTerminator::Goto(_)
             | SemTerminator::Trap { .. }
             | SemTerminator::Suspend { .. }

@@ -1489,6 +1489,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             result: CallResult::Value(result),
             ..
         }
+        | SemTerminator::IndirectCall {
+            result: CallResult::Value(result),
+            ..
+        }
         | SemTerminator::ValueCall {
             result: CallResult::Value(result),
             ..
@@ -1915,6 +1919,9 @@ impl FunctionLowerer<'_> {
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
                 },
             }),
+            SemTerminator::IndirectCall { .. } => Err(PhysicalError::new(
+                "indirect calls require checked callable value lowering",
+            )),
             SemTerminator::ValueCall {
                 ty,
                 capability,

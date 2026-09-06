@@ -1686,3 +1686,39 @@ actor Sink {
         );
     }
 }
+
+#[test]
+fn ordinary_fork_values_infer_child_results() {
+    let output = check_source(
+        r"
+        fn number() -> i64 { 42 }
+        fn main() {
+            let task = fork number();
+            let first: i64 = await task;
+            let second: i64 = await fork number();
+            let third: i64 = await fork { return number(); };
+            let fourth: i64 = await fork { number() };
+            let _ = (first, second, third, fourth);
+        }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn ordinary_fork_result_is_not_unit() {
+    let output = check_source(
+        r"
+        fn number() -> i64 { 42 }
+        fn main() { let wrong: string = await fork number(); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:?}",
+        output.errors
+    );
+}

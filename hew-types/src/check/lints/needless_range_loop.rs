@@ -687,13 +687,7 @@ impl BodyScan<'_> {
                     self.expr(&value.0);
                 }
             }
-            Expr::ForkChild { binding, expr } => {
-                if binding.as_deref() == Some(self.idx) || binding.as_deref() == Some(self.coll) {
-                    self.ok = false;
-                    return;
-                }
-                self.expr(&expr.0);
-            }
+            Expr::ForkChild { expr } => self.expr(&expr.0),
             Expr::ScopeDeadline { duration, body } => {
                 self.expr(&duration.0);
                 self.block(body);

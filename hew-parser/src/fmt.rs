@@ -3254,12 +3254,8 @@ impl<'a> Formatter<'a> {
                 self.write("scope ");
                 self.format_block(body, self.source.len());
             }
-            Expr::ForkChild { binding, expr } => {
+            Expr::ForkChild { expr } => {
                 self.write("fork ");
-                if let Some(name) = binding {
-                    self.write(name);
-                    self.write(" = ");
-                }
                 self.format_expr(&expr.0);
             }
             Expr::ForkBlock { body } => {

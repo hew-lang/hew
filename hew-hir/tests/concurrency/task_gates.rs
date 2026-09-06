@@ -601,3 +601,22 @@ fn checker_resolved_qualified_spawn_is_accepted() {
         output.diagnostics
     );
 }
+
+#[test]
+fn ordinary_fork_and_await_expressions_lower_through_checked_hir() {
+    let output = lower(
+        r"
+        fn calculate(input: i64) -> i64 { input + 1 }
+        fn main() {
+            let task = fork calculate(41);
+            let first: i64 = await task;
+            let second: i64 = await fork calculate(first);
+            let third: i64 = await fork { return calculate(second); };
+            let fourth: i64 = await fork { calculate(third) };
+            let _ = (first, second, third, fourth);
+        }
+    ",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(hew_hir::verify::verify_hir(&output.module).is_empty());
+}

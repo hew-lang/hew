@@ -1438,43 +1438,23 @@ impl Parser<'_> {
                 return None;
             }
             Token::Fork => {
-                let fork_span = self.peek_span();
                 self.advance();
-                // `fork` is now exclusively the child-start verb inside a scope block:
-                // `fork name = call(...);` or bare `fork call(...);`.
+                if self.peek().is_some_and(Self::is_ident_token)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Equal)
+                {
+                    self.error_with_hint(
+                        "`fork name = expression` has been removed".to_string(),
+                        "bind the task with `let name = fork expression`",
+                    );
+                    return None;
+                }
                 if self.peek() == Some(&Token::LeftBrace) {
-                    if self.scope_expr_depth == 0 {
-                        self.error_at(
-                            "`fork { ... }` child-task blocks are only valid inside `scope { ... }`"
-                                .to_string(),
-                            fork_span,
-                        );
-                        return None;
+                    Expr::ForkBlock {
+                        body: self.parse_block()?,
                     }
-                    if self.fork_block_depth > 0 {
-                        self.error_at(
-                            "nested `fork { ... }` blocks are not a CT-2 surface; use an inner `scope { ... }`"
-                                .to_string(),
-                            fork_span,
-                        );
-                        return None;
-                    }
-                    self.fork_block_depth += 1;
-                    let body = self.parse_block()?;
-                    self.fork_block_depth -= 1;
-                    Expr::ForkBlock { body }
                 } else {
-                    let binding = if self.fork_starts_child_binding() {
-                        let name = self.expect_ident()?;
-                        self.expect(&Token::Equal)?;
-                        Some(name)
-                    } else {
-                        None
-                    };
-                    let expr = self.parse_expr()?;
                     Expr::ForkChild {
-                        binding,
-                        expr: Box::new(expr),
+                        expr: Box::new(self.parse_expr()?),
                     }
                 }
             }

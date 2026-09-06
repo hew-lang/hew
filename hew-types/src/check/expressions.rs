@@ -2779,36 +2779,7 @@ impl Checker {
     )]
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         match expr {
-            Expr::ForkChild {
-                binding,
-                expr: child,
-            } => {
-                // `fork name = call(...)` is a child-task spawn statement and is
-                // only meaningful inside a `scope { }` body (TI-2). HIR lowering
-                // enforces the same position rule; rejecting here as well gives a
-                // check-time diagnostic instead of a lowering error.
-                if self.task_scope_depth == 0 {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "`fork` is only valid inside a `scope { }` body".to_string(),
-                    );
-                    return Ty::Error;
-                }
-                // Parity with HIR's ForkChildNotACall gate: the child must be a
-                // call expression — task spawning needs a callee to run, not a
-                // value to wrap.
-                if !matches!(child.0, Expr::Call { .. }) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &child.1,
-                        "`fork name = expr` requires a call expression as the \
-                         right-hand side; other expression forms cannot be \
-                         spawned as tasks"
-                            .to_string(),
-                    );
-                    return Ty::Error;
-                }
+            Expr::ForkChild { expr: child } => {
                 let ret_ty = self.synthesize(&child.0, &child.1);
                 // Mark non-Copy call arguments as moved into the fork child.
                 //
@@ -2841,56 +2812,19 @@ impl Checker {
                         }
                     }
                 }
-                if let Some(name) = binding {
-                    // Mirror `let`: introduce the binding into the enclosing
-                    // block scope so later statements (`await t`) resolve it.
-                    // The handle types as Task<T> where T is the callee's
-                    // return type; `await` typing unwraps it (await Task<T> → T).
-                    self.env.define_with_span(
-                        name.clone(),
-                        Ty::Task(Box::new(ret_ty)),
-                        false,
-                        span.clone(),
-                    );
-                }
-                // The fork statement itself produces no value.
-                Ty::Unit
+                Ty::Task(Box::new(ret_ty))
             }
             Expr::ForkBlock { body } => {
-                // `fork { ... }` is a fire-and-forget anonymous child task,
-                // `≈ fork _ = (|| { body })()`. Its body is checked here as a
-                // zero-parameter, unit-returning closure context so that body
-                // statements, callee arguments, and the tail expression are all
-                // type-checked — the same coverage the named `fork name = call()`
-                // form already enjoys.
-                //
-                // Position gate (defence-in-depth): like `fork name = call(...)`,
-                // `fork { ... }` is only meaningful inside a `scope { }` body. The
-                // parser already rejects `fork { }` outside a scope, so this gate is
-                // unreachable via a clean parse; it mirrors the `ForkChild` arm so
-                // the checker never silently accepts an out-of-position fork.
-                if self.task_scope_depth == 0 {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "`fork { ... }` is only valid inside a `scope { }` body".to_string(),
-                    );
-                    return Ty::Unit;
-                }
-                // A fork block is a synthesized nullary `move` closure. Reuse
-                // the closure checker so free-variable identity, Send checks,
-                // and move tracking stay on the same capture ledger as every
-                // other scope-owned task environment.
+                // Share capture identity and child return inference with closures.
                 let synthetic_body = (Expr::Block(body.clone()), span.clone());
-                let expected_params: &[Ty] = &[];
-                let _ = self.check_lambda(
+                let lambda_ty = self.check_lambda(
                     true,
                     &[],
                     None,
                     &[],
                     None,
                     &synthetic_body,
-                    Some((expected_params, &Ty::Unit)),
+                    None,
                     span,
                     false,
                 );
@@ -2922,8 +2856,10 @@ impl Checker {
                         }
                     }
                 }
-                // The fork statement itself produces no value.
-                Ty::Unit
+                match lambda_ty {
+                    Ty::Function { ret, .. } | Ty::Closure { ret, .. } => Ty::Task(ret),
+                    _ => Ty::Error,
+                }
             }
             Expr::SpawnLambdaActor {
                 is_move,

@@ -1197,7 +1197,6 @@ fn walk_expr(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::AwaitTask { .. }
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
@@ -1247,7 +1246,7 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(
                 child,
                 subst,

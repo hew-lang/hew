@@ -891,17 +891,11 @@ impl Parser<'_> {
                 !(matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
                     && self.peek_at(self.pos + 2) == Some(&Token::Colon))
             }
-            // Expr::ForkBlock only when a brace follows; bare `fork` and
-            // `fork name = expr` build Expr::ForkChild, which is not block-like.
+            // Only a brace-delimited fork body is block-like.
             Some(Token::Fork) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
             // Expr::ScopeDeadline
             Some(Token::After) => self.looks_like_scope_deadline(),
             _ => false,
         }
-    }
-
-    pub(crate) fn fork_starts_child_binding(&self) -> bool {
-        self.peek().is_some_and(Self::is_ident_token)
-            && self.peek_at(self.pos + 1) == Some(&Token::Equal)
     }
 }

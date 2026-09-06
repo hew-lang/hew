@@ -607,7 +607,7 @@ fn walk_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             walk_expr(conn, subst, residual_domain, disc);
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(child, subst, residual_domain, disc);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -837,7 +837,6 @@ fn walk_expr(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::AwaitTask { .. }
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }

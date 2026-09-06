@@ -1329,6 +1329,9 @@ codegen-stable = [
   "hew_await_cancel_retain",
   "hew_await_cancel_schedule_deadline_ms",
   "hew_await_cancel_status",
+  "hew_callable_clone",
+  "hew_callable_drop",
+  "hew_callable_env_alloc",
   "hew_cbor_de_array_next",
   "hew_cbor_de_bool",
   "hew_cbor_de_bytes",
@@ -1981,6 +1984,34 @@ substantive justification is on that edge in the table above; this entry only \
 stops the call site from being read as an independent lane operation."""
 
 [ownership]
+
+# Allocation returns zeroed storage with no initialized captures. Raw cleanup
+# uses the exact descriptor layout; initialized callable cleanup wraps the
+# storage in its carrier and uses hew_callable_drop.
+[[ownership.contracts]]
+symbol = "hew_callable_env_alloc"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_dealloc"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+# Carrier slots are borrowed. Clone publishes a new owner through out only
+# after success; a failure leaves that slot and the source owner unchanged.
+[[ownership.contracts]]
+symbol = "hew_callable_clone"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Drop consumes the slot's contents and clears it, retaining no slot ownership.
+[[ownership.contracts]]
+symbol = "hew_callable_drop"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
 
 # Copy-in preserves all caller owners; the collection owns semantic copies.
 # Output-slot addresses are borrowed. Callback status governs initialization

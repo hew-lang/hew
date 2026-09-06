@@ -1733,3 +1733,9 @@ integration.
 Defined the shared two-pointer callable carrier, immutable descriptor, and erased borrowed/consuming invocation adapter signature. SIR retains call permission and capture ownership decisions; compiler-generated environment layouts own initialization masks and clone/drop behaviour. Once adapters dispose the environment on both outcomes. The runtime interface provides zeroed aligned allocation, independent cloning with failure-preserved output, and drop with carrier clearing.
 
 CABI tests and layout assertions compile for native, Windows x64, macOS arm64 and WASI. This is the ABI checkpoint; runtime helper implementation and executable closure integration remain pending.
+
+### Callable environment runtime
+
+Implemented zeroed aligned environment allocation through the existing allocator, independent semantic clones with output publication only on success, and carrier-clearing drop. Compiler layout callbacks interpret capture masks and roll back partial clones; the runtime releases only outer storage after clone failure. Invocation remains in compiler adapters, with consuming adapters responsible for cleanup on either outcome.
+
+Focused runtime tests cover independent captures, alignment and zeroing, partial initialization, rollback without duplicate drop, release-only captures, empty function invocation, captured zero-sized values, and consuming success/fault cleanup. The full native runtime suite, focused native ASan/LSan, scoped JSON Clippy, generated C ABI surface checks and the export ownership verifier pass. C ABI tests and cross-target layout assertions pass for Windows x64, macOS arm64 and WASI; these are compile checks, not native platform execution. Added only the callable helpers to the existing codegen ABI classification and ownership contracts.

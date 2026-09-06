@@ -586,6 +586,7 @@ pub use auto_mutex::{
     HewAutoMutex,
 };
 pub mod cabi;
+pub mod callable;
 /// Stackless continuation substrate: `HewCont` heap-frame + C ABI (W6.007).
 /// The runtime side of the unified suspension representation — the coro frame
 /// allocator and the resume/done/poll/destroy verbs the poll/resume executor

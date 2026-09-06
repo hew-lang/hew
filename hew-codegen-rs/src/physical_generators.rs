@@ -161,7 +161,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(requested, cancelled, continuing)
             .llvm_ctx("resume producer or run its cancellation cleanup")?;
         self.builder.position_at_end(cancelled);
-        self.initialize_active_fault(hew_runtime::fault::HEW_FAULT_CANCELLED)?;
+        self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(continuing);
         self.emit_edge(normal)
@@ -383,9 +383,47 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)?;
         self.builder.position_at_end(cancelled);
-        self.initialize_active_fault(hew_runtime::fault::HEW_FAULT_CANCELLED)?;
+        self.take_generator_fault(handle)?;
+        let missing = self
+            .ctx
+            .append_basic_block(self.value, "generator.cancel.missing");
+        let propagate = self
+            .ctx
+            .append_basic_block(self.value, "generator.cancel.propagate");
+        let fault = self
+            .builder
+            .build_load(pointer, self.active_fault, "generator.cancel.fault")
+            .llvm_ctx("load producer cancellation fault")?
+            .into_pointer_value();
+        let absent = self
+            .builder
+            .build_is_null(fault, "generator.cancel.absent")
+            .llvm_ctx("test absent producer cancellation")?;
+        self.builder
+            .build_conditional_branch(absent, missing, propagate)
+            .llvm_ctx("retain producer fault or construct consumer cancellation")?;
+        self.builder.position_at_end(missing);
+        self.initialize_cancellation_fault()?;
+        self.builder
+            .build_unconditional_branch(propagate)
+            .llvm_ctx("propagate consumer cancellation")?;
+        self.builder.position_at_end(propagate);
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
+        let cancelled_failure = self
+            .ctx
+            .append_basic_block(self.value, "generator.failure.cancelled");
+        let ordinary_failure = self
+            .ctx
+            .append_basic_block(self.value, "generator.failure.ordinary");
+        self.builder
+            .build_conditional_branch(closing, cancelled_failure, ordinary_failure)
+            .llvm_ctx("preserve consumer cancellation as the primary failure")?;
+        self.builder.position_at_end(cancelled_failure);
+        self.initialize_cancellation_fault()?;
+        self.take_generator_fault(handle)?;
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(ordinary_failure);
         self.take_generator_fault(handle)?;
         self.emit_edge(unwind)
     }

@@ -7,9 +7,8 @@
 use crate::callable::{hew_callable_drop, HewCallableValue};
 use crate::cont::{hew_cont_destroy, hew_cont_done, hew_cont_resume};
 use crate::coro_state::{
-    hew_coro_state_cancel, hew_coro_state_free, hew_coro_state_new, hew_coro_state_private_status,
-    hew_coro_state_resume_yield, hew_coro_state_status, hew_coro_state_token, hew_coro_state_waker,
-    CoroStatus, HewCoroState,
+    hew_coro_state_cancel, hew_coro_state_free, hew_coro_state_new, hew_coro_state_resume_yield,
+    hew_coro_state_status, hew_coro_state_token, hew_coro_state_waker, CoroStatus, HewCoroState,
 };
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::{hew_fault_drop, HewFault};
@@ -254,6 +253,17 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             // SAFETY: close consumes the final return value, if any.
             unsafe { generator.discard_output() };
             generator.closed = true;
+            if status == CoroStatus::Cancelled as i32 {
+                // SAFETY: this close requested cancellation solely to drain.
+                // Retain real producer cleanup failures, not that control marker.
+                generator.fault =
+                    unsafe { crate::fault::hew_fault_finish_cleanup(generator.fault) };
+                return if generator.fault.is_null() {
+                    CoroStatus::Complete as i32
+                } else {
+                    CoroStatus::Fault as i32
+                };
+            }
         }
     }
     status
@@ -296,7 +306,7 @@ pub unsafe extern "C" fn hew_checked_generator_take_fault(
     // SAFETY: move one fault obligation, leaving the producer slot empty.
     unsafe {
         *output = ptr::replace(&raw mut (*generator).fault, ptr::null_mut());
-        hew_coro_state_private_status((*generator).state)
+        (*output).as_ref().map_or(0, HewFault::code)
     }
 }
 
@@ -326,3 +336,7 @@ pub unsafe extern "C" fn hew_checked_generator_free(generator: *mut HewCheckedGe
         dealloc(generator.output.cast(), generator.allocation);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "generator_checked_tests.rs"]
+mod tests;

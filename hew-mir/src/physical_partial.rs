@@ -491,14 +491,16 @@ pub(super) fn verify_trap_cleanup_refinement(
                 return Err(invalid());
             }
             let block = blocks.get(&site.0).ok_or_else(invalid)?;
-            if block.ops[site.1..].iter().any(|operation| {
+            if let Some(operation) = block.ops[site.1..].iter().find(|operation| {
                 !certified(operation)
                     && !matches!(
                         operation,
                         PhysicalOp::EndBorrow { .. } | PhysicalOp::TaskScopeClose { .. }
                     )
             }) {
-                return Err(invalid());
+                return Err(PhysicalError::new(format!(
+                    "physical CFG no longer realizes its certified trap cleanup region: callable {:?} block {:?} contains {operation:?}", function.callable, site.0
+                )));
             }
             pending.push((site, true));
             match &block.terminator {
@@ -533,7 +535,9 @@ pub(super) fn verify_trap_cleanup_refinement(
                     pending.push(((then_target.target, 0), false));
                     pending.push(((else_target.target, 0), false));
                 }
-                _ => return Err(invalid()),
+                terminator => return Err(PhysicalError::new(format!(
+                    "physical CFG no longer realizes its certified trap cleanup region: callable {:?} block {:?} ends with {terminator:?}", function.callable, site.0
+                ))),
             }
         }
     }

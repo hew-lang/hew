@@ -1,0 +1,8 @@
+gen fn values() -> string {
+    defer panic("close failed");
+    yield "first";
+}
+fn main() {
+    for value in values() { println(value); break; }
+    println("unreachable");
+}

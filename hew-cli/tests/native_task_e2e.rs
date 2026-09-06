@@ -9,6 +9,7 @@ use support::{describe_output, hew_binary, require_codegen, run_bounded_command,
 fn never_returning_calls_preserve_cleanup_and_recovery() {
     run_task(
         r#"
+fn invoke<T>(action: fn() -> T) -> T { await action() }
 fn main() {
     let message = "bottom call";
     let fail = || { defer println("callee cleanup"); panic(message); };
@@ -16,13 +17,14 @@ fn main() {
         defer println("caller cleanup");
         fail();
     } handle failure { println("recovered call"); };
+    scope { await invoke(fail); } handle failure { println("recovered generic call"); };
     scope {
         let child = fork fail();
         await child;
     } handle failure { println("recovered child call"); };
 }
 "#,
-        "callee cleanup\ncaller cleanup\nrecovered call\ncallee cleanup\nrecovered child call\n",
+        "callee cleanup\ncaller cleanup\nrecovered call\ncallee cleanup\nrecovered generic call\ncallee cleanup\nrecovered child call\n",
         0,
         "",
     );

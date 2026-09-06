@@ -330,6 +330,7 @@ fn counter_module(
         callables: vec![parent, body],
         type_facts: facts.rows().clone(),
         closures: vec![sir::SemClosure {
+            generator_yield: None,
             id: sir::ClosureId(0),
             instance: sir::ClosureInstanceKey {
                 enclosing: CallableId(0),

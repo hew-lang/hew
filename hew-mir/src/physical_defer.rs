@@ -108,7 +108,19 @@ pub(super) type Plan = BTreeMap<BlockId, Region>;
 
 pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     match term {
-        PhysicalTerminator::Sleep {
+        PhysicalTerminator::GeneratorYield {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::GeneratorNext {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::Sleep {
             normal,
             cancel,
             unwind,
@@ -126,7 +138,8 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         } => normal.iter().chain([cancel, unwind]).collect(),
-        PhysicalTerminator::EnterDefer { body, .. }
+        PhysicalTerminator::ValueClose { next: body, .. }
+        | PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. }
         | PhysicalTerminator::Panic { cleanup: body, .. }
@@ -178,7 +191,8 @@ fn operation_storage(
     match operation {
         PhysicalOp::TaskScopeEnter { duration, .. } => used.extend(duration),
         PhysicalOp::TaskScopeClose { .. } => {}
-        PhysicalOp::TaskSpawn { dest, callable, .. } => {
+        PhysicalOp::GeneratorMake { dest, callable, .. }
+        | PhysicalOp::TaskSpawn { dest, callable, .. } => {
             defined.insert(*dest);
             used.insert(*callable);
         }
@@ -311,6 +325,8 @@ pub(super) fn verify_calls(
             }
             PhysicalTerminator::Sleep { .. }
             | PhysicalTerminator::TaskSelect { .. }
+            | PhysicalTerminator::GeneratorYield { .. }
+            | PhysicalTerminator::GeneratorNext { .. }
             | PhysicalTerminator::TaskAwait { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }
             | PhysicalTerminator::IndirectCall { .. }

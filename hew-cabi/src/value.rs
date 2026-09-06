@@ -57,6 +57,21 @@ pub type HewValueCloneThunk = unsafe extern "C" fn(src: *const c_void, dst: *mut
 ///
 pub type HewValueDropThunk = unsafe extern "C" fn(slot: *mut c_void);
 
+/// Poll a uniquely borrowed owner through cooperative cleanup. The invocation
+/// state supplies cancellation and readiness; the result uses `CoroStatus`.
+/// Pending retains the borrow. A terminal fault transfers one fault owner.
+pub type HewValueClosePoll = unsafe extern "C" fn(
+    owner: *mut c_void,
+    invocation_state: *mut c_void,
+    fault_out: *mut *mut c_void,
+) -> i32;
+
+/// Visit initialized children whose release requires cooperative cleanup.
+/// Generated from the same field recipes as drop, including their masks and
+/// variant tags. `context` is the runtime's close collector. Visiting borrows
+/// children without changing their initialization or releasing storage.
+pub type HewValueCloseVisit = unsafe extern "C" fn(slot: *mut c_void, context: *mut c_void);
+
 // Rust guarantees fn pointers are non-null, so `Option<fn>` niche-optimises to
 // the underlying fn-pointer width — the null value is the `None` discriminant.
 // These asserts lock the invariant so a future Rust change breaks loudly here
@@ -87,6 +102,7 @@ const _: () = assert!(
 ///     /* padding to pointer alignment */
 ///     HewValueCloneThunk       clone_fn;  /* NULL for plain or release-only values */
 ///     HewValueDropThunk        drop_fn;   /* may be NULL only when ownership_kind == Plain */
+///     HewValueCloseVisit      visit_close; /* optional child walk before drop */
 /// } HewValueLayout;
 /// ```
 #[repr(C)]
@@ -105,6 +121,8 @@ pub struct HewValueLayout {
     /// Cleanup thunk invoked when destroying an owned value. `None` is
     /// valid only for `ownership_kind == Plain`.
     pub drop_fn: Option<HewValueDropThunk>,
+    /// Optional initialized-child walk performed before synchronous drop.
+    pub visit_close: Option<HewValueCloseVisit>,
 }
 
 #[cfg(target_pointer_width = "64")]
@@ -114,7 +132,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, ownership_kind) == 16);
     assert!(core::mem::offset_of!(HewValueLayout, clone_fn) == 24);
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 32);
-    assert!(core::mem::size_of::<HewValueLayout>() == 40);
+    assert!(core::mem::offset_of!(HewValueLayout, visit_close) == 40);
+    assert!(core::mem::size_of::<HewValueLayout>() == 48);
 };
 
 #[cfg(target_pointer_width = "32")]
@@ -124,5 +143,6 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, ownership_kind) == 8);
     assert!(core::mem::offset_of!(HewValueLayout, clone_fn) == 12);
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 16);
-    assert!(core::mem::size_of::<HewValueLayout>() == 20);
+    assert!(core::mem::offset_of!(HewValueLayout, visit_close) == 20);
+    assert!(core::mem::size_of::<HewValueLayout>() == 24);
 };

@@ -639,3 +639,76 @@ fn non_clone_callable_can_transfer_through_either_if_arm() {
     ",
     );
 }
+
+#[test]
+fn generator_cleanup_cannot_discard_a_fault_or_cancel_successor() {
+    let valid = lower_source(
+        r#"
+        gen fn values() -> string { yield "first"; yield "second"; }
+        fn main() { for value in values() { println(value); break; } }
+    "#,
+    );
+    for alter_cancel in [false, true] {
+        let mut invalid = valid.clone();
+        let function = invalid
+            .functions
+            .iter_mut()
+            .find(|function| {
+                function.blocks.iter().any(|block| {
+                    matches!(
+                        block.terminator,
+                        SemTerminator::Suspend {
+                            kind: hew_sir::SuspendKind::ValueClose { .. },
+                            ..
+                        }
+                    )
+                })
+            })
+            .expect("producer owner has explicit cleanup");
+        let entry = function.entry;
+        let close = function
+            .blocks
+            .iter_mut()
+            .find(|block| {
+                matches!(
+                    block.terminator,
+                    SemTerminator::Suspend {
+                        kind: hew_sir::SuspendKind::ValueClose { .. },
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let SemTerminator::Suspend { cancel, unwind, .. } = &mut close.terminator else {
+            unreachable!()
+        };
+        if alter_cancel {
+            cancel.target = entry;
+        } else {
+            unwind.target = entry;
+        }
+        assert!(verify_module(&invalid).iter().any(|diagnostic|
+            matches!(&diagnostic.kind, hew_sir::SirDiagnosticKind::InvalidTerminator { reason }
+                if reason.contains("ValueClose"))));
+    }
+}
+
+#[test]
+fn generator_producer_descriptor_rejects_ordinary_callable_capabilities() {
+    let mut module = lower_source(
+        r"
+        gen fn values() -> i64 { yield 1; }
+        fn main() { for value in values() { println(value); } }
+    ",
+    );
+    let producer = module
+        .closures
+        .iter_mut()
+        .find(|closure| closure.generator_yield.is_some())
+        .unwrap();
+    let hew_types::ResolvedTy::Closure { capabilities, .. } = &mut producer.ty else {
+        unreachable!()
+    };
+    capabilities.call = hew_types::CallableCallMode::Read;
+    assert!(!verify_module(&module).is_empty());
+}

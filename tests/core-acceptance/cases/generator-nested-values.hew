@@ -1,0 +1,39 @@
+type Holder { values: Generator<string, ()>, label: string }
+enum Choice { Values(Generator<string, ()>), Empty }
+
+gen fn words(label: string) -> string {
+    defer println(label + " cleaned");
+    yield label;
+    yield "later";
+}
+
+fn started(label: string) -> Generator<string, ()> {
+    let values = words(label);
+    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    values
+}
+
+gen fn outer(consume values: Generator<string, ()>) -> string {
+    for value in values { yield value; }
+}
+
+fn main() {
+    {
+        let _holder = Holder { values: await started("record"), label: "held".to_upper() };
+    }
+    {
+        let _choice = Choice.Values(await started("enum"));
+    }
+    {
+        let values = await started("closure");
+        let _callback: fn[once]() -> () = move || { let _held = values; };
+    }
+    {
+        let holder = Holder { values: await started("partial"), label: "extracted".to_upper() };
+        println(holder.label);
+    }
+    {
+        let _lazy = outer(await started("lazy"));
+    }
+    println("done");
+}

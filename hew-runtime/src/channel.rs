@@ -1353,6 +1353,7 @@ mod tests {
 
     fn plain_layout(size: usize, align: usize) -> HewValueLayout {
         HewValueLayout {
+            visit_close: None,
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -1363,6 +1364,7 @@ mod tests {
 
     fn string_layout() -> HewValueLayout {
         HewValueLayout {
+            visit_close: None,
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -1573,6 +1575,7 @@ mod tests {
 
     fn ch_owned_layout() -> HewValueLayout {
         HewValueLayout {
+            visit_close: None,
             size: size_of::<ChOwnedElem>(),
             align: align_of::<ChOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

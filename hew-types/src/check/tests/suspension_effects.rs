@@ -326,6 +326,74 @@ fn select_timeout_retains_every_task() {
 }
 
 #[test]
+fn select_preparation_rejects_changing_an_already_borrowed_task() {
+    for (prepare, expected) in [
+        (
+            "task = fork { 42 };",
+            crate::error::TypeErrorKind::OwnMutateBorrowed,
+        ),
+        (
+            "let value = await task;",
+            crate::error::TypeErrorKind::OwnConsumeBorrowed,
+        ),
+    ] {
+        let output = check_source(&format!(
+            "fn main() {{ var task = fork {{ 17 }}; select {{ value = await task => value, after {{ {prepare} 0ms }} => 0 }}; }}"
+        ));
+        let diagnostic = output
+            .errors
+            .iter()
+            .find(|error| error.kind == expected)
+            .unwrap_or_else(|| panic!("{prepare}: {:?}", output.errors));
+        assert!(
+            diagnostic.message.contains("prepared task"),
+            "{diagnostic:?}"
+        );
+        assert_eq!(diagnostic.notes.len(), 1);
+    }
+}
+
+#[test]
+fn select_preparation_tracks_binding_identity_and_disjoint_fields() {
+    for source in [
+        "fn main() { let task = fork { 17 }; select { value = await task => value, after { let task = fork { 42 }; let value = await task; 0ms } => await task }; }",
+        "fn main() { var pair = (fork { 17 }, fork { 42 }); select { value = await pair.0 => value, after { pair.1 = fork { 0 }; 0ms } => await pair.0 }; }",
+        "fn main() { var task = fork { 17 }; select { value = await task => value, after 0ms => { task = fork { 42 }; await task } }; }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn nested_select_keeps_the_outer_preparation_borrow() {
+    let output = check_source("fn main() { var task = fork { 17 }; let second = fork { 42 }; select { value = await task => value, after { select { value = await second => { task = fork { 0 }; 0ms } }; 0ms } => 0 }; }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == crate::error::TypeErrorKind::OwnMutateBorrowed),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn ordinary_task_await_consumes_its_handle_before_the_next_use() {
+    let output = check_source(
+        "fn main() { let task = fork { 42 }; let first = await task; let second = await task; }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == crate::error::TypeErrorKind::UseAfterMove),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn fork_rejects_non_send_arguments_and_indirect_captures() {
     for source in [
         "fn use_value(value: Rc<i64>) -> i64 { 1 } fn main() { let value = Rc.new(1); let task = fork use_value(value); }",

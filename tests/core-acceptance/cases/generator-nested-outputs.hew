@@ -1,0 +1,23 @@
+gen fn words(label: string) -> string {
+    defer println(label + " cleaned");
+    yield label;
+    yield "later";
+}
+
+fn started(label: string) -> Generator<string, ()> {
+    let values = words(label);
+    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    values
+}
+
+fn main() {
+    {
+        let values = gen {
+            yield await started("yielded");
+            await started("returned")
+        };
+        match await values.next() { .Some(_child) => println("received"), .None => panic("missing child"), }
+        match await values.next() { .Some(_child) => panic("extra child"), .None => println("finished"), }
+    }
+    println("done");
+}

@@ -143,6 +143,7 @@ unsafe extern "C" fn eq_cstr_slot(
 fn string_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: size_of::<*mut c_char>(),
             align: align_of::<*mut c_char>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -153,6 +154,7 @@ fn string_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_cstr_slot as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<*mut c_char>(),
         align: align_of::<*mut c_char>(),
         ownership_kind: HewTypeOwnershipKind::String,
@@ -217,6 +219,7 @@ unsafe extern "C" fn eq_i64(
 fn i64_plain_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -227,6 +230,7 @@ fn i64_plain_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

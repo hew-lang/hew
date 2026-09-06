@@ -37,6 +37,8 @@ pub struct SemCaptureField {
 /// Its body signature starts with this exact closure type as receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemClosure {
+    /// Checked yield type for a generator body using this ordinary environment.
+    pub generator_yield: Option<ResolvedTy>,
     pub id: ClosureId,
     pub instance: ClosureInstanceKey,
     pub body: CallableId,
@@ -232,6 +234,18 @@ impl SemClosure {
         {
             return Err("closure promises Clone for a non-cloneable captured owner".to_string());
         }
+        if let Some(yielded) = &self.generator_yield {
+            let (params, _, capabilities) = callable_parts(&self.ty)?;
+            if !params.is_empty()
+                || capabilities.call != CallableCallMode::Once
+                || capabilities.clone
+            {
+                return Err(
+                    "generator producer must be a nullary non-cloneable once callable".into(),
+                );
+            }
+            OwnKind::of_ty(yielded, &module.type_facts)?;
+        }
         let mut signature = callable_value_signature(&self.ty, &module.type_facts)?;
         signature.params.insert(
             0,
@@ -262,6 +276,23 @@ impl SemModule {
             .get(usize::try_from(id.0).ok()?)
             .filter(|closure| closure.id == id)
     }
+}
+
+/// Read the exact yield and return types of a checked generator value.
+#[must_use]
+pub fn generator_parts(ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::Generator),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let [yielded, returned] = args.as_slice() else {
+        return None;
+    };
+    Some((yielded, returned))
 }
 
 #[cfg(test)]
@@ -317,6 +348,7 @@ mod tests {
             actors: Vec::new(),
             callables: vec![parent, body],
             closures: vec![SemClosure {
+                generator_yield: None,
                 id: ClosureId(0),
                 instance: ClosureInstanceKey {
                     enclosing: CallableId(0),

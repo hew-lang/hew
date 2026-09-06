@@ -163,6 +163,7 @@ unsafe extern "C" fn eq_point(
 fn key_layout_i64() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -177,6 +178,7 @@ fn key_layout_i64() -> HewMapKeyLayout {
 fn key_layout_i32() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 4,
             align: 4,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -191,6 +193,7 @@ fn key_layout_i32() -> HewMapKeyLayout {
 fn key_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 16,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -204,6 +207,7 @@ fn key_layout_point() -> HewMapKeyLayout {
 
 fn val_layout(size: usize, align: usize) -> HewValueLayout {
     HewValueLayout {
+        visit_close: None,
         size,
         align,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -516,6 +520,7 @@ fn layout_hashmap_null_val_layout_aborts() {
 fn layout_hashmap_null_hash_fn_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -533,6 +538,7 @@ fn layout_hashmap_null_hash_fn_aborts() {
 fn layout_hashmap_null_eq_fn_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -553,6 +559,7 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
     // in validate_descriptor_ownership when drop_fn is missing.
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -572,6 +579,7 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
 #[should_panic(expected = "val_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn layout_hashmap_managed_value_without_drop_aborts() {
     let vl = HewValueLayout {
+        visit_close: None,
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -613,6 +621,7 @@ fn layout_hashmap_zero_size_key_keeps_nonzero_metadata_stride() {
     }
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 0,
             align: 1,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -635,6 +644,7 @@ fn layout_hashmap_zero_size_key_keeps_nonzero_metadata_stride() {
 fn layout_hashmap_invalid_align_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: 8,
             align: 3,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -651,6 +661,7 @@ fn layout_hashmap_invalid_align_aborts() {
 #[should_panic(expected = "zero-size value layout must have align == 1")]
 fn layout_hashmap_zero_size_value_with_nonunit_align_aborts() {
     let vl = HewValueLayout {
+        visit_close: None,
         size: 0,
         align: 8, // invalid: size==0 requires align==1 (HashSet ZST contract)
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -668,6 +679,7 @@ fn layout_hashmap_stride_overflow_aborts() {
     // overflow guard.
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: usize::MAX / 2,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,

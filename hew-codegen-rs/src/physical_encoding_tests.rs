@@ -7,6 +7,9 @@ use hew_types::RuntimeCallFamily;
 #[path = "../../hew-mir/src/physical_encoding_fixture.rs"]
 mod fixture;
 
+#[path = "physical_encoding_runtime_tests.rs"]
+mod runtime;
+
 fn physical_fixture(semantic: &hew_sir::SemModule, triple: &str) -> PhysicalModule {
     let target = physical_target_for_inventory(
         triple,

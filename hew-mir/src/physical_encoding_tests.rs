@@ -45,6 +45,7 @@ fn encoding_operations_lower_through_shared_ownership_contracts() {
     }
     for format in [EncodingFormat::Json, EncodingFormat::Yaml] {
         physical(&fixture::copy(format));
+        physical(&fixture::local_copy(format));
     }
 }
 
@@ -77,6 +78,35 @@ fn encoding_recipes_reject_bitwise_copy_and_cross_format_glue() {
         *action = DestroyAction::Encoding(other);
         let error = verify_physical_module(&module).unwrap_err();
         assert!(error.message.contains("destroy action"), "{error:?}");
+    }
+}
+
+#[test]
+fn encoding_calls_reject_scalar_contract_drift_even_at_equal_widths() {
+    for (original, changed) in [
+        (EncodingOp::FromInt, EncodingOp::FromU64),
+        (EncodingOp::FromFloat, EncodingOp::FromInt),
+        (EncodingOp::FromBool, EncodingOp::FromInt),
+        (EncodingOp::GetInt, EncodingOp::GetU64),
+        (EncodingOp::GetFloat, EncodingOp::GetInt),
+    ] {
+        let mut module = physical(&fixture::operation(RuntimeCallFamily::Encoding {
+            format: EncodingFormat::Json,
+            op: original,
+        }));
+        let PhysicalTerminator::RuntimeCall { action, .. } =
+            &mut module.functions[0].blocks[0].terminator
+        else {
+            panic!("runtime call")
+        };
+        *action = PhysicalRuntimeAction::Encoding {
+            format: EncodingFormat::Json,
+            op: changed,
+        };
+        assert!(
+            verify_physical_module(&module).is_err(),
+            "{original:?} changed to {changed:?}"
+        );
     }
 }
 

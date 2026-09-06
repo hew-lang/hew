@@ -231,3 +231,57 @@ pub fn copy(format: EncodingFormat) -> sir::SemModule {
     sir::check_module(&module).unwrap();
     module
 }
+
+pub fn local_copy(format: EncodingFormat) -> sir::SemModule {
+    let ty = value(format);
+    let mut module = skeleton(vec![ty.clone()], ty.clone());
+    let function = &mut module.functions[0];
+    function.places = vec![sir::PlaceDecl {
+        id: sir::PlaceId(0),
+        ty: ty.clone(),
+        origin: sir::PlaceOrigin::Local,
+    }];
+    function.blocks = vec![sir::SemBlock {
+        id: sir::BlockId(0),
+        args: vec![],
+        ops: vec![
+            op(
+                0,
+                sir::SemOpKind::AllocPlace {
+                    place: sir::PlaceId(0),
+                },
+                vec![],
+            ),
+            op(
+                1,
+                sir::SemOpKind::StoreInit {
+                    place: sir::PlaceId(0),
+                    value: operand(0),
+                },
+                vec![],
+            ),
+            op(
+                2,
+                sir::SemOpKind::LoadCopy {
+                    place: sir::PlaceId(0),
+                },
+                vec![result(1, ty, sir::OwnKind::Owned)],
+            ),
+            op(
+                3,
+                sir::SemOpKind::EndLifetime {
+                    place: sir::PlaceId(0),
+                },
+                vec![],
+            ),
+        ],
+        terminator: sir::SemTerminator::Return {
+            value: Some(sir::BoundaryOperand {
+                operand: operand(1),
+                decision: sir::BoundaryDecision::Move,
+            }),
+        },
+    }];
+    sir::check_module(&module).unwrap();
+    module
+}

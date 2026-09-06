@@ -18319,23 +18319,12 @@ impl LowerCtx {
                         span,
                     };
                 }
-                let mut ty = Self::binary_ty(*op, &left.ty, &right.ty);
-                // `instant - instant -> duration`: both operands erase to i64
-                // (instant canonicalises to i64), so `binary_ty` over the operand
-                // types yields i64 and cannot recover the Duration result. The
-                // checker typed this subtraction as Duration; prefer its recorded
-                // type so the result drives Display and the duration accessors
-                // (checker–HIR contract). Only adopt the recorded Duration when
-                // `binary_ty` did not already produce it, so genuine i64
-                // arithmetic is untouched.
-                if ty != ResolvedTy::Duration {
-                    let checker_key = self.mk_key(&span);
-                    if let Some(checker_ty) = self.expr_types.get(&checker_key) {
-                        if matches!(ResolvedTy::from_ty(checker_ty), Ok(ResolvedTy::Duration)) {
-                            ty = ResolvedTy::Duration;
-                        }
-                    }
-                }
+                let Some(checked_ty) = self.expr_types.get(&dispatch_key) else {
+                    return self.unsupported_expr(span, "binary expression has no checked type");
+                };
+                let Ok(ty) = ResolvedTy::from_ty(checked_ty) else {
+                    return self.unsupported_expr(span, "binary expression type is unresolved");
+                };
                 (
                     HirExprKind::Binary {
                         op: *op,
@@ -24528,88 +24517,6 @@ impl LowerCtx {
                 self.unsupported(ty.1.clone(), "type-expression", "slice-2");
                 ResolvedTy::Unit
             }
-        }
-    }
-
-    fn binary_ty(op: BinaryOp, left: &ResolvedTy, right: &ResolvedTy) -> ResolvedTy {
-        // `instant` in any annotation position (let x: instant, fn f(x: instant), etc.)
-        // reaches here as `Named { builtin: Some(BuiltinType::Instant) }` because
-        // `lower_type` (the field-type producer) preserves the named form for field
-        // storage — it has no `instant` arm unlike the expression-level `from_ty`.
-        //
-        // Canonicalise Named{Instant} operands to I64 for classification so the
-        // existing arithmetic arms fire regardless of how the operand binding was
-        // introduced. Preserve the original left-operand type when it is an
-        // instant-result operation (instant + duration, instant - duration) so the
-        // binary result type matches `-> instant` return annotations and the
-        // checker-promotion logic remains consistent.
-        //
-        // Field storage arms (`value_class`, `state_clone`, `primitive_to_llvm`, etc.)
-        // are untouched — this normalisation is local to operand type classification.
-        let left_is_named_instant = matches!(
-            left,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Instant),
-                ..
-            }
-        );
-        let left_canon;
-        let right_canon;
-        let left_eff = if left_is_named_instant {
-            left_canon = ResolvedTy::I64;
-            &left_canon
-        } else {
-            left
-        };
-        let right_eff = if matches!(
-            right,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Instant),
-                ..
-            }
-        ) {
-            right_canon = ResolvedTy::I64;
-            &right_canon
-        } else {
-            right
-        };
-        let result = Self::binary_ty_classified(op, left_eff, right_eff);
-        // When the left operand was Named{Instant} and the result type is the
-        // same as left (i.e. I64 from the wildcard arm — an instant-result op
-        // like `instant + duration` or `instant - duration`), return the
-        // original Named{Instant} so the result type matches annotation and the
-        // MIR can classify it alongside Duration in integer_signedness.
-        if left_is_named_instant && result == ResolvedTy::I64 {
-            left.clone()
-        } else {
-            result
-        }
-    }
-
-    fn binary_ty_classified(op: BinaryOp, left: &ResolvedTy, right: &ResolvedTy) -> ResolvedTy {
-        match op {
-            BinaryOp::Equal
-            | BinaryOp::NotEqual
-            | BinaryOp::Less
-            | BinaryOp::LessEqual
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEqual
-            | BinaryOp::And
-            | BinaryOp::Or => ResolvedTy::Bool,
-            BinaryOp::Add if left == &ResolvedTy::String || right == &ResolvedTy::String => {
-                ResolvedTy::String
-            }
-            // `duration + instant → instant`: the checker admits this as `duration + I64`
-            // at HIR level (since `instant` is erased to `I64`). The result is the
-            // right operand's type (I64, i.e. the instant backing type).
-            BinaryOp::Add if left == &ResolvedTy::Duration && right == &ResolvedTy::I64 => {
-                ResolvedTy::I64
-            }
-            // Wrapping ops (WrappingAdd/WrappingSub/WrappingMul) fall through
-            // to the wildcard: they return the left operand's integer type,
-            // same as any other integer arithmetic op. The type checker has
-            // already enforced integer-only operands.
-            _ => left.clone(),
         }
     }
 

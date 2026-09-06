@@ -1676,6 +1676,11 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
                 ops: Vec::new(),
                 terminator: SemTerminator::Suspend {
                     kind: SuspendKind::Await,
+                    result: hew_sir::CallResult::Unit,
+                    unwind: Edge {
+                        target: BlockId(1),
+                        args: Vec::new(),
+                    },
                     inputs: vec![BoundaryOperand {
                         operand: read(ValueId(0)),
                         decision: BoundaryDecision::Move,
@@ -1704,7 +1709,7 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
         diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
             SirDiagnosticKind::InvalidTerminator { reason }
-                if reason.contains("outside the verified SIR relation table")
+                if reason.contains("suspension has no matching")
         )),
         "a suspend no §1.5 row admits must be refused, got {diagnostics:?}"
     );

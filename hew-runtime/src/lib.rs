@@ -597,6 +597,15 @@ pub mod cont;
 /// resume vs destroy on a parked `HewCont`. Target-agnostic; drives the
 /// `cont` ABI, holds no scheduler queue state.
 pub mod coro_exec;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coro_state;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coro_sleep;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coro_root;
 pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
@@ -865,6 +874,7 @@ pub mod arena;
 #[cfg(target_arch = "wasm32")]
 #[path = "arena_wasm.rs"]
 pub mod arena;
+pub mod wake;
 // Expose arena_wasm as a distinct module in native test builds so its unit
 // tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
 // guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.

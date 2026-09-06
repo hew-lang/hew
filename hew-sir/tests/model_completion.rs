@@ -310,6 +310,11 @@ fn snapshot_boundary_decisions_are_visible_to_the_terminator_visitor() {
             ),
         ],
         resumes: Vec::new(),
+        result: CallResult::Unit,
+        unwind: Edge {
+            target: BlockId(0),
+            args: Vec::new(),
+        },
         cancel: Edge {
             target: BlockId(0),
             args: Vec::new(),

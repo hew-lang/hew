@@ -418,9 +418,20 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         SemTerminator::Suspend {
             kind,
             inputs,
+            result,
             resumes,
             cancel,
-        } => dump_suspend(out, *kind, inputs, resumes, cancel),
+            unwind,
+        } => {
+            dump_suspend(out, *kind, inputs, resumes, cancel);
+            writeln!(
+                out,
+                "      result {result:?} unwind bb{}{}",
+                unwind.target.0,
+                edge_args(unwind)
+            )
+            .expect("write to String");
+        }
         SemTerminator::ResumeUnwind => writeln!(out, "    resume_unwind").expect("write to String"),
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }

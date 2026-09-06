@@ -23,6 +23,10 @@ use crate::lifetime::live_actors::ActorIncarnation;
 use crate::rc::hew_rc_drop;
 use crate::util::{CondvarExt, MutexExt};
 
+#[path = "task_scope_wake.rs"]
+mod wake;
+pub use wake::{hew_cancel_observe, hew_cancel_unobserve, HewCancelObserver};
+
 /// Return the current context's active task scope (null if none).
 pub(crate) fn current_task_scope() -> *mut HewTaskScope {
     let ctx = crate::execution_context::require_current_context();
@@ -101,6 +105,8 @@ pub struct HewCancellationToken {
     state: AtomicI32,
     reason: AtomicI32,
     parent: *mut HewCancellationToken,
+    /// Readiness subscribers; token state remains the cancellation authority.
+    observers: Mutex<Vec<std::sync::Weak<crate::wake::OwnedWaker>>>,
     children_total: AtomicI32,
     #[expect(
         dead_code,
@@ -212,6 +218,7 @@ pub unsafe extern "C" fn hew_cancel_token_new_child(
         state: AtomicI32::new(HewCancellationState::Active as i32),
         reason: AtomicI32::new(0),
         parent,
+        observers: Mutex::new(Vec::new()),
         children_total: AtomicI32::new(0),
         children_terminal: AtomicI32::new(0),
         last_nonterminal_child: AtomicUsize::new(0),
@@ -243,6 +250,16 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
         .is_ok()
     {
         t.reason.store(reason, Ordering::Release);
+        let observers = {
+            let mut registered = t.observers.lock_or_recover();
+            std::mem::take(&mut *registered)
+                .into_iter()
+                .filter_map(|observer| observer.upgrade())
+                .collect::<Vec<_>>()
+        };
+        for observer in observers {
+            observer.wake();
+        }
     }
 }
 

@@ -73,6 +73,7 @@ impl<'a> HostExport<'a> {
             for block in &body.blocks {
                 match &block.terminator {
                     PhysicalTerminator::IndirectCall { .. }
+                    | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::ValueCall { .. }
                     | PhysicalTerminator::SwitchVariant { .. } => {
                         return Err(fail(

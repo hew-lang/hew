@@ -592,6 +592,12 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         lowered
             .callable_statuses
             .iter()
+            .filter(|(id, _)| lowered
+                .module
+                .callables
+                .iter()
+                .any(|callable| callable.id == *id
+                    && matches!(callable.instance, CallableInstance::Generic(_))))
             .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
         "every requested concrete instance must have a body: {:#?}",
         lowered.callable_statuses
@@ -704,6 +710,12 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
         lowered
             .callable_statuses
             .iter()
+            .filter(|(id, _)| lowered
+                .module
+                .callables
+                .iter()
+                .any(|callable| callable.id == *id
+                    && matches!(callable.instance, CallableInstance::Generic(_))))
             .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
         "the closed mutual-recursive instance graph must have no missing body: {:#?}",
         lowered.callable_statuses

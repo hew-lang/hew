@@ -2,8 +2,8 @@
 
 use hew_hir::{lower_program_host_target, HirExprKind, HirItem, ResolutionCtx};
 use hew_sir::{
-    lower_module, verify_module, BoundaryDecision, LoweredModule, SemOpKind, SemTerminator,
-    SirLoweringStatus,
+    lower_module_with_demand, verify_module, BoundaryDecision, LoweredModule, SemOpKind,
+    SemTerminator, SirLoweringDemand, SirLoweringStatus,
 };
 use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker};
 
@@ -14,7 +14,7 @@ fn lower(source: &str) -> LoweredModule {
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    lower_module(&hir.module, &checked)
+    lower_module_with_demand(&hir.module, &checked, SirLoweringDemand::EveryCallable)
 }
 
 fn declarations(clone: bool) -> String {
@@ -161,7 +161,8 @@ fn assert_refused(source: &str, function: &str, code: &str) {
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let mut hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    let baseline = lower_module(&hir.module, &checked);
+    let baseline =
+        lower_module_with_demand(&hir.module, &checked, SirLoweringDemand::EveryCallable);
     assert!(
         baseline
             .statuses
@@ -201,7 +202,7 @@ fn assert_refused(source: &str, function: &str, code: &str) {
         callee.kind,
         HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
     ));
-    let lowered = lower_module(&hir.module, &checked);
+    let lowered = lower_module_with_demand(&hir.module, &checked, SirLoweringDemand::EveryCallable);
     assert!(lowered.statuses.iter().any(|status| {
         status.name == function && matches!(&status.status, SirLoweringStatus::Unsupported { reason } if reason.contains(code))
     }), "{:?}", lowered.statuses);

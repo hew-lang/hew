@@ -362,12 +362,16 @@ pub fn checked_binary_failure_kinds(
     const DIV_SIGNED: &[TrapKind] = &[TrapKind::DivideByZero, TrapKind::SignedMinDivNegOne];
     const SHIFT: &[TrapKind] = &[TrapKind::ShiftOutOfRange];
 
-    if !ty.is_integer() {
+    if !ty.is_integer() && *ty != ResolvedTy::Duration {
         return None;
     }
     match op {
         BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply => Some(OVERFLOW),
-        BinaryOp::Divide | BinaryOp::Modulo if ty.is_signed_integer() => Some(DIV_SIGNED),
+        BinaryOp::Divide | BinaryOp::Modulo
+            if ty.is_signed_integer() || *ty == ResolvedTy::Duration =>
+        {
+            Some(DIV_SIGNED)
+        }
         BinaryOp::Divide | BinaryOp::Modulo => Some(DIV_UNSIGNED),
         BinaryOp::Shl | BinaryOp::Shr => Some(SHIFT),
         BinaryOp::Equal
@@ -387,6 +391,37 @@ pub fn checked_binary_failure_kinds(
         | BinaryOp::WrappingSub
         | BinaryOp::WrappingMul => None,
     }
+}
+
+/// Check the operand and result relation for admitted checked arithmetic.
+/// Duration arithmetic uses signed nanoseconds; scaling currently admits i64.
+#[must_use]
+pub fn checked_binary_types_match(
+    op: hew_parser::ast::BinaryOp,
+    lhs: &ResolvedTy,
+    rhs: &ResolvedTy,
+    result: &ResolvedTy,
+) -> bool {
+    use hew_parser::ast::BinaryOp;
+    use ResolvedTy::{Duration, I64};
+    if lhs.is_integer() && lhs == rhs && lhs == result {
+        return true;
+    }
+    matches!(
+        (op, lhs, rhs, result),
+        (
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Modulo,
+            Duration,
+            Duration,
+            Duration
+        ) | (
+            BinaryOp::Multiply | BinaryOp::Divide,
+            Duration,
+            I64,
+            Duration
+        ) | (BinaryOp::Multiply, I64, Duration, Duration)
+            | (BinaryOp::Divide, Duration, Duration, I64)
+    )
 }
 
 /// Which runtime operation a `Suspend` terminator parks on (§1.5).

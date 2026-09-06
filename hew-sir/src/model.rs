@@ -1537,11 +1537,15 @@ pub enum SemTerminator {
     Suspend {
         kind: SuspendKind,
         inputs: Vec<BoundaryOperand>,
+        /// Defined only on the first successful resume edge, like a call result.
+        result: CallResult,
         /// One edge per outcome: `await` has one, `select` has one per arm,
         /// a deadline form has two, `join` has one.
         resumes: Vec<Edge>,
         /// Always present; its first op is the kind's abandon op.
         cancel: Edge,
+        /// Logical operation failure, after abandoning its pending registration.
+        unwind: Edge,
     },
     /// Continue unwinding after an invoke cleanup block has discharged its
     /// obligations.
@@ -1638,6 +1642,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::Suspend {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::CheckedBinary { result, .. } => visit(result),
             Self::SwitchVariant { arms, .. } => {
                 for arm in arms {
@@ -1671,7 +1679,10 @@ impl SemTerminator {
             }
             | Self::Panic { .. }
             | Self::Trap { .. }
-            | Self::Suspend { .. }
+            | Self::Suspend {
+                result: CallResult::Unit,
+                ..
+            }
             | Self::ResumeUnwind
             | Self::Unreachable => {}
         }
@@ -1786,6 +1797,7 @@ impl SemTerminator {
                 inputs,
                 resumes,
                 cancel,
+                unwind,
                 ..
             } => {
                 let mut next = 0_u32;
@@ -1795,7 +1807,7 @@ impl SemTerminator {
                         .checked_add(1)
                         .expect("SIR suspend operand count exceeds u32");
                 }
-                for edge in resumes.iter().chain(std::iter::once(cancel)) {
+                for edge in resumes.iter().chain([cancel, unwind]) {
                     for operand in &edge.args {
                         visit(OperandSlot(next), operand);
                         next = next
@@ -1916,6 +1928,7 @@ impl SemTerminator {
                 inputs,
                 resumes,
                 cancel,
+                unwind,
                 ..
             } => {
                 let mut next = 0_u32;
@@ -1925,7 +1938,7 @@ impl SemTerminator {
                         .checked_add(1)
                         .expect("SIR suspend operand count exceeds u32");
                 }
-                for edge in resumes.iter_mut().chain(std::iter::once(cancel)) {
+                for edge in resumes.iter_mut().chain([cancel, unwind]) {
                     for operand in &mut edge.args {
                         visit(OperandSlot(next), operand);
                         next = next
@@ -2007,9 +2020,12 @@ impl SemTerminator {
                 }
             }
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => {
-                for (index, edge) in resumes.iter().chain(std::iter::once(cancel)).enumerate() {
+                for (index, edge) in resumes.iter().chain([cancel, unwind]).enumerate() {
                     visit(
                         SuccessorSlot(
                             u32::try_from(index).expect("SIR suspend edge count exceeds u32"),
@@ -2085,13 +2101,12 @@ impl SemTerminator {
                 }
             }
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => {
-                for (index, edge) in resumes
-                    .iter_mut()
-                    .chain(std::iter::once(cancel))
-                    .enumerate()
-                {
+                for (index, edge) in resumes.iter_mut().chain([cancel, unwind]).enumerate() {
                     visit(
                         SuccessorSlot(
                             u32::try_from(index).expect("SIR suspend edge count exceeds u32"),
@@ -2157,10 +2172,13 @@ impl SemTerminator {
                     .map(|failure| &failure.edge),
             },
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => resumes
                 .iter()
-                .chain(std::iter::once(cancel))
+                .chain([cancel, unwind])
                 .nth(usize::try_from(slot.0).ok()?),
             Self::EnterDefer { .. }
             | Self::FinishDefer { .. }
@@ -2224,10 +2242,13 @@ impl SemTerminator {
                     .map(|failure| &mut failure.edge),
             },
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => resumes
                 .iter_mut()
-                .chain(std::iter::once(cancel))
+                .chain([cancel, unwind])
                 .nth(usize::try_from(slot.0).ok()?),
             Self::EnterDefer { .. }
             | Self::FinishDefer { .. }

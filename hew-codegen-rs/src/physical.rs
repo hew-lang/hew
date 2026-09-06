@@ -14,6 +14,11 @@ mod key;
 #[path = "physical_partial.rs"]
 mod partial;
 
+#[path = "physical_coro.rs"]
+mod coro;
+#[path = "physical_suspend.rs"]
+mod suspend;
+
 #[path = "physical_host.rs"]
 mod host;
 pub use host::HostExport;
@@ -659,6 +664,7 @@ struct ModuleEmitter<'ctx, 'm> {
     module: &'m PhysicalModule,
     llvm: Module<'ctx>,
     functions: BTreeMap<CallableId, FunctionValue<'ctx>>,
+    ramps: BTreeMap<CallableId, FunctionValue<'ctx>>,
     value_callbacks: key::CallbackTable<'ctx>,
 }
 
@@ -679,6 +685,8 @@ struct FunctionEmitter<'a, 'ctx> {
     fault_parks: BTreeMap<hew_mir::physical::FaultParkId, (PointerValue<'ctx>, PointerValue<'ctx>)>,
     functions: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     value_callbacks: &'a key::CallbackTable<'ctx>,
+    ramps: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
+    frame: Option<coro::Frame<'ctx>>,
 }
 
 /// Execute verified type recipes in either a language body or a container
@@ -1338,6 +1346,7 @@ fn build_module_with_host<'ctx>(
         module: physical,
         llvm,
         functions: BTreeMap::new(),
+        ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
     };
     emitter.declare_functions()?;
@@ -1354,6 +1363,13 @@ fn build_module_with_host<'ctx>(
         .llvm
         .verify()
         .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
+    if physical
+        .callables
+        .iter()
+        .any(|callable| callable.is_resumable)
+    {
+        coro::lower(&emitter.llvm, machine)?;
+    }
     Ok(emitter.llvm)
 }
 
@@ -1549,6 +1565,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let symbol = emitted_symbol(self.module, callable);
             let function = self.llvm.add_function(&symbol, function_type, None);
             self.functions.insert(callable.id, function);
+            if callable.is_resumable {
+                params.push(ptr.into());
+                let ramp = self.llvm.add_function(
+                    &format!("{symbol}$resume"),
+                    ptr.fn_type(&params, false),
+                    Some(Linkage::Internal),
+                );
+                self.ramps.insert(callable.id, ramp);
+            }
         }
         Ok(())
     }
@@ -1556,13 +1581,21 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn emit_functions(&self) -> CodegenResult<()> {
         for function in &self.module.functions {
             let callable = callable(self.module, function.callable)?;
-            let value = *self.functions.get(&function.callable).ok_or_else(|| {
+            let values = if callable.is_resumable {
+                &self.ramps
+            } else {
+                &self.functions
+            };
+            let value = *values.get(&function.callable).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "physical callable {} has no LLVM declaration",
                     function.callable.0
                 ))
             })?;
             FunctionEmitter::new(self, function, callable, value)?.emit()?;
+            if callable.is_resumable {
+                self.emit_sync_wrapper(callable)?;
+            }
         }
         Ok(())
     }
@@ -1686,6 +1719,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let builder = ctx.create_builder();
         let prologue = ctx.append_basic_block(value, "physical.prologue");
         builder.position_at_end(prologue);
+        let frame = if callable.is_resumable {
+            let state = value
+                .get_last_param()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("resumable body has no invocation state".into())
+                })?
+                .into_pointer_value();
+            Some(coro::begin(ctx, &module.llvm, &builder, value, state)?)
+        } else {
+            None
+        };
         let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
         let place_flags = partial::allocate_flags(module, function, &builder)?;
         let active_fault = builder
@@ -1797,6 +1841,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             fault_parks,
             functions: &module.functions,
             value_callbacks: &module.value_callbacks,
+            ramps: &module.ramps,
+            frame,
         })
     }
 
@@ -2427,6 +2473,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::Sleep {
+                duration,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_sleep(*duration, normal, cancel, unwind),
             PhysicalTerminator::EnterDefer { park, body, .. } => self.emit_enter_defer(*park, body),
             PhysicalTerminator::FinishDefer { park, next, .. } => {
                 self.emit_finish_defer(*park, next)
@@ -2546,10 +2598,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.ctx.ptr_type(AddressSpace::default()).const_null(),
             )
             .llvm_ctx("clear physical fault-out on success")?;
-        self.builder
-            .build_return(Some(&self.ctx.i32_type().const_zero()))
-            .llvm_ctx("return physical success status")?;
-        Ok(())
+        self.emit_finish(self.ctx.i32_type().const_zero())
     }
 
     fn emit_checked_binary(
@@ -2910,6 +2959,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             arguments.push(self.slots[result.0 as usize].into());
         }
         arguments.push(self.active_fault.into());
+        if callee.is_resumable {
+            let status = self.emit_resumable_call(callee_id, &arguments, &moved)?;
+            return self.emit_call_outcome(status, result, normal, unwind);
+        }
         let status = self
             .builder
             .build_call(function, &arguments, "call.status")
@@ -4562,10 +4615,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.builder
             .build_store(self.fault_out, fault)
             .llvm_ctx("transfer active fault to caller")?;
-        self.builder
-            .build_return(Some(&status))
-            .llvm_ctx("return active failure status")?;
-        Ok(())
+        self.emit_finish(status)
     }
 }
 

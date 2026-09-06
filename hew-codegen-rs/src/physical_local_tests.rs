@@ -400,3 +400,37 @@ fn allocated_closure() -> hew_sir::SemModule {
     check_module(&module).unwrap();
     module
 }
+
+#[test]
+fn duration_scaling_preserves_signed_values_and_overflow_at_o0_o2() {
+    let semantic = fixture::source("fn probe(value: i64) -> duration { value * 1ms } fn main() {}");
+    let physical = physical_fixture(&semantic);
+    for optimized in [false, true] {
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let engine = engine(&llvm, optimized);
+        // SAFETY: probe has one i64 input and the verified private result/fault ABI.
+        unsafe {
+            let probe = engine
+                .get_function::<unsafe extern "C" fn(i64, *mut i64, *mut *mut c_void) -> i32>(
+                    &symbol(&physical, "probe"),
+                )
+                .unwrap();
+            for value in [-42, 0, 42, i64::MAX] {
+                let mut result = -77;
+                let mut fault = std::ptr::null_mut();
+                let status = probe.call(value, &raw mut result, &raw mut fault);
+                if value == i64::MAX {
+                    assert_ne!(status, 0);
+                    assert_eq!(result, -77);
+                    assert!(!fault.is_null());
+                    hew_runtime::fault::hew_fault_drop(fault.cast());
+                } else {
+                    assert_eq!(status, 0);
+                    assert_eq!(result, value * 1_000_000);
+                    assert!(fault.is_null());
+                }
+            }
+        }
+    }
+}

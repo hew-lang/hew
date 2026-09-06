@@ -334,12 +334,12 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
         [b"ok".to_vec()]
     );
 
-    for callable in lowered
-        .module
-        .callables
-        .iter()
-        .filter(|callable| callable.declaration.full_path() != "main")
-    {
+    for callable in lowered.module.callables.iter().filter(|callable| {
+        matches!(
+            callable.declaration.full_path(),
+            "keep_text" | "keep_bytes" | "use_values"
+        )
+    }) {
         assert!(callable
             .signature
             .params

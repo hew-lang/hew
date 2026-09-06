@@ -2098,7 +2098,11 @@ fn verify_callable_operation(
 }
 
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
-    ty.is_integer() || matches!(ty, ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char)
+    ty.is_integer()
+        || matches!(
+            ty,
+            ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char | ResolvedTy::Duration
+        )
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
@@ -2281,6 +2285,14 @@ fn verify_operation_shape(
             SirDiagnosticKind::InvalidConstType {
                 op: operation.id,
                 expected: "f64",
+                actual: result.ty.user_facing().to_string(),
+            },
+        )),
+        SemOpKind::ConstDuration(_) if result.ty != ResolvedTy::Duration => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidConstType {
+                op: operation.id,
+                expected: "duration",
                 actual: result.ty.user_facing().to_string(),
             },
         )),
@@ -2682,7 +2694,9 @@ fn verify_operation_shape(
                 | hew_parser::ast::BinaryOp::Modulo
                 | hew_parser::ast::BinaryOp::Shl
                 | hew_parser::ast::BinaryOp::Shr => {
-                    lhs_ty == rhs_ty && lhs_ty == &result.ty && !lhs_ty.is_integer()
+                    lhs_ty == rhs_ty
+                        && lhs_ty == &result.ty
+                        && crate::checked_binary_failure_kinds(*op, lhs_ty).is_none()
                 }
                 hew_parser::ast::BinaryOp::BitAnd
                 | hew_parser::ast::BinaryOp::BitOr
@@ -2791,6 +2805,7 @@ fn verify_operation_shape(
         | SemOpKind::ConstBool(_)
         | SemOpKind::ConstF64(_)
         | SemOpKind::ConstChar(_)
+        | SemOpKind::ConstDuration(_)
         | SemOpKind::ConstStr(_)
         | SemOpKind::ConstBytes(_)
         | SemOpKind::FunctionMake { .. }
@@ -2799,7 +2814,6 @@ fn verify_operation_shape(
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
         SemOpKind::LoadBorrow { .. }
-        | SemOpKind::ConstDuration(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }
         | SemOpKind::EndBorrow { .. }
@@ -3197,7 +3211,7 @@ fn verify_checked_binary_terminator(
     let (Some(lhs_ty), Some(rhs_ty)) = (types.get(&lhs.value), types.get(&rhs.value)) else {
         return;
     };
-    if lhs_ty != rhs_ty || lhs_ty != &result.ty {
+    if !crate::checked_binary_types_match(op, lhs_ty, rhs_ty, &result.ty) {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidTerminator {
@@ -3211,7 +3225,7 @@ fn verify_checked_binary_terminator(
         ));
         return;
     }
-    let Some(required) = crate::checked_binary_failure_kinds(op, lhs_ty) else {
+    let Some(required) = crate::checked_binary_failure_kinds(op, &result.ty) else {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidTerminator {
@@ -3831,13 +3845,33 @@ fn verify_terminator_shape(
         // an unverified operation is: admitting it would let a shape nothing
         // checks reach MIR. This is the operation arm's refusal, not a new
         // ownership rule.
-        SemTerminator::Suspend { .. } => {
-            diagnostics.push(diag(
-                function,
-                SirDiagnosticKind::InvalidTerminator {
-                    reason: "terminator is outside the verified SIR relation table".to_string(),
-                },
-            ));
+        SemTerminator::Suspend {
+            kind,
+            inputs,
+            result,
+            resumes,
+            ..
+        } => {
+            let valid = match kind {
+                crate::SuspendKind::Sleep => {
+                    resumes.len() == 1
+                        && matches!(result, crate::CallResult::Unit)
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::Copy
+                        && types.get(&input.operand.value) == Some(&ResolvedTy::Duration))
+                }
+                _ => false,
+            };
+            if !valid {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: format!(
+                            "{kind:?} suspension has no matching input/result/resume contract"
+                        ),
+                    },
+                ));
+            }
         }
     }
 }
@@ -4014,6 +4048,9 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
             start..start + normal.args.len()
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
+        SemTerminator::Suspend {
+            inputs, resumes, ..
+        } => inputs.len()..inputs.len() + resumes.first().map_or(0, |edge| edge.args.len()),
         SemTerminator::SwitchVariant { arms, .. } => {
             let end = 1 + arms.iter().map(|arm| arm.target.args.len()).sum::<usize>();
             1..end

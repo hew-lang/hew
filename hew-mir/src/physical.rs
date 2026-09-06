@@ -3075,7 +3075,7 @@ fn verify_physical_function(
             partial::verify_cleanup_site(function, operation, (block.id, index))?;
         }
     }
-    Ok(())
+    partial::verify_trap_cleanup_refinement(function)
 }
 
 fn storage(function: &PhysicalFunction, id: StorageId) -> Result<&PhysicalStorage, PhysicalError> {

@@ -2265,3 +2265,19 @@ and malformed-IR tests cover conditional assignment, nested loans, repeated
 empty lifetimes, zero-sized cells, partial aggregates and trap reclamation.
 These tests establish the physical storage contract independently of lexical
 source production; combined source acceptance remains a separate check.
+
+## Preserve certified cleanup through physical CFG changes
+
+A cleanup's function and storage identity do not prove that mutable physical
+control flow still reaches the certified exit. Physical verification now
+checks continuations from SIR-certified trap cleanup: only certified cleanup
+and loan ends may follow, and every path must finish with a trap or fault
+propagation. Ordinary effects, returning branches and cycles invalidate the
+certificate. This check can reject a stale certificate but cannot assign a
+cleanup mode or grant an exemption.
+
+Malformed physical controls reproduce the previously accepted ordinary return
+and reject work inserted after cleanup, including an observable print call.
+A finite branching cleanup region remains valid, while a returning successor
+or an escaping cycle is refused. The physical and LLVM suites continue to
+execute the Local ownership and allocated-capture witnesses at O0 and O2.

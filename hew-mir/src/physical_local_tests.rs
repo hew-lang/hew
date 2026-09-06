@@ -156,6 +156,104 @@ fn linear_cleanup_requires_the_checked_trap_disposition() {
 }
 
 #[test]
+fn physical_trap_certificate_cannot_survive_an_ordinary_exit_or_later_effect() {
+    let mut accepted = vec![];
+    for mutation in 0..3 {
+        let mut module = fixture(Case::LinearTrap);
+        let function = probe(&mut module);
+        if mutation == 1 {
+            // Define a scalar after EndLifetime without moving its certified site.
+            function.blocks[0].ops.push(PhysicalOp::Const {
+                dest: function.parameters[1],
+                value: PhysicalConst::Bool(false),
+            });
+        } else if mutation == 0 {
+            function.blocks[0].terminator = PhysicalTerminator::Return { value: None };
+        } else {
+            let trap = function.blocks[0].terminator.clone();
+            function.blocks[0].terminator = PhysicalTerminator::RuntimeCall {
+                action: PhysicalRuntimeAction::PrintlnBool,
+                args: vec![ArgumentTransfer::Clone {
+                    source: function.parameters[1],
+                    action: CloneAction::Bitwise,
+                }],
+                result: None,
+                normal: PhysicalEdge {
+                    target: BlockId(1),
+                    transfers: vec![],
+                    leaf_transfers: vec![],
+                },
+                failure: None,
+            };
+            function.blocks.push(PhysicalBlock {
+                id: BlockId(1),
+                arguments: vec![],
+                ops: vec![],
+                terminator: trap,
+            });
+        }
+        match verify_physical_module(&module) {
+            Ok(()) => accepted.push(mutation),
+            Err(error) => assert!(
+                error.message.contains("certified trap cleanup region"),
+                "{error:?}"
+            ),
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "accepted stale cleanup certificates: {accepted:?}"
+    );
+}
+
+#[test]
+fn certified_cleanup_can_cross_a_finite_diamond_but_cannot_escape_or_cycle() {
+    let mut module = fixture(Case::LinearTrap);
+    let function = probe(&mut module);
+    let trap = function.blocks[0].terminator.clone();
+    let edge = |target| PhysicalEdge {
+        target: BlockId(target),
+        transfers: vec![],
+        leaf_transfers: vec![],
+    };
+    let block = |id, terminator| PhysicalBlock {
+        id: BlockId(id),
+        arguments: vec![],
+        ops: vec![],
+        terminator,
+    };
+    function.blocks[0].terminator = PhysicalTerminator::Goto(edge(1));
+    function.blocks.extend([
+        block(
+            1,
+            PhysicalTerminator::Branch {
+                condition: function.parameters[1],
+                then_target: edge(2),
+                else_target: edge(3),
+            },
+        ),
+        block(2, PhysicalTerminator::Goto(edge(4))),
+        block(3, PhysicalTerminator::Goto(edge(4))),
+        block(4, trap),
+    ]);
+    verify_physical_module(&module).unwrap();
+    for cycle in [false, true] {
+        let mut broken = module.clone();
+        let function = probe(&mut broken);
+        if cycle {
+            function.blocks[4].terminator = PhysicalTerminator::Goto(PhysicalEdge {
+                target: BlockId(1),
+                transfers: vec![],
+                leaf_transfers: vec![],
+            });
+        } else {
+            function.blocks[3].terminator = PhysicalTerminator::Return { value: None };
+        }
+        refuses(&broken, "certified trap cleanup region");
+    }
+}
+
+#[test]
 fn expanded_local_partitions_refuse_missing_zero_sized_cells_and_synthetic_root_bits() {
     let semantic = partial_fixture::local_module(partial_fixture::Case::MixedReplacement);
     let module = lower_physical_module(&semantic, target_for_inventory(&semantic))

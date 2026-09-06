@@ -424,6 +424,75 @@ pub(super) fn verify_cleanup_site(
     Ok(())
 }
 
+/// Check that mutable physical control flow still realizes SIR's certificate.
+/// This never assigns a cleanup mode: only already-certified Trap operations
+/// seed the walk. Every continuation must remain cleanup-only and finish in a
+/// trap or fault propagation; a cycle cannot establish that obligation.
+pub(super) fn verify_trap_cleanup_refinement(
+    function: &PhysicalFunction,
+) -> Result<(), PhysicalError> {
+    use super::{PhysicalOp, PhysicalTerminator};
+
+    let blocks: BTreeMap<_, _> = function
+        .blocks
+        .iter()
+        .map(|block| (block.id, block))
+        .collect();
+    let certified = |operation: &PhysicalOp| {
+        matches!(operation,
+        PhysicalOp::Destroy { cleanup, .. } | PhysicalOp::StorageDead { cleanup, .. }
+        if cleanup.mode() == hew_sir::CleanupMode::Trap)
+    };
+    let seeds = function.blocks.iter().filter_map(|block| {
+        block
+            .ops
+            .iter()
+            .position(certified)
+            .map(|index| (block.id, index))
+    });
+    let invalid =
+        || PhysicalError::new("physical CFG no longer realizes its certified trap cleanup region");
+    let mut complete = BTreeSet::new();
+    for seed in seeds {
+        let mut visiting = BTreeSet::new();
+        let mut pending = vec![(seed, false)];
+        while let Some((site, leaving)) = pending.pop() {
+            if leaving {
+                visiting.remove(&site);
+                complete.insert(site);
+                continue;
+            }
+            if complete.contains(&site) {
+                continue;
+            }
+            if !visiting.insert(site) {
+                return Err(invalid());
+            }
+            let block = blocks.get(&site.0).ok_or_else(invalid)?;
+            if block.ops[site.1..].iter().any(|operation| {
+                !certified(operation) && !matches!(operation, PhysicalOp::EndBorrow { .. })
+            }) {
+                return Err(invalid());
+            }
+            pending.push((site, true));
+            match &block.terminator {
+                PhysicalTerminator::Trap(_) | PhysicalTerminator::PropagateFault => {}
+                PhysicalTerminator::Goto(edge) => pending.push(((edge.target, 0), false)),
+                PhysicalTerminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push(((then_target.target, 0), false));
+                    pending.push(((else_target.target, 0), false));
+                }
+                _ => return Err(invalid()),
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn require_local(
     function: &PhysicalFunction,
     id: StorageId,

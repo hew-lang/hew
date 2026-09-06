@@ -2392,6 +2392,16 @@ linear ownership duties. Unannotated expressions retain proved guarantees.
 Explicit annotations, assignments, arguments, returns and conditional joins
 use the same directional rules, including nested `Option` and `Result` types.
 
+Calling a once callable stored in an owned plain-record or tuple field consumes
+that field and preserves its siblings. The same partial transfer applies to
+other non-copyable fields. Remaining fields retain their usual cleanup rules:
+automatic cleanup releases initialized contents, and linear fields retain their
+explicit-consumption duties. A consumed field cannot be read again until assigned
+a replacement through a mutable binding. Whole-value uses require every field to be initialized. Nested partial
+moves may cross plain record and tuple fields, but not resource, linear or opaque
+declaration boundaries. Borrowed aggregate parameters cannot supply a consuming
+field; use an explicit `consume` parameter to acquire the owner.
+
 Generic function declarations can be used as values with explicit type
 arguments (`identity<i64>`) or arguments inferred from an expected function
 type or a later call through the binding. Each reference is instantiated

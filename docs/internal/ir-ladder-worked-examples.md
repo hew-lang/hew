@@ -231,90 +231,55 @@ Fixture (P1-L3): `repros/ladder/worked/w2_consuming_match.hew`, expected to
 print `3` for `take_first(consume Pair{other: [1], value: .Some([1,2,3])})
 .len()`; ASan zero leaks.
 
-## W3. Closing one resource field of a composite (#3070)
+## W3. Taking one owned field while preserving its siblings
 
 ```hew
-#[resource] type Conn { fd: i64 }
-impl Conn { fn close(self) { println(f"close {self.fd}") } }
-type Two { a: Conn, b: Conn }
+type Job { run: fn[once]() -> string, label: string }
 
-fn shut_param(t: Two) { t.a.close(); }          // (1) Borrow parameter
-
-fn shut_local() {                               // (2) owned local
-    let t = Two { a: Conn { fd: 1 }, b: Conn { fd: 2 } };
-    t.a.close();
-    t.b.close();
+fn dispatch(consume job: Job) {
+    println(job.run());
+    println(job.label);
 }
 ```
 
-Classes: `Conn` is `AffineResource` (clone `None`, `UserClose` glue);
-`Two` is `AffineResource` by the aggregate rule.
+`job` owns a plain record. Calling `job.run()` transfers that field to the
+consuming invocation; `job.label` remains available. A borrowed `job: Job`
+parameter cannot supply that transfer and receives `E_OWN_CONSUME_BORROWED`.
+Declare `consume job: Job` when the function must acquire its caller's owner.
 
-**Both spellings are refused.** In (1) `t.a` is a `Guaranteed` projection
-inside the borrow of `%t`, `close` has a `Consume` receiver slot (§4.2), and
-a `Guaranteed` value is never an operand of a consuming position (rule 3):
-`E_OWN_CONSUME_BORROWED` "`t.a` is borrowed through parameter `t`; declare
-it `consume t: Two` and destructure it: `let Two { a, b } = t;`" (both
-steps in one fix-it, so the user is not routed into the second
-diagnostic). In (2) `%t` is `Owned`, but `t.a` is still a `Guaranteed`
-projection of a live aggregate, and §1.3 emits `destructure` only for a
-whole-value last use, never for a field consume. This is a **decision
-recorded here** (ledger D345): Hew has no partial move. A field of a live
-local is consumed only after the local is destructured, and the diagnostic
-is `E_OWN_PARTIAL_CONSUME` "field `a` of `t` is consumed while `t` is
-live; destructure first: `let Two { a, b } = t;`". The alternative,
-per-field consumed state on a local (Rust's partial moves), is a second
-definite-initialization lattice over every aggregate local, and per-field
-move-out tracking is the mechanism whose repairs produced the double frees
-this file exists to end (field _assignment_ on a live inline record stays
-as the §1.3 `fork` row states it: release the old field, store the new).
-The `let` destructuring pattern is admitted by the §1.3 `destructure` row
-(the "`let` destructuring pattern whose initializer is a last use" entry,
-added with this file). Issue #3070's acceptance shape, a returned record
-whose fields the caller closes, is therefore satisfied by the destructure
-spelling and the issue is amended to say so.
+SIR retains one `Owned` aggregate root and declares exact projected places for
+all its immediate fields. `load.take` creates the callable owner and marks its
+leaf unavailable in the existing lifetime flow. Cleanup of the root releases
+only its remaining initialized leaves, including on argument-evaluation and
+callable-body failures. It neither clones the once callable nor retires the
+whole record when the first field is taken.
 
-The spelling that compiles, and its IR:
+Nested projections form a complete tree: expanding a child also declares every
+sibling. Whole-value copying, borrowing, returning and calling require every
+leaf to be initialized. Internal CFG edges can carry a partially initialized
+root; they transfer matching leaf states simultaneously with that root.
+Replacing a field of a mutable record conditionally cleans up its initialized
+contents and marks the replacement initialized. After all fields are restored,
+the whole record is usable again. Explicit whole-record destructuring remains
+available when all its parts should become independent local owners at once.
 
-```hew
-fn shut_both(consume t: Two) {
-    let Two { a, b } = t;
-    a.close();
-    b.close();
-}
-```
+Only plain transparent record and tuple ancestors can be split. A resource,
+linear or opaque field can remain an indivisible leaf with its own cleanup
+contract; partial access cannot cross that field's declaration boundary.
+A plain wrapper containing such a field does not acquire that field's marker.
 
-```
-fn shut_both(%0: Owned Two) -> () {
-bb0:
-    %1: Owned Conn, %2: Owned Conn = destructure %0
-    call @Conn.close(%1)
-    call @Conn.close(%2)
-    return
-}
-```
+Physical MIR resolves the verified paths to aliases of one root allocation.
+Leaf initialization flags are separate from payload bytes, including zero-sized
+and no-drop leaves. CFG permutations snapshot both payloads and flags before
+writing destinations. LLVM conditional cleanup follows the same leaf recipes;
+an uninitialized payload is never passed to a destructor.
 
-Rule 1 for `%0`, `%1`, `%2`: one consumer each (`Conn.close` has a
-`Consume` receiver slot). Rule 6d does not apply (`AffineResource`, not
-`Linear`). If the body were `a.close();` alone, HIR→SIR emits
-`destroy_value %2` at scope exit (§1.3.4: every live `Owned` binding), which
-lowers to `Release { b }` → `Conn.close` through `UserClose` glue. One close
-per field, always, because each field is one `Owned` value with one
-consumer. The one place a field is consumed inside a live aggregate is an
-actor state field with a taken bit (§1.3.6, W7), where the runtime owns the
-aggregate and the bit records the take.
-
-What the legacy lowerer did: it emitted the user close for `t.a` and then
-walked `t`'s fields at scope exit, closing `a` a second time. PR 3246's
-repair retired the whole record at the first close and thereby leaked `b`,
-which its own description records as the trade. Under the ladder the
-aggregate has no "walk"; it is either one `Owned` value released by glue,
-or it has been destructured into named parts.
-
-Fixtures (P1-L3): `repros/ladder/worked/w3_partial_close_param.hew` and
-`w3_partial_close_local.hew` are `reject` fixtures with the two diagnostics
-above; `w3_destructure_close.hew` prints `close 1`, `close 2` under ASan
-with no double free.
+Permanent source controls are
+`tests/core-acceptance/cases/partial-job-dispatch.hew`,
+`partial-job-reuse.hew`, `partial-job-later-argument-fault.hew` and
+`partial-job-callback-body-fault.hew`. SIR and physical MIR controls also reject
+incomplete partitions, invalid field paths, partial whole-value reads and
+missing remaining-root cleanup.
 
 ## W4. Match over a fresh call result (#3127)
 

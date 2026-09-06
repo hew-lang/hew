@@ -123,6 +123,13 @@ pub fn set_last_error_with_errno_and_kind(msg: String, errno: i32, kind: i32) {
     LAST_ERROR_KIND.with(|k| *k.borrow_mut() = kind);
 }
 
+/// Whether the current thread has a stream/sink error, even with an empty
+/// message and no OS errno. This Boolean probe does not consume any metadata.
+#[no_mangle]
+pub extern "C" fn hew_stream_has_error() -> bool {
+    LAST_ERROR.with(|error| error.borrow().is_some())
+}
+
 /// Take and clear the last error, if any. Also clears the associated errno and
 /// error-kind.
 #[must_use]
@@ -289,9 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn set_last_error_empty_string() {
+    fn empty_error_remains_present_until_consumed() {
+        let _ = take_last_error();
+        assert!(!hew_stream_has_error());
         set_last_error(String::new());
-        assert_eq!(take_last_error().as_deref(), Some(""));
+        assert!(hew_stream_has_error());
+        assert_eq!(hew_stream_last_errno(), 0);
+        assert!(hew_stream_has_error());
+        // Empty error text and no error share a null string carrier, but not status.
+        assert!(hew_stream_last_error().is_null());
+        assert!(!hew_stream_has_error());
     }
 
     // ── hew_stream_last_error (C ABI) ────────────────────────────────────
@@ -473,7 +487,8 @@ mod tests {
             17,
             IO_ERROR_KIND_ALREADY_EXISTS,
         );
-        // Read kind before errno (documented ordering).
+        // The Boolean peek preserves all metadata; read kind before errno.
+        assert!(hew_stream_has_error());
         assert_eq!(hew_stream_last_error_kind(), IO_ERROR_KIND_ALREADY_EXISTS);
         assert_eq!(hew_stream_last_errno(), 17);
         // Kind is consumed after reading.

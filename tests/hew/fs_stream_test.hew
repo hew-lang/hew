@@ -15,6 +15,7 @@ import std.testing;
 // test observe the channel directly, the same way an unrelated caller
 // elsewhere in the program would.
 extern "C" {
+    fn hew_stream_has_error() -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32;
 }
@@ -37,6 +38,34 @@ fn test_try_read_missing_returns_not_found() {
             _ => panic("expected IoError::NotFound"),
         },
     }
+}
+
+#[test]
+#[serial]
+fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
+    let file_path = "tests/hew/_fs_stream_text_outcomes.txt";
+    cleanup_file(file_path);
+    fs.write(file_path, "").unwrap();
+    testing.assert_eq_str(fs.read(file_path).unwrap(), "");
+    fs.write(file_path, "é\0中🙂").unwrap();
+    testing.assert_eq_str(fs.read(file_path).unwrap(), "é\0中🙂");
+    fs.write_bytes(file_path, b"A\xffB").unwrap();
+    match fs.read(file_path) {
+        .Ok(_) => panic("invalid UTF-8 must be a read failure"),
+        .Err(error) => match error {
+            fs.IoError.Other(raw) => testing.assert_eq(raw, 0),
+            _ => panic("encoding failure must not invent an OS error"),
+        },
+    }
+    // The checked wrapper consumes all error metadata, including errors without errno.
+    unsafe {
+        testing.assert_true(!hew_stream_has_error());
+        testing.assert_eq(hew_stream_last_errno() as i64, 0);
+        testing.assert_eq_str(hew_stream_last_error(), "");
+    }
+    fs.write(file_path, "recovered").unwrap();
+    testing.assert_eq_str(fs.read(file_path).unwrap(), "recovered");
+    cleanup_file(file_path);
 }
 
 #[test]

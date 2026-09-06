@@ -62,8 +62,8 @@ use std::sync::{Arc, Mutex};
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
 pub use crate::stream_error::{
-    hew_stream_last_error, io_error_kind_tag, set_last_error, set_last_error_with_errno,
-    set_last_error_with_errno_and_kind, take_last_error,
+    hew_stream_has_error, hew_stream_last_error, io_error_kind_tag, set_last_error,
+    set_last_error_with_errno, set_last_error_with_errno_and_kind, take_last_error,
 };
 pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
 
@@ -280,9 +280,10 @@ impl StreamBacking for FileReadStream {
             }
             Ok(_) => None,
             Err(error) => {
-                set_last_error_with_errno(
+                set_last_error_with_errno_and_kind(
                     format!("file stream read failed: {error}"),
-                    error.raw_os_error().unwrap_or(libc::EIO),
+                    error.raw_os_error().unwrap_or(0),
+                    io_error_kind_tag(error.kind()),
                 );
                 None
             }
@@ -1232,10 +1233,10 @@ pub unsafe extern "C" fn hew_stream_pair_stream_bytes(pair: *mut HewStreamPair) 
 ///
 /// # Safety
 ///
-/// `path` must be a live managed string.
+/// `path` must be a live managed string, or null for an empty path.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_from_file_read(path: *const HewString) -> *mut HewStream {
-    cabi_guard!(path.is_null(), ptr::null_mut());
+    let _ = take_last_error();
     // SAFETY: Caller guarantees path is a live managed string.
     let path_str = unsafe { string_as_str(path) };
     if path_str.contains('\0') {
@@ -1243,17 +1244,14 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const HewString) -> *m
         return ptr::null_mut();
     }
     match fs::File::open(path_str) {
-        Ok(f) => {
-            let _ = take_last_error();
-            into_stream_ptr(FileReadStream {
-                reader: BufReader::new(f),
-                chunk_size: 4096,
-            })
-        }
+        Ok(f) => into_stream_ptr(FileReadStream {
+            reader: BufReader::new(f),
+            chunk_size: 4096,
+        }),
         Err(e) => {
             set_last_error_with_errno_and_kind(
                 format!("{e}"),
-                e.raw_os_error().unwrap_or(libc::EIO),
+                e.raw_os_error().unwrap_or(0),
                 io_error_kind_tag(e.kind()),
             );
             ptr::null_mut()
@@ -2107,31 +2105,57 @@ pub unsafe extern "C" fn hew_stream_chunks(
 /// Read all remaining items from a stream and concatenate them as a managed string.
 ///
 /// Returns an owned managed string. The caller must free it with
-/// `hew_string_drop`.
-/// Consumes the stream.
+/// `hew_string_drop`. Null can represent valid empty text or failure; inspect
+/// `hew_stream_has_error` before consuming the error metadata. Read and UTF-8
+/// failures never return partial text. Clears stale errors when collection starts.
+/// Consumes the stream and preserves its collection outcome through cleanup.
 ///
 /// # Safety
 ///
 /// `stream` must be a valid `HewStream` pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut HewString {
-    cabi_guard!(stream.is_null(), ptr::null_mut());
+    let _ = take_last_error();
+    if stream.is_null() {
+        set_last_error("cannot collect a null stream".into());
+        return ptr::null_mut();
+    }
 
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     let mut owned = unsafe { Box::from_raw(stream) }; // ALLOCATOR-PAIRING: GlobalAlloc
     let mut buffer = Vec::new();
-
     while let Some(chunk) = owned.inner.next() {
+        if hew_stream_has_error() {
+            break;
+        }
         buffer.extend_from_slice(&chunk);
     }
 
-    match string_from_utf8(&buffer) {
-        Ok(value) => value,
-        Err(error) => {
-            set_last_error(format!("stream string collection: {error}"));
-            ptr::null_mut()
+    // A read failure takes precedence over decoding any partial contents.
+    let result = if hew_stream_has_error() {
+        ptr::null_mut()
+    } else {
+        match string_from_utf8(&buffer) {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("stream string collection: {error}"));
+                ptr::null_mut()
+            }
         }
+    };
+
+    // Keep the collection outcome owned while releasing the stream. Cleanup
+    // can use the thread-local channel but must not replace this operation's
+    // result or its portable kind/raw code. Read kind before errno clears it.
+    let kind = crate::stream_error::take_last_error_kind();
+    let errno = crate::stream_error::take_last_errno();
+    let error = take_last_error();
+    drop(owned);
+    let _ = take_last_error();
+    if let Some(error) = error {
+        set_last_error_with_errno_and_kind(error, errno, kind);
     }
+    result
 }
 
 /// Drain and consume a nominal `std.fs.FileReadStream` into one string.
@@ -3616,9 +3640,12 @@ mod tests {
 
     #[test]
     fn file_read_null_path_returns_null() {
-        // SAFETY: null path is handled by cabi_guard.
+        set_last_error_with_errno_and_kind("stale".into(), 17, 3);
+        // SAFETY: null is the managed empty path, which must record a fresh error.
         let result = unsafe { hew_stream_from_file_read(ptr::null()) };
         assert!(result.is_null());
+        assert!(hew_stream_has_error());
+        assert_ne!(take_last_error().as_deref(), Some("stale"));
     }
 
     #[test]
@@ -3670,6 +3697,70 @@ mod tests {
             hew_file_read_stream_close(stream);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_read_collection_distinguishes_text_and_decode_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("contents.txt");
+        let path_arg = ManagedString::new(path.to_str().unwrap());
+        for (contents, fails) in [
+            (b"".as_slice(), false),
+            ("é\0中🙂".as_bytes(), false),
+            (&[b'a', 0xff, 0], true),
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            // SAFETY: the path is live; collection consumes the returned file.
+            unsafe {
+                let stream = hew_file_read_stream_open(path_arg.as_ptr());
+                assert!(!stream.is_null());
+                // Another operation may have used the thread's channel after open.
+                set_last_error_with_errno_and_kind("stale".into(), 5, 2);
+                let value = hew_file_read_stream_collect_string(stream);
+                let failed = hew_stream_has_error();
+                let bytes = string_as_bytes(value).to_vec();
+                string_release(value);
+                let kind = crate::stream_error::take_last_error_kind();
+                let errno = crate::stream_error::take_last_errno();
+                let error = take_last_error();
+                assert_eq!(failed, fails, "contents: {contents:?}");
+                assert_eq!((kind, errno), (0, 0));
+                if fails {
+                    assert!(value.is_null());
+                    assert!(error.unwrap().contains("invalid utf-8"));
+                } else {
+                    assert_eq!(bytes, contents);
+                    assert!(error.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn file_read_collection_reports_os_read_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("write-only.txt");
+        let mut file = std::fs::File::create(path).unwrap();
+        // A real file opened only for writing must fail when read on every host.
+        let expected = file.read(&mut [0u8; 1]).unwrap_err();
+        let stream = into_stream_ptr(FileReadStream {
+            reader: BufReader::new(file),
+            chunk_size: 4096,
+        });
+        // SAFETY: collection takes the sole live stream owner.
+        let value = unsafe { hew_file_read_stream_collect_string(stream) };
+        assert!(value.is_null());
+        assert_eq!(
+            crate::stream_error::take_last_error_kind(),
+            io_error_kind_tag(expected.kind())
+        );
+        assert_eq!(
+            crate::stream_error::take_last_errno(),
+            expected.raw_os_error().unwrap_or(0)
+        );
+        assert!(take_last_error()
+            .unwrap()
+            .contains("file stream read failed"));
     }
 
     #[test]
@@ -4124,6 +4215,52 @@ mod tests {
     }
 
     // ── Collect string ──────────────────────────────────────────────────
+
+    #[test]
+    fn collect_string_preserves_partial_read_failure_across_cleanup() {
+        #[derive(Debug)]
+        struct FailingRead {
+            prefix: Option<Vec<u8>>,
+            closes: Arc<AtomicU64>,
+        }
+        impl StreamBacking for FailingRead {
+            fn next(&mut self) -> Option<Item> {
+                if let Some(prefix) = self.prefix.take() {
+                    return Some(prefix);
+                }
+                // Portable errors need not have an OS code.
+                set_last_error_with_errno_and_kind("primary read failure".into(), 0, 2);
+                None
+            }
+            fn close(&mut self) {
+                self.closes.fetch_add(1, Ordering::Relaxed);
+                // Cleanup may use the same channel; it must not replace the read error.
+                set_last_error_with_errno_and_kind("cleanup channel use".into(), 17, 3);
+            }
+            fn is_closed(&self) -> bool {
+                false
+            }
+        }
+        for prefix in [b"partial text".as_slice(), &[0xff]] {
+            let closes = Arc::new(AtomicU64::new(0));
+            let stream = into_stream_ptr(FailingRead {
+                prefix: Some(prefix.to_vec()),
+                closes: Arc::clone(&closes),
+            });
+            // SAFETY: collection consumes the stream; any returned string is ours.
+            let value = unsafe { hew_stream_collect_string(stream) };
+            // SAFETY: collection transfers any returned string owner to this caller.
+            unsafe { string_release(value) };
+            assert!(
+                value.is_null(),
+                "partial data must not become a successful string"
+            );
+            assert_eq!(closes.load(Ordering::Relaxed), 1);
+            assert_eq!(crate::stream_error::take_last_error_kind(), 2);
+            assert_eq!(crate::stream_error::take_last_errno(), 0);
+            assert_eq!(take_last_error().as_deref(), Some("primary read failure"));
+        }
+    }
 
     #[test]
     fn collect_string_concatenates_items() {

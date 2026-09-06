@@ -2108,7 +2108,9 @@ pub unsafe extern "C" fn hew_stream_chunks(
 /// `hew_string_drop`. Null can represent valid empty text or failure; inspect
 /// `hew_stream_has_error` before consuming the error metadata. Read and UTF-8
 /// failures never return partial text. Clears stale errors when collection starts.
-/// Consumes the stream and preserves its collection outcome through cleanup.
+/// Consumes the stream. A close failure prevents success; when collection has
+/// already failed, the close diagnostic is appended without replacing the primary
+/// error kind or OS code.
 ///
 /// # Safety
 ///
@@ -2144,16 +2146,28 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
         }
     };
 
-    // Keep the collection outcome owned while releasing the stream. Cleanup
-    // can use the thread-local channel but must not replace this operation's
-    // result or its portable kind/raw code. Read kind before errno clears it.
+    // Keep the collection outcome owned while releasing the stream, then
+    // capture cleanup's outcome separately. Read kind before errno clears it.
     let kind = crate::stream_error::take_last_error_kind();
     let errno = crate::stream_error::take_last_errno();
     let error = take_last_error();
     drop(owned);
-    let _ = take_last_error();
-    if let Some(error) = error {
+    let close_kind = crate::stream_error::take_last_error_kind();
+    let close_errno = crate::stream_error::take_last_errno();
+    let close_error = take_last_error();
+    if let Some(mut error) = error {
+        if let Some(secondary) = close_error {
+            // Include a labelled diagnostic even when the close message is empty.
+            error = format!(
+                "{error}\nstream close failed (kind {close_kind}, errno {close_errno}): {secondary}"
+            );
+        }
         set_last_error_with_errno_and_kind(error, errno, kind);
+    } else if let Some(error) = close_error {
+        // SAFETY: this operation still owns the collected string, including null/empty.
+        unsafe { string_release(result) };
+        set_last_error_with_errno_and_kind(error, close_errno, close_kind);
+        return ptr::null_mut();
     }
     result
 }
@@ -4217,48 +4231,84 @@ mod tests {
     // ── Collect string ──────────────────────────────────────────────────
 
     #[test]
-    fn collect_string_preserves_partial_read_failure_across_cleanup() {
+    fn collect_string_preserves_read_and_close_outcomes() {
         #[derive(Debug)]
-        struct FailingRead {
+        struct ReadWithCleanup {
             prefix: Option<Vec<u8>>,
+            read_fails: bool,
+            close_error: Option<&'static str>,
             closes: Arc<AtomicU64>,
         }
-        impl StreamBacking for FailingRead {
+        impl StreamBacking for ReadWithCleanup {
             fn next(&mut self) -> Option<Item> {
                 if let Some(prefix) = self.prefix.take() {
                     return Some(prefix);
                 }
-                // Portable errors need not have an OS code.
-                set_last_error_with_errno_and_kind("primary read failure".into(), 0, 2);
+                if self.read_fails {
+                    // Portable errors need not have an OS code.
+                    set_last_error_with_errno_and_kind("primary read failure".into(), 0, 2);
+                }
                 None
             }
             fn close(&mut self) {
                 self.closes.fetch_add(1, Ordering::Relaxed);
-                // Cleanup may use the same channel; it must not replace the read error.
-                set_last_error_with_errno_and_kind("cleanup channel use".into(), 17, 3);
+                if let Some(error) = self.close_error {
+                    set_last_error_with_errno_and_kind(error.into(), 17, 3);
+                }
             }
             fn is_closed(&self) -> bool {
                 false
             }
         }
-        for prefix in [b"partial text".as_slice(), &[0xff]] {
-            let closes = Arc::new(AtomicU64::new(0));
-            let stream = into_stream_ptr(FailingRead {
-                prefix: Some(prefix.to_vec()),
-                closes: Arc::clone(&closes),
-            });
-            // SAFETY: collection consumes the stream; any returned string is ours.
-            let value = unsafe { hew_stream_collect_string(stream) };
-            // SAFETY: collection transfers any returned string owner to this caller.
-            unsafe { string_release(value) };
-            assert!(
-                value.is_null(),
-                "partial data must not become a successful string"
-            );
-            assert_eq!(closes.load(Ordering::Relaxed), 1);
-            assert_eq!(crate::stream_error::take_last_error_kind(), 2);
-            assert_eq!(crate::stream_error::take_last_errno(), 0);
-            assert_eq!(take_last_error().as_deref(), Some("primary read failure"));
+        for (prefix, read_fails) in [
+            (b"partial text".as_slice(), true),
+            (&[0xff], true),
+            ("é\0中🙂".as_bytes(), false),
+            (b"".as_slice(), false),
+        ] {
+            for close_error in [Some("secondary close failure"), Some(""), None] {
+                let closes = Arc::new(AtomicU64::new(0));
+                let stream = into_stream_ptr(ReadWithCleanup {
+                    prefix: Some(prefix.to_vec()),
+                    read_fails,
+                    close_error,
+                    closes: Arc::clone(&closes),
+                });
+                // SAFETY: collection consumes the stream and transfers any string result.
+                let value = unsafe { hew_stream_collect_string(stream) };
+                let failed = hew_stream_has_error();
+                // SAFETY: this caller owns the collected string until its release.
+                let bytes = unsafe { string_as_bytes(value) }.to_vec();
+                // SAFETY: collection transfers any returned string owner to this caller.
+                unsafe { string_release(value) };
+                assert_eq!(closes.load(Ordering::Relaxed), 1);
+                let kind = crate::stream_error::take_last_error_kind();
+                let errno = crate::stream_error::take_last_errno();
+                let error = take_last_error();
+                if read_fails {
+                    assert!(failed);
+                    assert!(value.is_null(), "partial contents must not escape");
+                    assert_eq!((kind, errno), (2, 0));
+                    let error = error.expect("the read failure remains primary");
+                    assert!(error.starts_with("primary read failure"));
+                    if let Some(secondary) = close_error {
+                        assert!(error.contains("stream close failed"), "{error}");
+                        assert!(error.ends_with(secondary), "{error}");
+                    } else {
+                        assert_eq!(error, "primary read failure");
+                    }
+                } else if let Some(secondary) = close_error {
+                    assert!(failed, "even empty close errors must remain present");
+                    assert!(value.is_null(), "failed close must release collected text");
+                    assert_eq!((kind, errno), (3, 17));
+                    assert_eq!(error.as_deref(), Some(secondary));
+                } else {
+                    assert!(!failed);
+                    assert_eq!(bytes, prefix);
+                    assert_eq!((kind, errno), (0, 0));
+                    assert!(error.is_none());
+                }
+            }
         }
     }
 

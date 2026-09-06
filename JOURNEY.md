@@ -1973,3 +1973,19 @@ new producer but still has tests tied to replaced projection/reconstruction
 shapes; those assertions need migration while preserving their borrow, ordering
 and fault obligations. Native partial storage remains deliberately refused until
 physical realization is integrated; this is a producer checkpoint.
+
+## Preserve aggregate ownership oracles after projected lowering
+
+Aggregate tests now inspect canonical local field paths, root identities and
+explicit loads. A temporary aggregate retains the genuine nested loan chain
+needed to test parent-loan lifetime rules; local nested fields exercise direct
+root loans and the same ended-loan, ownership and fault-cleanup refusals.
+
+Runtime mutation checks follow the returned receiver into its existing field
+before the next take. Failure checks require cleanup of the partially
+initialized root and reject removal of that cleanup. Record copies still have
+independent roots, while cursor reads borrow the exact vector field.
+
+The affected test binaries and the full SIR component pass. This validates
+semantic lowering and verification; native partial-field realization remains a
+separate integration requirement.

@@ -102,7 +102,9 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
     {
         if matches!(
             operation.kind,
-            SemOpKind::CopyValue { .. } | SemOpKind::AggregateProjectCopy { .. }
+            SemOpKind::CopyValue { .. }
+                | SemOpKind::AggregateProjectCopy { .. }
+                | SemOpKind::LoadCopy { .. }
         ) {
             assert!(operation.results.iter().all(|result| {
                 hew_types::runtime_call::collection_type_arguments(&result.ty).is_none()
@@ -143,61 +145,108 @@ fn later_argument_updates_are_in_the_receiver_version_taken_by_push() {
         }
     "#,
     );
+    assert_receiver_update_order(&module);
+}
+
+fn assert_receiver_update_order(module: &SemModule) {
     let main = module
         .functions
         .iter()
         .find(|function| function.name == "main")
         .unwrap();
-    let versions: Vec<_> = main
+    let BindingTarget::Value(root) = main
         .bindings
         .iter()
-        .filter(|binding| binding.name == "state")
-        .filter_map(|binding| match binding.target {
-            BindingTarget::Value(value) => Some(value),
-            BindingTarget::Place(_) => None,
-        })
-        .collect();
-    assert!(
-        versions.len() >= 4,
-        "initial, sibling assignment, clear and push versions"
-    );
-    let call = main
+        .find(|binding| binding.name == "state")
+        .unwrap()
+        .target
+    else {
+        panic!("state must retain its owning SSA root")
+    };
+    let plan =
+        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
+            .unwrap();
+    let clear = runtime_block(main, RuntimeCallFamily::Vector(VecValueOp::Clear));
+    let SemTerminator::RtCall {
+        normal,
+        args: clear_args,
+        ..
+    } = &clear.terminator
+    else {
+        unreachable!()
+    };
+    let push = main
         .blocks
         .iter()
-        .rev()
-        .find_map(|block| match &block.terminator {
-            SemTerminator::RtCall {
-                family: RuntimeCallFamily::Vector(VecValueOp::Push),
-                args,
-                ..
-            } => Some(args[0].operand.value),
-            _ => None,
-        })
+        .find(|block| block.id == normal.target)
         .unwrap();
-    let operations: Vec<_> = main.blocks.iter().flat_map(|block| &block.ops).collect();
-    let leaf = operations
-        .iter()
-        .find_map(|operation| match &operation.kind {
-            SemOpKind::Move { source } if operation.results[0].id == call => Some(source.value),
-            _ => None,
-        })
-        .unwrap();
-    let parent = operations
-        .iter()
-        .find_map(|operation| match &operation.kind {
-            SemOpKind::Destructure { aggregate, .. }
-                if operation.results.iter().any(|result| result.id == leaf) =>
-            {
-                Some(aggregate.value)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let SemTerminator::RtCall {
+        family: RuntimeCallFamily::Vector(VecValueOp::Push),
+        args,
+        normal,
+        ..
+    } = &push.terminator
+    else {
+        panic!("push must follow the later argument's clear")
+    };
+    let (_, place) = taken_receiver(push, args[0].operand.value);
+    assert_eq!(place, taken_receiver(clear, clear_args[0].operand.value).1);
+    let field = plan.projection(place).unwrap();
+    assert_eq!(field.root, root);
     assert_eq!(
-        parent,
-        versions[versions.len() - 2],
-        "take the version after both later-argument mutations"
+        field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
+        [0]
     );
+    let sibling_write = clear
+        .ops
+        .iter()
+        .position(|op| match op.kind {
+            SemOpKind::StoreAssign { place, .. } => {
+                let sibling = plan.projection(place).unwrap();
+                sibling.root == root
+                    && sibling
+                        .path
+                        .iter()
+                        .map(|step| step.field)
+                        .collect::<Vec<_>>()
+                        == [1]
+            }
+            _ => false,
+        })
+        .unwrap();
+    let clear_take = clear
+        .ops
+        .iter()
+        .position(|op| matches!(op.kind, SemOpKind::LoadTake { place: p } if p == place))
+        .unwrap();
+    assert!(
+        sibling_write < clear_take,
+        "sibling replacement precedes clearing the receiver"
+    );
+    let clear_write = returned_receiver_store(push, place);
+    let push_take = push
+        .ops
+        .iter()
+        .position(|op| matches!(op.kind, SemOpKind::LoadTake { place: p } if p == place))
+        .unwrap();
+    assert!(
+        clear_write < push_take,
+        "push takes the field after installing clear's returned receiver"
+    );
+    let after_push = main
+        .blocks
+        .iter()
+        .find(|block| block.id == normal.target)
+        .unwrap();
+    returned_receiver_store(after_push, place);
+    for block in &main.blocks {
+        if matches!(
+            block.terminator,
+            SemTerminator::Return { .. } | SemTerminator::Trap { .. }
+        ) {
+            assert_root_cleanup(block, root);
+        }
+    }
 }
 
 #[test]
@@ -255,7 +304,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         .iter()
         .find(|function| function.name == "main")
         .unwrap();
-    let (moved, cleanup) = main
+    let (call, moved, cleanup) = main
         .blocks
         .iter()
         .rev()
@@ -265,34 +314,24 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
                 args,
                 unwind: CallUnwind::Cleanup(edge),
                 ..
-            } if *actual == family => Some((args[0].operand.value, edge.target)),
+            } if *actual == family => Some((block, args[0].operand.value, edge.target)),
             _ => None,
         })
         .unwrap();
-    let operations: Vec<_> = main.blocks.iter().flat_map(|block| &block.ops).collect();
-    let leaf = operations
-        .iter()
-        .find_map(|operation| match &operation.kind {
-            SemOpKind::Move { source } if operation.results[0].id == moved => Some(source.value),
-            _ => None,
-        })
-        .unwrap();
-    let fields = operations
-        .iter()
-        .find(|operation| {
-            matches!(operation.kind, SemOpKind::Destructure { .. })
-                && operation.results.iter().any(|result| result.id == leaf)
-        })
-        .unwrap();
-    let siblings: Vec<_> = fields
-        .results
-        .iter()
-        .filter(|result| result.id != leaf && result.own == OwnKind::Owned)
-        .map(|result| result.id)
-        .collect();
+    let (leaf, place) = taken_receiver(call, moved);
+    let plan =
+        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
+            .unwrap();
+    let field = plan.projection(place).unwrap();
+    assert_eq!(
+        field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
+        [0]
+    );
     assert!(
-        !siblings.is_empty(),
-        "fixture must retain an owned parent sibling"
+        plan.leaves(field.root).unwrap().iter().any(|&sibling| {
+            sibling != place && plan.projection(sibling).unwrap().recipe.own == OwnKind::Owned
+        }),
+        "fixture must retain an owned sibling in the root partition"
     );
     let destroyed: Vec<ValueId> = main.blocks[cleanup.0 as usize]
         .ops
@@ -302,12 +341,37 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
             _ => None,
         })
         .collect();
-    for sibling in siblings {
-        assert!(
-            destroyed.contains(&sibling),
-            "retained sibling missing from cleanup"
-        );
-    }
+    assert_eq!(
+        destroyed
+            .iter()
+            .filter(|&&value| value == field.root)
+            .count(),
+        1,
+        "the partially initialized root must clean up its remaining fields exactly once"
+    );
+    assert!(!main.blocks[cleanup.0 as usize].ops.iter().any(|op| matches!(op.kind,
+        SemOpKind::StoreAssign { place: p, .. } | SemOpKind::StoreInit { place: p, .. } if p == place)),
+        "failure cannot reinstall the consumed receiver");
+    let mut missing_cleanup = module.clone();
+    let fault = missing_cleanup
+        .functions
+        .iter_mut()
+        .find(|f| f.name == "main")
+        .unwrap()
+        .blocks
+        .iter_mut()
+        .find(|block| block.id == cleanup)
+        .unwrap();
+    fault.ops.retain(
+        |op| !matches!(&op.kind, SemOpKind::DestroyValue { value } if value.value == field.root),
+    );
+    assert!(
+        verify_module(&missing_cleanup)
+            .iter()
+            .any(|error| matches!(error.kind,
+        hew_sir::SirDiagnosticKind::OwnershipLifetime { value, .. } if value == field.root)),
+        "omitting remaining-root cleanup must be rejected"
+    );
     assert!(
         !destroyed.contains(&leaf) && !destroyed.contains(&moved),
         "runtime consumes the receiver on failure"
@@ -463,4 +527,54 @@ fn malformed_mutable_places_cannot_bypass_root_or_projection_checks() {
             "{expected}: {status:?}"
         );
     }
+}
+
+fn taken_receiver(block: &hew_sir::SemBlock, receiver: ValueId) -> (ValueId, hew_sir::PlaceId) {
+    let leaf = block
+        .ops
+        .iter()
+        .find_map(|op| match &op.kind {
+            SemOpKind::Move { source } if op.results[0].id == receiver => Some(source.value),
+            _ => None,
+        })
+        .unwrap();
+    let place = block
+        .ops
+        .iter()
+        .find_map(|op| match op.kind {
+            SemOpKind::LoadTake { place } if op.results[0].id == leaf => Some(place),
+            _ => None,
+        })
+        .unwrap();
+    (leaf, place)
+}
+
+fn runtime_block(function: &hew_sir::SemFunction, family: RuntimeCallFamily) -> &hew_sir::SemBlock {
+    function
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(block.terminator,
+        SemTerminator::RtCall { family: actual, .. } if actual == family)
+        })
+        .unwrap()
+}
+
+fn returned_receiver_store(block: &hew_sir::SemBlock, place: hew_sir::PlaceId) -> usize {
+    block.ops.iter().position(|op| matches!(&op.kind,
+        SemOpKind::StoreAssign { place: p, value } if *p == place && value.value == block.args[0].value))
+        .expect("store the returned receiver into the same projected field")
+}
+
+fn assert_root_cleanup(block: &hew_sir::SemBlock, root: ValueId) {
+    assert_eq!(
+        block
+            .ops
+            .iter()
+            .filter(|op| matches!(&op.kind,
+        SemOpKind::DestroyValue { value } if value.value == root))
+            .count(),
+        1,
+        "each exit cleans up the remaining root exactly once"
+    );
 }

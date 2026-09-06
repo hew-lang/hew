@@ -74,14 +74,35 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
             }
         )
     }));
+    let plan = hew_sir::aggregate_projection_plan(
+        main,
+        &lowered.module.aggregate_shapes,
+        &lowered.module.type_facts,
+    )
+    .unwrap();
+    let fields: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.ops)
+        .filter_map(|op| match &op.kind {
+            SemOpKind::LoadBorrow { place, environment } => {
+                let projection = plan.projection(*place).unwrap();
+                assert_eq!(projection.root, environment.value);
+                assert_eq!(projection.path.len(), 1);
+                assert_eq!(projection.path[0].shape, AggregateShapeRef::Tuple);
+                assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
+                Some((projection.root, projection.path[0].field))
+            }
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        main.blocks
-            .iter()
-            .flat_map(|block| &block.ops)
-            .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
-            .count(),
-        3,
-        "each read-only tuple argument must produce an explicit field loan"
+        fields.iter().map(|(_, field)| *field).collect::<Vec<_>>(),
+        [0, 0, 1]
+    );
+    assert!(
+        fields.iter().all(|(root, _)| *root == fields[0].0),
+        "repeated reads borrow the same tuple owner"
     );
 }
 
@@ -123,19 +144,45 @@ fn owned_record_shape_and_field_order_are_exact() {
         ["label", "payload"],
         "the descriptor must retain declaration order, not initializer order"
     );
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .unwrap();
+    let plan = hew_sir::aggregate_projection_plan(
+        main,
+        &lowered.module.aggregate_shapes,
+        &lowered.module.type_facts,
+    )
+    .unwrap();
+    let fields: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.ops)
+        .filter_map(|op| match &op.kind {
+            SemOpKind::LoadBorrow { place, environment } => {
+                let projection = plan.projection(*place).unwrap();
+                assert_eq!(projection.root, environment.value);
+                assert_eq!(projection.path.len(), 1);
+                assert_eq!(
+                    projection.path[0].shape,
+                    AggregateShapeRef::Record(shape.id)
+                );
+                Some((projection.root, projection.path[0].field))
+            }
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        lowered
-            .module
-            .functions
-            .iter()
-            .find(|function| function.name == "main")
-            .expect("main must have a body")
-            .blocks
-            .iter()
-            .flat_map(|block| &block.ops)
-            .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
-            .count(),
-        4
+        fields.iter().map(|(_, field)| *field).collect::<Vec<_>>(),
+        [0, 0, 1, 0]
+    );
+    assert_eq!(fields[0].0, fields[1].0);
+    assert_eq!(fields[0].0, fields[2].0);
+    assert_ne!(
+        fields[0].0, fields[3].0,
+        "the copied record must have an independent owner"
     );
     assert!(
         lowered.module.functions.iter().any(|function| {
@@ -173,7 +220,7 @@ fn owned_projection_refuses_a_missing_clone_recipe() {
         .iter()
         .flat_map(|function| &function.blocks)
         .flat_map(|block| &block.ops)
-        .find(|op| matches!(op.kind, SemOpKind::AggregateProjectCopy { .. }))
+        .find(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
         .expect("source must produce an aggregate projection")
         .id;
     lowered
@@ -413,7 +460,7 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         .blocks
         .iter()
         .flat_map(|b| &b.ops)
-        .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
+        .filter(|op| matches!(op.kind, SemOpKind::LoadBorrow { .. }))
         .map(|op| {
             assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
             op.results[0].id
@@ -421,8 +468,41 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         .collect();
     assert_eq!(
         loans.len(),
-        3,
-        "record, tuple and nested record must all borrow"
+        1,
+        "the leaf borrows directly from its owning root"
+    );
+    let plan = hew_sir::aggregate_projection_plan(
+        main,
+        &lowered.module.aggregate_shapes,
+        &lowered.module.type_facts,
+    )
+    .unwrap();
+    let (place, owner) = main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.ops)
+        .find_map(|op| match &op.kind {
+            SemOpKind::LoadBorrow { place, environment } if op.results[0].id == loans[0] => {
+                Some((*place, environment.value))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let projection = plan.projection(place).unwrap();
+    assert_eq!(projection.root, owner);
+    assert_eq!(
+        projection
+            .path
+            .iter()
+            .map(|step| step.field)
+            .collect::<Vec<_>>(),
+        [0, 0, 0]
+    );
+    assert_eq!(projection.recipe.own, hew_sir::OwnKind::Owned);
+    assert_eq!(
+        plan.leaves(owner).unwrap().len(),
+        2,
+        "include the retained tuple sibling"
     );
     let (normal, fault) = main
         .blocks
@@ -544,7 +624,7 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
             .unwrap();
         assert!(
             main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
-                matches!(op.kind, SemOpKind::AggregateProjectCopy { .. })
+                matches!(op.kind, SemOpKind::LoadCopy { .. })
                     && op.results[0].id == captured
                     && op.results[0].own == hew_sir::OwnKind::Owned
             }),
@@ -554,7 +634,7 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
 }
 
 #[test]
-fn scalar_arguments_borrow_owning_intermediate_records() {
+fn scalar_arguments_copy_the_exact_nested_leaf() {
     let lowered = lower_source(
         r#"
         type Inner { items: Vec<string>, count: i64 }
@@ -574,17 +654,38 @@ fn scalar_arguments_borrow_owning_intermediate_records() {
         .find(|f| f.name == "main")
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
+    let plan = hew_sir::aggregate_projection_plan(
+        main,
+        &lowered.module.aggregate_shapes,
+        &lowered.module.type_facts,
+    )
+    .unwrap();
+    let scalar = operations
+        .iter()
+        .find(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
+        .unwrap();
+    let SemOpKind::LoadCopy { place } = scalar.kind else {
+        unreachable!()
+    };
+    let projection = plan.projection(place).unwrap();
     assert_eq!(
-        operations
+        projection
+            .path
             .iter()
-            .filter(|op| { matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }) })
-            .count(),
-        1,
-        "the intermediate owning record needs a loan"
+            .map(|step| step.field)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(projection.recipe.own, hew_sir::OwnKind::None);
+    assert!(
+        !operations
+            .iter()
+            .any(|op| matches!(op.kind, SemOpKind::LoadBorrow { .. })),
+        "reading a scalar leaf needs no intermediate owner loan"
     );
     assert!(
         operations.iter().any(|op| {
-            matches!(op.kind, SemOpKind::AggregateProjectCopy { .. })
+            matches!(op.kind, SemOpKind::LoadCopy { .. })
                 && op.results[0].own == hew_sir::OwnKind::None
                 && op.results[0].ty == hew_types::ResolvedTy::I64
         }),
@@ -613,7 +714,7 @@ fn runtime_read_keeps_bindings_replaced_by_index_evaluation() {
         .unwrap();
     assert!(
         main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
-            matches!(op.kind, SemOpKind::AggregateProjectCopy { .. })
+            matches!(op.kind, SemOpKind::LoadCopy { .. })
                 && op.results[0].own == hew_sir::OwnKind::Owned
         }),
         "the receiver must be captured before the index expression replaces it"

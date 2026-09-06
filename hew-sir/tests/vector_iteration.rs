@@ -96,8 +96,38 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
             reads += 1;
             assert!(
                 operations.iter().any(|op| {
-                    matches!(op.kind, hew_sir::SemOpKind::AggregateProjectBorrow { .. })
-                        && op.results[0].id == args[0].operand.value
+                    if op
+                        .results
+                        .first()
+                        .is_none_or(|result| result.id != args[0].operand.value)
+                    {
+                        return false;
+                    }
+                    let hew_sir::SemOpKind::LoadBorrow { place, environment } = &op.kind else {
+                        return false;
+                    };
+                    let plan = hew_sir::aggregate_projection_plan(
+                        main,
+                        &module.aggregate_shapes,
+                        &module.type_facts,
+                    )
+                    .unwrap();
+                    let projection = plan.projection(*place).unwrap();
+                    assert_eq!(projection.root, environment.value);
+                    let [step] = projection.path.as_slice() else {
+                        panic!("cursor field must be direct")
+                    };
+                    let hew_sir::AggregateShapeRef::Record(id) = step.shape else {
+                        panic!("cursor must be a record")
+                    };
+                    let shape = module
+                        .aggregate_shapes
+                        .iter()
+                        .find(|shape| shape.id == id)
+                        .unwrap();
+                    assert_eq!(shape.instance.nominal.full_path(), "std.builtins.VecIter");
+                    assert_eq!(shape.fields[step.field as usize].ty, op.results[0].ty);
+                    op.results[0].own == hew_sir::OwnKind::Guaranteed
                 }),
                 "each cursor read must borrow its vector field"
             );
@@ -106,8 +136,11 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
     assert_eq!(reads, 2, "cursor next needs one length and one item read");
     assert!(
         !operations.iter().any(|op| {
-            matches!(op.kind, hew_sir::SemOpKind::AggregateProjectCopy { .. })
-                && op.results[0].own == hew_sir::OwnKind::Owned
+            matches!(
+                op.kind,
+                hew_sir::SemOpKind::AggregateProjectCopy { .. }
+                    | hew_sir::SemOpKind::LoadCopy { .. }
+            ) && op.results[0].own == hew_sir::OwnKind::Owned
         }),
         "cursor traversal must not clone its owning fields"
     );

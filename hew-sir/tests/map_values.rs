@@ -275,7 +275,7 @@ fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
         .collect();
     let field_loan = operations
         .iter()
-        .find(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
+        .find(|op| matches!(op.kind, SemOpKind::LoadBorrow { .. }))
         .expect("cloning the map field must borrow its parent")
         .results[0]
         .id;
@@ -328,8 +328,24 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
         .iter()
         .flat_map(|b| &b.ops)
         .find_map(|op| match &op.kind {
-            SemOpKind::AggregateProjectBorrow { aggregate, .. } if op.results[0].id == borrowed => {
-                Some(aggregate.value)
+            SemOpKind::LoadBorrow { place, environment } if op.results[0].id == borrowed => {
+                let plan = hew_sir::aggregate_projection_plan(
+                    main,
+                    &module.aggregate_shapes,
+                    &module.type_facts,
+                )
+                .unwrap();
+                let projection = plan.projection(*place).unwrap();
+                assert_eq!(projection.root, environment.value);
+                assert_eq!(
+                    projection
+                        .path
+                        .iter()
+                        .map(|step| step.field)
+                        .collect::<Vec<_>>(),
+                    [0]
+                );
+                Some(projection.root)
             }
             _ => None,
         })

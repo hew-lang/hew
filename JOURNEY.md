@@ -2218,3 +2218,15 @@ instead of being discarded. The runtime suites pass normally and under address
 and leak sanitizers, covering integer boundaries, tagged containers and scalars,
 and an actual nested-tag serialization failure followed by a successful encode.
 Source wrapper integration remains separate.
+
+## Retire encoding resource lifecycle metadata
+
+JSON and YAML FFI contracts now describe independent data owners rather than
+external resources. Borrowed and consuming parameters retain their existing
+ownership effects, and fresh results retain deep release through the existing
+destructors. Removing the obsolete resource identities prevents generated
+lifecycle candidates from demanding a source `close` method after the ordinary
+value API cutover. Canonical type facts own automatic copy and destruction.
+
+The FFI ownership and generated C ABI checks pass. Source wrapper integration
+still needs to verify the complete replacement through HIR and native lowering.

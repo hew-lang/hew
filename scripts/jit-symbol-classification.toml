@@ -5428,18 +5428,14 @@ discharge-depth = "none"
 symbol = "hew_json_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "clones the selected serde_json value into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_array_len"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5447,17 +5443,14 @@ discharge-depth = "none"
 symbol = "hew_json_array_new"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new empty serde_json array and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_array_push"
 result = "none"
 params = ["borrow", "consume"]
-resource-param-types = ["std.encoding.json.Value", "std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5465,7 +5458,6 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_bool"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5473,7 +5465,6 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_float"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5481,7 +5472,6 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_int"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5489,7 +5479,6 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_null"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5497,7 +5486,6 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_string"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5520,7 +5508,6 @@ discharge-depth = "none"
 symbol = "hew_json_free"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5528,51 +5515,41 @@ discharge-depth = "none"
 symbol = "hew_json_from_bool"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_json boolean and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_float"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "for a representable float, constructs a new serde_json number and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_int"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_json integer and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_null"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_json null and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_string"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "copies the C string into a new serde_json string and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_u64"
@@ -5586,7 +5563,6 @@ result-retention = "transferred"
 symbol = "hew_json_get_bool"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5594,18 +5570,14 @@ discharge-depth = "none"
 symbol = "hew_json_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "clones the selected object field into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_get_float"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5613,7 +5585,6 @@ discharge-depth = "none"
 symbol = "hew_json_int_status"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5621,7 +5592,6 @@ discharge-depth = "none"
 symbol = "hew_json_unrepresentable_int_count"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5629,7 +5599,6 @@ discharge-depth = "none"
 symbol = "hew_json_get_int"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5637,7 +5606,6 @@ discharge-depth = "none"
 symbol = "hew_json_get_string"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5661,32 +5629,22 @@ result-retention = "transferred"
 symbol = "hew_json_object_keys"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "copies object keys into a new serde_json array and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_new"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new empty serde_json object and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_set"
 result = "none"
 params = ["borrow", "borrow", "consume"]
-resource-param-types = [
-  "std.encoding.json.Value",
-  "",
-  "std.encoding.json.Value",
-]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5694,7 +5652,6 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_bool"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5702,7 +5659,6 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_float"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5710,7 +5666,6 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_int"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5718,7 +5673,6 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_null"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5726,7 +5680,6 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_string"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5734,17 +5687,14 @@ discharge-depth = "none"
 symbol = "hew_json_parse"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "successful serde_json parsing moves the new value into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_stringify"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5753,7 +5703,6 @@ result-retention = "transferred"
 symbol = "hew_json_type"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6028,18 +5977,14 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "clones the selected serde_yaml value into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_array_len"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6047,17 +5992,14 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_new"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new empty serde_yaml sequence and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_array_push"
 result = "none"
 params = ["borrow", "consume"]
-resource-param-types = ["std.encoding.yaml.Value", "std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6065,7 +6007,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_bool"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6073,7 +6014,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_float"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6081,7 +6021,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_int"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6089,7 +6028,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_null"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6097,7 +6035,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_string"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6120,7 +6057,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_free"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6128,51 +6064,41 @@ discharge-depth = "none"
 symbol = "hew_yaml_from_bool"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_yaml boolean and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_float"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_yaml number and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_int"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_yaml integer and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_null"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new serde_yaml null and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_string"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "copies the C string into a new serde_yaml string and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_u64"
@@ -6186,7 +6112,6 @@ result-retention = "transferred"
 symbol = "hew_yaml_get_bool"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6194,18 +6119,14 @@ discharge-depth = "none"
 symbol = "hew_yaml_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "clones the selected mapping field into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_float"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6213,7 +6134,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_int_status"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6221,7 +6141,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_unrepresentable_int_count"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6229,7 +6148,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_get_int"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6237,7 +6155,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_get_string"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -6261,21 +6178,14 @@ result-retention = "transferred"
 symbol = "hew_yaml_object_new"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new empty serde_yaml mapping and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_object_set"
 result = "none"
 params = ["borrow", "borrow", "consume"]
-resource-param-types = [
-  "std.encoding.yaml.Value",
-  "",
-  "std.encoding.yaml.Value",
-]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6283,7 +6193,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_bool"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6291,7 +6200,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_float"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6299,7 +6207,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_int"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6307,7 +6214,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_null"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6315,7 +6221,6 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_string"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6323,17 +6228,14 @@ discharge-depth = "none"
 symbol = "hew_yaml_parse"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "successful serde_yaml parsing moves the new value into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_stringify"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -6342,7 +6244,6 @@ result-retention = "transferred"
 symbol = "hew_yaml_type"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 

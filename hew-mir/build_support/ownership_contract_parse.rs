@@ -148,6 +148,10 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
             "borrowed/none result for {symbol} must carry no release axis"
         );
     }
+    validate_result_retention(symbol, row);
+}
+
+fn validate_result_retention(symbol: &str, row: &ContractRow) {
     // The RETENTION axis. Absence is the fail-closed answer "not established",
     // so only measured positive spellings are allowed, and they are meaningful
     // only about an allocation the caller was actually given.
@@ -160,6 +164,10 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
     assert!(
         row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained" | "owned"),
         "result-retention for {symbol} is meaningless without an owned result"
+    );
+    assert!(
+        row.result != "owned" || !row.result_retention.is_empty(),
+        "owned result for {symbol} requires explicit result-retention"
     );
     assert!(
         row.result_retention != "shared-refcount" || row.result == "retained",

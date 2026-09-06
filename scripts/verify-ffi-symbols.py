@@ -505,6 +505,8 @@ def validate_ownership_contracts(
                 'and discharge-depth = "none"'
             )
 
+        if result == "owned" and "result-retention" not in contract:
+            errors.append(f"{location} owned result requires explicit result-retention")
         if "result-retention" in contract:
             retention = contract.get("result-retention")
             if retention not in RESULT_RETENTIONS:

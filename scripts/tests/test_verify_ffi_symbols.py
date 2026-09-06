@@ -258,6 +258,10 @@ def test_owned_result_requires_release_without_claiming_a_refcount_share() -> No
     assert not ownership_errors_for_source(source.replace(old, owned))
     for bad, diagnostic in [
         (
+            owned.replace('result-retention = "transferred"', ""),
+            "owned result requires explicit result-retention",
+        ),
+        (
             owned.replace('release-symbol = "hew_bytes_drop"', 'release-symbol = ""'),
             "owned result requires release-symbol",
         ),

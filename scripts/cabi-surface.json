@@ -5535,6 +5535,19 @@
         "native"
       ],
       "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_combine( *mut HewFault, *mut HewFault, ) -> *mut HewFault"
+      },
+      "symbol": "hew_fault_combine"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "internal",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",

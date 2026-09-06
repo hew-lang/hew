@@ -135,6 +135,7 @@ fn owned_result_keeps_release_obligations_without_claiming_freshness() {
     let rows = parse_ownership_contracts(&source);
     assert_eq!(rows["example_string_to_bytes"].result, "owned");
     for invalid in [
+        source.replace("result-retention = \"transferred\"", ""),
         source.replace(
             "release-symbol = \"example_bytes_drop\"",
             "release-symbol = \"\"",

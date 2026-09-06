@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1512u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1513u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1512] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1513] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -1949,6 +1949,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1512] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_clear_all", "{\"native\": \"fn hew_fault_clear_all()\"}",
      "native", "internal", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fault_combine",
+     "{\"native\": \"fn hew_fault_combine( *mut HewFault, *mut HewFault, ) -> "
+     "*mut HewFault\"}",
+     "native", "internal", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_count", "{\"native\": \"fn hew_fault_count() -> u32\"}",
      "native", "internal", "not-applicable", "not-applicable",

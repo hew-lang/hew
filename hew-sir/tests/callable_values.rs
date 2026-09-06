@@ -123,3 +123,110 @@ fn captured_snapshots_and_escaped_environments_have_exact_body_instances() {
             .any(|operation| matches!(operation.kind, SemOpKind::LoadCopy { .. })));
     }
 }
+
+#[test]
+fn copied_private_counter_uses_mutable_receiver_and_capture_storage() {
+    let module = lower_source(
+        r"
+        fn make_counter(start: i64) -> fn[var, clone]() -> i64 {
+            let count = start;
+            capture(var count) || { count = count + 1; count }
+        }
+        fn main() -> i64 {
+            var first = make_counter(10);
+            println(first());
+            var second = first;
+            println(first());
+            println(first());
+            second()
+        }
+    ",
+    );
+    assert!(module
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::StoreAssign { .. })));
+    assert!(module.functions.iter().flat_map(|function| &function.blocks)
+        .any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::BorrowMut)));
+}
+
+#[test]
+fn nested_owned_closure_can_outlive_the_environment_that_created_it() {
+    let module = lower_source(
+        r#"
+        fn factory() -> fn() -> fn() -> string {
+            let word = "Ready";
+            || { let local = word; || local }
+        }
+        fn main() -> i64 {
+            let outer = factory();
+            let inner = outer();
+            println(inner());
+            0
+        }
+    "#,
+    );
+    assert_eq!(module.closures.len(), 2);
+    assert_eq!(
+        module.closures[1].instance.enclosing,
+        module.closures[0].body
+    );
+}
+
+#[test]
+fn consuming_capture_is_taken_before_invocation_and_environment_cleanup() {
+    let module = lower_source(
+        r"
+        fn answer() -> i64 { 42 }
+        fn main() -> i64 {
+            let callback: fn[once]() -> i64 = answer;
+            let outer = move || callback();
+            outer()
+        }
+    ",
+    );
+    let closure = &module.closures[0];
+    let body = module
+        .functions
+        .iter()
+        .find(|function| function.callable == closure.body)
+        .unwrap();
+    assert_eq!(body.params[0].own, hew_sir::OwnKind::Owned);
+    assert!(body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::LoadTake { .. })));
+}
+
+#[test]
+fn captured_receiver_loan_ends_when_argument_evaluation_faults() {
+    lower_source(
+        r"
+        fn increment(value: i64) -> i64 { value + 1 }
+        fn main() -> i64 {
+            let callback = increment;
+            let outer = move |divisor: i64| callback(100 / divisor);
+            outer(0)
+        }
+    ",
+    );
+}
+
+#[test]
+fn remaining_capture_can_be_borrowed_after_another_capture_is_consumed() {
+    lower_source(
+        r"
+        fn answer() -> i64 { 41 }
+        fn increment(value: i64) -> i64 { value + 1 }
+        fn main() -> i64 {
+            let once: fn[once]() -> i64 = answer;
+            let read = increment;
+            let outer = move || { let value = once(); read(value) };
+            outer()
+        }
+    ",
+    );
+}

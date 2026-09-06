@@ -401,7 +401,10 @@ impl<'a> Flow<'a> {
             self.capture_operation(id, &op.kind, state, emit);
             let consumes = operation_consumes_operands(&op.kind);
             op.visit_operands(|_, operand| {
-                if !matches!(op.kind, SemOpKind::DestroyValue { .. }) {
+                if !matches!(
+                    op.kind,
+                    SemOpKind::DestroyValue { .. } | SemOpKind::LoadBorrow { .. }
+                ) {
                     self.require_complete_environment(id, operand.value, state, emit);
                 }
                 self.access(id, operand.value, consumes, state, emit);

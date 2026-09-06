@@ -1716,3 +1716,14 @@ Lexer syntax-metadata validation passed through Make.
 Generic function-value instantiation and editor grammar propagation remain for
 the next source checkpoint. Native invocation and runtime lifetime acceptance
 remain integration work.
+
+## Combined capture ownership paths
+
+Source verification now covers the approved mutable-counter syntax, independent
+callable copying, nested escaping environments, consuming captured callables
+and borrowing a remaining field after another field has been consumed.
+Argument evaluation retains its already-evaluated receiver loan through nested
+calls and arithmetic checks; terminating argument paths end that loan before
+environment cleanup. The focused callable source suite passes these combined
+paths. Native invocation and sanitizer acceptance remain pending physical
+integration.

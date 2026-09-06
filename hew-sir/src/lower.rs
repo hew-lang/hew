@@ -2270,6 +2270,9 @@ struct Builder<'hir, 'service> {
     loops: Vec<Option<LoopScope>>,
     places: Vec<crate::PlaceDecl>,
     capture_places: HashMap<BindingId, crate::PlaceId>,
+    /// Receivers already evaluated while their arguments are being lowered.
+    /// A terminating argument path must end these loans before owner cleanup.
+    argument_receiver_loans: Vec<ValueId>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2356,6 +2359,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             loops: Vec::new(),
             places: Vec::new(),
             capture_places: HashMap::new(),
+            argument_receiver_loans: Vec::new(),
         };
         builder.bind_captures(source)?;
         Ok(builder)
@@ -2867,6 +2871,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn destroy_all_live(&mut self) -> Result<(), String> {
+        // Keep the lexical stack: another generated continuation can still
+        // finish the enclosing call's argument evaluation normally.
+        self.end_call_loans(&self.argument_receiver_loans.clone())?;
         let values: Vec<_> = self.owned_live.keys().copied().collect();
         for value in values.into_iter().rev() {
             self.emit_destroy(value)?;
@@ -5493,6 +5500,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string(),
             );
         }
+        let receiver_loan_depth = self.argument_receiver_loans.len();
+        self.argument_receiver_loans.extend(&loans);
         let mut lowered_args = Vec::with_capacity(args.len());
         for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
             let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
@@ -5522,6 +5531,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             });
         }
+        self.argument_receiver_loans.truncate(receiver_loan_depth);
         if let PreparedCallee::Indirect(receiver) = &callee {
             if receiver.decision == crate::BoundaryDecision::Move {
                 self.owned_live.remove(&receiver.operand.value);

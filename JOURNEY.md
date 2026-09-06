@@ -2163,3 +2163,12 @@ embedded NULs, empty strings and mismatching or longer prefixes. Both input
 values remain usable. When a later argument replaces the receiver variable,
 the comparison still uses the value evaluated first, including replacement by
 an empty string. Paired generated/runtime sanitizer validation is next.
+
+## Validate borrowed string prefix execution
+
+The complete native acceptance and paired generated/runtime ASan/LSan suites
+pass at O0 and O2 with the prefix operation. Prefix and equality predicates
+preserve their distinct runtime result ABIs while sharing the boolean
+normalization path. The full lint run has clean Rust diagnostics; its benchmark
+now reaches the next unsupported string operation, `trim`. Machine lowering
+and the pinned grammar remain separate unfinished capabilities.

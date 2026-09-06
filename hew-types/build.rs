@@ -88,6 +88,7 @@ fn generate_ffi_ownership_table(contracts: &BTreeMap<String, ContractRow>, out_d
         let result = match row.result.as_str() {
             "fresh" => "ExternResultOwnership::Fresh",
             "retained" => "ExternResultOwnership::Retained",
+            "owned" => "ExternResultOwnership::Owned",
             "borrowed" => "ExternResultOwnership::Borrowed",
             "none" => "ExternResultOwnership::None",
             other => panic!("unmapped result ownership: {other}"),

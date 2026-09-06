@@ -71,7 +71,7 @@ fn quoted_list(body: &str) -> Vec<String> {
 /// validator would reject.
 fn validate_contract_row(symbol: &str, row: &ContractRow) {
     assert!(
-        ["fresh", "retained", "borrowed", "none"].contains(&row.result.as_str()),
+        ["fresh", "retained", "owned", "borrowed", "none"].contains(&row.result.as_str()),
         "unknown ownership result for {symbol}: {}",
         row.result
     );
@@ -128,7 +128,7 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
             "resource result type for {symbol} must be a qualified nominal: {resource_type}"
         );
         assert!(
-            matches!(row.result.as_str(), "fresh" | "retained"),
+            matches!(row.result.as_str(), "fresh" | "retained" | "owned"),
             "resource result type for {symbol} requires an owned result"
         );
     }
@@ -137,7 +137,7 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         "unknown discharge depth for {symbol}: {}",
         row.discharge_depth
     );
-    if matches!(row.result.as_str(), "fresh" | "retained") {
+    if matches!(row.result.as_str(), "fresh" | "retained" | "owned") {
         assert!(
             !row.release_symbol.is_empty() && row.discharge_depth != "none",
             "owned result for {symbol} requires release-symbol and discharge depth"
@@ -158,7 +158,7 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         row.result_retention
     );
     assert!(
-        row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained"),
+        row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained" | "owned"),
         "result-retention for {symbol} is meaningless without an owned result"
     );
     assert!(

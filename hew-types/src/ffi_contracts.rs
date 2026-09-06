@@ -21,6 +21,9 @@ pub enum ExternParamOwnership {
 pub enum ExternResultOwnership {
     Fresh,
     Retained,
+    /// An independently owned result, possibly reusing a consumed allocation.
+    /// This makes no new-allocation or additional-refcount claim.
+    Owned,
     Borrowed,
     None,
 }
@@ -164,7 +167,9 @@ pub(crate) fn owned_resource_result_for_contract(
     if owner_module.is_empty()
         || !matches!(
             contract.result,
-            ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+            ExternResultOwnership::Fresh
+                | ExternResultOwnership::Retained
+                | ExternResultOwnership::Owned
         )
         || contract.release_symbol.is_empty()
         || contract.discharge_depth == ReleaseDischargeDepth::None

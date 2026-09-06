@@ -43,7 +43,7 @@ STDLIB_SRC = ROOT / "hew-std" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
 FFI_OWNERSHIP_RATCHET = ROOT / "scripts" / "ffi-ownership-ratchet.toml"
 SOURCE_ENCODING = "utf-8"
-OWNERSHIP_RESULTS = {"fresh", "retained", "borrowed", "none"}
+OWNERSHIP_RESULTS = {"fresh", "retained", "owned", "borrowed", "none"}
 PARAM_OWNERSHIP = {"borrow", "consume", "retain"}
 DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
 # The RETENTION axis: whether the callee provably keeps no pointer into the
@@ -466,7 +466,7 @@ def validate_ownership_contracts(
                 errors.append(
                     f"{location} resource-result-type must be a qualified nominal"
                 )
-            if result not in {"fresh", "retained"}:
+            if result not in {"fresh", "retained", "owned"}:
                 errors.append(
                     f"{location} resource-result-type requires an owned result"
                 )
@@ -492,7 +492,7 @@ def validate_ownership_contracts(
             errors.append(
                 f"{location} discharge-depth must be one of {sorted(DISCHARGE_DEPTHS)}"
             )
-        elif result in {"fresh", "retained"}:
+        elif result in {"fresh", "retained", "owned"}:
             if not release_symbol:
                 errors.append(f"{location} owned result requires release-symbol")
             if discharge_depth == "none":
@@ -512,7 +512,7 @@ def validate_ownership_contracts(
                     f"{location} result-retention must be one of "
                     f"{sorted(RESULT_RETENTIONS)} when present"
                 )
-            elif result not in {"fresh", "retained"}:
+            elif result not in {"fresh", "retained", "owned"}:
                 errors.append(
                     f"{location} result-retention is meaningless without an "
                     "owned result"

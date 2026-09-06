@@ -241,6 +241,42 @@ def test_string_to_bytes_transfer_contract_is_exact() -> None:
     }
 
 
+def test_owned_result_requires_release_without_claiming_a_refcount_share() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    old = (
+        'symbol = "hew_string_to_bytes"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'release-symbol = "hew_bytes_drop"\n'
+        'discharge-depth = "shallow"\n'
+        'result-retention = "transferred"'
+    )
+    assert source.count(old) == 1
+    owned = old.replace('result = "fresh"', 'result = "owned"')
+    assert not ownership_errors_for_source(source.replace(old, owned))
+    for bad, diagnostic in [
+        (
+            owned.replace('release-symbol = "hew_bytes_drop"', 'release-symbol = ""'),
+            "owned result requires release-symbol",
+        ),
+        (
+            owned.replace('discharge-depth = "shallow"', 'discharge-depth = "none"'),
+            "owned result requires shallow or deep discharge",
+        ),
+        (
+            owned.replace(
+                'result-retention = "transferred"',
+                'result-retention = "shared-refcount"',
+            ),
+            "shared-refcount retention requires a retained result",
+        ),
+    ]:
+        errors = ownership_errors_for_source(source.replace(old, bad))
+        assert any(diagnostic in error for error in errors), errors
+
+
 def test_malformed_string_to_bytes_retention_fails_verification() -> None:
     source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
@@ -428,6 +464,7 @@ _TESTS = [
     test_c_unwind_machine_emit_exports_are_classified,
     test_local_pid_runtime_surface_is_jit_stable,
     test_string_to_bytes_transfer_contract_is_exact,
+    test_owned_result_requires_release_without_claiming_a_refcount_share,
     test_malformed_string_to_bytes_retention_fails_verification,
     test_transferred_result_with_resource_basis_fails_verification,
     test_resource_transfer_without_body_basis_fails_verification,

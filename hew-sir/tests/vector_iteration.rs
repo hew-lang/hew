@@ -103,17 +103,13 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
                     {
                         return false;
                     }
-                    let hew_sir::SemOpKind::LoadBorrow { place, environment } = &op.kind else {
+                    let hew_sir::SemOpKind::LoadBorrow { place } = &op.kind else {
                         return false;
                     };
-                    let plan = hew_sir::aggregate_projection_plan(
-                        main,
-                        &module.aggregate_shapes,
-                        &module.type_facts,
-                    )
-                    .unwrap();
+                    let plan =
+                        hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts)
+                            .unwrap();
                     let projection = plan.projection(*place).unwrap();
-                    assert_eq!(projection.root, environment.value);
                     let [step] = projection.path.as_slice() else {
                         panic!("cursor field must be direct")
                     };

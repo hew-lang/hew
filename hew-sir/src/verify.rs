@@ -853,7 +853,7 @@ pub(crate) fn verify_function_with_context(
             ));
         }
     }
-    let projections = crate::aggregate_projection_plan(function, aggregate_shapes, facts);
+    let projections = crate::place_plan(function, aggregate_shapes, facts);
     if let Err(reason) = &projections {
         diagnostics.push(diag(
             function,
@@ -1575,10 +1575,10 @@ fn verify_capture_operation(
     context: Option<&CallableContext<'_>>,
 ) -> Option<Result<(), String>> {
     let (place, stored, borrowed, takes) = match &operation.kind {
-        SemOpKind::LoadCopy { place } => (*place, None, None, false),
-        SemOpKind::LoadTake { place } => (*place, None, None, true),
-        SemOpKind::LoadBorrow { place, environment } => (*place, None, Some(environment), false),
-        SemOpKind::StoreAssign { place, value } => (*place, Some(value), None, false),
+        SemOpKind::LoadCopy { place } => (*place, None, false, false),
+        SemOpKind::LoadTake { place } => (*place, None, false, true),
+        SemOpKind::LoadBorrow { place } => (*place, None, true, false),
+        SemOpKind::StoreAssign { place, value } => (*place, Some(value), false, false),
         _ => return None,
     };
     Some((|| {
@@ -1588,7 +1588,7 @@ fn verify_capture_operation(
             .iter()
             .find(|decl| decl.id == place)
             .ok_or_else(|| "capture operation names an unknown place".to_string())?;
-        let crate::PlaceOrigin::Capture { environment, field } = decl.origin else {
+        let crate::PlaceOrigin::Capture { field, .. } = decl.origin else {
             return Err("capture operation requires an environment-owned place".to_string());
         };
         let field = closure
@@ -1616,9 +1616,8 @@ fn verify_capture_operation(
         if result.ty != decl.ty {
             return Err("capture load changes its field type".to_string());
         }
-        if let Some(parent) = borrowed {
-            if parent.value != environment || OwnKind::of_ty(&decl.ty, facts) != Ok(OwnKind::Owned)
-            {
+        if borrowed {
+            if OwnKind::of_ty(&decl.ty, facts) != Ok(OwnKind::Owned) {
                 return Err(
                     "capture loan requires its exact environment and an owning field".to_string(),
                 );
@@ -1691,13 +1690,14 @@ fn callable_mutation_permitted(
             });
         };
         if let SemOpKind::LoadBorrow { place, .. } = operation.kind {
-            if let Some(crate::PlaceDecl {
-                origin: crate::PlaceOrigin::Aggregate { root, .. },
-                ..
-            }) = function.places.iter().find(|decl| decl.id == place)
-            {
-                value = *root;
-                continue;
+            if let Ok((root, _)) = crate::projection::place_path(&function.places, place) {
+                match root {
+                    crate::OwnerRoot::Value(root) => {
+                        value = root;
+                        continue;
+                    }
+                    crate::OwnerRoot::Local(_) => return true,
+                }
             }
             return closure_for_body(function, context)
                 .ok()
@@ -1718,8 +1718,8 @@ fn callable_mutation_permitted(
                         })
                 });
         }
-        if let Some(parent) = operation.kind.borrow_parent() {
-            value = parent.value;
+        if let Some(crate::PlaceBase::Value(parent)) = operation.kind.borrow_parent() {
+            value = parent;
             continue;
         }
         return operation
@@ -1995,6 +1995,7 @@ fn verify_operation_shape(
     let expected_results = usize::from(!matches!(
         operation.kind,
         SemOpKind::DestroyValue { .. }
+            | SemOpKind::AllocPlace { .. }
             | SemOpKind::EndBorrow { .. }
             | SemOpKind::StoreInit { .. }
             | SemOpKind::StoreAssign { .. }
@@ -3584,21 +3585,19 @@ fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
 fn uses_in_op(function: &SemFunction, op: &crate::SemOp) -> Vec<(ValueId, bool)> {
     let mut uses = Vec::new();
     op.visit_operands(|_, operand| uses.push((operand.value, false)));
-    let place = match op.kind {
-        SemOpKind::LoadTake { place }
-        | SemOpKind::LoadCopy { place }
-        | SemOpKind::LoadBorrow { place, .. }
-        | SemOpKind::StoreInit { place, .. }
-        | SemOpKind::StoreAssign { place, .. } => Some(place),
-        _ => None,
-    };
-    if let Some(crate::PlaceDecl {
-        origin: crate::PlaceOrigin::Aggregate { root, .. },
-        ..
-    }) = place.and_then(|id| function.places.iter().find(|place| place.id == id))
-    {
-        uses.push((*root, false));
-    }
+    op.kind.visit_places(|id| {
+        if let Some(crate::PlaceDecl {
+            origin: crate::PlaceOrigin::Capture { environment, .. },
+            ..
+        }) = function.places.iter().find(|place| place.id == id)
+        {
+            uses.push((*environment, false));
+        } else if let Ok((crate::OwnerRoot::Value(root), _)) =
+            crate::projection::place_path(&function.places, id)
+        {
+            uses.push((root, false));
+        }
+    });
     uses
 }
 

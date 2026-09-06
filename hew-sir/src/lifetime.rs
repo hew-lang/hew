@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    BlockId, BoundaryDecision, CallUnwind, Edge, OwnKind, SemFunction, SemOpKind, SemTerminator,
-    SnapshotDecision, ValueId,
+    BlockId, BoundaryDecision, CallUnwind, Edge, OwnKind, OwnerRoot, PlaceBase, SemFunction,
+    SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,10 +31,7 @@ struct State {
     places: Vec<u8>,
 }
 
-pub(crate) fn verify(
-    function: &SemFunction,
-    projections: &crate::AggregateProjectionPlan,
-) -> Vec<Violation> {
+pub(crate) fn verify(function: &SemFunction, projections: &crate::PlacePlan) -> Vec<Violation> {
     let flow = Flow::new(function, projections);
     if !flow.blocks.contains_key(&function.entry) {
         return Vec::new();
@@ -59,7 +56,7 @@ pub(crate) fn verify(
             initial.values[index] = LIVE;
         }
         for (index, (_, owner)) in flow.places.iter().enumerate() {
-            if *owner == param.value {
+            if *owner == OwnerRoot::Value(param.value) {
                 initial.places[index] = LIVE;
             }
         }
@@ -108,15 +105,14 @@ struct Flow<'a> {
     values: Vec<ValueId>,
     guaranteed: BTreeSet<ValueId>,
     local_borrows: BTreeSet<ValueId>,
-    borrowers: BTreeMap<ValueId, Vec<ValueId>>,
-    parents: BTreeMap<ValueId, ValueId>,
-    places: Vec<(crate::PlaceId, ValueId)>,
-    projections: &'a crate::AggregateProjectionPlan,
+    parents: BTreeMap<ValueId, PlaceBase>,
+    places: Vec<(crate::PlaceId, OwnerRoot)>,
+    projections: &'a crate::PlacePlan,
     place_indices: BTreeMap<crate::PlaceId, usize>,
 }
 
 impl<'a> Flow<'a> {
-    fn new(function: &'a SemFunction, projections: &'a crate::AggregateProjectionPlan) -> Self {
+    fn new(function: &'a SemFunction, projections: &'a crate::PlacePlan) -> Self {
         let mut values = BTreeSet::new();
         let mut guaranteed = BTreeSet::new();
         let mut record = |value, own| {
@@ -144,13 +140,11 @@ impl<'a> Flow<'a> {
         }
         let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
-        let mut borrowers = BTreeMap::<_, Vec<_>>::new();
         for op in function.blocks.iter().flat_map(|block| &block.ops) {
             if let Some(parent) = op.kind.borrow_parent() {
                 for result in &op.results {
-                    parents.insert(result.id, parent.value);
+                    parents.insert(result.id, parent);
                     local_borrows.insert(result.id);
-                    borrowers.entry(parent.value).or_default().push(result.id);
                 }
             }
         }
@@ -161,7 +155,9 @@ impl<'a> Flow<'a> {
             .places
             .iter()
             .filter_map(|place| match place.origin {
-                crate::PlaceOrigin::Capture { environment, .. } => Some((place.id, environment)),
+                crate::PlaceOrigin::Capture { environment, .. } => {
+                    Some((place.id, OwnerRoot::Value(environment)))
+                }
                 _ => None,
             })
             .chain(
@@ -189,7 +185,6 @@ impl<'a> Flow<'a> {
             values,
             guaranteed,
             local_borrows,
-            borrowers,
             parents,
             places,
             place_indices,
@@ -228,31 +223,54 @@ impl<'a> Flow<'a> {
             });
         }
         if consume {
-            self.require_no_live_borrows(block, value, state, emit);
+            self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
             state.values[index] = DEAD;
             for (index, (_, owner)) in self.places.iter().enumerate() {
-                if *owner == value {
+                if *owner == OwnerRoot::Value(value) {
                     state.places[index] = DEAD;
                 }
             }
         }
     }
 
+    fn dependency_parent(&self, base: PlaceBase) -> Option<PlaceBase> {
+        match base {
+            PlaceBase::Value(value) => self.parents.get(&value).copied(),
+            PlaceBase::Place(place) => self.projections.base(place),
+        }
+    }
+
+    fn depends_on(&self, value: ValueId, ancestor: PlaceBase) -> bool {
+        let mut current = PlaceBase::Value(value);
+        let mut seen = BTreeSet::new();
+        while seen.insert(current) {
+            let Some(parent) = self.dependency_parent(current) else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
     fn require_no_live_borrows(
         &self,
         block: BlockId,
-        value: ValueId,
+        base: PlaceBase,
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
-        if self.borrowers.get(&value).is_some_and(|borrows| {
-            borrows
-                .iter()
-                .any(|borrow| state.values[self.indices[borrow]] & LIVE != 0)
+        if self.local_borrows.iter().any(|&borrow| {
+            state.values[self.indices[&borrow]] & LIVE != 0 && self.depends_on(borrow, base)
         }) {
             emit(Violation {
                 block,
-                value: Some(value),
+                value: match base {
+                    PlaceBase::Value(value) => Some(value),
+                    PlaceBase::Place(_) => None,
+                },
                 reason: "value cannot be consumed or ended while a dependent borrow is live",
             });
         }
@@ -274,7 +292,7 @@ impl<'a> Flow<'a> {
             return;
         }
         self.access(block, value, false, state, emit);
-        self.require_no_live_borrows(block, value, state, emit);
+        self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
         state.values[self.indices[&value]] = DEAD;
     }
 
@@ -301,7 +319,7 @@ impl<'a> Flow<'a> {
         }
         state.values[index] = LIVE;
         for (index, (place, owner)) in self.places.iter().enumerate() {
-            if *owner == value && self.projections.projection(*place).is_some() {
+            if *owner == OwnerRoot::Value(value) && self.projections.projection(*place).is_some() {
                 state.places[index] = LIVE;
             }
         }
@@ -319,7 +337,11 @@ impl<'a> Flow<'a> {
         // Consume all sources and define all destinations before installing
         // leaf states. Loop edges may rename, reuse or permute root arguments.
         for argument in &edge.args {
-            if self.projections.leaves(argument.value).is_none() {
+            if self
+                .projections
+                .leaves(OwnerRoot::Value(argument.value))
+                .is_none()
+            {
                 self.require_complete_environment(from, argument.value, &state, emit);
             }
             self.access(from, argument.value, true, &mut state, emit);
@@ -470,16 +492,13 @@ impl<'a> Flow<'a> {
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
-        if self
-            .places
-            .iter()
-            .enumerate()
-            .any(|(index, (_, owner))| *owner == value && state.places[index] != LIVE)
-        {
+        if self.places.iter().enumerate().any(|(index, (_, owner))| {
+            *owner == OwnerRoot::Value(value) && state.places[index] != LIVE
+        }) {
             emit(Violation {
                 block,
                 value: Some(value),
-                reason: if self.projections.leaves(value).is_some() {
+                reason: if self.projections.leaves(OwnerRoot::Value(value)).is_some() {
                     "partially consumed aggregate cannot be copied, borrowed, invoked or transferred"
                 } else {
                     "partially consumed environment cannot be copied, invoked or transferred"
@@ -503,9 +522,12 @@ impl<'a> Flow<'a> {
             _ => return,
         };
         if let Some(projection) = self.projections.projection(place) {
-            self.access(block, projection.root, false, state, emit);
+            let OwnerRoot::Value(root) = projection.root else {
+                unreachable!("local admission remains closed")
+            };
+            self.access(block, root, false, state, emit);
             if changes {
-                self.require_no_live_borrows(block, projection.root, state, emit);
+                self.require_no_live_borrows(block, PlaceBase::Value(root), state, emit);
             }
             let stores = matches!(
                 kind,
@@ -523,7 +545,7 @@ impl<'a> Flow<'a> {
                 if expected.is_some_and(|expected| state.places[index] != expected) {
                     emit(Violation {
                         block,
-                        value: Some(projection.root),
+                        value: Some(root),
                         reason: if stores {
                             "aggregate field initialization would overwrite a live value"
                         } else {
@@ -544,7 +566,9 @@ impl<'a> Flow<'a> {
         let Some(&index) = self.place_indices.get(&place) else {
             return;
         };
-        let (_, owner) = self.places[index];
+        let (_, OwnerRoot::Value(owner)) = self.places[index] else {
+            unreachable!("local admission remains closed")
+        };
         self.access(block, owner, false, state, emit);
         if state.places[index] != LIVE {
             emit(Violation {
@@ -554,49 +578,45 @@ impl<'a> Flow<'a> {
             });
         }
         if changes {
-            self.require_no_live_borrows(block, owner, state, emit);
+            self.require_no_live_borrows(block, PlaceBase::Value(owner), state, emit);
         }
         if matches!(kind, SemOpKind::LoadTake { .. }) {
             state.places[index] = DEAD;
         }
     }
 
-    fn borrow_root(&self, mut value: ValueId) -> ValueId {
+    fn borrow_root(&self, value: ValueId) -> PlaceBase {
+        let mut current = PlaceBase::Value(value);
         let mut seen = BTreeSet::new();
-        while seen.insert(value) {
-            let Some(parent) = self.parents.get(&value) else {
+        while seen.insert(current) {
+            let Some(parent) = self.dependency_parent(current) else {
                 break;
             };
-            value = *parent;
+            current = parent;
         }
-        value
+        current
     }
 
     fn require_exclusive(
         &self,
         block: BlockId,
-        mut value: ValueId,
+        value: ValueId,
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
-        self.require_no_live_borrows(block, value, state, emit);
-        let mut seen = BTreeSet::new();
-        while seen.insert(value) {
-            let Some(&parent) = self.parents.get(&value) else {
-                break;
-            };
-            if self.borrowers.get(&parent).is_some_and(|borrows| {
-                borrows.iter().any(|borrow| {
-                    *borrow != value && state.values[self.indices[borrow]] & LIVE != 0
-                })
-            }) {
-                emit(Violation {
-                    block,
-                    value: Some(value),
-                    reason: "exclusive receiver has another live loan of its owner",
-                });
-            }
-            value = parent;
+        self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
+        let root = self.borrow_root(value);
+        if self.local_borrows.iter().any(|&borrow| {
+            borrow != value
+                && state.values[self.indices[&borrow]] & LIVE != 0
+                && self.borrow_root(borrow) == root
+                && !self.depends_on(value, PlaceBase::Value(borrow))
+        }) {
+            emit(Violation {
+                block,
+                value: Some(value),
+                reason: "exclusive receiver has another live loan of its owner",
+            });
         }
     }
 
@@ -749,7 +769,10 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
 #[cfg(test)]
 mod tests {
     fn verify(function: &crate::SemFunction) -> Vec<super::Violation> {
-        super::verify(function, &crate::AggregateProjectionPlan::default())
+        super::verify(
+            function,
+            &crate::place_plan(function, &[], &std::collections::BTreeMap::default()).unwrap(),
+        )
     }
     use crate::{
         BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, CallableId,
@@ -1457,7 +1480,6 @@ mod tests {
             0,
             SemOpKind::LoadBorrow {
                 place: crate::PlaceId(0),
-                environment: operand(0),
             },
             vec![ValueDef {
                 own: OwnKind::Guaranteed,

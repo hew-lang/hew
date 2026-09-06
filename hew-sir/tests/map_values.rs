@@ -328,15 +328,10 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
         .iter()
         .flat_map(|b| &b.ops)
         .find_map(|op| match &op.kind {
-            SemOpKind::LoadBorrow { place, environment } if op.results[0].id == borrowed => {
-                let plan = hew_sir::aggregate_projection_plan(
-                    main,
-                    &module.aggregate_shapes,
-                    &module.type_facts,
-                )
-                .unwrap();
+            SemOpKind::LoadBorrow { place } if op.results[0].id == borrowed => {
+                let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts)
+                    .unwrap();
                 let projection = plan.projection(*place).unwrap();
-                assert_eq!(projection.root, environment.value);
                 assert_eq!(
                     projection
                         .path
@@ -359,7 +354,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
             .ops
             .iter()
             .filter(
-                |op| matches!(&op.kind, SemOpKind::DestroyValue { value } if value.value == parent)
+                |op| matches!(&op.kind, SemOpKind::DestroyValue { value } if hew_sir::OwnerRoot::Value(value.value) == parent)
             )
             .count(),
         1,

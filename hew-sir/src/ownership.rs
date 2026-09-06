@@ -278,6 +278,21 @@ pub struct PlaceDecl {
     pub origin: PlaceOrigin,
 }
 
+/// An explicit value or place dependency. Projection parents and local loans
+/// use the same identity vocabulary; neither invents another owning value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlaceBase {
+    Value(ValueId),
+    Place(PlaceId),
+}
+
+/// The owner reached through a checked place path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OwnerRoot {
+    Value(ValueId),
+    Local(PlaceId),
+}
+
 /// The semantic owner of a memory place, without a physical field offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceOrigin {
@@ -288,11 +303,10 @@ pub enum PlaceOrigin {
         environment: ValueId,
         field: u32,
     },
-    /// A field of a live owned aggregate. A parent selects a nested aggregate
-    /// place under the same root; neither projection creates a second owner.
+    /// One exact field of the immediate aggregate base. Resolving that base
+    /// supplies the unique owning root; it is not repeated on each child.
     Aggregate {
-        root: ValueId,
-        parent: Option<PlaceId>,
+        base: PlaceBase,
         shape: AggregateShapeRef,
         field: u32,
     },

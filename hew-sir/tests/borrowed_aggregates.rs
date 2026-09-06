@@ -21,8 +21,9 @@ fn leaf_loan(function: &SemFunction) -> ValueId {
         .unwrap()
 }
 
-fn parent(function: &SemFunction, loan: ValueId) -> ValueId {
-    function
+fn parent(module: &hew_sir::SemModule, loan: ValueId) -> ValueId {
+    let function = &module.functions[0];
+    let base = function
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
@@ -30,8 +31,18 @@ fn parent(function: &SemFunction, loan: ValueId) -> ValueId {
         .unwrap()
         .kind
         .borrow_parent()
-        .unwrap()
-        .value
+        .unwrap();
+    match base {
+        hew_sir::PlaceBase::Value(value) => value,
+        hew_sir::PlaceBase::Place(place) => {
+            let plan = hew_sir::place_plan(function, &module.aggregate_shapes, &module.type_facts)
+                .unwrap();
+            let hew_sir::OwnerRoot::Value(value) = plan.projection(place).unwrap().root else {
+                panic!("fixture must borrow an SSA owner")
+            };
+            value
+        }
+    }
 }
 
 fn move_cleanup_before_read(function: &mut SemFunction, value: ValueId) {
@@ -72,15 +83,14 @@ fn nested_loans_end_before_owner_cleanup_on_normal_and_fault_paths() {
 fn an_owner_or_parent_loan_cannot_end_while_its_child_is_live() {
     for end_owner in [false, true] {
         let mut module = fixture::nested_borrow_module();
-        let function = &mut module.functions[0];
-        let leaf = leaf_loan(function);
-        let parent = parent(function, leaf);
+        let leaf = leaf_loan(&module.functions[0]);
+        let parent = parent(&module, leaf);
         let value = if end_owner {
-            self::parent(function, parent)
+            self::parent(&module, parent)
         } else {
             parent
         };
-        move_cleanup_before_read(function, value);
+        move_cleanup_before_read(&mut module.functions[0], value);
         assert!(verify_module(&module).iter().any(|error| matches!(
             error.kind,
             SirDiagnosticKind::OwnershipLifetime { reason, .. }
@@ -179,10 +189,9 @@ fn projection_borrows_require_exact_shape_field_type_and_ownership() {
 #[test]
 fn projected_owner_cannot_end_while_its_leaf_is_live() {
     let mut module = projected_borrow_module();
-    let function = &mut module.functions[0];
-    let leaf = leaf_loan(function);
-    let root = parent(function, leaf);
-    move_cleanup_before_read(function, root);
+    let leaf = leaf_loan(&module.functions[0]);
+    let root = parent(&module, leaf);
+    move_cleanup_before_read(&mut module.functions[0], root);
     assert!(verify_module(&module).iter().any(|error| matches!(error.kind,
         SirDiagnosticKind::OwnershipLifetime { value, reason, .. }
             if value == root && reason == "value cannot be consumed or ended while a dependent borrow is live")));
@@ -200,10 +209,10 @@ fn projected_loans_require_the_exact_root_type_and_ownership() {
             .unwrap();
         match mutation {
             0 => {
-                let SemOpKind::LoadBorrow { environment, .. } = &mut operation.kind else {
+                let SemOpKind::LoadBorrow { place } = &mut operation.kind else {
                     unreachable!()
                 };
-                environment.value = operation.results[0].id;
+                *place = hew_sir::PlaceId(u32::MAX);
             }
             1 => operation.results[0].ty = hew_types::ResolvedTy::String,
             2 => operation.results[0].own = OwnKind::Owned,
@@ -229,17 +238,14 @@ fn projected_borrow_module() -> hew_sir::SemModule {
     "#,
     );
     let main = &module.functions[0];
-    let plan =
-        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
-            .unwrap();
+    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let loans: Vec<_> = main
         .blocks
         .iter()
         .flat_map(|b| &b.ops)
         .filter_map(|op| match &op.kind {
-            SemOpKind::LoadBorrow { place, environment } => {
+            SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
-                assert_eq!(projection.root, environment.value);
                 assert_eq!(
                     projection
                         .path

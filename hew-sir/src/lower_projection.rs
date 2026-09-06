@@ -4,8 +4,8 @@
 use super::{BindingPlace, Builder};
 use crate::ownership::TypeFactTable;
 use crate::{
-    aggregate_field_recipes, AggregateShapeRef, Operand, OwnKind, PlaceDecl, PlaceId, PlaceOrigin,
-    Provenance, SemAggregateShape, SemFunction, SemOp, SemOpKind, ValueId,
+    aggregate_field_recipes, AggregateShapeRef, Operand, OwnKind, OwnerRoot, PlaceBase, PlaceDecl,
+    PlaceId, PlaceOrigin, Provenance, SemAggregateShape, SemFunction, SemOp, SemOpKind, ValueId,
 };
 use hew_hir::HirExpr;
 use hew_types::ResolvedTy;
@@ -103,8 +103,7 @@ fn declare_path(
         for (field, recipe) in recipes.into_iter().enumerate() {
             let field = u32::try_from(field).map_err(|_| "aggregate field exceeds u32")?;
             let origin = PlaceOrigin::Aggregate {
-                root,
-                parent,
+                base: parent.map_or(PlaceBase::Value(root), PlaceBase::Place),
                 shape,
                 field,
             };
@@ -131,34 +130,6 @@ fn declare_path(
         parent = selected_place;
     }
     parent.ok_or_else(|| "aggregate projection has an empty field path".into())
-}
-
-fn place_path(places: &[PlaceDecl], id: PlaceId) -> Result<Vec<(AggregateShapeRef, u32)>, String> {
-    let mut path = Vec::new();
-    let mut current = Some(id);
-    let mut seen = BTreeSet::new();
-    while let Some(id) = current {
-        if !seen.insert(id) {
-            return Err("aggregate projection has a cyclic parent".into());
-        }
-        let place = places
-            .iter()
-            .find(|place| place.id == id)
-            .ok_or_else(|| "aggregate projection parent disappeared".to_string())?;
-        let PlaceOrigin::Aggregate {
-            parent,
-            shape,
-            field,
-            ..
-        } = place.origin
-        else {
-            return Err("aggregate projection has a non-aggregate parent".into());
-        };
-        path.push((shape, field));
-        current = parent;
-    }
-    path.reverse();
-    Ok(path)
 }
 
 /// Publish the same structural field partition for every connected SSA root
@@ -210,9 +181,23 @@ pub(super) fn complete_edge_partitions(
     loop {
         let before = function.places.len();
         for &(source, destination) in &edges {
-            let paths = function.places.iter().filter(|place| {
-                matches!(place.origin, PlaceOrigin::Aggregate { root, .. } if root == source)
-            }).map(|place| place_path(&function.places, place.id)).collect::<Result<Vec<_>, _>>()?;
+            let paths = function
+                .places
+                .iter()
+                .filter_map(|place| {
+                    if !matches!(place.origin, PlaceOrigin::Aggregate { .. }) {
+                        return None;
+                    }
+                    match crate::projection::place_path(&function.places, place.id) {
+                        Ok((OwnerRoot::Value(root), path)) if root == source => Some(Ok(path
+                            .into_iter()
+                            .map(|step| (step.shape, step.field))
+                            .collect::<Vec<_>>())),
+                        Ok(_) => None,
+                        Err(error) => Some(Err(error)),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let (_, ty) = &types[&destination];
             for path in paths {
                 declare_path(&mut function.places, destination, ty, &path, shapes, facts)?;

@@ -155,12 +155,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::CallableCoerce { source } => {
             writeln!(out, "callable.coerce %{}", source.value.0).expect("write to String");
         }
-        SemOpKind::LoadBorrow { place, environment } => writeln!(
-            out,
-            "load.borrow p{} from %{}",
-            place.0, environment.value.0
-        )
-        .expect("write to String"),
+        SemOpKind::LoadBorrow { place } => {
+            writeln!(out, "load.borrow p{}", place.0).expect("write to String");
+        }
         SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::TupleMake { elements } => {

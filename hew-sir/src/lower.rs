@@ -5458,14 +5458,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
     ) -> Result<Operand, String> {
-        if let Some((place, root)) = self.expression_projection(expr)? {
+        if let Some((place, _root)) = self.expression_projection(expr)? {
             let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
                 == OwnKind::Owned;
             let kind = if owning {
-                SemOpKind::LoadBorrow {
-                    place,
-                    environment: Operand { value: root },
-                }
+                SemOpKind::LoadBorrow { place }
             } else {
                 SemOpKind::LoadCopy { place }
             };
@@ -5485,12 +5482,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     let value = self.emit_typed(
                         Provenance::Site(expr.site),
                         &field.ty,
-                        SemOpKind::LoadBorrow {
-                            place,
-                            environment: Operand {
-                                value: self.params[0].value,
-                            },
-                        },
+                        SemOpKind::LoadBorrow { place },
                     )?;
                     loans.push(value);
                     return Ok(Operand { value });

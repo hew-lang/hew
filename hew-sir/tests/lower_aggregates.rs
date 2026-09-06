@@ -74,7 +74,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
             }
         )
     }));
-    let plan = hew_sir::aggregate_projection_plan(
+    let plan = hew_sir::place_plan(
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -85,9 +85,8 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .iter()
         .flat_map(|b| &b.ops)
         .filter_map(|op| match &op.kind {
-            SemOpKind::LoadBorrow { place, environment } => {
+            SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
-                assert_eq!(projection.root, environment.value);
                 assert_eq!(projection.path.len(), 1);
                 assert_eq!(projection.path[0].shape, AggregateShapeRef::Tuple);
                 assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
@@ -150,7 +149,7 @@ fn owned_record_shape_and_field_order_are_exact() {
         .iter()
         .find(|f| f.name == "main")
         .unwrap();
-    let plan = hew_sir::aggregate_projection_plan(
+    let plan = hew_sir::place_plan(
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -161,9 +160,8 @@ fn owned_record_shape_and_field_order_are_exact() {
         .iter()
         .flat_map(|b| &b.ops)
         .filter_map(|op| match &op.kind {
-            SemOpKind::LoadBorrow { place, environment } => {
+            SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
-                assert_eq!(projection.root, environment.value);
                 assert_eq!(projection.path.len(), 1);
                 assert_eq!(
                     projection.path[0].shape,
@@ -471,25 +469,23 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         1,
         "the leaf borrows directly from its owning root"
     );
-    let plan = hew_sir::aggregate_projection_plan(
+    let plan = hew_sir::place_plan(
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
     )
     .unwrap();
-    let (place, owner) = main
+    let place = main
         .blocks
         .iter()
         .flat_map(|b| &b.ops)
         .find_map(|op| match &op.kind {
-            SemOpKind::LoadBorrow { place, environment } if op.results[0].id == loans[0] => {
-                Some((*place, environment.value))
-            }
+            SemOpKind::LoadBorrow { place } if op.results[0].id == loans[0] => Some(*place),
             _ => None,
         })
         .unwrap();
     let projection = plan.projection(place).unwrap();
-    assert_eq!(projection.root, owner);
+    let owner = projection.root;
     assert_eq!(
         projection
             .path
@@ -654,7 +650,7 @@ fn scalar_arguments_copy_the_exact_nested_leaf() {
         .find(|f| f.name == "main")
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
-    let plan = hew_sir::aggregate_projection_plan(
+    let plan = hew_sir::place_plan(
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,

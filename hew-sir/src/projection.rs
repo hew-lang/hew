@@ -6,8 +6,9 @@ use hew_types::{ResolvedTy, TypeInstanceKey};
 
 use crate::ownership::TypeFactTable;
 use crate::{
-    aggregate_field_recipes, AggregateFieldRecipe, AggregateShapeRef, OwnKind, PlaceDecl, PlaceId,
-    PlaceOrigin, SemAggregateShape, SemFunction, SemOp, SemOpKind, ValueId,
+    aggregate_field_recipes, AggregateFieldRecipe, AggregateShapeRef, OwnKind, OwnerRoot,
+    PlaceBase, PlaceDecl, PlaceId, PlaceOrigin, SemAggregateShape, SemFunction, SemOp, SemOpKind,
+    ValueId,
 };
 
 /// One declaration-order selection in a typed aggregate path.
@@ -22,7 +23,7 @@ pub struct AggregateProjectionStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateProjection {
     pub place: PlaceId,
-    pub root: ValueId,
+    pub root: OwnerRoot,
     pub path: Vec<AggregateProjectionStep>,
     pub recipe: AggregateFieldRecipe,
     /// Complete, non-overlapping partition in declaration order. Cleanup
@@ -38,26 +39,33 @@ pub struct AggregateProjection {
 /// through source names or storage offsets. Rebuild after changing places or
 /// CFG root versions.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AggregateProjectionPlan {
+pub struct PlacePlan {
     projections: BTreeMap<PlaceId, AggregateProjection>,
-    roots: BTreeMap<ValueId, Vec<PlaceId>>,
+    bases: BTreeMap<PlaceId, PlaceBase>,
+    roots: BTreeMap<OwnerRoot, Vec<PlaceId>>,
 }
 
-impl AggregateProjectionPlan {
+impl PlacePlan {
+    /// Immediate declared dependency of a projection or capture place.
+    #[must_use]
+    pub fn base(&self, place: PlaceId) -> Option<PlaceBase> {
+        self.bases.get(&place).copied()
+    }
+
     #[must_use]
     pub fn projection(&self, place: PlaceId) -> Option<&AggregateProjection> {
         self.projections.get(&place)
     }
 
     /// Every aggregate root and its complete leaf partition.
-    pub fn roots(&self) -> impl Iterator<Item = (ValueId, &[PlaceId])> {
+    pub fn roots(&self) -> impl Iterator<Item = (OwnerRoot, &[PlaceId])> {
         self.roots
             .iter()
             .map(|(&root, leaves)| (root, leaves.as_slice()))
     }
 
     #[must_use]
-    pub fn leaves(&self, root: ValueId) -> Option<&[PlaceId]> {
+    pub fn leaves(&self, root: OwnerRoot) -> Option<&[PlaceId]> {
         self.roots.get(&root).map(Vec::as_slice)
     }
 
@@ -70,7 +78,10 @@ impl AggregateProjectionPlan {
         source: ValueId,
         destination: ValueId,
     ) -> Result<Vec<(PlaceId, PlaceId)>, String> {
-        match (self.leaves(source), self.leaves(destination)) {
+        match (
+            self.leaves(OwnerRoot::Value(source)),
+            self.leaves(OwnerRoot::Value(destination)),
+        ) {
             (None, None) => Ok(Vec::new()),
             (Some(source), Some(destination)) if source.len() == destination.len() => source
                 .iter()
@@ -91,43 +102,43 @@ impl AggregateProjectionPlan {
     }
 }
 
-fn path(
+/// Resolve the structural owner without inventing an SSA lifetime for a place.
+/// Type/descriptor admission remains in `place_plan`.
+pub(crate) fn place_path(
     places: &[PlaceDecl],
     id: PlaceId,
-) -> Result<(ValueId, Vec<AggregateProjectionStep>), String> {
-    let mut next = Some(id);
-    let mut root = None;
+) -> Result<(OwnerRoot, Vec<AggregateProjectionStep>), String> {
+    let mut next = PlaceBase::Place(id);
     let mut fields = Vec::new();
     let mut seen = BTreeSet::new();
-    while let Some(id) = next {
-        if !seen.insert(id) {
-            return Err("aggregate place has a cyclic parent path".into());
-        }
-        let place = places
-            .iter()
-            .find(|place| place.id == id)
-            .ok_or_else(|| "aggregate place has an unknown parent".to_string())?;
-        let PlaceOrigin::Aggregate {
-            root: owner,
-            parent,
-            shape,
-            field,
-        } = place.origin
-        else {
-            return Err("aggregate place parent is not an aggregate projection".into());
+    let root =
+        loop {
+            match next {
+                PlaceBase::Value(value) => break OwnerRoot::Value(value),
+                PlaceBase::Place(id) => {
+                    if !seen.insert(id) {
+                        return Err("aggregate place has a cyclic parent path".into());
+                    }
+                    let place = places
+                        .iter()
+                        .find(|place| place.id == id)
+                        .ok_or_else(|| "aggregate place has an unknown parent".to_string())?;
+                    match place.origin {
+                        PlaceOrigin::Local => break OwnerRoot::Local(id),
+                        PlaceOrigin::Aggregate { base, shape, field } => {
+                            fields.push(AggregateProjectionStep { shape, field });
+                            next = base;
+                        }
+                        _ => return Err(
+                            "aggregate place parent is not an owned local or aggregate projection"
+                                .into(),
+                        ),
+                    }
+                }
+            }
         };
-        if root.is_some_and(|root| root != owner) {
-            return Err("aggregate place path changes its owning root".into());
-        }
-        root = Some(owner);
-        fields.push(AggregateProjectionStep { shape, field });
-        next = parent;
-    }
     fields.reverse();
-    Ok((
-        root.ok_or_else(|| "aggregate place has no root".to_string())?,
-        fields,
-    ))
+    Ok((root, fields))
 }
 
 fn value_definitions(function: &SemFunction) -> BTreeMap<ValueId, (OwnKind, ResolvedTy)> {
@@ -158,13 +169,13 @@ fn value_definitions(function: &SemFunction) -> BTreeMap<ValueId, (OwnKind, Reso
 /// # Errors
 /// Refuses borrowed roots, invalid paths/descriptors/types, incomplete field
 /// coverage and CFG transfers that change the availability partition.
-pub fn aggregate_projection_plan(
+pub fn place_plan(
     function: &SemFunction,
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
-) -> Result<AggregateProjectionPlan, String> {
+) -> Result<PlacePlan, String> {
     let values = value_definitions(function);
-    let mut plan = AggregateProjectionPlan::default();
+    let mut plan = PlacePlan::default();
     let mut ids = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for place in &function.places {
@@ -172,14 +183,19 @@ pub fn aggregate_projection_plan(
             return Err("projected places have duplicate identities".into());
         }
         match place.origin {
-            PlaceOrigin::Capture { .. } => continue,
+            PlaceOrigin::Capture { environment, .. } => {
+                plan.bases.insert(place.id, PlaceBase::Value(environment));
+                continue;
+            }
             PlaceOrigin::Local | PlaceOrigin::Runtime => {
                 return Err(
                     "non-projected local and runtime places have no admitted lifetime contract"
                         .into(),
                 );
             }
-            PlaceOrigin::Aggregate { .. } => {}
+            PlaceOrigin::Aggregate { base, .. } => {
+                plan.bases.insert(place.id, base);
+            }
         }
         let projection = resolve_projection(function, place, &values, shapes, facts)?;
         if !paths.insert((projection.root, projection.path.clone())) {
@@ -247,8 +263,11 @@ fn resolve_projection(
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
 ) -> Result<AggregateProjection, String> {
-    let (root, path) = path(&function.places, place.id)?;
-    let Some((OwnKind::Owned, root_ty)) = values.get(&root) else {
+    let (root, path) = place_path(&function.places, place.id)?;
+    let OwnerRoot::Value(value) = root else {
+        return Err("local places have no admitted lifetime contract".into());
+    };
+    let Some((OwnKind::Owned, root_ty)) = values.get(&value) else {
         return Err(
             "aggregate projection requires an owned root; a loan cannot supply field ownership"
                 .into(),
@@ -282,42 +301,38 @@ fn resolve_projection(
 
 fn verify_partition_coverage(
     function: &SemFunction,
-    plan: &AggregateProjectionPlan,
+    plan: &PlacePlan,
     values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
-) -> Result<BTreeSet<(ValueId, PlaceId)>, String> {
+) -> Result<BTreeSet<(OwnerRoot, PlaceId)>, String> {
     let mut groups = BTreeMap::<_, (AggregateShapeRef, usize, BTreeSet<u32>)>::new();
     for place in &function.places {
-        let PlaceOrigin::Aggregate {
-            root,
-            parent,
-            shape,
-            field,
-        } = place.origin
-        else {
+        let PlaceOrigin::Aggregate { base, shape, field } = place.origin else {
             continue;
         };
-        let ty = if let Some(parent) = parent {
-            &plan
-                .projections
-                .get(&parent)
-                .ok_or_else(|| "aggregate projection has no parent recipe".to_string())?
-                .recipe
-                .ty
-        } else {
-            &values[&root].1
+        let root = plan.projections[&place.id].root;
+        let ty = match base {
+            PlaceBase::Place(parent) => {
+                &plan
+                    .projections
+                    .get(&parent)
+                    .ok_or_else(|| "aggregate projection has no parent recipe".to_string())?
+                    .recipe
+                    .ty
+            }
+            PlaceBase::Value(value) => &values[&value].1,
         };
         let count = plain_field_recipes(shape, ty, shapes, facts)?.len();
         let (previous_shape, expected, fields) = groups
-            .entry((root, parent))
+            .entry((root, base))
             .or_insert_with(|| (shape, count, BTreeSet::new()));
         if *previous_shape != shape || *expected != count || !fields.insert(field) {
             return Err("aggregate sibling projections disagree on their parent descriptor".into());
         }
     }
     let mut expanded = BTreeSet::new();
-    for ((root, parent), (_, expected, fields)) in groups {
+    for ((root, base), (_, expected, fields)) in groups {
         if fields.len() != expected
             || fields
                 .into_iter()
@@ -325,14 +340,14 @@ fn verify_partition_coverage(
         {
             return Err("aggregate projection partition omits a sibling field".into());
         }
-        if let Some(parent) = parent {
+        if let PlaceBase::Place(parent) = base {
             expanded.insert((root, parent));
         }
     }
     Ok(expanded)
 }
 
-fn install_partitions(plan: &mut AggregateProjectionPlan, expanded: &BTreeSet<(ValueId, PlaceId)>) {
+fn install_partitions(plan: &mut PlacePlan, expanded: &BTreeSet<(OwnerRoot, PlaceId)>) {
     let mut leaves: Vec<_> = plan
         .projections
         .values()
@@ -361,15 +376,15 @@ pub(crate) fn verify_operation(
     facts: &TypeFactTable,
 ) -> Option<Result<(), String>> {
     let (id, stored, borrowed) = match &operation.kind {
-        SemOpKind::LoadCopy { place } | SemOpKind::LoadTake { place } => (*place, None, None),
-        SemOpKind::LoadBorrow { place, environment } => (*place, None, Some(environment.value)),
+        SemOpKind::LoadCopy { place } | SemOpKind::LoadTake { place } => (*place, None, false),
+        SemOpKind::LoadBorrow { place } => (*place, None, true),
         SemOpKind::StoreInit { place, value } | SemOpKind::StoreAssign { place, value } => {
-            (*place, Some(value.value), None)
+            (*place, Some(value.value), false)
         }
         _ => return None,
     };
     let place = function.places.iter().find(|place| place.id == id)?;
-    let PlaceOrigin::Aggregate { root, .. } = place.origin else {
+    let PlaceOrigin::Aggregate { .. } = place.origin else {
         return None;
     };
     Some((|| {
@@ -388,9 +403,8 @@ pub(crate) fn verify_operation(
         if result.ty != place.ty {
             return Err("aggregate place load changes its field type".into());
         }
-        if let Some(owner) = borrowed {
-            if owner != root
-                || result.own != OwnKind::Guaranteed
+        if borrowed {
+            if result.own != OwnKind::Guaranteed
                 || OwnKind::of_ty(&place.ty, facts) != Ok(OwnKind::Owned)
             {
                 return Err(

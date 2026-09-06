@@ -163,9 +163,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     else {
         panic!("state must retain its owning SSA root")
     };
-    let plan =
-        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
-            .unwrap();
+    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let clear = runtime_block(main, RuntimeCallFamily::Vector(VecValueOp::Clear));
     let SemTerminator::RtCall {
         normal,
@@ -192,7 +190,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     let (_, place) = taken_receiver(push, args[0].operand.value);
     assert_eq!(place, taken_receiver(clear, clear_args[0].operand.value).1);
     let field = plan.projection(place).unwrap();
-    assert_eq!(field.root, root);
+    assert_eq!(field.root, hew_sir::OwnerRoot::Value(root));
     assert_eq!(
         field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
         [0]
@@ -203,7 +201,7 @@ fn assert_receiver_update_order(module: &SemModule) {
         .position(|op| match op.kind {
             SemOpKind::StoreAssign { place, .. } => {
                 let sibling = plan.projection(place).unwrap();
-                sibling.root == root
+                sibling.root == hew_sir::OwnerRoot::Value(root)
                     && sibling
                         .path
                         .iter()
@@ -319,9 +317,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         })
         .unwrap();
     let (leaf, place) = taken_receiver(call, moved);
-    let plan =
-        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
-            .unwrap();
+    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
     let field = plan.projection(place).unwrap();
     assert_eq!(
         field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
@@ -344,7 +340,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     assert_eq!(
         destroyed
             .iter()
-            .filter(|&&value| value == field.root)
+            .filter(|&&value| hew_sir::OwnerRoot::Value(value) == field.root)
             .count(),
         1,
         "the partially initialized root must clean up its remaining fields exactly once"
@@ -363,13 +359,13 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         .find(|block| block.id == cleanup)
         .unwrap();
     fault.ops.retain(
-        |op| !matches!(&op.kind, SemOpKind::DestroyValue { value } if value.value == field.root),
+        |op| !matches!(&op.kind, SemOpKind::DestroyValue { value } if hew_sir::OwnerRoot::Value(value.value) == field.root),
     );
     assert!(
         verify_module(&missing_cleanup)
             .iter()
             .any(|error| matches!(error.kind,
-        hew_sir::SirDiagnosticKind::OwnershipLifetime { value, .. } if value == field.root)),
+        hew_sir::SirDiagnosticKind::OwnershipLifetime { value, .. } if hew_sir::OwnerRoot::Value(value) == field.root)),
         "omitting remaining-root cleanup must be rejected"
     );
     assert!(

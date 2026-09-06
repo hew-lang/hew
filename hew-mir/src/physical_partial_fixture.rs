@@ -152,8 +152,10 @@ fn partition(root: u32, start: u32) -> Vec<sir::PlaceDecl> {
         id: sir::PlaceId(start + u32::try_from(index).unwrap()),
         ty,
         origin: sir::PlaceOrigin::Aggregate {
-            root: sir::ValueId(root),
-            parent,
+            base: parent.map_or(
+                sir::PlaceBase::Value(sir::ValueId(root)),
+                sir::PlaceBase::Place,
+            ),
             shape: sir::AggregateShapeRef::Tuple,
             field,
         },

@@ -1490,7 +1490,7 @@ struct FunctionLowerer<'a> {
     values: BTreeMap<ValueId, StorageId>,
     places: BTreeMap<hew_sir::PlaceId, StorageId>,
     storage: Vec<PhysicalStorage>,
-    projections: hew_sir::AggregateProjectionPlan,
+    projections: hew_sir::PlacePlan,
 }
 
 #[allow(
@@ -1511,12 +1511,8 @@ fn lower_function(
         values: BTreeMap::new(),
         places: BTreeMap::new(),
         storage: Vec::new(),
-        projections: hew_sir::aggregate_projection_plan(
-            function,
-            &module.aggregate_shapes,
-            &module.type_facts,
-        )
-        .map_err(PhysicalError::new)?,
+        projections: hew_sir::place_plan(function, &module.aggregate_shapes, &module.type_facts)
+            .map_err(PhysicalError::new)?,
     };
     let mut parameters = Vec::with_capacity(function.params.len());
     for parameter in &function.params {
@@ -1592,7 +1588,9 @@ fn lower_function(
                 },
                 hew_sir::PlaceOrigin::Aggregate { .. } => StorageOrigin::Aggregate(place.id),
                 hew_sir::PlaceOrigin::Local | hew_sir::PlaceOrigin::Runtime => {
-                    StorageOrigin::Place(place.id)
+                    return Err(PhysicalError::new(
+                        "function-local storage realization is not implemented",
+                    ));
                 }
             },
             borrow_parent: None,
@@ -1602,9 +1600,9 @@ fn lower_function(
     for operation in function.blocks.iter().flat_map(|block| &block.ops) {
         if let Some(parent) = operation.kind.borrow_parent() {
             let dest = lowerer.one_result(operation)?;
-            let source = match operation.kind {
-                SemOpKind::LoadBorrow { place, .. } => lowerer.place(place)?,
-                _ => lowerer.value(parent.value)?,
+            let source = match parent {
+                hew_sir::PlaceBase::Place(place) => lowerer.place(place)?,
+                hew_sir::PlaceBase::Value(value) => lowerer.value(value)?,
             };
             lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
         }

@@ -52,6 +52,11 @@ impl FunctionLowerer<'_> {
         };
         let mut result = BTreeMap::new();
         for (root, partition) in self.projections.roots() {
+            let hew_sir::OwnerRoot::Value(root) = root else {
+                return Err(PhysicalError::new(
+                    "function-local storage realization is not implemented",
+                ));
+            };
             let root = self.value(root)?;
             result.insert(
                 root,
@@ -66,7 +71,12 @@ impl FunctionLowerer<'_> {
             let Some(projection) = self.projections.projection(place.id) else {
                 continue;
             };
-            let root = self.value(projection.root)?;
+            let hew_sir::OwnerRoot::Value(root) = projection.root else {
+                return Err(PhysicalError::new(
+                    "function-local storage realization is not implemented",
+                ));
+            };
+            let root = self.value(root)?;
             let mut ty = self.storage[root.0 as usize].ty.clone();
             let mut path = Vec::with_capacity(projection.path.len());
             for step in &projection.path {

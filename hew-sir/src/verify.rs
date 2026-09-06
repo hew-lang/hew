@@ -2283,6 +2283,20 @@ fn verify_operation_shape(
         }
         return;
     }
+    if let SemOpKind::TaskScopeEnter {
+        duration: Some(duration),
+        ..
+    } = &operation.kind
+    {
+        if types.get(&duration.value) != Some(&ResolvedTy::Duration) {
+            invalid_operation(
+                function,
+                operation.id,
+                "scope deadline requires Duration".into(),
+                diagnostics,
+            );
+        }
+    }
     if matches!(
         operation.kind,
         SemOpKind::TaskScopeEnter { .. }

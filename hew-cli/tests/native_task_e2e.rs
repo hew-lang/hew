@@ -58,6 +58,7 @@ fn main() {
     };
     println(answer);
 }
+
 "#,
         "child value\n42\n",
         0,
@@ -177,5 +178,47 @@ fn main() {
         "0\nloop finished\n",
         0,
         "",
+    );
+}
+
+#[test]
+fn scope_deadline_interrupts_its_body_and_runs_cleanup() {
+    run_task(
+        r#"
+fn main() {
+    defer println("parent cleanup");
+    scope within 1ms {
+        defer println("scope cleanup");
+        await sleep(5s);
+        println("missed deadline");
+    };
+}
+"#,
+        "scope cleanup\nparent cleanup\n",
+        255,
+        "Cancelled",
+    );
+}
+
+#[test]
+fn scope_deadline_reaches_a_nested_call_before_scope_cleanup() {
+    run_task(
+        r#"
+fn wait_for_work() {
+    defer println("call cleanup");
+    await sleep(5s);
+    println("missed deadline");
+}
+fn main() {
+    defer println("parent cleanup");
+    scope within 1ms {
+        defer println("scope cleanup");
+        await wait_for_work();
+    };
+}
+"#,
+        "call cleanup\nscope cleanup\nparent cleanup\n",
+        255,
+        "Cancelled",
     );
 }

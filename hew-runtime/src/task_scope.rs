@@ -1752,6 +1752,7 @@ pub struct HewTaskScope {
     /// Scope-root cancellation token owned by this task scope.
     pub(crate) cancel_token: *mut HewCancellationToken,
     deadlines: *mut HewTaskScopeDeadline,
+    checked_deadline: *mut crate::coro_sleep::HewCoroSleep,
     /// Parent scope for nesting (reserved for future nested scope support).
     #[expect(dead_code, reason = "reserved for future nested scope tree support")]
     parent: *mut HewTaskScope,
@@ -1762,6 +1763,8 @@ unsafe impl Send for HewTaskScope {}
 
 impl Drop for HewTaskScope {
     fn drop(&mut self) {
+        // SAFETY: this scope owns its optional nonblocking deadline operation.
+        unsafe { crate::coro_sleep::hew_coro_sleep_free(self.checked_deadline) };
         // SAFETY: cancel_token, when present, is owned by this scope.
         unsafe { hew_cancel_token_release_impl(self.cancel_token) };
     }
@@ -1806,6 +1809,7 @@ pub unsafe extern "C" fn hew_task_scope_new() -> *mut HewTaskScope {
         cancelled: AtomicBool::new(false),
         cancel_token,
         deadlines: ptr::null_mut(),
+        checked_deadline: ptr::null_mut(),
         parent: ptr::null_mut(),
     });
     Box::into_raw(scope)

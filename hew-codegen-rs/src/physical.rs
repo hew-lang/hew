@@ -1924,9 +1924,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         match operation {
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
-            PhysicalOp::TaskScopeEnter { scope, parent } => {
-                self.emit_task_scope_enter(*scope, *parent)
-            }
+            PhysicalOp::TaskScopeEnter {
+                scope,
+                parent,
+                duration,
+            } => self.emit_task_scope_enter(*scope, *parent, *duration),
             PhysicalOp::TaskScopeClose { scope } => self.emit_task_scope_close(*scope),
             PhysicalOp::TaskSpawn {
                 scope,

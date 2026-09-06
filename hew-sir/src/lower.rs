@@ -3574,6 +3574,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_task_scope(body)?;
                 return Ok(());
             }
+            HirExprKind::ScopeDeadline { duration, body }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
+                self.lower_task_scope_with_deadline(body, Some(duration))?;
+                return Ok(());
+            }
             HirExprKind::SubsumedValue { source } => {
                 if self.ty(&source.ty) != self.ty(&expr.ty) {
                     return Err(
@@ -3779,6 +3785,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent scope cannot produce a SIR value".into()),
             },
+            HirExprKind::ScopeDeadline { duration, body } => {
+                match self.lower_task_scope_with_deadline(body, Some(duration))? {
+                    Some(value) => Ok(value),
+                    None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                    None => Err("divergent scope cannot produce a SIR value".into()),
+                }
+            }
             HirExprKind::RecordCloneCall { src, .. }
                 if matches!(
                     self.ty(&src.ty),

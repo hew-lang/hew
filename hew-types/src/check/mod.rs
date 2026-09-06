@@ -768,19 +768,6 @@ impl Checker {
             .or_else(|| self.identity.root_module_path())
     }
 
-    /// Canonical-first `fn_sigs` key for a bare free-fn spelling written in
-    /// ROOT context. Returns the root-canonical key only when it is actually
-    /// registered, so bare builtin/extern registrations keep resolving
-    /// unchanged (the bare rung is the builtin/extern floor, not a root
-    /// fallback).
-    pub(super) fn root_canonical_fn_sig_key(&self, name: &str) -> Option<String> {
-        if self.current_module.is_some() {
-            return None;
-        }
-        let scoped = scoped_module_item_name(self.identity.root_module_path(), name)?;
-        self.fn_sigs.contains_key(&scoped).then_some(scoped)
-    }
-
     /// Mint the declaration-table identity for a free function owned by a
     /// known lexical scope. A source-less root deliberately keeps its bare
     /// key; imported bindings are resolution facts and must never rename the

@@ -2813,3 +2813,8 @@ fn fmt_fstring_full_escape_set_roundtrip() {
         assert_eq!(formatted, formatted2, "idempotency failure for {src:?}");
     }
 }
+
+#[test]
+fn fmt_generic_function_values_roundtrip_at_expression_boundaries() {
+    exact_roundtrip("fn make() -> fn(i64) -> i64 {\n    let f = id<i64>;\n    let pair = (id<i64>, id<string>);\n    use_fn(id<i64>);\n    id<i64>\n}\n");
+}

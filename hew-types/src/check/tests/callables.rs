@@ -474,3 +474,33 @@ fn contextual_builtin_composition_keeps_shape_and_payload_errors() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
+
+#[test]
+fn generic_function_values_instantiate_each_reference() {
+    for source in [
+        "fn id<T>(x: T) -> T { x } fn main() { let f: fn[clone](i64) -> i64 = id; let g: fn(string) -> string = id; f(4); g(\"hew\"); }",
+        "fn id<T>(x: T) -> T { x } fn main() { let f = id<i64>; f(4); }",
+        "fn id<T>(x: T) -> T { x } fn main() { let f = id; f(4); }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+        assert!(output.call_type_args.values().any(|args| args == &[Ty::I64]));
+        assert!(output.direct_call_targets.values().any(|target|
+            matches!(target, crate::CallTarget::User(declaration) if declaration.full_path() == "id")));
+    }
+}
+
+#[test]
+fn generic_function_values_enforce_explicit_arity_and_inferred_bounds() {
+    for source in [
+        "fn id<T>(x: T) -> T { x } fn main() { let f = id<i64, string>; }",
+        "fn id(x: i64) -> i64 { x } fn main() { let f = id<i64>; }",
+        "type Holder { call: fn(i64) -> i64 } fn bad(holder: Holder) { let f = holder.call<i64>; }",
+        "fn id<T>(x: T) -> T { x } fn main() { let f = id<i64>; let g = f<string>; }",
+        "trait Allowed { fn ok(self) -> bool; } fn id<T: Allowed>(x: T) -> T { x } fn main() { let f: fn(i64) -> i64 = id; }",
+        "trait Allowed { fn ok(self) -> bool; } fn id<T: Allowed>(x: T) -> T { x } fn main() { let f = id<i64>; }",
+    ] {
+        let output = check_source(source);
+        assert!(!output.errors.is_empty(), "accepted invalid function value: {source}");
+    }
+}

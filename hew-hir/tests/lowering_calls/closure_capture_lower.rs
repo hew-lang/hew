@@ -387,3 +387,154 @@ fn contextual_option_result_preserves_nested_callable_storage() {
     };
     assert_eq!(captures[0].access, hew_types::ClosureCaptureAccess::Var);
 }
+
+#[test]
+fn generic_function_values_register_concrete_targets_and_site_arguments() {
+    let output = typecheck_and_lower("fn id<T>(x: T) -> T { x } fn main() { let a: fn(i64) -> i64 = id; let b = id<string>; a(4); b(\"hew\"); }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let monos = &output.module.monomorphisations;
+    assert_eq!(monos.len(), 2, "{monos:?}");
+    let origin = monos[0].key.origin;
+    assert!(monos
+        .iter()
+        .all(|mono| mono.key.origin == origin && mono.key.declaration.full_path() == "id"));
+    for ty in [ResolvedTy::I64, ResolvedTy::String] {
+        assert!(monos
+            .iter()
+            .any(|mono| mono.key.type_args == vec![ty.clone()]));
+    }
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    for stmt in main.body.statements.iter().take(2) {
+        let HirStmtKind::Let(_, Some(value)) = &stmt.kind else {
+            panic!("expected binding");
+        };
+        assert!(
+            matches!(value.kind, HirExprKind::BindingRef { resolved: hew_hir::ResolvedRef::Item(id), .. } if id == origin)
+        );
+        assert!(output.module.call_site_type_args.contains_key(&value.site));
+        assert!(
+            matches!(&value.ty, ResolvedTy::Function { capabilities, .. } if *capabilities == hew_types::CallableCapabilities::FUNCTION_ITEM)
+        );
+    }
+}
+
+#[test]
+fn generic_function_values_close_under_substitution() {
+    let output = typecheck_and_lower("fn id<T>(x: T) -> T { x } fn factory<T>() -> fn(T) -> T { id<T> } fn main() { let f = factory<i64>(); f(4); }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .module
+            .monomorphisations
+            .iter()
+            .any(|mono| mono.key.declaration.full_path() == "id"
+                && mono.key.type_args == vec![ResolvedTy::I64]),
+        "{:?}",
+        output.module.monomorphisations
+    );
+}
+
+#[test]
+fn generic_function_value_requires_complete_checker_facts() {
+    let parsed =
+        hew_parser::parse("fn id<T>(x: T) -> T { x } fn main() { let f = id<i64>; f(4); }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let key = checked
+        .call_type_args
+        .keys()
+        .next()
+        .expect("value instantiation")
+        .clone();
+    for defect in 0..4 {
+        let mut checked = checked.clone();
+        match defect {
+            0 => {
+                checked.call_type_args.remove(&key);
+            }
+            1 => {
+                checked.direct_call_targets.remove(&key);
+            }
+            2 => {
+                checked.expr_types.insert(key.clone(), hew_types::Ty::Error);
+            }
+            _ => {
+                checked
+                    .call_type_args
+                    .insert(key.clone(), vec![hew_types::Ty::Error]);
+            }
+        }
+        let output = lower_program(
+            &parsed.program,
+            &checked,
+            &ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            output.into_result().is_err(),
+            "accepted malformed value facts {defect}"
+        );
+    }
+}
+
+#[test]
+fn mutable_callable_field_call_keeps_the_selected_projection() {
+    let output = typecheck_and_lower("type Holder { next: fn[var, clone](i64) -> i64 } fn main() { let count: i64 = 0; var holder = Holder { next: capture(var count) |step: i64| { count = count + step; count } }; holder.next(1); }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let HirStmtKind::Let(holder, _) = &main.body.statements[1].kind else {
+        panic!("holder binding");
+    };
+    let HirStmtKind::Expr(call) = &main.body.statements[2].kind else {
+        panic!("field call expression");
+    };
+    let HirExprKind::Call {
+        target: hew_types::CallTarget::IndirectFunctionValue,
+        callee,
+        args,
+    } = &call.kind
+    else {
+        panic!("direct field invocation: {:?}", call.kind);
+    };
+    let HirExprKind::FieldAccess { object, field } = &callee.kind else {
+        panic!("selected field callee: {:?}", callee.kind);
+    };
+    assert_eq!(field, "next");
+    assert!(
+        matches!(object.kind, HirExprKind::BindingRef { resolved: hew_hir::ResolvedRef::Binding(id), .. } if id == holder.id)
+    );
+    assert_eq!(
+        callee.ty,
+        ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities {
+                call: hew_types::CallableCallMode::Var,
+                clone: true
+            },
+            params: vec![ResolvedTy::I64],
+            ret: Box::new(ResolvedTy::I64),
+        }
+    );
+    assert_eq!(call.ty, ResolvedTy::I64);
+    assert_eq!(args.len(), 1);
+    assert!(
+        object.site.0 < args[0].site.0,
+        "evaluate the receiver before the arguments"
+    );
+}

@@ -1283,7 +1283,7 @@ impl Checker {
         clippy::too_many_lines,
         reason = "call-target precedence stays explicit in one resolution ladder"
     )]
-    fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
+    pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
         // declaration identity is semantic authority, while the validated ABI

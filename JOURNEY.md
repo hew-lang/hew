@@ -1841,3 +1841,26 @@ Added callable cases to both the native acceptance and paired ASan/LSan suites: 
 The cases pass the retained frontend-only `hew_compile::check_file` API using the parser/checker build for `312adcf59`; manifest membership is verified. Native and sanitizer execution remain pending composition of the closure producer and physical lowering. The CLI's `check` also enters SIR and currently reports unsupported callable transfer, so it is not reported as passing.
 
 Generic indirect-only values remain a source-checker blocker: assigning `identity<T>` as a value to `fn[clone](i64) -> i64` or `fn[clone](string) -> string` leaves the generic `T` unresolved. That case is held out of this passing-source checkpoint pending the checker owner's fix.
+
+### Generic function values and projected callable invocation
+
+Function declarations used as values now instantiate through the existing
+signature, bound and declaration-identity authorities. Explicit type arguments
+parse at value boundaries, and inferred arguments settle from annotations or
+later calls. HIR records value-site arguments in the existing monomorphisation
+registry, including imported aliases and private helpers reached through generic
+factories. The previous annotation-only module-function path is removed.
+Missing or corrupt generic value facts remain HIR boundary errors.
+
+A record callable field remains the direct indirect-call callee. Removing the
+synthetic local binding prevents a mutable, cloneable environment from being
+copied before invocation; SIR decides the selected projection's lifetime.
+The focused HIR control checks the exact receiver binding, capabilities,
+argument order and absence of a temporary callable binding.
+
+Make validation: the complete parser/type/HIR component run passed every test
+except the new imported private-helper value control. Canonical owner lookup
+fixed that failure and its focused rerun passed. Generic value and projected
+field controls passed; native compilation and workspace lint are checked for
+this checkpoint. Native runtime behaviour remains an integration acceptance
+item in the SIR/backend owners' tree. Downstream grammar propagation follows.

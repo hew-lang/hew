@@ -369,12 +369,22 @@ impl Checker {
                 );
                 Ty::Error
             }
-            Expr::GenericApplySuffix { target, type_args } => {
-                for type_arg in type_args {
-                    self.resolve_type_expr(type_arg);
+            Expr::GenericApplySuffix { target, type_args } => match &target.0 {
+                Expr::Identifier(name) => {
+                    self.synthesize_identifier_with_type_args(name, Some(type_args), span)
                 }
-                self.synthesize(&target.0, &target.1)
-            }
+                Expr::FieldAccess { object, field } => {
+                    self.check_field_access_with_type_args(object, field, Some(type_args), span)
+                }
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "explicit type arguments require a function declaration".to_string(),
+                    );
+                    Ty::Error
+                }
+            },
             Expr::RecordInitSuffix {
                 target,
                 fields,
@@ -1650,11 +1660,29 @@ impl Checker {
         Ty::Unit
     }
 
+    pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+        self.synthesize_identifier_with_type_args(name, None, span)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single dispatch over all identifier forms (context readers, module-qualified variants, bindings, fn sigs, constructors, type aliases); splitting would fragment shared error-reporting state"
     )]
-    pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+    fn synthesize_identifier_with_type_args(
+        &mut self,
+        name: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        if type_args.is_some() && self.env.lookup_ref(name).is_some() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "explicit type arguments require a function declaration, not a value binding"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             if self.in_actor_handler_context {
                 return reader.ty();
@@ -1820,12 +1848,10 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) = self
-            // rc1-F1 stage A: canonical-first — a root fn used as a value
-            // resolves under its canonical `{root_module}.{name}` fn_sigs
-            // key; bare registrations (builtins, externs) resolve unchanged.
-            .root_canonical_fn_sig_key(name)
-            .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
+        } else if let Some(fn_sig_key) =
+            Some(self.canonical_fn_identity(self.canonical_fn_owner(), name))
+                .filter(|key| self.fn_sigs.contains_key(key))
+                .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
         {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
@@ -1856,11 +1882,7 @@ impl Checker {
             if sig.params.is_empty() && self.let_identifier_is_unit_variant(name) {
                 sig.return_type
             } else {
-                Ty::Function {
-                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-                    params: sig.params,
-                    ret: Box::new(sig.return_type),
-                }
+                self.instantiate_function_value(&fn_sig_key, type_args, span)
             }
         } else if self.module_binding_in_current_file(surface_name) {
             self.report_error(
@@ -4392,120 +4414,6 @@ impl Checker {
                 }
             }
 
-            // Context-determined generic cross-module function as a value.
-            //
-            // When `module.fn_name` resolves to a generic function and the
-            // expected type is a concrete `Ty::Function`, infer the type
-            // args by unifying the freshened parameter/return types with the
-            // expected shape.  Concretely-resolved type args are recorded into
-            // `call_type_args` at this span so the HIR lowerer can compute the
-            // mangled monomorphisation symbol and register the instantiation.
-            //
-            // Guard: fires ONLY when
-            //   (a) the object is a bare module identifier,
-            //   (b) the field names a GENERIC function in `fn_sigs`, and
-            //   (c) the expected type is a `Ty::Function`.
-            // Non-generic cross-module fns are handled by the synthesize path
-            // (which returns the monomorphic function type directly without
-            // needing this arm).  Ambiguous fn values (no expected context) fall
-            // through to `synthesize` → `check_field_access` → diagnostic.
-            (Expr::FieldAccess { object, field }, Ty::Function { .. })
-                if if let Expr::Identifier(module_name) = &object.0 {
-                    // Must be a known module (not a local binding or user type).
-                    let receiver_is_binding = self.env.lookup_ref(module_name).is_some();
-                    let receiver_is_known_type = self.type_defs.contains_key(module_name);
-                    !receiver_is_binding
-                        && !receiver_is_known_type
-                        && self.module_binding_in_current_file(module_name)
-                        && !field.contains("::")
-                        && {
-                            let qk = format!("{module_name}.{field}");
-                            self.fn_sigs
-                                .get(&qk)
-                                .is_some_and(|s| !s.type_params.is_empty())
-                        }
-                } else {
-                    false
-                } =>
-            {
-                // Re-extract the module name and qualified key now that the
-                // guard has confirmed the shape.
-                let Expr::Identifier(module_name) = &object.0 else {
-                    unreachable!("guard confirmed Identifier shape")
-                };
-                let qualified_key = format!("{module_name}.{field}");
-                // `unwrap` is safe: the guard confirmed the entry exists.
-                let sig = self.fn_sigs.get(&qualified_key).unwrap().clone();
-
-                // Freshen the sig (allocates fresh inference vars for each
-                // type parameter) and unify against the expected function type.
-                let (freshened_params, freshened_ret, resolved_type_args) =
-                    self.instantiate_fn_sig_for_call(&sig, None, span);
-
-                let fresh_fn_ty = Ty::Function {
-                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-                    params: freshened_params.clone(),
-                    ret: Box::new(freshened_ret.clone()),
-                };
-
-                // Trial-unify: if the expected type is inconsistent (e.g. wrong
-                // arity or incompatible concrete types) surface a type mismatch
-                // diagnostic and return Error — never a garbage fn value.
-                let n = self.errors.len();
-                self.expect_type(expected, &fresh_fn_ty, span);
-                if self.errors.len() > n {
-                    return Ty::Error;
-                }
-
-                // Resolve after unification — type args should now be concrete.
-                let concrete_args: Vec<Ty> = resolved_type_args
-                    .iter()
-                    .map(|ty| self.subst.resolve(ty))
-                    .collect();
-
-                if concrete_args.iter().any(Ty::has_inference_var) {
-                    // Still ambiguous after unification — the expected type did
-                    // not fully determine the type parameters (e.g. a partially-
-                    // polymorphic context). Fail closed with a diagnostic that
-                    // asks for an explicit annotation.
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`{qualified_key}` is a generic function; the type context \
-                             did not fully determine its type parameters — add an \
-                             explicit type annotation (e.g. `let f: fn({params}) -> {ret} \
-                             = {qualified_key}`)",
-                            params = sig
-                                .params
-                                .iter()
-                                .map(|t| format!("{t}"))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            ret = sig.return_type,
-                        ),
-                    );
-                    return Ty::Error;
-                }
-
-                // Record the concrete type args so the HIR lowerer can look
-                // them up by this expression's span and compute the mangled
-                // monomorphisation symbol.
-                self.record_concrete_call_type_args(span, &concrete_args);
-
-                // Mark the module as used.
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    module_name.clone(),
-                ));
-
-                // Resolve the resulting function type and record it.
-                let result_ty = self.subst.resolve(&fresh_fn_ty);
-                self.record_type(span, &result_ty);
-                result_ty
-            }
-
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
@@ -6894,16 +6802,38 @@ impl Checker {
             .map(|handle_name| (field.to_string(), handle_name))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "field access handles many type variants"
-    )]
     pub(super) fn check_field_access(
         &mut self,
         object: &Spanned<Expr>,
         field: &str,
         span: &Span,
     ) -> Ty {
+        self.check_field_access_with_type_args(object, field, None, span)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "field access handles many type variants"
+    )]
+    fn check_field_access_with_type_args(
+        &mut self,
+        object: &Spanned<Expr>,
+        field: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        if type_args.is_some()
+            && matches!(&object.0, Expr::Identifier(name) if self.env.lookup_ref(name).is_some())
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "explicit type arguments require a function declaration, not a value field"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+
         // `self.count` is the receiver spelling of the actor state binding
         // `count`. Delegate to the bare-name shell so the read gets the same
         // type, the same use-after-move reporting, and the same HIR binding
@@ -7084,69 +7014,30 @@ impl Checker {
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(name) {
-                        // The module DOES export a function under this name:
-                        // a non-generic cross-module function in value
-                        // position resolves to its function type (the HIR
-                        // lowerer emits a fn-value BindingRef for it). The
-                        // generic case reached here without a context-determined
-                        // expected type (the `check_against` arm handles the
-                        // annotated case); emit a diagnostic asking for a type
-                        // annotation or suggesting a direct call / lambda wrap.
-                        if let Some(sig) = self.fn_sigs.get(&qualified_key) {
-                            if sig.type_params.is_empty() {
-                                let ty = Ty::Function {
-                                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-                                    params: sig.params.clone(),
-                                    ret: Box::new(sig.return_type.clone()),
-                                };
-                                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                    self.current_module.clone(),
-                                    self.current_module_idx,
-                                    name.clone(),
-                                ));
-                                // Apply the same wasm native-only guard used for call
-                                // expressions (#2135): a value-position reference to a
-                                // native-only stdlib function is itself a
-                                // `PlatformLimitation` rejection on wasm32, mirroring
-                                // the call-form guard in methods.rs.
-                                // The manifest-generated rejection slice is the
-                                // single source; both guards iterate it.
-                                if let Some(feature) = self.wasm_native_only_module_feature(name) {
-                                    self.reject_wasm_feature(span, feature);
-                                }
-                                self.reject_wasm_native_only_module_function(name, field, span);
-                                // crypto.random_bytes and its fallible twin depend on a
-                                // native-only secure entropy source absent from the wasm32
-                                // link set.
-                                if self.is_shipped_crypto_module(name)
-                                    && matches!(field, "random_bytes" | "try_random_bytes")
-                                {
-                                    self.reject_wasm_feature(
-                                        span,
-                                        WasmUnsupportedFeature::CryptoRandom,
-                                    );
-                                }
-                                return ty;
+                        if self.fn_sigs.contains_key(&qualified_key) {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                name.clone(),
+                            ));
+                            if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                                self.reject_wasm_feature(span, feature);
                             }
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
+                            self.reject_wasm_native_only_module_function(name, field, span);
+                            if self.is_shipped_crypto_module(name)
+                                && matches!(field, "random_bytes" | "try_random_bytes")
+                            {
+                                self.reject_wasm_feature(
+                                    span,
+                                    WasmUnsupportedFeature::CryptoRandom,
+                                );
+                            }
+                            self.record_call_edge(&qualified_key);
+                            return self.instantiate_function_value(
+                                &qualified_key,
+                                type_args,
                                 span,
-                                format!(
-                                    "`{qualified_key}` is a generic function; to use it as a \
-                                     value, add a type annotation that fully determines its \
-                                     type parameters (e.g. `let f: fn({params}) -> {ret} = \
-                                     {qualified_key}`), call it directly, or wrap it in a \
-                                     lambda (`|x| {qualified_key}(x)`)",
-                                    params = sig
-                                        .params
-                                        .iter()
-                                        .map(|t| format!("{t}"))
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                    ret = sig.return_type,
-                                ),
                             );
-                            return Ty::Error;
                         }
                         let similar = crate::error::find_similar(
                             field,

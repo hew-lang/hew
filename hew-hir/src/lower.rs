@@ -6986,6 +6986,13 @@ fn collect_call_sites_in_expr(
     trait_out: &mut Vec<TraitMethodStaticSite>,
 ) {
     match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(_),
+        } => {
+            out.push((name.clone(), expr.site));
+        }
+
         HirExprKind::RcIntrinsic {
             receiver, value, ..
         } => {
@@ -10044,6 +10051,13 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
 )]
 fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &mut CallNames) {
     match expr {
+        Expr::Identifier(name) if pf.is_some_and(|candidates| candidates.contains(name)) => {
+            out.bare.push(name.clone());
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            scan_expr_for_private_refs(&target.0, pf, out);
+        }
+
         Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
                 // `pf == None` collects every bare call name; `Some(set)` records
@@ -18249,7 +18263,7 @@ impl LowerCtx {
                         machine_ty,
                     )
                 } else {
-                    self.lower_identifier(name, span.clone())
+                    self.lower_identifier(name, span.clone(), site)
                 }
             }
             Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
@@ -19823,150 +19837,28 @@ impl LowerCtx {
                     }
                 }
 
-                // Pre-dispatch: module-qualified function reference in value
-                // position, e.g. `module_short.fn_name` stored, passed, or
-                // returned (not called). The checker accepted this and
-                // recorded a `Ty::Function` in `expr_types`; the HIR must
-                // produce a `BindingRef { Item(id) }` carrying the mangled
-                // symbol (e.g. `helpers$double`) so MIR's named-fn-value shim
-                // machinery resolves it through `module_fn_names` exactly
-                // like a same-module named fn.
-                //
-                // Guard: object is a bare `Expr::Identifier`, the mangled
-                // qualified key is in `fn_registry`, AND the checker-recorded
-                // expression type is actually `ResolvedTy::Function`.  The
-                // third condition mirrors the checker's `receiver_is_binding`
-                // discipline: when a local binding shadows an imported module
-                // name (e.g. `let helpers = Fake { double: 7 }; helpers.double`)
-                // the checker resolves the expression as a record-field access
-                // (i64), not a function.  Without this guard the registry hit
-                // would silently hijack the field access into a fn BindingRef,
-                // producing wrong-code with exit 0.
-                //
-                // Generic cross-module fns now reach here via the
-                // `check_against` arm (A156): when the checker accepted a
-                // `module.generic_fn` used as a value it recorded both a
-                // concrete `ResolvedTy::Function` in `expr_types` AND the
-                // inferred type args in `call_type_args` at this span.  The
-                // non-generic arm below handles the non-generic case (no
-                // `call_type_args` entry); this arm handles the generic one.
+                // Resolve a module function value through its lexical owner.
+                // A local record with the same name remains a field access.
                 if let Expr::Identifier(module_name) = &object.0 {
-                    let qualified_key = format!("{module_name}.{field}");
-                    let mangled = crate::mangle_dotted_name(&qualified_key);
-                    if let Some(entry) = self.fn_registry.get(&mangled).cloned() {
-                        // LESSONS: `checker-authority` P0 — honour the checker's
-                        // resolution before consulting the registry.  Only take
-                        // the fn-value path when the checker itself recorded a
-                        // Function type for this expression.  A non-Function
-                        // result (e.g. i64 from a shadowing field access) means
-                        // the checker resolved it differently; fall through to
-                        // the generic field-access lowering below.
-                        let checker_ty = self.checker_expr_ty(&span, "cross-module fn value");
-                        if let Some(ResolvedTy::Function { .. }) = &checker_ty {
-                            let ty = checker_ty.unwrap();
-
-                            // Generic fn-value: the checker recorded concrete
-                            // type args — look them up and register the
-                            // monomorphisation so MIR's `module_fn_names` finds
-                            // the mangled symbol.  The non-generic case has an
-                            // empty `type_params` on the registry entry and
-                            // produces no monomorphisation.
-                            let fn_mangled_symbol = if entry.type_params.is_empty() {
-                                // Non-generic cross-module fn — no monomorphisation needed.
-                                mangled.clone()
-                            } else {
-                                let span_key = self.mk_key(&span);
-                                if let Some(type_args_raw) =
-                                    self.call_type_args.get(&span_key).cloned()
-                                {
-                                    let mut type_args: Vec<ResolvedTy> =
-                                        Vec::with_capacity(type_args_raw.len());
-                                    let mut boundary_ok = true;
-                                    for raw_ty in &type_args_raw {
-                                        match ResolvedTy::from_ty(raw_ty) {
-                                            Ok(resolved) => type_args.push(resolved),
-                                            Err(err) => {
-                                                self.diagnostics.push(HirDiagnostic::new(
-                                                    HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
-                                                        callee: mangled.clone(),
-                                                        reason: err.to_string(),
-                                                    },
-                                                    span.clone(),
-                                                    "checker-authoritative call_type_args entry \
-                                                     for generic fn-value failed boundary conversion",
-                                                ));
-                                                boundary_ok = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if boundary_ok
-                                        && !type_args
-                                            .iter()
-                                            .any(|t| self.contains_abstract_type_param(t))
-                                    {
-                                        if let Some(declaration) =
-                                            self.direct_monomorph_declaration(&span)
-                                        {
-                                            let mono_key = MonoKey {
-                                                origin: entry.id,
-                                                declaration,
-                                                linker_symbol: mangled.clone(),
-                                                type_args: type_args.clone(),
-                                            };
-                                            let mono_sym =
-                                                crate::monomorph::function_monomorph_symbol(
-                                                    &mangled, &type_args,
-                                                );
-                                            if let Err(()) = self.mono_registry.insert(mono_key) {
-                                                if !self.mono_cap_diag_emitted {
-                                                    self.mono_cap_diag_emitted = true;
-                                                    let cap = self.mono_registry.cap();
-                                                    self.diagnostics.push(HirDiagnostic::new(
-                                                        HirDiagnosticKind::MonomorphisationCapExceeded {
-                                                            cap,
-                                                        },
-                                                        span.clone(),
-                                                        "too many distinct generic-function \
-                                                         instantiations; cap exceeded at fn-value site",
-                                                    ));
-                                                }
-                                            }
-                                            // Record per-site type args for the
-                                            // closure-under-substitution pass.
-                                            self.call_site_type_args.insert(site, type_args);
-                                            mono_sym
-                                        } else {
-                                            mangled.clone()
-                                        }
-                                    } else {
-                                        mangled.clone()
-                                    }
-                                } else {
-                                    // No call_type_args at this span — checker
-                                    // should have diagnosed this as ambiguous; fall
-                                    // back to the generic origin symbol (MIR will
-                                    // fail closed if it can't find it in
-                                    // module_fn_names).
-                                    mangled.clone()
-                                }
-                            };
-
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                value_class: ValueClass::of_ty(&ty, &self.type_classes),
-                                ty,
-                                intent,
-                                kind: HirExprKind::BindingRef {
-                                    name: fn_mangled_symbol,
-                                    resolved: ResolvedRef::Item(entry.id),
-                                },
-                                span,
-                            };
-                        }
-                        // checker_ty is None (boundary violation already
-                        // pushed) or a non-Function type — fall through.
+                    let key = self.imported_module_member_key(module_name, field);
+                    let symbol = crate::mangle_dotted_name(&key);
+                    if self.lookup(module_name).is_none()
+                        && self.fn_registry.contains_key(&symbol)
+                        && matches!(
+                            self.checker_expr_ty_if_present(&span),
+                            Some(ResolvedTy::Function { .. })
+                        )
+                    {
+                        let (kind, ty) = self.lower_function_value(&symbol, &span, site);
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                            ty,
+                            intent,
+                            kind,
+                            span,
+                        };
                     }
                 }
 
@@ -22956,16 +22848,8 @@ impl LowerCtx {
         )
     }
 
-    /// Expand `receiver.field(args)` — a record field of function type
-    /// called in method position — into a synthetic block:
-    ///
-    /// ```text
-    /// { let __hew_fnfield = <receiver>.<field>; __hew_fnfield(args...) }
-    /// ```
-    ///
-    /// The field read is a BORROW of the closure pair (the record keeps env
-    /// ownership; `classify_closure_pair_rhs` leaves field-access rhs
-    /// unadmitted), so the call neither frees nor retains the environment.
+    /// Preserve the selected record field as the indirect-call callee.
+    /// SIR decides the projection's borrow or consumption from its capabilities.
     fn lower_record_fn_field_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -22993,8 +22877,6 @@ impl LowerCtx {
                 );
             }
         };
-        let block_scope = self.ids.scope();
-        self.push_scope();
         let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
         let field_access = self.make_expr(
             HirExprKind::FieldAccess {
@@ -23005,42 +22887,13 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let fn_name = format!("__hew_fnfield_{}", self.ids.binding().0);
-        let fn_binding = self.bind(fn_name.clone(), field_ty.clone(), false, span.clone());
-        let fn_id = fn_binding.id;
-        let let_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(fn_binding, Some(field_access)),
-            span: span.clone(),
-        };
-        let fn_ref = self.make_binding_ref(
-            fn_name,
-            fn_id,
-            field_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
         let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-        let call = self.make_expr(
+        (
             HirExprKind::Call {
                 target: CallTarget::IndirectFunctionValue,
-                callee: Box::new(fn_ref),
+                callee: Box::new(field_access),
                 args: lowered_args,
             },
-            ret_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-        self.pop_scope();
-        (
-            HirExprKind::Block(HirBlock {
-                node: self.ids.node(),
-                scope: block_scope,
-                statements: vec![let_stmt],
-                tail: Some(Box::new(call)),
-                ty: ret_ty.clone(),
-                span,
-            }),
             ret_ty,
         )
     }
@@ -23054,6 +22907,76 @@ impl LowerCtx {
         }
     }
 
+    fn lower_function_value(
+        &mut self,
+        symbol: &str,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+    ) -> (HirExprKind, ResolvedTy) {
+        let entry = self.fn_registry[symbol].clone();
+        self.register_free_fn_monomorphisation(symbol, None, span, site);
+        let key = self.mk_key(span);
+        if !entry.type_params.is_empty()
+            && (self.expr_types.contains_key(&key) || self.call_type_args.contains_key(&key))
+            && (!self.call_type_args.contains_key(&key)
+                || self.direct_monomorph_declaration(span).is_none())
+        {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.to_string(),
+                    reason:
+                        "generic function value requires type arguments and declaration identity"
+                            .to_string(),
+                },
+                span.clone(),
+                "generic function value has incomplete checker instantiation facts",
+            ));
+            return (
+                HirExprKind::Unsupported("incomplete generic function value".to_string()),
+                ResolvedTy::Unit,
+            );
+        }
+        let ty = if self.expr_types.contains_key(&key) || self.call_type_args.contains_key(&key) {
+            let Some(ty) = self.checker_expr_ty(span, "function value") else {
+                return (
+                    HirExprKind::Unsupported("function value has no checked type".to_string()),
+                    ResolvedTy::Unit,
+                );
+            };
+            ty
+        } else {
+            // Direct-call callee references may be synthesised from the
+            // declaration without a separate value expression in the checker.
+            ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                params: entry.param_tys,
+                ret: Box::new(entry.return_ty),
+            }
+        };
+        let emitted = self
+            .call_site_type_args
+            .get(&site)
+            .filter(|args| !args.iter().any(|ty| self.contains_abstract_type_param(ty)))
+            .map_or_else(
+                || {
+                    self.fn_symbol_overrides
+                        .get(&entry.id)
+                        .cloned()
+                        .unwrap_or_else(|| symbol.to_string())
+                },
+                |args| crate::monomorph::function_monomorph_symbol(symbol, args),
+            );
+        (
+            HirExprKind::BindingRef {
+                name: emitted,
+                resolved: entry
+                    .builtin_family
+                    .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin),
+            },
+            ty,
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "multi-branch identifier resolution: context readers, bindings, fn_sigs, \
@@ -23065,6 +22988,7 @@ impl LowerCtx {
         &mut self,
         name: &str,
         span: std::ops::Range<usize>,
+        site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             let key = self.mk_key(&span);
@@ -23196,21 +23120,8 @@ impl LowerCtx {
             }
         }
         if let Some(symbol) = self.imported_rewrite_symbol(name).map(str::to_string) {
-            if let Some(entry) = self.fn_registry.get(&symbol) {
-                let fn_ty = ResolvedTy::Function {
-                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                    params: entry.param_tys.clone(),
-                    ret: Box::new(entry.return_ty.clone()),
-                };
-                let id = entry.id;
-                let emitted_symbol = self.fn_symbol_overrides.get(&id).cloned().unwrap_or(symbol);
-                return (
-                    HirExprKind::BindingRef {
-                        name: emitted_symbol,
-                        resolved: ResolvedRef::Item(id),
-                    },
-                    fn_ty,
-                );
+            if self.fn_registry.contains_key(&symbol) {
+                return self.lower_function_value(&symbol, &span, site);
             }
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -23262,32 +23173,8 @@ impl LowerCtx {
                 ty,
             );
         }
-        if let Some(entry) = self.fn_registry.get(name) {
-            // Known function item — expose as a function-typed reference so
-            // callers can extract the return type from the call expression.
-            let fn_ty = ResolvedTy::Function {
-                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                params: entry.param_tys.clone(),
-                ret: Box::new(entry.return_ty.clone()),
-            };
-            // Checker-registered runtime builtins with no AST `fn` item
-            // resolve to the typed family directly; MIR reads
-            // `family.c_symbol()` instead of reverse-mapping the
-            // user-visible name through a string bridge.
-            let resolved = entry
-                .builtin_family
-                .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin);
-            let emitted_name = self
-                .fn_symbol_overrides
-                .get(&entry.id)
-                .map_or_else(|| name.to_string(), Clone::clone);
-            (
-                HirExprKind::BindingRef {
-                    name: emitted_name,
-                    resolved,
-                },
-                fn_ty,
-            )
+        if self.fn_registry.contains_key(name) {
+            self.lower_function_value(name, &span, site)
         } else {
             if let Some(module) = self.missing_stdlib_module_import(name) {
                 let source_module = module.replace("::", ".");

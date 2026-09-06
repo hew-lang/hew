@@ -74,10 +74,10 @@ pub struct HirModule {
     /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub monomorphisations: Vec<MonomorphizedFn>,
-    /// Per-call-site type arguments observed at generic function calls.
-    /// Keyed by the `SiteId` of the `HirExpr` whose `kind` is
-    /// `HirExprKind::Call` and whose callee is a generic top-level user
-    /// function.
+    /// Type arguments observed at generic function calls and function values.
+    /// Keyed by the `SiteId` of the `HirExpr`: `Call` identifies an invocation;
+    /// `BindingRef` with `ResolvedRef::Item` identifies a function value.
+    /// Both retain the generic declaration as their origin.
     ///
     /// The recorded `ResolvedTy`s mirror the checker's `call_type_args`
     /// side-table, with one important nuance: when a call appears

@@ -11,6 +11,32 @@ use crate::{
 };
 
 impl Checker {
+    /// Instantiate a declaration used as a value through the same signature,
+    /// bound and identity authorities as a direct call. Inference can settle
+    /// from the destination type or a later invocation of the local binding.
+    pub(super) fn instantiate_function_value(
+        &mut self,
+        signature_key: &str,
+        type_args: Option<&[Spanned<hew_parser::ast::TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        let sig = self.fn_sigs[signature_key].clone();
+        let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
+        let assoc_bindings = self
+            .fn_type_param_assoc_bindings
+            .get(signature_key)
+            .cloned()
+            .unwrap_or_default();
+        self.enforce_type_param_bounds_with_assoc(&sig, &assoc_bindings, &arguments, span);
+        self.record_concrete_call_type_args(span, &arguments);
+        self.record_direct_call_target(span, self.call_target_for_signature(signature_key));
+        Ty::Function {
+            capabilities: CallableCapabilities::FUNCTION_ITEM,
+            params,
+            ret: Box::new(ret),
+        }
+    }
+
     /// Record invocation-time consumption when an owned value leaves a place.
     /// SIR authors the actual transfer; the checker uses the same class facts
     /// to determine capture capabilities and reject later source uses.

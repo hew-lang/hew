@@ -13,8 +13,9 @@ impl Parser<'_> {
     /// suffix.  The scan is linear and its interior language is deliberately
     /// bounded to identifier/primitive type names, `.`, `,`, and
     /// balanced nested angle brackets.  The outer `>` commits only when the
-    /// following token is `(`, `.`, or `{`; once committed, a later type parse
-    /// error never backtracks into relational operators.
+    /// following token starts a postfix or ends the value expression; once
+    /// committed, a later type parse error never backtracks into relational
+    /// operators.
     fn generic_apply_suffix_commits(&self) -> bool {
         if self.peek() != Some(&Token::Less) {
             return false;
@@ -29,7 +30,16 @@ impl Parser<'_> {
                     if depth == 0 {
                         return matches!(
                             self.peek_at(idx + 1),
-                            Some(Token::LeftParen | Token::Dot | Token::LeftBrace)
+                            None | Some(
+                                Token::LeftParen
+                                    | Token::Dot
+                                    | Token::LeftBrace
+                                    | Token::Semicolon
+                                    | Token::Comma
+                                    | Token::RightParen
+                                    | Token::RightBracket
+                                    | Token::RightBrace
+                            )
                         );
                     }
                 }
@@ -38,7 +48,16 @@ impl Parser<'_> {
                     if depth == 0 {
                         return matches!(
                             self.peek_at(idx + 1),
-                            Some(Token::LeftParen | Token::Dot | Token::LeftBrace)
+                            None | Some(
+                                Token::LeftParen
+                                    | Token::Dot
+                                    | Token::LeftBrace
+                                    | Token::Semicolon
+                                    | Token::Comma
+                                    | Token::RightParen
+                                    | Token::RightBracket
+                                    | Token::RightBrace
+                            )
                         );
                     }
                 }

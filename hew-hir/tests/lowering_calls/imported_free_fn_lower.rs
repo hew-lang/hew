@@ -468,3 +468,52 @@ pub fn entry(n: i64) -> i64 { secret(n) }
         tco.errors
     );
 }
+
+#[test]
+fn generic_module_function_values_keep_the_selected_declaration() {
+    for root in [
+        "import m; fn main() { let f: fn(i64) -> i64 = m.id; f(4); }",
+        "import m as helpers; fn main() { let f = helpers.id<i64>; f(4); }",
+        "import m; fn main() { let f = m.id; f(4); }",
+    ] {
+        let program = build_program_with_imported_module("pub fn id<T>(x: T) -> T { x }", root);
+        let (output, checked) = lower_with_checker(&program);
+        assert!(checked.errors.is_empty(), "{root}: {:?}", checked.errors);
+        assert!(
+            output.diagnostics.is_empty(),
+            "{root}: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            output
+                .module
+                .monomorphisations
+                .iter()
+                .any(|mono| mono.key.declaration.full_path() == "m.id"
+                    && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+            "{root}: {:?}",
+            output.module.monomorphisations
+        );
+    }
+}
+
+#[test]
+fn generic_function_value_keeps_an_imported_private_helper_reachable() {
+    let program = build_program_with_imported_module(
+        "fn id<T>(x: T) -> T { x } pub fn factory<T>() -> fn(T) -> T { id<T> }",
+        "import m; fn main() { let f = m.factory<i64>(); f(4); }",
+    );
+    let (output, checked) = lower_with_checker(&program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .module
+            .monomorphisations
+            .iter()
+            .any(|mono| mono.key.declaration.full_path() == "m.id"
+                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+        "{:?}",
+        output.module.monomorphisations
+    );
+}

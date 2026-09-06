@@ -372,10 +372,9 @@ fn verifier_requires_recursive_vector_shape_and_type_facts() {
 }
 
 #[test]
-fn function_bearing_vector_record_is_not_an_executable_value_yet() {
-    // Function values have retain semantics in TypeFactService. The current
-    // executable SIR domain still lacks a function value contract, even when
-    // the nested vector is empty and no closure expression is constructed.
+fn non_clone_callable_vector_cannot_publish_copy_capability() {
+    // A plain erased function type does not promise Clone. Even an empty
+    // nested vector must not publish element-copy glue without that evidence.
     let parsed = hew_parser::parse(
         r"
         type Holder { callbacks: Vec<fn() -> i64>, }
@@ -400,10 +399,13 @@ fn function_bearing_vector_record_is_not_an_executable_value_yet() {
         .find(|status| status.name == "main")
         .unwrap()
         .status;
+    assert!(matches!(status, SirLoweringStatus::Lowered), "{status:#?}");
+    let diagnostics = verify_module(&lowered.module);
     assert!(
-        matches!(status, SirLoweringStatus::Unsupported { reason }
-        if reason.contains("vector element") && reason.contains("no semantic value contract")),
-        "{status:#?}"
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidCollectionType { .. }
+        )),
+        "{diagnostics:#?}"
     );
-    assert!(lowered.module.functions.is_empty());
 }

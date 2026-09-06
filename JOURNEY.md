@@ -1658,3 +1658,18 @@ The complete SIR Make suite passes with capture mutation, malformed receiver and
 signature, branch-dependent extraction, cleanup and exclusive-loan controls.
 This connects semantic verification; source production and physical invocation
 remain under implementation, so it is not native closure acceptance.
+
+## Typed function values and shared invocation lowering
+
+Function references now demand their exact source bodies and construct owned
+callable values. Direct and indirect user calls share argument evaluation and
+normal/fault cleanup, with explicit borrowing or consuming receiver transfers.
+Callable capability weakening is explicit at bindings, arguments and returns;
+fresh function references avoid a spurious copy after capability erasure.
+Plain erased callables retain their non-Clone transfer contract.
+
+Source tests cover indirect-only body demand, nested repeated calls, returned
+and annotated callable values and consuming invocation. Existing demand tests
+now use an unsupported scalar header instead of newly admitted function types;
+collection tests still reject copying non-Clone callable elements. Physical
+callable execution remains the next integration layer.

@@ -1804,7 +1804,13 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
-        || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+        || matches!(
+            ty,
+            ResolvedTy::String
+                | ResolvedTy::Bytes
+                | ResolvedTy::Function { .. }
+                | ResolvedTy::Closure { .. }
+        )
         || collection_type_arguments(ty).is_some()
 }
 
@@ -1910,8 +1916,13 @@ fn lower_initial_value_transfer(
         ));
     }
     builder.service.require_type_facts(&ty)?;
-    if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
-        && collection_type_arguments(&ty).is_none()
+    if !matches!(
+        ty,
+        ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+    ) && collection_type_arguments(&ty).is_none()
     {
         if is_concrete_variant_type(builder.service.module, &ty) {
             builder
@@ -1942,6 +1953,44 @@ fn lower_initial_value_transfer(
 enum OwnedBindingUse {
     Copy,
     Move,
+}
+
+/// The evaluated receiver is retained separately from the ordinary arguments.
+enum PreparedCallee {
+    Direct(CallableId),
+    Indirect(crate::BoundaryOperand),
+}
+
+impl PreparedCallee {
+    fn invoke(
+        self,
+        id: OpId,
+        signature: SemSignature,
+        args: Vec<crate::BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    ) -> SemTerminator {
+        match self {
+            Self::Direct(callee) => SemTerminator::Call {
+                id,
+                callee,
+                args,
+                result,
+                normal,
+                unwind,
+            },
+            Self::Indirect(callee) => SemTerminator::IndirectCall {
+                id,
+                callee,
+                signature,
+                args,
+                result,
+                normal,
+                unwind,
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2211,6 +2260,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ));
         }
         let result = self.lower_block(&self.function.body, OwnedBindingUse::Move)?;
+        let result = result
+            .map(|operand| {
+                self.coerce_value(
+                    operand.value,
+                    &self.callable.signature.return_ty.clone(),
+                    Provenance::Synthesized,
+                )
+                .map(|value| Operand { value })
+            })
+            .transpose()?;
         if self.is_open() {
             if let Some(result) = &result {
                 self.owned_live.remove(&result.value);
@@ -2286,13 +2345,33 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     source: Operand { value: source },
                 },
             ),
-            Some(OwnKind::Owned) if matches!(expr.kind, HirExprKind::BindingRef { .. }) => {
+            Some(OwnKind::Owned)
+                if matches!(
+                    expr.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(_),
+                        ..
+                    }
+                ) =>
+            {
                 let protected = match &expr.kind {
                     HirExprKind::BindingRef {
                         resolved: ResolvedRef::Binding(binding),
                         ..
                     } => self.move_protected_bindings.contains(binding),
                     _ => false,
+                };
+                let binding_use = if !protected
+                    && self
+                        .service
+                        .checked_facts
+                        .rows()
+                        .get(&TypeInstanceKey(ty.clone()))
+                        .is_some_and(|row| row.clone == hew_types::CloneKind::None)
+                {
+                    OwnedBindingUse::Move
+                } else {
+                    binding_use
                 };
                 match (binding_use, protected) {
                     (OwnedBindingUse::Copy, _) | (OwnedBindingUse::Move, true) => self.emit(
@@ -2318,6 +2397,30 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 ty.user_facing()
             )),
         }
+    }
+
+    fn coerce_value(
+        &mut self,
+        value: ValueId,
+        target: &ResolvedTy,
+        provenance: Provenance,
+    ) -> Result<ValueId, String> {
+        let source = self
+            .value_ty(value)
+            .ok_or_else(|| "coercion has no typed source value".to_string())?;
+        if source == *target {
+            return Ok(value);
+        }
+        self.service.require_type_facts(target)?;
+        crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())?;
+        self.owned_live.remove(&value);
+        self.emit_typed(
+            provenance,
+            target,
+            SemOpKind::CallableCoerce {
+                source: Operand { value },
+            },
+        )
     }
 
     fn value_own_kind(&self, value: ValueId) -> Option<OwnKind> {
@@ -2649,6 +2752,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // provenance lands on that definition — and only when it
                     // has none, because `let y = x` must not rename the
                     // parameter `x` already named.
+                    let value =
+                        self.coerce_value(value, &self.ty(&binding.ty), Provenance::Synthesized)?;
                     self.bind_source_value(binding, value)?;
                 }
                 HirStmtKind::Expr(expr) => {
@@ -3042,7 +3147,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// path, so a divergent expression cannot manufacture a placeholder SSA
     /// value or continue evaluating sibling operands.
     fn lower_function_return(&mut self, value: Option<&HirExpr>) -> Result<(), String> {
-        let value = match value {
+        let mut value = match value {
             Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 lower_initial_unit_return(self, expr)?;
                 None
@@ -3060,7 +3165,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }),
             None => None,
         };
-        if let Some(value) = &value {
+        if let Some(value) = &mut value {
+            value.operand.value = self.coerce_value(
+                value.operand.value,
+                &self.callable.signature.return_ty.clone(),
+                Provenance::Synthesized,
+            )?;
             self.owned_live.remove(&value.operand.value);
         }
         self.destroy_all_live()?;
@@ -3112,6 +3222,42 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     ));
                 }
                 Ok(value)
+            }
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(item),
+                ..
+            } => {
+                let declaration = self
+                    .service
+                    .table
+                    .functions_by_item
+                    .get(item)
+                    .ok_or_else(|| "function value has no checked HIR declaration".to_string())?
+                    .declaration
+                    .clone();
+                let target = self.service.resolve_direct_call(
+                    &declaration,
+                    expr.site,
+                    &self.substitution,
+                )?;
+                let ty = ResolvedTy::Function {
+                    params: target
+                        .signature
+                        .params
+                        .iter()
+                        .map(|param| param.ty.clone())
+                        .collect(),
+                    ret: Box::new(target.signature.return_ty.clone()),
+                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                };
+                let value = self.emit_typed(
+                    Provenance::Site(expr.site),
+                    &ty,
+                    SemOpKind::FunctionMake {
+                        callable: target.id,
+                    },
+                )?;
+                self.coerce_value(value, &self.ty(&expr.ty), Provenance::Site(expr.site))
             }
             HirExprKind::Unary { op, operand, .. } => {
                 let value = self.lower_read_operand(operand, "unary operand")?;
@@ -4918,15 +5064,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(continuation)
     }
 
-    /// Lower an HIR direct call through the resolved SIR callable table.
-    ///
-    /// `value_required` distinguishes a value context from a discarded/unit
-    /// context.  Non-unit calls always retain their single SSA result; unit
-    /// calls are admitted only in the latter and become zero-result `Call`
-    /// operations.
+    /// Direct and indirect user calls share argument capture and both cleanup paths.
     #[allow(
         clippy::too_many_lines,
-        reason = "the initial direct-call ABI admission is deliberately kept as one auditable HIR-to-SIR boundary"
+        reason = "one user-call boundary owns evaluation order, receiver transfer and both continuations"
     )]
     fn lower_direct_call(
         &mut self,
@@ -4939,70 +5080,66 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             args,
         } = &expr.kind
         else {
-            return Err(
-                "internal SIR lowering error: direct-call lowering received a non-call".to_string(),
-            );
+            return Err("user-call lowering received a non-call".to_string());
         };
-        let declaration =
-            match target {
-                CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => declaration,
-                CallTarget::IndirectFunctionValue => {
-                    return Err(
-                        "indirect calls are deferred until SIR models the callee value explicitly"
-                            .to_string(),
-                    );
-                }
-                _ => return Err(
-                    "only ordinary user/impl direct calls are in SIR's initial scalar call domain"
-                        .to_string(),
-                ),
-            };
-        if !matches!(callee.kind, HirExprKind::BindingRef { .. }) {
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let (callee, signature) = match target {
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                let target =
+                    self.service
+                        .resolve_direct_call(declaration, expr.site, &self.substitution)?;
+                (PreparedCallee::Direct(target.id), target.signature)
+            }
+            CallTarget::IndirectFunctionValue => {
+                let ty = self.ty(&callee.ty);
+                self.service.require_type_facts(&ty)?;
+                let signature =
+                    crate::callable_value_signature(&ty, self.service.checked_facts.rows())?;
+                let (_, _, capabilities) = crate::callable_parts(&ty)?;
+                let value = self.lower_expr(callee)?;
+                let decision = match capabilities.call {
+                    hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,
+                    hew_types::CallableCallMode::Var => crate::BoundaryDecision::BorrowMut,
+                    hew_types::CallableCallMode::Once => crate::BoundaryDecision::Move,
+                };
+                (
+                    PreparedCallee::Indirect(crate::BoundaryOperand {
+                        operand: Operand { value },
+                        decision,
+                    }),
+                    signature,
+                )
+            }
+            _ => {
+                return Err(
+                    "user-call lowering requires a resolved direct or indirect target".to_string(),
+                )
+            }
+        };
+        if args.len() != signature.params.len() || self.ty(&expr.ty) != signature.return_ty {
             return Err(
-                "calls with an evaluated callee are deferred until SIR models callee values"
+                "user-call argument count or result type differs from its semantic signature"
                     .to_string(),
             );
         }
-        let callee =
-            self.service
-                .resolve_direct_call(declaration, expr.site, &self.substitution)?;
-        let callee_id = callee.id;
-        let callee_declaration = callee.declaration.clone();
-        let params = callee.signature.params.clone();
-        let return_ty = callee.signature.return_ty.clone();
-        if args.len() != params.len() {
-            return Err(format!(
-                "direct callee `{}` expects {} argument(s), HIR carries {}",
-                callee_declaration.full_path(),
-                params.len(),
-                args.len()
-            ));
-        }
-        let expression_ty = self.ty(&expr.ty);
-        if expression_ty != return_ty {
-            return Err(format!(
-                "direct callee `{}` returns `{}`, but call expression has `{}`",
-                callee_declaration.full_path(),
-                return_ty.user_facing(),
-                expression_ty.user_facing()
-            ));
-        }
-        let live_before_arguments: std::collections::HashSet<_> =
-            self.owned_live.keys().copied().collect();
         let mut lowered_args = Vec::with_capacity(args.len());
-        let mut loans = Vec::new();
-        for (index, (arg, expected)) in args.iter().zip(&params).enumerate() {
-            let argument_ty = self.ty(&arg.ty);
-            if argument_ty != expected.ty {
-                return Err(format!(
-                    "direct call argument {index} to `{}` has `{}`, expected `{}`",
-                    callee_declaration.full_path(),
-                    argument_ty.user_facing(),
-                    expected.ty.user_facing()
-                ));
-            }
+        for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
             let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
-            let operand = self.lower_call_read(arg, &mut loans, stable_tail, true)?;
+            let operand = if self.ty(&arg.ty) == expected.ty {
+                self.lower_call_read(arg, &mut loans, stable_tail, true)?
+            } else {
+                let value = lower_initial_value_transfer(
+                    self,
+                    arg,
+                    "call argument coercion",
+                    OwnedBindingUse::Copy,
+                )?;
+                Operand {
+                    value: self.coerce_value(value, &expected.ty, Provenance::Site(arg.site))?,
+                }
+            };
             lowered_args.push(crate::BoundaryOperand {
                 operand,
                 decision: match expected.passing {
@@ -5010,17 +5147,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
                     SemParamPassing::BorrowMut | SemParamPassing::Consume => {
                         return Err(
-                            "direct-call receiver transfer has no source operation contract"
-                                .to_string(),
-                        );
+                            "direct parameter transfer requires its source contract".to_string()
+                        )
                     }
                 },
             });
         }
+        if let PreparedCallee::Indirect(receiver) = &callee {
+            if receiver.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&receiver.operand.value);
+            }
+        }
         let live_at_call = self.owned_live.clone();
-        // Argument evaluation can replace an outer binding. Its new owner
-        // survives the call; only unbound expression owners are temporaries.
-        let argument_temporaries: Vec<_> = live_at_call
+        let temporaries: Vec<_> = live_at_call
             .keys()
             .filter(|value| {
                 !live_before_arguments.contains(value)
@@ -5028,90 +5167,72 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .copied()
             .collect();
-        if return_ty == ResolvedTy::Unit {
+        let return_ty = &signature.return_ty;
+        let (result, normal, continuation) = if *return_ty == ResolvedTy::Unit {
             if value_required {
-                return Err(format!(
-                    "unit-valued direct call `{}` cannot produce an SSA value",
-                    callee_declaration.full_path()
-                ));
+                return Err("unit-valued call cannot produce an SSA value".to_string());
             }
-            let normal = self.new_block(Vec::new());
-            let unwind = self.new_block(Vec::new());
-            let id = OpId(self.ops);
-            self.ops += 1;
-            self.set_terminator(SemTerminator::Call {
-                id,
-                callee: callee_id,
-                args: lowered_args,
-                result: CallResult::Unit,
-                normal: Edge {
-                    target: normal,
-                    args: Vec::new(),
+            (
+                CallResult::Unit,
+                Edge {
+                    target: self.new_block(Vec::new()),
+                    args: vec![],
                 },
-                unwind: CallUnwind::Cleanup(Edge {
-                    target: unwind,
-                    args: Vec::new(),
-                }),
-            })?;
-            self.current = unwind;
-            self.owned_live = live_at_call.clone();
-            self.end_call_loans(&loans)?;
-            self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::ResumeUnwind)?;
-            self.current = normal;
-            self.owned_live = live_at_call;
-            self.end_call_loans(&loans)?;
-            for value in argument_temporaries.into_iter().rev() {
-                self.emit_destroy(value)?;
-            }
-            Ok(None)
+                None,
+            )
         } else {
-            let result = self.fresh_value();
+            self.service.require_type_facts(return_ty)?;
+            let own = OwnKind::of_ty(return_ty, self.service.checked_facts.rows())?;
+            let raw = self.fresh_value();
             let continuation = self.fresh_value();
-            self.service.require_type_facts(&return_ty)?;
-            let own = OwnKind::of_ty(&return_ty, self.service.checked_facts.rows())?;
             let normal = self.new_block(vec![BlockArg {
                 value: continuation,
-                own,
                 ty: return_ty.clone(),
+                own,
             }]);
-            let unwind = self.new_block(Vec::new());
-            let id = OpId(self.ops);
-            self.ops += 1;
-            self.set_terminator(SemTerminator::Call {
-                id,
-                callee: callee_id,
-                args: lowered_args,
-                result: CallResult::Value(ValueDef {
-                    id: result,
+            (
+                CallResult::Value(ValueDef {
+                    id: raw,
+                    ty: return_ty.clone(),
                     own,
-                    ty: return_ty,
                 }),
-                normal: Edge {
+                Edge {
                     target: normal,
-                    args: vec![Operand { value: result }],
+                    args: vec![Operand { value: raw }],
                 },
-                unwind: CallUnwind::Cleanup(Edge {
-                    target: unwind,
-                    args: Vec::new(),
-                }),
-            })?;
-            self.current = unwind;
-            self.owned_live = live_at_call.clone();
-            self.end_call_loans(&loans)?;
-            self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::ResumeUnwind)?;
-            self.current = normal;
-            self.owned_live = live_at_call;
-            self.end_call_loans(&loans)?;
-            for value in argument_temporaries.into_iter().rev() {
-                self.emit_destroy(value)?;
-            }
-            if own == OwnKind::Owned {
-                self.owned_live.insert(continuation, self.ty(&expr.ty));
-            }
-            Ok(Some(continuation))
+                Some((continuation, own)),
+            )
+        };
+        let normal_block = normal.target;
+        let unwind = self.new_block(Vec::new());
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(callee.invoke(
+            id,
+            signature,
+            lowered_args,
+            result,
+            normal,
+            CallUnwind::Cleanup(Edge {
+                target: unwind,
+                args: vec![],
+            }),
+        ))?;
+        self.current = unwind;
+        self.owned_live = live_at_call.clone();
+        self.end_call_loans(&loans)?;
+        self.destroy_all_live()?;
+        self.set_terminator(SemTerminator::ResumeUnwind)?;
+        self.current = normal_block;
+        self.owned_live = live_at_call;
+        self.end_call_loans(&loans)?;
+        for value in temporaries.into_iter().rev() {
+            self.emit_destroy(value)?;
         }
+        if let Some((value, OwnKind::Owned)) = continuation {
+            self.owned_live.insert(value, self.ty(&expr.ty));
+        }
+        Ok(continuation.map(|(value, _)| value))
     }
 
     fn lower_call(
@@ -5131,7 +5252,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 &args.iter().collect::<Vec<_>>(),
                 value_required,
             ),
-            CallTarget::User(_) | CallTarget::ImplMethod(_) => {
+            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::IndirectFunctionValue => {
                 self.lower_direct_call(expr, value_required)
             }
             _ => Err(format!(

@@ -1603,6 +1603,11 @@ pub struct HewActor {
     pub parked_ask_channel: AtomicPtr<c_void>,
     /// Published with the dispatch callback before the actor becomes visible.
     pub dispatch_ownership: HewDispatchOwnership,
+
+    /// Borrowed invocation state of the active checked handler, protected by
+    /// activation ownership. Stop requests cancel and drain this invocation
+    /// before its frame can be destroyed. Null between checked turns.
+    pub checked_invocation: AtomicPtr<c_void>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -2108,6 +2113,13 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
 /// A no-op for the overwhelmingly common actor that never suspended.
 #[cfg(not(target_arch = "wasm32"))]
 fn abandon_parked_activation(a: &HewActor) {
+    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+        // A checked turn owns scoped work that may still be cleaning up. Its
+        // scheduler activation must cancel and drain before reclaiming it.
+        // SAFETY: the caller keeps this actor live throughout teardown.
+        unsafe { hew_actor_stop(std::ptr::from_ref(a).cast_mut()) };
+        return;
+    }
     if !crate::coro_exec::has_live_parked_cont(a) {
         return;
     }
@@ -2255,6 +2267,9 @@ enum FinalizeDecision {
 ///   free paths and routes `Suspended` to the same fail-closed leak — closing a
 ///   latent finalize-over-a-parked-frame on the cleanup path.
 fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
+    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+        return FinalizeDecision::Skip;
+    }
     match a.actor_state.compare_exchange(
         HewActorState::Idle as i32,
         HewActorState::Stopped as i32,
@@ -2505,6 +2520,13 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+        // Terminal state cannot revoke a live checked frame's ownership of
+        // state and child work. Retain it if terminal teardown raced its drain.
+        crate::set_last_error("checked actor cleanup has not completed");
+        return;
+    }
 
     // Every route into this function is a route that abandons the actor: the
     // box is about to go away. If it was parked mid-`ask`, its suspend edge
@@ -3214,6 +3236,7 @@ fn build_spawned_actor(
         state_drop_consumed: AtomicBool::new(false),
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+        checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
     })
 }
 
@@ -4818,7 +4841,10 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
             // before the freer's map removal (freer waits in the drain loop), or
             // the freer removes the map entry before the sender's lookup (sender
             // gets `None`, no pin, no UAF).
-            if actor_free_state_is_quiescent(state) && !a.dispatch_active.load(Ordering::Acquire) {
+            if actor_free_state_is_quiescent(state)
+                && !a.dispatch_active.load(Ordering::Acquire)
+                && a.checked_invocation.load(Ordering::Acquire).is_null()
+            {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -7484,6 +7510,16 @@ pub extern "C" fn hew_actor_self_stop() {
     // SAFETY: The canonical context only installs valid actor pointers during dispatch.
     let a = unsafe { &*actor };
 
+    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+        // Keep the checked turn runnable until its cancellation cleanup ends.
+        // SAFETY: this is the current, exclusively owned actor activation.
+        unsafe {
+            hew_actor_stop(actor);
+            crate::actor_native::cancel_checked_turn(a);
+        }
+        return;
+    }
+
     // Close the mailbox to reject new messages.
     let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
@@ -8594,6 +8630,7 @@ pub mod composition_test_support {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         }))
     }
 
@@ -10250,6 +10287,7 @@ mod tests {
                 state_drop_consumed: AtomicBool::new(false),
                 state_drop_borrowed: AtomicBool::new(false),
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+                checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
             }));
             (actor, mailbox)
         }
@@ -11350,6 +11388,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -16135,6 +16174,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

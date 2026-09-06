@@ -321,6 +321,11 @@ pub(crate) fn has_drain_blocking_suspended_actor(
                 {
                     return false;
                 }
+                if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+                    // An abandoned reply cannot release the checked turn's
+                    // state or children before cooperative cleanup completes.
+                    return true;
+                }
                 let gate = a.parked_ask_channel.load(Ordering::Acquire);
                 if gate.is_null() {
                     // Parked with no ask: an admission wait does not block;

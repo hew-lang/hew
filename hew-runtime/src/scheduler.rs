@@ -2304,6 +2304,8 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
     // SAFETY: the mailbox pointer is valid for the actor's lifetime
     // (null-tolerant).
     if unsafe { mailbox::mailbox_stop_requested(mailbox) }
+        // SAFETY: the caller owns this activation and its parked child state.
+        && !unsafe { crate::actor_native::cancel_checked_turn(a) }
         && a.actor_state
             .compare_exchange(
                 HewActorState::Running as i32,
@@ -2355,6 +2357,8 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
         // this load) by waking the actor so this path runs again.
         // SAFETY: the mailbox pointer is valid for the actor's lifetime.
         if unsafe { mailbox::mailbox_stop_requested(mailbox) }
+        // SAFETY: the caller owns this activation and its parked child state.
+        && !unsafe { crate::actor_native::cancel_checked_turn(a) }
             && a.actor_state
                 .compare_exchange(
                     HewActorState::Suspended as i32,
@@ -3165,6 +3169,8 @@ fn activate_queued_actor(actor: *mut HewActor) {
         // fresh-dispatch path only — this activation returns before reaching it.
         // SAFETY: mailbox pointer is valid for the lifetime of the actor.
         if unsafe { mailbox::mailbox_stop_requested(a.mailbox.cast::<HewMailbox>()) }
+            // SAFETY: this worker owns the activation and invocation borrow.
+            && !unsafe { crate::actor_native::cancel_checked_turn(a) }
             && a.actor_state
                 .compare_exchange(
                     HewActorState::Running as i32,
@@ -6070,6 +6076,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -8866,6 +8873,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

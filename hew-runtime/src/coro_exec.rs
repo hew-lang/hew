@@ -321,8 +321,15 @@ pub unsafe fn resume_park(a: &HewActor) -> Option<ResumePoll> {
 /// gate (only one caller wins the `… → Destroyed` CAS).
 #[must_use]
 pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
-    // FG1: win the single transition to Destroyed from Done or Parked.
+    // Acquire the published park before reading its invocation borrow. Reading
+    // the borrow first could miss a checked turn that parks between the loads.
     let cur = load_tag(a);
+    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+        // Checked turns must first cooperatively drain their scoped work.
+        // The owning adapter clears this borrow only after terminal cleanup.
+        return ExecGuard::Refused;
+    }
+    // FG1: win the single transition to Destroyed from Done or Parked.
     let won = match cur {
         ContTag::Done => cas_tag(a, ContTag::Done, ContTag::Destroyed),
         ContTag::Parked => cas_tag(a, ContTag::Parked, ContTag::Destroyed),
@@ -801,6 +808,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 
@@ -1244,6 +1252,7 @@ mod forced_ordering_probe {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 

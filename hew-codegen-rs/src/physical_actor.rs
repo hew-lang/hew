@@ -1,5 +1,6 @@
 //! Native actor adapters over verified state, message and callable contracts.
 
+use super::suspend::call_value;
 use super::*;
 use hew_mir::physical::{ActorId, ActorOperation, SemActor, SemActorHandler};
 use inkwell::types::StructType;
@@ -367,6 +368,49 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         for (handler, block) in handlers {
             builder.position_at_end(block);
             let callable = callable(self.module, handler.callable)?;
+            if callable.is_resumable {
+                let ramp = self.emit_actor_handler_ramp(actor, handler)?;
+                let handle = call_value(
+                    &builder,
+                    ramp,
+                    &[state.into(), payload.into()],
+                    "handler.frame",
+                )?
+                .into_pointer_value();
+                let is_done = coro::external(
+                    &self.llvm,
+                    "hew_cont_done",
+                    self.ctx.bool_type().fn_type(&[ptr.into()], false),
+                )?;
+                let complete = call_value(&builder, is_done, &[handle.into()], "handler.done")?
+                    .into_int_value();
+                let ready = self.ctx.append_basic_block(dispatch, "handler.ready");
+                let pending = self.ctx.append_basic_block(dispatch, "handler.pending");
+                let finished = builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        complete,
+                        self.ctx.bool_type().const_zero(),
+                        "handler.complete",
+                    )
+                    .llvm_ctx("test actor turn completion")?;
+                builder
+                    .build_conditional_branch(finished, ready, pending)
+                    .llvm_ctx("select actor turn completion")?;
+                builder.position_at_end(pending);
+                builder
+                    .build_return(Some(&handle))
+                    .llvm_ctx("park strict actor turn")?;
+                builder.position_at_end(ready);
+                let destroy = external_drop(self.ctx, &self.llvm, "hew_cont_destroy")?;
+                builder
+                    .build_call(destroy, &[handle.into()], "")
+                    .llvm_ctx("destroy completed actor adapter")?;
+                builder
+                    .build_return(Some(&ptr.const_null()))
+                    .llvm_ctx("finish ready actor turn")?;
+                continue;
+            }
             let message_ty = message_type(self.module, self.ctx, handler)?;
             let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
             for (index, parameter) in callable.params.iter().skip(1).enumerate() {
@@ -427,6 +471,97 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_return(Some(&ptr.const_null()))
             .llvm_ctx("complete synchronous strict actor turn")?;
         Ok(())
+    }
+
+    fn emit_actor_handler_ramp(
+        &self,
+        actor: &SemActor,
+        handler: &SemActorHandler,
+    ) -> CodegenResult<FunctionValue<'ctx>> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let ramp = self.llvm.add_function(
+            &symbol(actor.id, &format!("handler_{}_start", handler.message_id)),
+            ptr.fn_type(&[ptr.into(), ptr.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(ramp, "entry"));
+        let new_state = coro::external(
+            &self.llvm,
+            "hew_actor_coro_state_new",
+            ptr.fn_type(&[], false),
+        )?;
+        let child =
+            call_value(&builder, new_state, &[], "handler.invocation")?.into_pointer_value();
+        let frame = coro::begin(self.ctx, &self.llvm, &builder, ramp, child)?;
+        let fault = builder
+            .build_alloca(ptr, "handler.fault")
+            .llvm_ctx("allocate persistent handler fault")?;
+        builder
+            .build_store(fault, ptr.const_null())
+            .llvm_ctx("initialize handler fault")?;
+        let callable = callable(self.module, handler.callable)?;
+        if callable.return_layout.is_some() {
+            return Err(CodegenError::FailClosed(
+                "actor replies require the suspending reply adapter".into(),
+            ));
+        }
+        let state = ramp.get_nth_param(0).unwrap().into_pointer_value();
+        let payload = ramp.get_nth_param(1).unwrap().into_pointer_value();
+        let message_ty = message_type(self.module, self.ctx, handler)?;
+        let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
+        for (index, parameter) in callable.params.iter().skip(1).enumerate() {
+            let slot = builder
+                .build_struct_gep(message_ty, payload, (index + 1) as u32, "handler.argument")
+                .llvm_ctx("address handler argument")?;
+            args.push(match parameter.carrier {
+                ParamCarrier::Indirect => slot.into(),
+                ParamCarrier::Direct => builder
+                    .build_load(
+                        llvm_type(self.ctx, &parameter.layout.repr)?,
+                        slot,
+                        "handler.value",
+                    )
+                    .llvm_ctx("load handler argument")?
+                    .into(),
+            });
+        }
+        builder
+            .build_store(payload, self.ctx.i8_type().const_zero())
+            .llvm_ctx("transfer message fields to handler frame")?;
+        args.push(fault.into());
+        args.push(child.into());
+        let child_frame = call_value(
+            &builder,
+            self.ramps[&handler.callable],
+            &args,
+            "handler.body.frame",
+        )?
+        .into_pointer_value();
+        suspend::await_child(
+            self.ctx,
+            &self.llvm,
+            &builder,
+            ramp,
+            &frame,
+            child,
+            child_frame,
+        )?;
+        let returned_fault = builder
+            .build_load(ptr, fault, "handler.returned.fault")
+            .llvm_ctx("read completed handler fault")?;
+        let publish = coro::external(
+            &self.llvm,
+            "hew_actor_coro_set_fault",
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+        )?;
+        builder
+            .build_call(publish, &[returned_fault.into()], "")
+            .llvm_ctx("publish handler completion under current activation")?;
+        builder
+            .build_unconditional_branch(frame.finish)
+            .llvm_ctx("finish actor adapter frame")?;
+        Ok(ramp)
     }
 }
 

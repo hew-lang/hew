@@ -358,6 +358,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         state_drop_consumed: AtomicBool::new(false),
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+        checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
     })
 }
 

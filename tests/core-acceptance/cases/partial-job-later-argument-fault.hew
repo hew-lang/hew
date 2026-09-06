@@ -1,0 +1,32 @@
+type Job {
+    run: fn[once](i64) -> i64,
+    label: string,
+    payload: bytes,
+}
+
+fn make_job(label: string) -> Job {
+    let captured = label.to_upper();
+    Job { run: move |value: i64| -> i64 {
+        println(captured);
+        value
+    }, label: label.to_upper(), payload: label.to_bytes() }
+}
+
+fn submit(consume run: fn[once](i64) -> i64, value: i64) -> i64 {
+    println("unexpected submit entry");
+    run(value)
+}
+
+fn later_argument(divisor: i64) -> i64 {
+    let text = "argument owner".to_upper();
+    let bytes = text.to_bytes();
+    bytes.len() / divisor
+}
+
+fn main() -> i64 {
+    let job = make_job("unexpected callback entry");
+    let result = submit(job.run, later_argument(0));
+    println(job.label);
+    println(job.payload.len());
+    result
+}

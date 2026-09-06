@@ -1650,6 +1650,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .build_not(source_value.into_int_value(), "bitnot")
                         .llvm_ctx("emit physical bit not")?
                         .into(),
+                    UnaryOp::Negate if source_value.is_float_value() => self
+                        .builder
+                        .build_float_neg(source_value.into_float_value(), "float.negate")
+                        .llvm_ctx("emit IEEE floating negation")?
+                        .into(),
                     UnaryOp::Negate | UnaryOp::RawDeref => {
                         return Err(CodegenError::FailClosed(
                             "fallible or raw unary operation reached physical emitter".into(),
@@ -2068,7 +2073,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 emit_integer_binary(&self.builder, op, left, right, is_signed(ty))?.into()
             }
             (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
-                emit_float_binary(&self.builder, op, left, right)?.into()
+                emit_float_binary(&self.builder, op, left, right)?
             }
             _ => {
                 return Err(CodegenError::FailClosed(
@@ -4161,23 +4166,37 @@ fn emit_float_binary<'ctx>(
     op: BinaryOp,
     lhs: inkwell::values::FloatValue<'ctx>,
     rhs: inkwell::values::FloatValue<'ctx>,
-) -> CodegenResult<IntValue<'ctx>> {
+) -> CodegenResult<BasicValueEnum<'ctx>> {
+    let arithmetic = match op {
+        BinaryOp::Add => Some(builder.build_float_add(lhs, rhs, "float.add")),
+        BinaryOp::Subtract => Some(builder.build_float_sub(lhs, rhs, "float.sub")),
+        BinaryOp::Multiply => Some(builder.build_float_mul(lhs, rhs, "float.mul")),
+        BinaryOp::Divide => Some(builder.build_float_div(lhs, rhs, "float.div")),
+        BinaryOp::Modulo => Some(builder.build_float_rem(lhs, rhs, "float.rem")),
+        _ => None,
+    };
+    if let Some(value) = arithmetic {
+        return value
+            .llvm_ctx("emit IEEE floating arithmetic")
+            .map(Into::into);
+    }
     let predicate = match op {
         BinaryOp::Equal => FloatPredicate::OEQ,
-        BinaryOp::NotEqual => FloatPredicate::ONE,
+        BinaryOp::NotEqual => FloatPredicate::UNE,
         BinaryOp::Less => FloatPredicate::OLT,
         BinaryOp::LessEqual => FloatPredicate::OLE,
         BinaryOp::Greater => FloatPredicate::OGT,
         BinaryOp::GreaterEqual => FloatPredicate::OGE,
         _ => {
             return Err(CodegenError::FailClosed(
-                "non-comparison float operation reached physical emitter".into(),
+                "unsupported float operation reached physical emitter".into(),
             ));
         }
     };
     builder
         .build_float_compare(predicate, lhs, rhs, "float.compare")
         .llvm_ctx("emit physical float comparison")
+        .map(Into::into)
 }
 
 fn emit_entry_success<'ctx>(

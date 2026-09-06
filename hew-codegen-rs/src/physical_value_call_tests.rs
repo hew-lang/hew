@@ -209,3 +209,294 @@ fn ordinary_string_eq_and_scalar_hash_use_selected_callbacks_at_o0_o2() {
         }
     }
 }
+
+thread_local! {
+    static PRINTED_BOOLS: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CREATED_FAULT: std::cell::Cell<*mut hew_runtime::fault::HewFault> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+extern "C" fn capture_bool(value: u8) {
+    PRINTED_BOOLS.with_borrow_mut(|values| values.push(value != 0));
+}
+
+extern "C" fn capture_fault(code: i32) -> *mut hew_runtime::fault::HewFault {
+    let fault = hew_runtime::fault::hew_fault_new(code);
+    assert!(CREATED_FAULT.replace(fault).is_null());
+    fault
+}
+
+const COMPOSITE_SOURCE: &str =
+    include_str!("../../tests/core-acceptance/cases/selected-composite-equality.hew");
+const FAULT_SOURCE: &str =
+    include_str!("../../tests/core-acceptance/cases/selected-equality-callback-fault.hew");
+
+type MainBody = unsafe extern "C" fn(*mut i64, *mut *mut c_void) -> i32;
+
+#[test]
+fn source_composite_eq_executes_exact_generic_methods_and_float_rules_at_o0_o2() {
+    let physical = physical(COMPOSITE_SOURCE);
+    assert!(physical
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .any(|block| matches!(block.terminator, PhysicalTerminator::ValueCall { .. })));
+    assert!(physical
+        .value_capabilities
+        .values()
+        .any(|plan| matches!(plan.method, PhysicalValueMethod::User(_))));
+    for optimized in [false, true] {
+        PRINTED_BOOLS.with_borrow_mut(Vec::clear);
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let symbol = expose_probe(&ctx, &llvm, &physical, "main");
+        let engine = engine(&llvm, optimized);
+        engine.add_global_mapping(
+            &llvm.get_function("hew_println_bool").unwrap(),
+            capture_bool as *const () as usize,
+        );
+        let mut result = -1;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: the wrapper exposes main's recorded i64 result/fault ABI.
+        unsafe {
+            let main = engine.get_function::<MainBody>(&symbol).unwrap();
+            assert_eq!(main.call(&raw mut result, &raw mut fault), 0);
+        }
+        assert_eq!(result, 0);
+        assert!(fault.is_null());
+        PRINTED_BOOLS.with_borrow(|values| {
+            assert_eq!(
+                values,
+                &[true, true, true, true, true, true, true, true, true, false, true, true, true,]
+            )
+        });
+    }
+}
+
+#[test]
+fn source_selected_eq_fault_preserves_status_owner_and_caller_result_at_o0_o2() {
+    let physical = physical(FAULT_SOURCE);
+    for optimized in [false, true] {
+        assert!(CREATED_FAULT.get().is_null());
+        PRINTED_BOOLS.with_borrow_mut(Vec::clear);
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let symbol = expose_probe(&ctx, &llvm, &physical, "main");
+        let engine = engine(&llvm, optimized);
+        engine.add_global_mapping(
+            &llvm.get_function("hew_fault_new").unwrap(),
+            capture_fault as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &llvm.get_function("hew_println_bool").unwrap(),
+            capture_bool as *const () as usize,
+        );
+        let mut result = 0x1234_5678_i64;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: main has an i64 output and transfers one fault on failure.
+        unsafe {
+            let main = engine.get_function::<MainBody>(&symbol).unwrap();
+            assert_eq!(
+                main.call(&raw mut result, &raw mut fault),
+                HEW_TRAP_DIVIDE_BY_ZERO
+            );
+            assert_eq!(result, 0x1234_5678);
+            assert!(!fault.is_null());
+            assert_eq!(fault, CREATED_FAULT.replace(std::ptr::null_mut()).cast());
+            hew_runtime::fault::hew_fault_drop(fault.cast());
+        }
+        PRINTED_BOOLS.with_borrow(|values| assert!(values.is_empty()));
+    }
+}
+
+#[test]
+fn source_selected_value_calls_verify_at_o0_o2_for_windows_and_macos() {
+    for triple in ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"] {
+        for source in [COMPOSITE_SOURCE, FAULT_SOURCE] {
+            let physical = physical_for_triple(source, triple);
+            let ctx = Context::create();
+            let llvm = llvm(&ctx, &physical);
+            llvm.verify().unwrap();
+            let machine =
+                crate::llvm::target_machine_for_triple_with_opt_level(triple, OptLevel::O2)
+                    .unwrap();
+            llvm.run_passes(
+                "default<O2>",
+                &machine,
+                inkwell::passes::PassBuilderOptions::create(),
+            )
+            .unwrap();
+            llvm.verify().unwrap();
+        }
+    }
+}
+
+#[test]
+fn bare_float_arithmetic_and_nan_inequality_keep_ieee_semantics_at_o0_o2() {
+    let physical = physical(
+        r"
+        fn main() -> i64 {
+            let nan = 0.0 / 0.0;
+            println(nan != nan);
+            println(nan != 1.0);
+            println((7.0 - 1.0) * 2.0 / 3.0 + 1.0 == 5.0);
+            println(7.0 % 3.0 == 1.0);
+            0
+        }
+    ",
+    );
+    for optimized in [false, true] {
+        PRINTED_BOOLS.with_borrow_mut(Vec::clear);
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let symbol = expose_probe(&ctx, &llvm, &physical, "main");
+        let engine = engine(&llvm, optimized);
+        engine.add_global_mapping(
+            &llvm.get_function("hew_println_bool").unwrap(),
+            capture_bool as *const () as usize,
+        );
+        let mut result = -1;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: main's wrapper initializes its i64 result and fault output.
+        unsafe {
+            assert_eq!(
+                engine
+                    .get_function::<MainBody>(&symbol)
+                    .unwrap()
+                    .call(&raw mut result, &raw mut fault),
+                0
+            );
+        }
+        assert_eq!(result, 0);
+        assert!(fault.is_null());
+        PRINTED_BOOLS.with_borrow(|values| assert_eq!(values, &[true; 4]));
+    }
+}
+
+thread_local! {
+    static STRING_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static STRING_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+unsafe extern "C" fn count_string_clone(value: *const c_void) -> *mut c_void {
+    STRING_CLONES.set(STRING_CLONES.get() + 1);
+    // SAFETY: the generated call borrows a live managed string handle.
+    unsafe { hew_runtime::string::hew_string_clone(value.cast()).cast() }
+}
+
+unsafe extern "C" fn count_string_drop(value: *mut c_void) {
+    STRING_DROPS.set(STRING_DROPS.get() + 1);
+    // SAFETY: the generated call transfers one managed string owner.
+    unsafe { hew_runtime::string::hew_string_drop(value.cast()) };
+}
+
+#[repr(C)]
+struct Label {
+    value: *mut c_void,
+    divisor: i64,
+}
+
+#[repr(C)]
+struct Envelope {
+    label: Label,
+}
+
+#[test]
+fn generic_user_eq_keeps_borrowed_owners_on_success_and_fault_at_o0_o2() {
+    let physical = physical(
+        r#"
+        type Label<T> { value: T, divisor: i64 }
+        impl<T> Eq for Label<T> {
+            fn eq(self, other: Label<T>) -> bool { 10 / self.divisor == other.divisor }
+        }
+        type Envelope { label: Label<string> }
+        fn probe(a: Envelope, b: Envelope) -> bool { a == b }
+        fn main() -> i64 {
+            let a = Envelope { label: Label { value: "left", divisor: 2 } };
+            let b = Envelope { label: Label { value: "right", divisor: 5 } };
+            if probe(a, b) { 0 } else { 1 }
+        }
+    "#,
+    );
+    assert!(physical
+        .value_capabilities
+        .values()
+        .any(|plan| match plan.method {
+            PhysicalValueMethod::User(id) => matches!(
+                physical.callables[id.0 as usize].instance,
+                hew_sir::CallableInstance::Generic(_)
+            ),
+            _ => false,
+        }));
+    for optimized in [false, true] {
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let symbol = expose_probe(&ctx, &llvm, &physical, "probe");
+        let engine = engine(&llvm, optimized);
+        for (name, address) in [
+            ("hew_string_clone", count_string_clone as *const () as usize),
+            ("hew_string_drop", count_string_drop as *const () as usize),
+            ("hew_fault_new", capture_fault as *const () as usize),
+        ] {
+            if let Some(function) = llvm.get_function(name) {
+                engine.add_global_mapping(&function, address);
+            }
+        }
+        STRING_CLONES.set(0);
+        STRING_DROPS.set(0);
+        // SAFETY: Envelope wraps the verified pointer/i64 Label<string> layout. The probe
+        // borrows both complete records; Rust retains and releases their owners.
+        unsafe {
+            let mut left = std::ptr::null_mut();
+            let mut right = std::ptr::null_mut();
+            hew_runtime::string::hew_string_literal_new(b"left".as_ptr(), 4, &raw mut left);
+            hew_runtime::string::hew_string_literal_new(b"right".as_ptr(), 5, &raw mut right);
+            let mut a = Envelope {
+                label: Label {
+                    value: left.cast(),
+                    divisor: 2,
+                },
+            };
+            let b = Envelope {
+                label: Label {
+                    value: right.cast(),
+                    divisor: 5,
+                },
+            };
+            let probe = engine.get_function::<EqCallback>(&symbol).unwrap();
+            assert!(equal(&probe, &a, &b));
+            a.label.divisor = 0;
+            let mut output = true;
+            let mut fault = std::ptr::null_mut();
+            assert!(CREATED_FAULT.get().is_null());
+            assert_eq!(
+                probe.call(
+                    (&raw const a).cast(),
+                    (&raw const b).cast(),
+                    &raw mut output,
+                    &raw mut fault
+                ),
+                HEW_TRAP_DIVIDE_BY_ZERO
+            );
+            assert!(output);
+            assert!(!fault.is_null());
+            assert_eq!(fault, CREATED_FAULT.replace(std::ptr::null_mut()).cast());
+            hew_runtime::fault::hew_fault_drop(fault.cast());
+            assert_eq!(a.label.value, left.cast());
+            assert_eq!(b.label.value, right.cast());
+            assert_eq!(hew_runtime::string::hew_string_byte_length(left), 4);
+            assert_eq!(hew_runtime::string::hew_string_byte_length(right), 5);
+            assert_eq!(
+                STRING_CLONES.get(),
+                0,
+                "borrowed Eq must not clone caller owners"
+            );
+            assert_eq!(
+                STRING_DROPS.get(),
+                0,
+                "borrowed Eq must not drop caller owners"
+            );
+            hew_runtime::string::hew_string_drop(left);
+            hew_runtime::string::hew_string_drop(right);
+        }
+    }
+}

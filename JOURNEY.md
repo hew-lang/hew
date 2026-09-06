@@ -1472,3 +1472,22 @@ The LLVM library tests and scoped MIR/codegen JSON Clippy pass. An O0/O2 JIT
 control executes selected String equality and Hash through ordinary function
 bodies, including counted embedded-NUL contents and signed integer hash bits.
 Broader source equality controls follow the separate SIR producer prerequisite.
+
+## Source selected equality and IEEE float execution
+
+The selected-equality source oracles now execute through ordinary function bodies
+at O0 and O2. They cover owned vectors, tuples, records, active Option/Result
+payloads and nested generic user Eq. Callback failure preserves the exact status,
+opaque fault owner and untouched caller result. A borrowed generic Eq probe also
+leaves caller strings usable without cloning or dropping them on either path.
+
+The scalar-versus-wrapped NaN oracle exposed a missing float execution path:
+physical LLVM emission previously handled only comparisons. Emit admitted IEEE
+arithmetic and floating negation, and use unordered inequality for bare NaNs.
+Selected structural float equality retains its documented bit-pattern rule.
+
+The MIR/codegen library suites and scoped JSON Clippy pass. Source composite and
+fault modules verify before and after O2 optimization for Windows x64 and macOS
+arm64; execution here is Linux JIT. Source fixtures and their SIR/Types producers
+are supplied prerequisites. Native platform and combined safety acceptance stay
+with integration.

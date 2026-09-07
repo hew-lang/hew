@@ -816,10 +816,14 @@ pub enum PhysicalRuntimeAction {
     BytesDecodeUtf8Lossy,
     U8ToString,
     I64ToString,
+    BoolToString,
     Print {
         kind: hew_types::runtime_call::PrintKind,
         newline: bool,
     },
+    ProcessExit,
+    StderrWrite,
+    BytesNew,
     BytesLen,
     BytesIndex,
     BytesPushOwned,
@@ -862,7 +866,11 @@ impl PhysicalRuntimeAction {
             Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
             Self::I64ToString => RuntimeCallFamily::I64ToString,
+            Self::BoolToString => RuntimeCallFamily::BoolToString,
             Self::Print { kind, newline } => RuntimeCallFamily::Print { kind, newline },
+            Self::ProcessExit => RuntimeCallFamily::ProcessExit,
+            Self::StderrWrite => RuntimeCallFamily::StderrWrite,
+            Self::BytesNew => RuntimeCallFamily::BytesNew,
             Self::BytesLen => RuntimeCallFamily::BytesLen,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
@@ -2059,9 +2067,13 @@ fn physical_runtime_action(
         RuntimeCallFamily::BytesDecodeUtf8Lossy => PhysicalRuntimeAction::BytesDecodeUtf8Lossy,
         RuntimeCallFamily::U8ToString => PhysicalRuntimeAction::U8ToString,
         RuntimeCallFamily::I64ToString => PhysicalRuntimeAction::I64ToString,
+        RuntimeCallFamily::BoolToString => PhysicalRuntimeAction::BoolToString,
         RuntimeCallFamily::Print { kind, newline } => {
             PhysicalRuntimeAction::Print { kind, newline }
         }
+        RuntimeCallFamily::ProcessExit => PhysicalRuntimeAction::ProcessExit,
+        RuntimeCallFamily::StderrWrite => PhysicalRuntimeAction::StderrWrite,
+        RuntimeCallFamily::BytesNew => PhysicalRuntimeAction::BytesNew,
         RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
         RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
@@ -5682,7 +5694,18 @@ fn terminator_successors(
                     "runtime call result",
                 )?;
             }
-            let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
+            // A never-returning action ends the path; its normal edge is only
+            // the structural unreachable continuation.
+            let returns = !action
+                .semantic_family()
+                .semantic_contract()
+                .is_some_and(|contract| {
+                    matches!(contract.result, hew_types::RuntimeResultEffect::Never)
+                });
+            let mut successors = Vec::new();
+            if returns {
+                successors.push(apply_edge(function, normal, normal_state, block)?);
+            }
             if let Some(failure) = failure {
                 if let Some(preserved) = failure_inputs {
                     state = preserved;
@@ -6379,7 +6402,11 @@ fn verify_terminator(
             let result_type = result
                 .map(|id| slot(id).map(|slot| &slot.ty))
                 .transpose()?
-                .unwrap_or(&ResolvedTy::Unit);
+                .unwrap_or(if matches!(contract.result, RuntimeResultEffect::Never) {
+                    &ResolvedTy::Never
+                } else {
+                    &ResolvedTy::Unit
+                });
             let signature = contract.instantiate(&parameter_types, result_type)
                 .map_err(|reason| PhysicalError::new(format!("physical runtime action {action:?} signature disagrees with its semantic contract: {reason}")))?;
             if &signature.result_ty != result_type {
@@ -6493,8 +6520,8 @@ fn verify_terminator(
                         ));
                     }
                 }
-                (RuntimeResultEffect::Unit, None) => {}
-                (RuntimeResultEffect::Unit, Some(_)) | (_, None) => {
+                (RuntimeResultEffect::Unit | RuntimeResultEffect::Never, None) => {}
+                (RuntimeResultEffect::Unit | RuntimeResultEffect::Never, Some(_)) | (_, None) => {
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} result presence disagrees with its semantic contract"
                     )));
@@ -6515,7 +6542,9 @@ fn verify_terminator(
                         RuntimeResultEffect::IndependentValue(_) => {
                             OwnKind::of_class(semantic_type_facts(module, result_type)?.class)
                         }
-                        RuntimeResultEffect::Unit | RuntimeResultEffect::FreshOwnedVariant(_) => {
+                        RuntimeResultEffect::Unit
+                        | RuntimeResultEffect::Never
+                        | RuntimeResultEffect::FreshOwnedVariant(_) => {
                             unreachable!()
                         }
                     };

@@ -305,6 +305,8 @@ impl RuntimeVariantResultKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeResultEffect {
     Unit,
+    /// The operation never returns; the call has no normal continuation.
+    Never,
     BitCopy(RuntimeValueKind),
     FreshOwned(RuntimeValueKind),
     /// An independent language value. Owning elements are semantically copied;
@@ -432,6 +434,7 @@ impl RuntimeSemanticContract {
             .collect::<Result<Vec<_>, String>>()?;
         let result_ty = match self.result {
             RuntimeResultEffect::Unit => ResolvedTy::Unit,
+            RuntimeResultEffect::Never => ResolvedTy::Never,
             RuntimeResultEffect::BitCopy(kind)
             | RuntimeResultEffect::FreshOwned(kind)
             | RuntimeResultEffect::IndependentValue(kind)
@@ -972,6 +975,10 @@ const fn runtime_semantic_contract(
 
 const SIR_I64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
     ty: RuntimeValueKind::I64,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+const SIR_BOOL_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::Bool,
     effect: RuntimeArgumentEffect::Copy,
 }];
 
@@ -1567,6 +1574,12 @@ pub enum RuntimeCallFamily {
         kind: PrintKind,
         newline: bool,
     },
+    /// Flush the standard streams and terminate the process with a Hew exit
+    /// code. The call never returns.
+    ProcessExit,
+    /// Write one borrowed string to the standard error stream.
+    StderrWrite,
+    BoolToString,
 
     // --- Supervisor --------------------------------------------------------
     /// Capture the stable direct identity for a live supervisor binding.
@@ -2233,6 +2246,10 @@ impl RuntimeCallFamily {
             }),
             "to_string_u8" => Some(Self::U8ToString),
             "to_string_i64" => Some(Self::I64ToString),
+            "to_string_bool" => Some(Self::BoolToString),
+            "string_concat" => Some(Self::StringConcat),
+            "bytes::new" => Some(Self::BytesNew),
+            "exit" => Some(Self::ProcessExit),
             "utf8.decode" => Some(Self::BytesDecodeUtf8),
             "utf8.decode_lossy" => Some(Self::BytesDecodeUtf8Lossy),
             _ => None,
@@ -2490,6 +2507,9 @@ impl RuntimeCallFamily {
             Self::U8ToString => "hew_u8_to_string",
             Self::I64ToString => "hew_i64_to_string",
             Self::Print { .. } => "hew_print_value",
+            Self::ProcessExit => "hew_exit",
+            Self::StderrWrite => "hew_io_write_err",
+            Self::BoolToString => "hew_bool_to_string",
             // Supervisor
             Self::SupervisorDirectId => "hew_supervisor_direct_id",
             Self::SupervisorChildGet => "hew_supervisor_child_get",
@@ -2882,6 +2902,9 @@ impl RuntimeCallFamily {
             "hew_string_trim" => Self::StringTrim,
             "hew_u8_to_string" => Self::U8ToString,
             "hew_i64_to_string" => Self::I64ToString,
+            "hew_exit" => Self::ProcessExit,
+            "hew_io_write_err" => Self::StderrWrite,
+            "hew_bool_to_string" => Self::BoolToString,
             "hew_println_int" => Self::Print {
                 kind: PrintKind::I64,
                 newline: true,
@@ -3476,7 +3499,7 @@ impl RuntimeCallFamily {
     #[must_use]
     pub const fn semantic_contract(self) -> Option<RuntimeSemanticContract> {
         use RuntimeArgumentEffect::{Borrow, Copy, Move};
-        use RuntimeResultEffect::{BitCopy, FreshOwned, Unit, UpdatedReceiver};
+        use RuntimeResultEffect::{BitCopy, FreshOwned, Never, Unit, UpdatedReceiver};
         use RuntimeValueKind::{Bool, Bytes, String, I64, U8};
 
         const STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
@@ -3563,6 +3586,12 @@ impl RuntimeCallFamily {
             Self::Print { kind, .. } => {
                 runtime_semantic_contract(kind.arguments(), Unit, NO_FAILURES)
             }
+            Self::ProcessExit => runtime_semantic_contract(SIR_I64_COPY, Never, NO_FAILURES),
+            Self::StderrWrite => runtime_semantic_contract(STRING_BORROW, Unit, NO_FAILURES),
+            Self::BoolToString => {
+                runtime_semantic_contract(SIR_BOOL_COPY, FreshOwned(String), NO_FAILURES)
+            }
+            Self::BytesNew => runtime_semantic_contract(&[], FreshOwned(Bytes), NO_FAILURES),
             Self::BytesLen => runtime_semantic_contract(BYTES_BORROW, BitCopy(I64), NO_FAILURES),
             Self::BytesIndex => runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), INDEX_FAILURES),
             Self::BytesPush => {
@@ -3584,6 +3613,7 @@ impl RuntimeCallFamily {
                     RuntimeResultOwnership::FreshOwnedBytes
                 }
                 RuntimeResultEffect::Unit
+                | RuntimeResultEffect::Never
                 | RuntimeResultEffect::IndependentValue(_)
                 | RuntimeResultEffect::UpdatedReceiverAndValue(_)
                 | RuntimeResultEffect::BitCopy(_)
@@ -3635,7 +3665,9 @@ impl RuntimeCallFamily {
                     RuntimeResultAuthority::IndependentOwned
                 }
                 RuntimeResultEffect::BitCopy(_) => RuntimeResultAuthority::IndependentBitCopy,
-                RuntimeResultEffect::Unit => RuntimeResultAuthority::FailClosed,
+                RuntimeResultEffect::Unit | RuntimeResultEffect::Never => {
+                    RuntimeResultAuthority::FailClosed
+                }
             };
         }
         match self {
@@ -3931,6 +3963,9 @@ impl RuntimeCallFamily {
             | F::StringCharCount
             | F::StringByteLen
             | F::StringConcat
+            | F::ProcessExit
+            | F::StderrWrite
+            | F::BoolToString
             | F::StringEquals
             | F::StringContains
             | F::StringStartsWith

@@ -1,0 +1,15 @@
+fn finish(label: string, code: i64) {
+    let owned = label + ":owned";
+    println(owned);
+    if code > 0 {
+        exit(code);
+    }
+    println("kept running");
+}
+
+fn main() {
+    let keep = "kept";
+    finish("first", 0);
+    finish("second", 7);
+    println(keep);
+}

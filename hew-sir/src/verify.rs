@@ -3307,7 +3307,7 @@ fn verify_runtime_call_terminator(
     }
 
     let expected_own = match contract.result {
-        RuntimeResultEffect::Unit => None,
+        RuntimeResultEffect::Unit | RuntimeResultEffect::Never => None,
         RuntimeResultEffect::BitCopy(_) => Some(crate::OwnKind::None),
         RuntimeResultEffect::FreshOwned(_)
         | RuntimeResultEffect::UpdatedReceiver(_)
@@ -3337,7 +3337,27 @@ fn verify_runtime_call_terminator(
         }
     };
     match (expected_own, result) {
-        (None, crate::CallResult::Unit) => {
+        (None, crate::CallResult::Never)
+            if matches!(contract.result, RuntimeResultEffect::Never) =>
+        {
+            // The call never returns, so its mandatory normal edge is only
+            // a structural continuation: the lifetime pass does not follow it.
+            let unreachable_target = normal.args.is_empty()
+                && blocks.get(&normal.target).is_some_and(|block| {
+                    matches!(block.terminator, crate::SemTerminator::Unreachable)
+                });
+            if !unreachable_target {
+                invalid_operation(
+                    function,
+                    id,
+                    format!(
+                        "runtime family `{family:?}` never returns; its normal edge must be an argument-free unreachable block"
+                    ),
+                    diagnostics,
+                );
+            }
+        }
+        (None, crate::CallResult::Unit) if matches!(contract.result, RuntimeResultEffect::Unit) => {
             if !normal.args.is_empty() {
                 invalid_operation(
                     function,

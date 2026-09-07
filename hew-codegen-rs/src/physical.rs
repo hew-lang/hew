@@ -3707,6 +3707,58 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
+            PhysicalRuntimeAction::BoolToString => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bool_to_string",
+                    ptr.fn_type(&[self.ctx.i8_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "bool.to.string.input")?.into()],
+                    "bool.to.string",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::ProcessExit => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_exit",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[self.ctx.i64_type().into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[self.load(source(0)?, "process.exit.code")?.into()],
+                    "process.exit",
+                )?;
+            }
+            PhysicalRuntimeAction::StderrWrite => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_io_write_err",
+                    self.ctx.void_type().fn_type(&[ptr.into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[self.load(source(0)?, "stderr.write.value")?.into()],
+                    "stderr.write",
+                )?;
+            }
+            PhysicalRuntimeAction::BytesNew => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bytes_new",
+                    ptr.fn_type(&[self.ctx.i32_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.ctx.i32_type().const_zero().into()],
+                    "bytes.new",
+                )?;
+                self.store(required_result()?, value)?;
+            }
             PhysicalRuntimeAction::Print { kind, newline } => {
                 use hew_types::runtime_call::PrintKind;
                 let value = self.load(source(0)?, "print.value")?;

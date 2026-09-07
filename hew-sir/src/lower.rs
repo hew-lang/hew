@@ -6632,6 +6632,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::IndirectFunctionValue => {
                 self.lower_direct_call(expr, value_required)
             }
+            CallTarget::Builtin { endpoint } => {
+                let family = hew_types::RuntimeCallFamily::from_catalog_endpoint(endpoint)
+                    .ok_or_else(|| {
+                        format!(
+                            "call target {target:?} has no verified ownership-SIR operation contract"
+                        )
+                    })?;
+                self.lower_runtime_operation(
+                    expr,
+                    family,
+                    &args.iter().collect::<Vec<_>>(),
+                    value_required,
+                )
+            }
             _ => Err(format!(
                 "call target {target:?} has no verified ownership-SIR operation contract"
             )),
@@ -6869,6 +6883,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
 
+        if semantic_result_ty == Some(ResolvedTy::Never) {
+            if !contract.failures.is_empty() {
+                return Err(format!(
+                    "runtime family `{family:?}` never returns but declares failure edges"
+                ));
+            }
+            // The process ends here: no continuation, no scope cleanup. The
+            // mandatory normal edge is a structural unreachable block.
+            let unreachable = self.new_block(Vec::new());
+            let id = OpId(self.ops);
+            self.ops += 1;
+            self.set_terminator(SemTerminator::RtCall {
+                id,
+                family,
+                args: lowered_args,
+                result: CallResult::Never,
+                normal: Edge {
+                    target: unreachable,
+                    args: Vec::new(),
+                },
+                unwind: CallUnwind::NotApplicable,
+            })?;
+            self.current = unreachable;
+            self.set_terminator(SemTerminator::Unreachable)?;
+            return Ok(None);
+        }
         let (result, normal, continuation) = if let Some(result_ty) = semantic_result_ty {
             self.service.require_type_facts(&result_ty)?;
             let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;

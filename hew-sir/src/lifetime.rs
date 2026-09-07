@@ -842,7 +842,17 @@ impl<'a> Flow<'a> {
                 block
                     .terminator
                     .visit_results(|result| self.define(id, result.id, &mut returned, emit));
-                successors.extend(self.edge(id, normal, returned, emit));
+                // A never-returning runtime call ends the path; its normal
+                // edge is a structural unreachable continuation.
+                if !matches!(
+                    block.terminator,
+                    SemTerminator::RtCall {
+                        result: crate::CallResult::Never,
+                        ..
+                    }
+                ) {
+                    successors.extend(self.edge(id, normal, returned, emit));
+                }
                 if let CallUnwind::Cleanup(edge) = unwind {
                     if let Some(preserved) = failure_inputs {
                         state = preserved;

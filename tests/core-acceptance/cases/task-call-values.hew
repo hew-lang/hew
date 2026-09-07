@@ -10,7 +10,7 @@ impl Bump for Counter {
 type Job { run: fn[suspends](i64) -> i64 }
 
 fn work(value: i64) -> i64 {
-    await sleep(1ms);
+    sleep(1ms);
     value
 }
 

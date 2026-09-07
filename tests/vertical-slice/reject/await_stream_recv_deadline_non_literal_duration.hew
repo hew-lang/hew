@@ -11,7 +11,7 @@ actor Pipeline {
     receive fn run() -> i64 {
         let (sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
         let d = 50ms;
-        let frame: Result<Option<string>, TimeoutError> = await input.recv() | after d;
+        let frame: Result<Option<string>, TimeoutError> = input.recv() | after d;
         sink.close();
         match frame {
             .Ok(inner) => {

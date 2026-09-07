@@ -40,7 +40,7 @@ fn main() -> i64 {
         .Err(_) => return 1,
     };
     sup.stopper.stop_tree(sup, ready_tx);
-    match await ready_rx.recv() {
+    match ready_rx.recv() {
         .Some(n) => n,
         .None => 1,
     }

@@ -10,17 +10,17 @@ import std.fs;
 import std.net;
 
 fn files(path: string, bytes: bytes) {
-    let _ = await fs.read(path);
-    let _ = await fs.read_bytes(path);
-    let _ = await fs.write(path, "text");
-    let _ = await fs.write_bytes(path, bytes);
+    let _ = fs.read(path);
+    let _ = fs.read_bytes(path);
+    let _ = fs.write(path, "text");
+    let _ = fs.write_bytes(path, bytes);
 }
 fn sockets(listener: net.Listener, conn: net.Connection) {
-    let _ = await listener.accept();
-    let _ = await conn.read();
-    let _ = await conn.try_read();
-    let _ = await conn.read_string();
-    let _ = await conn.try_read_string();
+    let _ = listener.accept();
+    let _ = conn.read();
+    let _ = conn.try_read();
+    let _ = conn.read_string();
+    let _ = conn.try_read_string();
 }
 fn main() {}
 "#;
@@ -79,29 +79,21 @@ fn canonical_io_wrappers_propagate_checked_native_operation_effects() {
             "missing checked effect: {call}"
         );
     }
-    // A plain call suspends on its own; `await` on it is only a warning.
-    let start = SOURCE.find("fs.read(path)").unwrap();
+    // A plain call suspends on its own, so `await` on it is refused.
+    let awaited = SOURCE.replace("fs.read(path)", "await fs.read(path)");
+    std::fs::write(&input, &awaited).unwrap();
+    let start = awaited.find("fs.read(path)").unwrap();
+    let diagnostics = match run_file_frontend_to_typecheck(input.to_str().unwrap(), &options) {
+        Ok(state) => state.diagnostics,
+        Err(failure) => failure.diagnostics,
+    };
     assert!(
-        state.diagnostics.iter().any(|diagnostic| {
+        diagnostics.iter().any(|diagnostic| {
             matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error)
-            if error.severity == hew_types::error::Severity::Warning
+            if error.severity == hew_types::error::Severity::Error
                 && error.message.contains("`await` on a plain call adds nothing")
                 && error.span == (start..start + "fs.read(path)".len()))
         }),
-        "missing redundant await warning: {:#?}",
-        state.diagnostics
+        "missing redundant await refusal: {diagnostics:#?}"
     );
-    let plain = SOURCE.replace("await ", "");
-    std::fs::write(&input, &plain).unwrap();
-    let state = run_file_frontend_to_typecheck(input.to_str().unwrap(), &options)
-        .unwrap_or_else(|error| panic!("{error:#?}"));
-    let output = state.typecheck_result.tco.expect("checked source output");
-    let start = plain.find("fs.read(path)").unwrap();
-    assert!(output
-        .suspension_effects
-        .calls
-        .iter()
-        .any(|(key, effect)| key.module_idx == 0
-            && key.start == start
-            && *effect == SuspensionEffect::MaySuspend));
 }

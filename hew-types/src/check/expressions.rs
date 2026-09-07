@@ -2847,8 +2847,8 @@ impl Checker {
             expr,
             Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
         ) {
-            self.warnings.push(TypeError {
-                severity: crate::error::Severity::Warning,
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::InvalidOperation,
                 span: span.clone(),
                 message: "`await` on a plain call adds nothing: the call suspends on its own"

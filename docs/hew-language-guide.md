@@ -1727,8 +1727,8 @@ actor Server {
     receive fn serve() {
         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
         loop {
-            let conn = await listener.accept();
-            let _data = await conn.read();
+            let conn = listener.accept();
+            let _data = conn.read();
             // ...
         }
     }
@@ -3353,7 +3353,7 @@ type in a `receive fn` parameter or an actor init field gets the wire rule's
 message applied to a send that never serializes. Until that lifts, open the
 handle inside the handler.
 
-### Typed streams — `await sink.send(x)` / `await stream.recv()`
+### Typed streams — `sink.send(x)` / `stream.recv()`
 
 ```hew
 import std.stream;
@@ -3363,12 +3363,12 @@ actor Echo {
     receive fn run(unused: i64) {
         let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0..n {
-            await sink.send(f"x{i}".to_bytes());
+            sink.send(f"x{i}".to_bytes());
         }
         sink.close();
         var done = false;
         while !done {
-            let item = await input.recv();
+            let item = input.recv();
             match item {
                 .Some(b) => println(b.to_string()),  // x0, x1
                 .None => { done = true; },
@@ -3384,11 +3384,11 @@ fn main() {
 }
 ```
 
-`await sink.send(x)` and `await stream.recv()` suspend the calling coroutine
+`sink.send(x)` and `stream.recv()` suspend the calling coroutine
 instead of OS-parking a worker, so a stream stage frees its worker while waiting.
 Only `Stream<bytes>` / `Sink<bytes>` suspend (the canonical element type), and the
 canonical method names are `recv()` / `send()` — not `next()` / `write()`. `recv()`
-yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `await sink.send`
+yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `sink.send`
 is statement-position only. Build the pipe with the public
 `std.stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
 turn text into a frame with the public `string.to_bytes()` surface. Keep both
@@ -3396,7 +3396,7 @@ ends in one handler: moving an owned `Stream`/`Sink` into actor state is not
 yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
 [`examples/v05/surfaces/typed_streams.hew`](../examples/v05/surfaces/typed_streams.hew).
 
-### Channels — `channel.new`, `await rx.recv()`, and select arms
+### Channels — `channel.new`, `rx.recv()`, and select arms
 
 ```hew
 import std.channel.channel;
@@ -3407,7 +3407,7 @@ actor Inbox {
         tx.send("ready");
         tx.close();
 
-        match await rx.recv() {
+        match rx.recv() {
             .Some(msg) => println(msg),   // ready
             .None => println("closed"),
         }
@@ -3430,7 +3430,7 @@ actor Inbox {
 Use `channel.new(capacity)` to build a bounded MPSC channel. `Sender<T>` is
 cloneable, and both channel handles are closed automatically at scope exit;
 call `.close()` only when you need to end production or reception before then.
-`await rx.recv()` returns `Option<T>`: `Some(value)` for a received item and
+`rx.recv()` returns `Option<T>`: `Some(value)` for a received item and
 `None` when the channel is closed. `rx.try_recv()` never suspends and returns
 `None` for both empty and closed. In `select`, write the sealed channel arm as
 `pat from rx.recv()` and match the bound `Option<T>`. Full examples:
@@ -3556,14 +3556,14 @@ current token with `text(sc)` only when `has_next(sc)` is true. Use
 scanner plus `Option<string>`. Full example:
 [`examples/v05/surfaces/scanner_tokens.hew`](../examples/v05/surfaces/scanner_tokens.hew).
 
-### HTTP over `await` — async client + server
+### Suspending HTTP — async client + server
 
-The flagship networking surface is an `await`-suspended HTTP/1.1 client and
+The flagship networking surface is a suspending HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
 `std.net.http.http_async_client` / `http_async_server`. A server handler
-`await`s a connection, drives an `await conn.read_string()` loop until the
-request is buffered, then replies; a client writes a request and `await`s the
-response. Every `await` suspends the handler (not the worker), so one worker can
+accepts a connection, drives a `conn.read_string()` loop until the
+request is buffered, then replies; a client writes a request and reads the
+response. Each call suspends the handler (not the worker), so one worker can
 serve and fetch on the same thread. The request/response codecs are pure and
 runnable in isolation:
 

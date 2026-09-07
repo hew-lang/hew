@@ -23,7 +23,7 @@ actor Server {
             .Ok(listener) => listener,
             .Err(_) => return,
         };
-        let code = match await ln.accept() | after 10s {
+        let code = match ln.accept() | after 10s {
             .Ok(_conn) => 2,
             .Err(_e) => 3,
         };

@@ -17,11 +17,11 @@ actor Worker {
         };
         tx.send("ping");
         tx.close();
-        match await rx.recv() {
+        match rx.recv() {
             .Some(v) => println(v),
             .None => println("closed"),
         }
-        match await rx.recv() {
+        match rx.recv() {
             .Some(v) => println(v),
             .None => println("closed"),
         }

@@ -44,28 +44,28 @@ fn file_requests_transfer_strings_and_bytes_and_restore_each_error() {
             r#"
 import std.fs;
 fn main() {
-    match await fs.write("first.txt", "native io") {
+    match fs.write("first.txt", "native io") {
         .Ok(_) => println("written"),
         .Err(_) => println("write failed"),
     }
-    match await fs.read_bytes("missing.txt") {
+    match fs.read_bytes("missing.txt") {
         .Ok(_) => println("wrong success"),
         .Err(_) => println("missing recovered"),
     }
-    match await fs.read_bytes("first.txt") {
+    match fs.read_bytes("first.txt") {
         .Ok(data) => {
-            match await fs.write_bytes("second.txt", data) {
+            match fs.write_bytes("second.txt", data) {
                 .Ok(_) => println("bytes copied"),
                 .Err(_) => println("copy failed"),
             }
         },
         .Err(_) => println("stale error"),
     }
-    match await fs.read("second.txt") {
+    match fs.read("second.txt") {
         .Ok(text) => println(text),
         .Err(_) => println("read failed"),
     }
-    match await fs.write("missing-directory/file", "data") {
+    match fs.write("missing-directory/file", "data") {
         .Ok(_) => println("wrong write success"),
         .Err(_) => println("write error recovered"),
     }
@@ -107,10 +107,10 @@ fn a_file_deadline_recovers_before_the_blocking_producer_finishes() {
 import std.fs;
 fn main() {
     scope within 1s {
-        let data = await fs.read_bytes("input.pipe");
+        let data = fs.read_bytes("input.pipe");
         println("unexpected read completion");
     } handle failure { println("deadline recovered"); };
-    let marker = await fs.write("cancelled.marker", "ready");
+    let marker = fs.write("cancelled.marker", "ready");
 }
 "#,
             directory.path(),
@@ -164,13 +164,13 @@ fn main() {
     match net.listen("127.0.0.1:0") {
         .Ok(listener) => {
             let port = listener.local_port();
-            let _announced = await fs.write("port", f"{port}");
-            let conn = await listener.accept();
-            match await conn.read_string() {
+            let _announced = fs.write("port", f"{port}");
+            let conn = listener.accept();
+            match conn.read_string() {
                 .Ok(text) => println(text),
                 .Err(_) => panic("read failed"),
             }
-            match await conn.write_string("native reply") {
+            match conn.write_string("native reply") {
                 .Ok(_) => println("written"),
                 .Err(_) => panic("write failed"),
             }

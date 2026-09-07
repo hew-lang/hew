@@ -7,7 +7,7 @@
 import std.net.{Connection};
 
 fn helper(conn: Connection) -> Result<bytes, net.NetError> {
-    await conn.read() | after 50ms
+    conn.read() | after 50ms
 }
 
 fn main() {

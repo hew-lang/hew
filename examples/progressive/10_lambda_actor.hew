@@ -17,5 +17,5 @@ fn main() {
         .Ok(_) => {},
         .Err(_) => panic("failed to send 15"),
     }
-    await counter.close();
+    counter.close();
 }

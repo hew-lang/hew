@@ -27516,7 +27516,7 @@ impl LowerCtx {
                 // is lowered here rather than baked into a literal.
                 let prefix =
                     self.build_string_literal_expr("expect failed: ".to_string(), span.clone());
-                let reason = self.lower_expr(args[0].expr(), IntentKind::Read);
+                let reason = self.lower_expr(args[0].expr(), IntentKind::Consume);
                 let panic_msg_expr =
                     self.build_catalog_call("string_concat", vec![prefix, reason], span.clone());
                 let panic_call =
@@ -36348,12 +36348,12 @@ impl Widget {
                     let child = value?;
                     Some(child)
                 }}
-                fn result_unwrap_probe(value: Result<Value, string>) -> Value {{
-                    let child = value.unwrap();
+                fn result_expect_probe(value: Result<Value, string>) -> Value {{
+                    let child = value.expect("the payload decoded");
                     child
                 }}
-                fn option_unwrap_probe(value: Option<Value>) -> Value {{
-                    let child = value.unwrap();
+                fn option_expect_probe(value: Option<Value>) -> Value {{
+                    let child = value.expect("the payload is present");
                     child
                 }}
                 fn result_unwrap_or_probe(value: Result<Value, string>, fallback: Value) -> Value {{
@@ -36365,7 +36365,10 @@ impl Widget {
                     child
                 }}
                 fn field_probe(value: Value) -> Value {{
-                    let child = value.get_field("key").unwrap().unwrap();
+                    let child = value
+                        .get_field("key")
+                        .expect("get_field succeeds")
+                        .expect("the field is present");
                     child
                 }}
             "#
@@ -36393,8 +36396,8 @@ impl Widget {
             for name in [
                 "result_probe",
                 "option_probe",
-                "result_unwrap_probe",
-                "option_unwrap_probe",
+                "result_expect_probe",
+                "option_expect_probe",
                 "result_unwrap_or_probe",
                 "option_unwrap_or_probe",
                 "field_probe",

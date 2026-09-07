@@ -21,7 +21,7 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => return,
         };
-        let code = match await conn.read() | after 60ms {
+        let code = match conn.read() | after 60ms {
             .Ok(data) => match utf8.decode(data) {
                 .Ok(_text) => 42,
                 .Err(_error) => 8,

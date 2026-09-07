@@ -497,7 +497,7 @@ actor ClientReader {
     receive fn start() {
         var reading = true;
         while reading {
-            match await input.recv() {
+            match input.recv() {
                 .Some(chunk) => {
                     reading = match await client.on_data(chunk) {
                         .Ok(keep_reading) => keep_reading,
@@ -664,7 +664,7 @@ actor Acceptor {
         println(f"[listener] MQTT broker ready on {addr}");
         var next_id: i32 = 1;
         loop {
-            let conn = await lst.accept();
+            let conn = lst.accept();
             let cid = f"client-{next_id}";
             let (input, sink) = conn.into_stream_sink();
             let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false);

@@ -7,7 +7,7 @@
 import std.stream;
 
 fn helper(input: stream.Stream<string>) -> Result<Option<string>, TimeoutError> {
-    await input.recv() | after 50ms
+    input.recv() | after 50ms
 }
 
 fn main() -> i64 {

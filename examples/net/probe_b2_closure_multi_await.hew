@@ -24,8 +24,8 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_twice = || {
-            let first = utf8.decode(await conn.read());
-            let second = utf8.decode(await conn.read());
+            let first = utf8.decode(conn.read());
+            let second = utf8.decode(conn.read());
             (first, second)
         };
         let (first_result, second_result) = read_twice();

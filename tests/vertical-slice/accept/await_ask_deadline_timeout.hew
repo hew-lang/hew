@@ -18,7 +18,7 @@ actor Slow {
             .Err(_) => return 7,
         };
         // `tx` stays in scope (never sent / closed) so the recv parks forever.
-        let parked = match await rx.recv() {
+        let parked = match rx.recv() {
             .Some(v) => v,
             .None => -1,
         };

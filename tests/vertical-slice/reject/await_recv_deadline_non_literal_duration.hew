@@ -14,7 +14,7 @@ actor Worker {
             .Err(err) => panic(f"channel.new failed: {err}"),
         };
         let d = 50ms;
-        let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after d;
+        let got: Result<Option<i64>, TimeoutError> = rx.recv() | after d;
         let _ = tx;
         match got {
             .Ok(inner) => {

@@ -11,12 +11,12 @@ gen fn fails_on_close(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = fails_on_close(label);
-    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
     values
 }
 
 fn main() {
-    var _holder = Holder { values: await started("primary") };
-    _holder = Holder { values: await started("secondary") };
+    var _holder = Holder { values: started("primary") };
+    _holder = Holder { values: started("secondary") };
     println("unreachable");
 }

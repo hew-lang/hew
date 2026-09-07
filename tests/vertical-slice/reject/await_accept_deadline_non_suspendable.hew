@@ -8,7 +8,7 @@
 import std.net.{Listener};
 
 fn helper(ln: Listener) {
-    let _ = await ln.accept() | after 50ms;
+    let _ = ln.accept() | after 50ms;
 }
 
 fn main() {

@@ -31,7 +31,7 @@ actor Acceptor {
         };
         let port = ln.local_port() as i32;
         connector.go(port);
-        let code = match await ln.accept() | after 5s {
+        let code = match ln.accept() | after 5s {
             .Ok(_conn) => 42,
             .Err(_e) => 7,
         };

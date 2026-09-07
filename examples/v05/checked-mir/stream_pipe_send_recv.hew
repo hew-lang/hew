@@ -15,12 +15,12 @@ actor Echo {
             .Err(error) => panic(error),
         };
         for i in 0 .. n {
-            await sink.send(f"x{i}".to_bytes());
+            sink.send(f"x{i}".to_bytes());
         }
         sink.close();
         var done = false;
         while !done {
-            let item = await input.recv();
+            let item = input.recv();
             match item {
                 .Some(b) => {
                     let text = utf8.decode(b) handle error {

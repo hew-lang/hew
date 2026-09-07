@@ -34,12 +34,12 @@ actor Server {
             .Err(_) => panic(f"network setup failed"),
         };
         for r in 0 .. requests {
-            let conn = await listener.accept();
+            let conn = listener.accept();
             var raw = "";
             var reads = 0;
             var done = false;
             while !done {
-                let chunk = utf8.decode(await conn.read()) handle error {
+                let chunk = utf8.decode(conn.read()) handle error {
                     println(f"invalid UTF-8: {error}");
                     return;
                 };
@@ -88,7 +88,7 @@ actor Client {
         var reads = 0;
         var done = false;
         while !done {
-            let chunk = utf8.decode(await conn.read()) handle error {
+            let chunk = utf8.decode(conn.read()) handle error {
                 println(f"invalid UTF-8: {error}");
                 return;
             };

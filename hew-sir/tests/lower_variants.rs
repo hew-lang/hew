@@ -833,7 +833,7 @@ const NESTED_AFFINE_SOURCE: &str = r#"
 
     fn keep_text(value: string) {}
     fn main() {
-        keep_text(await drive(Some(Choice.Values(words(), 7))));
+        keep_text(drive(Some(Choice.Values(words(), 7))));
     }
 "#;
 
@@ -994,7 +994,7 @@ fn guard_cannot_consume_a_candidate_binding() {
 
         fn drive(consume choice: Choice) -> string {
             match choice {
-                .Values(values, weight) if await drain(values) => "drained",
+                .Values(values, weight) if drain(values) => "drained",
                 .Values(_, weight) => "kept",
                 .Empty => "empty",
             }
@@ -1002,7 +1002,7 @@ fn guard_cannot_consume_a_candidate_binding() {
 
         fn keep_text(value: string) {}
         fn main() {
-            keep_text(await drive(Choice.Values(words(), 1)));
+            keep_text(drive(Choice.Values(words(), 1)));
         }
         "#,
     );

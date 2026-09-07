@@ -50,17 +50,17 @@ gen fn held() -> string {
 }
 fn produce() -> Generator<string, ()> {
     let values = held();
-    let _first = await values.next();
+    let _first = values.next();
     values
 }
 fn main() {
     { println("block"); };
-    { await produce() };
+    { produce() };
     let task = fork produce();
     await task;
-    let kept = await produce();
+    let kept = produce();
     kept;
-    match await kept.next() {
+    match kept.next() {
         .Some(value) => println(value),
         .None => panic("discarded binding was closed"),
     }
@@ -77,7 +77,7 @@ fn main() {
 fn never_returning_calls_preserve_cleanup_and_recovery() {
     run_task(
         r#"
-fn invoke<T>(action: fn() -> T) -> T { await action() }
+fn invoke<T>(action: fn() -> T) -> T { action() }
 fn main() {
     let message = "bottom call";
     let fail = || { defer println("callee cleanup"); panic(message); };
@@ -85,7 +85,7 @@ fn main() {
         defer println("caller cleanup");
         fail();
     } handle failure { println("recovered call"); };
-    scope { await invoke(fail); } handle failure { println("recovered generic call"); };
+    scope { invoke(fail); } handle failure { println("recovered generic call"); };
     scope {
         let child = fork fail();
         await child;
@@ -136,7 +136,7 @@ fn main() {
     scope within 5ms {
         let child = fork {
             defer println("child cleanup");
-            await sleep(1s);
+            sleep(1s);
             panic("unexpected completion");
         };
         await child;
@@ -175,13 +175,13 @@ fn main() {
 fn returning_past_recovery_does_not_catch_an_outer_child_fault() {
     run_task(
         r#"
-fn fail() -> i64 { await sleep(2ms); panic("outer child"); }
+fn fail() -> i64 { sleep(2ms); panic("outer child"); }
 fn choose() -> string {
-    let _outer = fork { await fail() };
+    let _outer = fork { fail() };
     scope { return "returned"; } handle failure { println("incorrect handler"); };
     "fallback"
 }
-fn main() { println(await choose()); }
+fn main() { println(choose()); }
 "#,
         "",
         212,
@@ -277,7 +277,7 @@ fn recovery_distinguishes_its_deadline_after_cleanup() {
 fn main() {
     let result = scope within 1ms {
         defer println("scope cleanup");
-        await sleep(1s);
+        sleep(1s);
         "unreachable"
     } handle failure {
         match failure {
@@ -303,7 +303,7 @@ fn main() {
         defer println("outer cleanup");
         scope {
             defer println("inner cleanup");
-            await sleep(1s);
+            sleep(1s);
         } handle failure { println("incorrect inner handler"); };
     } handle failure {
         match failure {
@@ -325,7 +325,7 @@ fn task_selection_preserves_the_loser_and_transfers_owned_results() {
     run_task(
         r#"
 fn main() {
-    let first = fork { await sleep(1ms); "first" };
+    let first = fork { sleep(1ms); "first" };
     let second = fork { "second" };
     let result = select {
         a = await first => { let b = await second; a + ":" + b },
@@ -346,8 +346,8 @@ fn task_selection_timer_preserves_both_tasks_and_evaluates_duration_once() {
         r#"
 fn duration() -> duration { println("timer"); 0ms }
 fn main() {
-    let first = fork { await sleep(100ms); 17 };
-    let second = fork { await sleep(100ms); 42 };
+    let first = fork { sleep(100ms); 17 };
+    let second = fork { sleep(100ms); 42 };
     let result = select {
         a = await first => a + await second,
         b = await second => b + await first,
@@ -370,7 +370,7 @@ fn task_selection_cancellation_drains_children_before_the_parent_defer() {
 fn main() {
     scope within 20ms {
         defer println("parent cleanup");
-        let child = fork { await sleep(1s); println("late"); 42 };
+        let child = fork { sleep(1s); println("late"); 42 };
         select { value = await child => println(value) };
     };
 }
@@ -390,7 +390,7 @@ fn main() {
     defer println("parent cleanup");
     let child = fork {
         defer println("child cleanup");
-        await sleep(1ms);
+        sleep(1ms);
         fail()
     };
     select { value = await child => println(value) };
@@ -407,7 +407,7 @@ fn task_selection_handles_projected_temporary_and_unit_tasks() {
     run_task(
         r#"
 fn main() {
-    let pair = (fork { await sleep(1ms); 17 }, fork { 42 });
+    let pair = (fork { sleep(1ms); 17 }, fork { 42 });
     let sum = select {
         a = await pair.0 => a + await pair.1,
         b = await pair.1 => b + await pair.0,
@@ -417,7 +417,7 @@ fn main() {
         value = await fork { println("created"); 42 } => value,
     };
     println(result);
-    let child = fork { await sleep(1ms); println("child"); };
+    let child = fork { sleep(1ms); println("child"); };
     select { done = await child => println("selected") };
 }
 "#,
@@ -434,7 +434,7 @@ fn task_selection_releases_prepared_loans_when_timer_evaluation_faults() {
 fn duration() -> duration { panic("timer preparation failed"); }
 fn main() {
     defer println("parent cleanup");
-    let child = fork { await sleep(1s); 42 };
+    let child = fork { sleep(1s); 42 };
     select {
         value = await child => println(value),
         after duration() => println("timer"),
@@ -493,7 +493,7 @@ fn await_transfers_owned_values_and_scope_returns_its_tail() {
         r#"
 fn main() {
     let answer = scope {
-        let first = fork { await sleep(1ms); "child value" };
+        let first = fork { sleep(1ms); "child value" };
         let second = fork { 42 };
         println(await first);
         await second
@@ -517,13 +517,13 @@ fn work() -> string {
     defer println("parent cleanup");
     let _child = fork {
         defer println("child cleanup");
-        await sleep(1ms);
+        sleep(1ms);
         println(label);
         "unused child result"
     };
     return "parent result";
 }
-fn main() { println(await work()); }
+fn main() { println(work()); }
 "#,
         "captured value\nchild cleanup\nparent cleanup\nparent result\n",
         0,
@@ -540,16 +540,16 @@ fn work() {
     defer println("parent cleanup");
     let _sibling = fork {
         defer println("sibling cleanup");
-        await sleep(5s);
+        sleep(5s);
         println("sibling escaped cancellation");
     };
     let _failure = fork {
         defer println("failed child cleanup");
-        await sleep(1ms);
+        sleep(1ms);
         fail();
     };
 }
-fn main() { await work(); }
+fn main() { work(); }
 "#,
         "failed child cleanup\nsibling cleanup\nparent cleanup\n",
         212,
@@ -562,13 +562,13 @@ fn borrowed_values_are_promoted_into_child_captures() {
     run_task(
         r#"
 fn work(label: string) {
-    let child = fork { await sleep(1ms); label };
+    let child = fork { sleep(1ms); label };
     println(await child);
     println(label);
 }
 fn main() {
     let original = "borrowed value";
-    await work(original);
+    work(original);
     println(original);
 }
 "#,
@@ -610,7 +610,7 @@ fn loop_exit_joins_its_inner_scope_before_continuing() {
 fn main() {
     for i in 0..2 {
         scope {
-            let _child = fork { await sleep(1ms); println(i); };
+            let _child = fork { sleep(1ms); println(i); };
             break;
         }
     }
@@ -631,7 +631,7 @@ fn main() {
     defer println("parent cleanup");
     scope within 1ms {
         defer println("scope cleanup");
-        await sleep(5s);
+        sleep(5s);
         println("missed deadline");
     };
 }
@@ -648,14 +648,14 @@ fn scope_deadline_reaches_a_nested_call_before_scope_cleanup() {
         r#"
 fn wait_for_work() {
     defer println("call cleanup");
-    await sleep(5s);
+    sleep(5s);
     println("missed deadline");
 }
 fn main() {
     defer println("parent cleanup");
     scope within 1ms {
         defer println("scope cleanup");
-        await wait_for_work();
+        wait_for_work();
     };
 }
 "#,

@@ -18,7 +18,7 @@ actor Worker {
             .Err(_) => return -2,
         };
         tx.send(42);
-        let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after 5000ms;
+        let got: Result<Option<i64>, TimeoutError> = rx.recv() | after 5000ms;
         let _ = tx;
         match got {
             .Ok(inner) => {

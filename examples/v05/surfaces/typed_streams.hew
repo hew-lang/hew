@@ -32,7 +32,7 @@ actor Drainer {
         var received = 0;
         var done = false;
         while !done {
-            match await input.recv() {
+            match input.recv() {
                 .Some(frame) => {
                     let decoded_frame = utf8.decode(frame) handle error {
                         println(f"invalid UTF-8: {error}");

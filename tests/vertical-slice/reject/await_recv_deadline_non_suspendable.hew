@@ -7,7 +7,7 @@
 import std.channel.channel;
 
 fn helper(rx: channel.Receiver<i64>) -> Result<Option<i64>, TimeoutError> {
-    await rx.recv() | after 50ms
+    rx.recv() | after 50ms
 }
 
 fn main() -> i64 {

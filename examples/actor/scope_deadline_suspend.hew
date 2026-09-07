@@ -40,11 +40,11 @@ actor Worker {
 }
 
 fn nap_long() {
-    await sleep(500ms);
+    sleep(500ms);
 }
 
 fn nap_short() {
-    await sleep(10ms);
+    sleep(10ms);
 }
 
 fn main() {

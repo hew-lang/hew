@@ -172,7 +172,7 @@ fn main() {
         loop {
             defer println("inner");
             let values = words();
-            match await values.next() { .Some(text) => println(text), .None => panic("empty"), }
+            match values.next() { .Some(text) => println(text), .None => panic("empty"), }
             if i == 0 { continue @outer; }
             break @outer;
         }

@@ -16,7 +16,7 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_once = || {
-            utf8.decode(await conn.read())
+            utf8.decode(conn.read())
         };
         let body = read_once() handle error {
             println(f"invalid UTF-8: {error}");

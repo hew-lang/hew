@@ -16,7 +16,7 @@ actor Worker {
             .Err(err) => panic(f"channel.new failed: {err}"),
         };
         let recv_once = || {
-            await rx.recv()
+            rx.recv()
         };
         let got = recv_once() | after 50ms;
         let _ = tx;

@@ -22,7 +22,7 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => return,
         };
-        let code = match await conn.read() | after 10s {
+        let code = match conn.read() | after 10s {
             .Ok(_body) => 2,
             .Err(e) => match e {
                 NetError.Cancelled(_c) => 43,

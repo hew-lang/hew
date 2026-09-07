@@ -111,7 +111,7 @@ fn receiver(consume input: ReceiverInput) -> LocalPid<Maker> {
     input.maker
 }
 fn mark(label: string) -> string { println(label); label.to_upper() }
-fn late(label: string) -> string { println(label); await sleep(10ms); label.to_upper() }
+fn late(label: string) -> string { println(label); sleep(10ms); label.to_upper() }
 fn report(result: Result<Parcel, AskError>) {
     match result {
         .Ok(parcel) => { println(parcel.label); println(parcel.notes[0]); },
@@ -125,7 +125,7 @@ fn main() {
     let right_input = ReceiverInput { maker: second, label: "receiver two" };
     let (left, right) = join {
         receiver(left_input).make(second: mark("b"), first: mark("a")),
-        receiver(right_input).make(second: await late("d"), first: mark("c")),
+        receiver(right_input).make(second: late("d"), first: mark("c")),
     };
     report(left);
     report(right);
@@ -164,7 +164,7 @@ actor Broken {
         panic("receiver failed");
     }
 }
-actor Healthy { receive fn echo() -> string { await sleep(2ms); "healthy".to_upper() } }
+actor Healthy { receive fn echo() -> string { sleep(2ms); "healthy".to_upper() } }
 fn main() {
     defer println("parent cleanup");
     let broken = spawn Broken();
@@ -210,7 +210,7 @@ actor Slow {
     receive fn echo(value: string) -> string {
         println("receiver started");
         defer println("receiver cleanup");
-        await sleep(100ms);
+        sleep(100ms);
         value.to_upper()
     }
 }

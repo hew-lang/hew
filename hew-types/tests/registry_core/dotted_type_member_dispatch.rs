@@ -22,7 +22,10 @@ fn main() {
     var set: HashSet<i64> = HashSet<i64>.new();
     let explicit: Option<i64> = Option<i64>.Some(7);
     set.insert(8);
-    println(f"{start.state_name()} {running.state_name()} {some.expect("some is present")} {none.is_none()} {ok.expect("ok succeeds")} {explicit.expect("explicit succeeds")} {set.len()}");
+    let some_value = some.expect("some is present");
+    let ok_value = ok.expect("ok succeeds");
+    let explicit_value = explicit.expect("explicit succeeds");
+    println(f"{start.state_name()} {running.state_name()} {some_value} {none.is_none()} {ok_value} {explicit_value} {set.len()}");
 }
 "#,
     );

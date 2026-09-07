@@ -18,7 +18,7 @@ actor Pipeline {
             .Err(_) => return -2,
         };
         sink.send("hello");
-        let frame: Result<Option<string>, TimeoutError> = await input.recv() | after 5000ms;
+        let frame: Result<Option<string>, TimeoutError> = input.recv() | after 5000ms;
         sink.close();
         match frame {
             .Ok(inner) => {

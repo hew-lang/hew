@@ -31,7 +31,7 @@ actor ChatReader {
     receive fn pump() {
         var reading = true;
         while reading {
-            match await input.recv() {
+            match input.recv() {
                 .Some(chunk) => {
                     let msg = utf8.decode(chunk) handle error {
                         done.send(f"[client] invalid UTF-8: {error}");

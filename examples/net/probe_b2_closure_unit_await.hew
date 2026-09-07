@@ -19,7 +19,7 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_once = || {
-            let _ = await conn.read_string();
+            let _ = conn.read_string();
         };
         read_once();
         println("reader-unit-done");

@@ -13,7 +13,7 @@ gen fn held(label: string) -> string {
 }
 fn started(label: string) -> Generator<string, ()> {
     let values = held(label);
-    let _first = await values.next();
+    let _first = values.next();
     values
 }
 "#;
@@ -49,14 +49,14 @@ fn affine_vector_push_set_clear_and_drop_close_each_owner_once() {
             r#"
 fn main() {
     var values: Vec<Generator<string, ()>> = [];
-    values.push(await started("first"));
-    values.push(await started("second"));
-    values.set(0, await started("third"));
+    values.push(started("first"));
+    values.push(started("second"));
+    values.set(0, started("third"));
     println("set");
     values.clear();
     println("clear");
     println(values.len());
-    values.push(await started("dropped"));
+    values.push(started("dropped"));
 }
 "#
         ),
@@ -73,8 +73,8 @@ fn affine_vector_failed_set_closes_receiver_and_untransferred_element() {
 fn main() {
     scope {
         var values: Vec<Generator<string, ()>> = [];
-        values.push(await started("stored"));
-        values.set(99, await started("replacement"));
+        values.push(started("stored"));
+        values.set(99, started("replacement"));
         println("unreachable");
     } handle failure { println("caught"); };
 }
@@ -100,11 +100,11 @@ fn affine_vector_parent_cancellation_closes_elements_before_recovery() {
             "{GENERATOR}{}",
             r#"
 fn main() {
-    let item = await started("cancelled owner");
+    let item = started("cancelled owner");
     scope within 50ms {
         var values: Vec<Generator<string, ()>> = [];
         values.push(item);
-        await sleep(1s);
+        sleep(1s);
         println("unreachable");
     } handle failure { println("caught"); };
 }
@@ -146,7 +146,7 @@ gen fn failing() -> i64 {
 fn main() {
     scope {
         let item = failing();
-        let _first = await item.next();
+        let _first = item.next();
         var values: Vec<Generator<i64, ()>> = [];
         values.push(item);
         values.clear();
@@ -177,8 +177,8 @@ fn affine_vector_record_field_mutations_preserve_the_enclosing_owner() {
 type Holder { values: Vec<Generator<string, ()>>, label: string, }
 fn main() {
     var holder = Holder { values: [], label: "holder" };
-    holder.values.push(await started("field"));
-    holder.values.set(0, await started("replacement"));
+    holder.values.push(started("field"));
+    holder.values.set(0, started("replacement"));
     println(holder.label);
     holder.values.clear();
     println(holder.values.len());

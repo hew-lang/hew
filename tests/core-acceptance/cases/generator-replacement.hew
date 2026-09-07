@@ -12,50 +12,50 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
     values
 }
 
 fn main() {
     {
-        var _holder = Holder { values: await started("record old") };
-        _holder = Holder { values: await started("record new") };
+        var _holder = Holder { values: started("record old") };
+        _holder = Holder { values: started("record new") };
         println("record replaced");
     }
     {
-        var _choice = Choice.Values(await started("enum old"));
+        var _choice = Choice.Values(started("enum old"));
         _choice = Choice.Empty;
         println("enum empty");
-        _choice = Choice.Values(await started("enum new"));
+        _choice = Choice.Values(started("enum new"));
     }
     {
         var pair = Pair {
-            first: Holder { values: await started("field old") },
-            second: Holder { values: await started("sibling") },
+            first: Holder { values: started("field old") },
+            second: Holder { values: started("sibling") },
         };
-        pair.first = Holder { values: await started("field new") };
+        pair.first = Holder { values: started("field new") };
         println("field replaced");
-        match await pair.second.values.next() { .Some(value) => println(value), .None => panic("sibling closed"), }
+        match pair.second.values.next() { .Some(value) => println(value), .None => panic("sibling closed"), }
     }
     {
         var pair = Pair {
-            first: Holder { values: await started("moved") },
-            second: Holder { values: await started("remaining") },
+            first: Holder { values: started("moved") },
+            second: Holder { values: started("remaining") },
         };
         let extracted = pair.first;
         pair = Pair {
-            first: Holder { values: await started("refilled first") },
-            second: Holder { values: await started("refilled second") },
+            first: Holder { values: started("refilled first") },
+            second: Holder { values: started("refilled second") },
         };
         println("partial replaced");
-        match await extracted.values.next() { .Some(value) => println(value), .None => panic("moved value closed"), }
+        match extracted.values.next() { .Some(value) => println(value), .None => panic("moved value closed"), }
     }
     {
-        var _holder = Holder { values: await started("field moved") };
+        var _holder = Holder { values: started("field moved") };
         let extracted = _holder.values;
-        _holder.values = await started("field refilled");
+        _holder.values = started("field refilled");
         println("field refilled safely");
-        match await extracted.next() { .Some(value) => println(value), .None => panic("moved field closed"), }
+        match extracted.next() { .Some(value) => println(value), .None => panic("moved field closed"), }
     }
     println("done");
 }

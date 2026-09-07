@@ -487,7 +487,7 @@ impl ListenerMethods for Listener {
     /// Wait until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
         unsafe {
-            await hew_tcp_accept(ln)
+            hew_tcp_accept(ln)
         }
     }
     fn local_port(ln: Listener) -> i64 {
@@ -631,7 +631,7 @@ impl ConnectionMethods for Connection {
     /// Read raw bytes from the connection.
     fn read(conn: Connection) -> bytes {
         unsafe {
-            await hew_tcp_read(conn)
+            hew_tcp_read(conn)
         }
     }
     /// Read raw bytes, reporting a read failure separately from EOF.
@@ -640,7 +640,7 @@ impl ConnectionMethods for Connection {
             // Drop any status left by an earlier operation so the status read
             // after the call describes this read and nothing else.
             let _ = hew_stream_last_errno();
-            let data = await hew_tcp_read(conn);
+            let data = hew_tcp_read(conn);
             let errno = hew_stream_last_errno();
             if errno == 0 {
                 Ok(data)
@@ -652,12 +652,12 @@ impl ConnectionMethods for Connection {
     }
     /// Read and validate one UTF-8 byte buffer from the connection.
     fn read_string(conn: Connection) -> Result<string, utf8.Utf8Error> {
-        let data = await conn.read();
+        let data = conn.read();
         utf8.decode(data)
     }
     /// Read UTF-8, preserving both transport and validation failures.
     fn try_read_string(conn: Connection) -> Result<string, ReadStringError> {
-        match await conn.try_read() {
+        match conn.try_read() {
             .Ok(data) => match utf8.decode(data) {
                 .Ok(text) => Ok(text),
                 .Err(error) => Err(ReadStringError.InvalidUtf8(error)),
@@ -668,14 +668,14 @@ impl ConnectionMethods for Connection {
     /// Write raw bytes to the connection.
     fn write(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            await hew_tcp_write(conn, data)
+            hew_tcp_write(conn, data)
         })
     }
     /// Write a UTF-8 string to the connection.
     fn write_string(conn: Connection, data: string) -> Result<(), WriteError> {
         let payload = data.to_bytes();
         write_result_from_status(unsafe {
-            await hew_tcp_write(conn, payload)
+            hew_tcp_write(conn, payload)
         })
     }
     /// Set the read timeout in milliseconds.
@@ -695,14 +695,14 @@ impl ConnectionMethods for Connection {
     /// Send raw bytes to the connection (alias for `write`).
     fn send(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            await hew_tcp_write(conn, data)
+            hew_tcp_write(conn, data)
         })
     }
     /// Send a UTF-8 string to the connection (alias for `write_string`).
     fn send_string(conn: Connection, data: string) -> Result<(), WriteError> {
         let payload = data.to_bytes();
         write_result_from_status(unsafe {
-            await hew_tcp_write(conn, payload)
+            hew_tcp_write(conn, payload)
         })
     }
 }
@@ -790,7 +790,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 /// ```
 pub fn connect(addr: string) -> Result<Connection, NetError> {
     unsafe {
-        let conn = await hew_tcp_connect(addr);
+        let conn = hew_tcp_connect(addr);
         if hew_connection_is_valid(conn) {
             Ok(conn)
         } else {
@@ -813,7 +813,7 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Res
     let Endpoint { host, port } = parse_endpoint("net.connect_timeout", addr)?;
     let timeout_ms = try_connect_timeout_ms(timeout_sec, timeout_usec)?;
     unsafe {
-        let conn = await hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
+        let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
         if hew_connection_is_valid(conn) {
             Ok(conn)
         } else {

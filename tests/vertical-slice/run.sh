@@ -1460,6 +1460,7 @@ grep -q 'ResourceCloseSourceUnsupported' "${reject_output}"
 # builder-terminal `consume self` shape and an owned-string consume that
 # transfers heap ownership exactly once.
 run_accept_expect_stdout "linear_inherent_consume"
+run_accept_expect_stdout "inherent_var_self_mutates"
 run_accept_expect_stdout "linear_inherent_owned_string"
 run_accept_expect_stdout "consuming_self_builder"
 

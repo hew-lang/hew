@@ -127,9 +127,9 @@ fn option_of_value_aggregate_supports_private_replacement() {
     assert_check_clean(concat!(
         "type Account { balance: i64, }\n",
         "fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {\n",
-        "    let current = acc.unwrap();\n",
+        r#"    let current = acc.expect("the account is present");"# "\n",
         "    acc = Some(Account { balance: current.balance - amount });\n",
-        "    return acc.unwrap().balance;\n",
+        r#"    return acc.expect("the account is present").balance;"# "\n",
         "}\n",
     ));
 }

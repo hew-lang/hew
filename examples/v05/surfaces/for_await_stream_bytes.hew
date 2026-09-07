@@ -15,7 +15,7 @@ actor DrainBytes {
         };
         for i in 0 .. frames {
             let frame = f"frame-{i}".to_bytes();
-            await sink.send(frame);
+            sink.send(frame);
         }
         sink.close();
         for await frame in input {

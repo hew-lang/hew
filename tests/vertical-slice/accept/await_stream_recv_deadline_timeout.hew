@@ -17,7 +17,7 @@ actor Pipeline {
         // `sink` stays in scope (never written / closed) so stream recv parks until
         // the deadline fires. Explicitly close after the await to satisfy drop
         // analysis (auto-drop would also close, but this makes the intent clear).
-        let frame: Result<Option<string>, TimeoutError> = await input.recv() | after 60ms;
+        let frame: Result<Option<string>, TimeoutError> = input.recv() | after 60ms;
         sink.close();
         match frame {
             .Ok(inner) => {

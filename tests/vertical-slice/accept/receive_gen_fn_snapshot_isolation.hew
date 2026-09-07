@@ -27,7 +27,7 @@ fn main() {
     let t = spawn Ticker(b: 100);
     let s1 = t.stream(3);
 
-    let head = await s1.recv();
+    let head = s1.recv();
     match head {
         .Some(v) => println(f"{v}"),
         .None => println("unexpected-close"),

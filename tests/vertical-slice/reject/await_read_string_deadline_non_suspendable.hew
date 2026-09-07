@@ -8,7 +8,7 @@
 import std.net.{Connection};
 
 fn helper(conn: Connection) {
-    let _ = await conn.read_string() | after 50ms;
+    let _ = conn.read_string() | after 50ms;
 }
 
 fn main() {

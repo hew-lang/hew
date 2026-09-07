@@ -8,7 +8,7 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
     values
 }
 
@@ -27,10 +27,10 @@ fn drive(consume choice: Option<Choice>) -> string {
 }
 
 fn main() {
-    println(await drive(Some(Choice.Values(await started("first"), 7))));
-    println(await drive(Some(Choice.Values(await started("zero"), 0))));
-    println(await drive(Some(Choice.Values(await started("heavy"), 11))));
-    println(await drive(Some(Choice.Empty)));
-    println(await drive(None));
+    println(drive(Some(Choice.Values(started("first"), 7))));
+    println(drive(Some(Choice.Values(started("zero"), 0))));
+    println(drive(Some(Choice.Values(started("heavy"), 11))));
+    println(drive(Some(Choice.Empty)));
+    println(drive(None));
     println("done");
 }

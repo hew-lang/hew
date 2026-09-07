@@ -8,7 +8,7 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
     values
 }
 
@@ -19,7 +19,7 @@ fn first_or_weight(consume choice: Option<Choice>) -> string {
             if weight > 5 {
                 return f"returned:{weight}";
             }
-            match await values.next() {
+            match values.next() {
                 .Some(value) => value,
                 .None => "exhausted",
             }
@@ -30,8 +30,8 @@ fn first_or_weight(consume choice: Option<Choice>) -> string {
 }
 
 fn main() {
-    println(await first_or_weight(Some(Choice.Values(await started("early"), 7))));
-    println(await first_or_weight(Some(Choice.Values(await started("driven"), 1))));
-    println(await first_or_weight(Some(Choice.Values(await started("heavy"), 11))));
+    println(first_or_weight(Some(Choice.Values(started("early"), 7))));
+    println(first_or_weight(Some(Choice.Values(started("driven"), 1))));
+    println(first_or_weight(Some(Choice.Values(started("heavy"), 11))));
     println("done");
 }

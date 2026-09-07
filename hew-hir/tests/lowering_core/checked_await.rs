@@ -6,7 +6,7 @@ fn checked_calls_and_task_values_compose_in_expression_positions() {
         include_str!("../../../tests/core-acceptance/cases/task-call-values.hew"),
         "actor Worker { receive fn process(value: i64) -> i64 { value + 1 } } fn main() { let worker = spawn Worker; let task = fork worker.process(41); let reply: Result<i64, AskError> = await task; }",
         "actor Worker { receive fn process() -> Result<i64, string> { .Ok(42) } } fn main() { let worker = spawn Worker; let task = fork worker.process(); let reply: Result<Result<i64, string>, AskError> = await task; }",
-        "fn work() -> i64 { await sleep(1ms); 42 } fn main() { let value = await work(); println(value); }",
+        "fn work() -> i64 { sleep(1ms); 42 } fn main() { let value = work(); println(value); }",
         "fn work() {} fn main() { let task = fork work(); let value: () = await task; }",
         "fn work() -> i64 { 42 } fn run() -> i64 { scope { let task = fork work(); return await task; } } fn main() {}",
         "fn main() { let value = await (if true { fork { 41 } } else { fork { 0 } }); println(value); }",

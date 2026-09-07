@@ -108,19 +108,19 @@ fn main() {
     match net.listen("127.0.0.1:0") {
         .Ok(listener) => {
             let address = f"127.0.0.1:{listener.local_port()}";
-            match await net.connect(address) {
+            match net.connect(address) {
                 .Ok(connection) => { connection.close(); println("connected"); }
                 .Err(_) => panic("connect failed"),
             }
             listener.close();
-            match await net.connect(address) {
+            match net.connect(address) {
                 .Ok(_) => panic("closed listener accepted a connection"),
                 .Err(_) => println("refused"),
             }
         }
         .Err(_) => panic("listen failed"),
     }
-    match await net.connect("127.0.0.1:0\0ignored") {
+    match net.connect("127.0.0.1:0\0ignored") {
         .Ok(_) => panic("invalid address accepted"),
         .Err(_) => println("invalid"),
     }
@@ -139,7 +139,7 @@ fn main() {
     match net.listen("127.0.0.1:0") {
         .Ok(listener) => {
             let address = f"127.0.0.1:{listener.local_port()}";
-            match await net.connect_timeout(address, 1, 0) {
+            match net.connect_timeout(address, 1, 0) {
                 .Ok(connection) => { connection.close(); println("timed connect"); }
                 .Err(_) => panic("timed connect failed"),
             }

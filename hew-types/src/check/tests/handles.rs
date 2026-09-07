@@ -1723,3 +1723,37 @@ fn ordinary_fork_result_is_not_unit() {
         output.errors
     );
 }
+
+mod actor_self_handle {
+    use super::*;
+
+    #[test]
+    fn bare_self_in_an_actor_body_is_the_actor_handle() {
+        // One receiver token: inside an actor, `self` names the actor's own
+        // handle. Actor state is still reached through a field.
+        let source = r"
+            actor Counter {
+                var count: i64 = 0,
+                receive fn tick() {
+                    let me = self;
+                    count = count + 1;
+                }
+            }
+        ";
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let handle_ty = output
+            .expr_types
+            .iter()
+            .find_map(|(key, ty)| {
+                (key.module_idx == 0 && source.get(key.start..key.end) == Some("self"))
+                    .then_some(ty)
+            })
+            .expect("the `self` span must carry a checker type");
+        assert_eq!(
+            handle_ty.user_facing().to_string(),
+            "LocalPid<Counter>",
+            "bare `self` must synthesize the actor handle"
+        );
+    }
+}

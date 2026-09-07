@@ -9,7 +9,7 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
     values
 }
 
@@ -19,25 +19,25 @@ gen fn outer(consume values: Generator<string, ()>) -> string {
 
 fn main() {
     {
-        let _holder = Holder { values: await started("record"), label: "held".to_upper() };
+        let _holder = Holder { values: started("record"), label: "held".to_upper() };
     }
     {
-        let _choice = Choice.Values(await started("enum"));
+        let _choice = Choice.Values(started("enum"));
     }
     {
         var values: Vec<Generator<string, ()>> = Vec.new();
-        values.push(await started("vector"));
+        values.push(started("vector"));
     }
     {
-        let values = await started("closure");
+        let values = started("closure");
         let _callback: fn[once]() -> () = move || { let _held = values; };
     }
     {
-        let holder = Holder { values: await started("partial"), label: "extracted".to_upper() };
+        let holder = Holder { values: started("partial"), label: "extracted".to_upper() };
         println(holder.label);
     }
     {
-        let _lazy = outer(await started("lazy"));
+        let _lazy = outer(started("lazy"));
     }
     println("done");
 }

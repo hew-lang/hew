@@ -221,7 +221,7 @@ fn number() -> i64 { println("number"); 7 }
 fn text() -> string { println("text"); "label".to_upper() }
 actor Maker {
     receive fn make(number: i64, label: string) -> Parcel {
-        await sleep(1ms);
+        sleep(1ms);
         println(number);
         Parcel { label: label, notes: ["owned".to_upper()] }
     }
@@ -273,7 +273,7 @@ fn native_ask_preserves_strict_turn_while_another_actor_replies() {
     run_actor(
         r#"actor Echo {
     receive fn echo(message: string) -> string {
-        await sleep(1ms);
+        sleep(1ms);
         message.to_upper()
     }
 }
@@ -308,7 +308,7 @@ fn native_ask_receiver_fault_returns_error_without_cancelling_caller() {
         r#"actor Broken {
     receive fn fail(message: string) -> string {
         defer { println(message); }
-        await sleep(1ms);
+        sleep(1ms);
         panic("receiver-fault");
     }
 }
@@ -340,7 +340,7 @@ fn native_ask_deadline_abandons_reply_and_actor_finishes_owned_cleanup() {
         r#"actor Slow {
     receive fn echo(message: string) -> string {
         defer { println("receiver-finished"); }
-        await sleep(30ms);
+        sleep(30ms);
         message.to_upper()
     }
 }
@@ -371,7 +371,7 @@ actor Gate {
     receive fn observe() { println(phase); }
     receive fn slow(message: string) {
         phase = "before";
-        await sleep(20ms);
+        sleep(20ms);
         phase = message;
         println("finished");
     }
@@ -398,7 +398,7 @@ fn resumed_handler_fault_runs_owned_defers_before_actor_failure() {
     receive fn fail(message: string) {
         defer { println(label); }
         defer { println(message); }
-        await sleep(1ms);
+        sleep(1ms);
         label = "actor-cleanup";
         panic("resumed-handler-fault");
     }
@@ -587,7 +587,7 @@ actor Sink {
     mailbox 1,
     receive fn hold(me: LocalPid<Sink>, driver: LocalPid<Driver>, probe: LocalPid<Probe>) {
         let _ = send driver.run(me, probe);
-        await sleep(20ms);
+        sleep(20ms);
     }
     receive fn process(value: string) { println(value); }
 }
@@ -623,7 +623,7 @@ actor Sink {
     mailbox 1,
     receive fn hold(me: LocalPid<Sink>, driver: LocalPid<Driver>, probe: LocalPid<Probe>) {
         let _ = send driver.run(me, probe);
-        await sleep(30ms);
+        sleep(30ms);
     }
     receive fn process(value: string) { println(value); }
 }
@@ -664,7 +664,7 @@ fn actor_close_waits_for_handler_cleanup() {
     receive fn slow(me: LocalPid<Holder>, closer: LocalPid<Closer>) {
         defer println(label);
         let _ = send closer.started(me);
-        await sleep(1s);
+        sleep(1s);
         println("must-not-complete");
     }
 }
@@ -696,7 +696,7 @@ fn main() {
 #[test]
 fn actor_termination_fault_reaches_waiter_recovery() {
     run_actor(
-        r#"actor Broken { receive fn fail() { defer println("receiver-cleanup"); await sleep(1ms); panic("receiver-failed"); } }
+        r#"actor Broken { receive fn fail() { defer println("receiver-cleanup"); sleep(1ms); panic("receiver-failed"); } }
 fn main() {
     let broken = spawn Broken();
     let _ = send broken.fail();

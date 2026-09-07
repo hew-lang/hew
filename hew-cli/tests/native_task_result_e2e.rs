@@ -7,14 +7,14 @@ use support::{describe_output, hew_binary, require_codegen, run_bounded_command,
 
 const STARTED: &str = r#"
 gen fn values(label: string) -> string {
-    let _pending = fork { await sleep(5s); println("missed cancellation"); };
+    let _pending = fork { sleep(5s); println("missed cancellation"); };
     defer println(label + " closed");
     yield label;
     yield "still live";
 }
 fn started(label: string) -> Generator<string, ()> {
     let result = values(label);
-    match await result.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match result.next() { .Some(value) => println(value), .None => panic("empty"), }
     result
 }
 "#;
@@ -27,9 +27,9 @@ fn ignored_started_generator_closes_before_parent_defer() {
             r#"
 fn work() {
     defer println("parent cleanup");
-    let _child = fork { await started("result") };
+    let _child = fork { started("result") };
 }
-fn main() { await work(); println("done"); }
+fn main() { work(); println("done"); }
 "#
         ),
         "result\nresult closed\nparent cleanup\ndone\n",
@@ -49,10 +49,10 @@ enum Wrapped { Full(Holder), Empty }
 fn work() {
     defer println("parent cleanup");
     let _child = fork {
-        Wrapped.Full(Holder { value: await started("nested"), label: "owned".to_upper() })
+        Wrapped.Full(Holder { value: started("nested"), label: "owned".to_upper() })
     };
 }
-fn main() { await work(); println("done"); }
+fn main() { work(); println("done"); }
 "#
         ),
         "nested\nnested closed\nparent cleanup\ndone\n",
@@ -69,11 +69,11 @@ fn observed_result_survives_its_old_scope() {
             r#"
 fn main() {
     let result = scope {
-        let child = fork { await started("transferred") };
+        let child = fork { started("transferred") };
         await child
     };
     println("scope closed");
-    match await result.next() { .Some(value) => println(value), .None => panic("closed early"), }
+    match result.next() { .Some(value) => println(value), .None => panic("closed early"), }
 }
 
 "#
@@ -93,12 +93,12 @@ fn abandoned_closure_result_closes_its_started_capture() {
 fn work() {
     defer println("parent cleanup");
     let _child = fork {
-        let result = await started("capture");
+        let result = started("capture");
         let callback: fn[once]() -> () = move || { let _held = result; };
         callback
     };
 }
-fn main() { await work(); }
+fn main() { work(); }
 "#
         ),
         "capture\ncapture closed\nparent cleanup\n",
@@ -119,11 +119,11 @@ fn work() {
     defer println("parent cleanup");
     let _child = fork {
         let result = values();
-        match await result.next() { .Some(value) => println(value), .None => panic("empty"), }
+        match result.next() { .Some(value) => println(value), .None => panic("empty"), }
         result
     };
 }
-fn main() { await work(); }
+fn main() { work(); }
 "#,
         "1\nparent cleanup\n",
         212,
@@ -140,8 +140,8 @@ fn cancelled_scope_closes_abandoned_result_before_parent_defer() {
 fn main() {
     scope within 100ms {
         defer println("parent cleanup");
-        let _child = fork { await started("cancelled") };
-        await sleep(5s);
+        let _child = fork { started("cancelled") };
+        sleep(5s);
         println("missed deadline");
     };
 }

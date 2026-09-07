@@ -40,7 +40,7 @@ fn race_prepares_inputs_before_launch_and_drains_losers_before_an_err_result() {
 fn prepare(value: i64) -> i64 { println(value); value }
 fn work(value: i64, delay: duration) -> Result<i64, string> {
     defer println(100 + value);
-    await sleep(delay);
+    sleep(delay);
     if value == 2 { Result.Err("winner") } else { Result.Ok(value) }
 }
 fn main() {
@@ -66,14 +66,14 @@ gen fn held(label: string) -> string {
 }
 fn produce(label: string, delay: duration) -> Generator<string, ()> {
     let values = held(label);
-    let _first = await values.next();
-    await sleep(delay);
+    let _first = values.next();
+    sleep(delay);
     values
 }
 fn main() {
     let winner = race { produce("loser", 5s), produce("winner", 20ms) };
     println("winner ready");
-    match await winner.next() {
+    match winner.next() {
         .Some(value) => println(value),
         .None => panic("winning generator was closed"),
     }
@@ -89,7 +89,7 @@ fn parent_deadline_drains_all_race_children_before_recovery() {
         r#"
 fn work(label: string) -> string {
     defer println(label);
-    await sleep(5s);
+    sleep(5s);
     "unreachable"
 }
 fn main() {
@@ -124,14 +124,14 @@ gen fn held(label: string) -> string { defer println(label); yield label; yield 
 gen fn broken() -> string { defer panic("loser cleanup"); yield "started"; }
 fn slow() -> Generator<string, ()> {
     let values = broken();
-    let _first = await values.next();
-    await sleep(5s);
+    let _first = values.next();
+    sleep(5s);
     values
 }
 fn fast() -> Generator<string, ()> {
     let values = held("winner cleanup");
-    let _first = await values.next();
-    await sleep(20ms);
+    let _first = values.next();
+    sleep(20ms);
     values
 }
 fn main() {

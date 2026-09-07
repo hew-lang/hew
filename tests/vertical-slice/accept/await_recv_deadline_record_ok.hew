@@ -15,7 +15,7 @@ actor Worker {
             .Err(_) => return -2,
         };
         tx.send(Point { x: 10, y: 20 });
-        let got: Result<Option<Point>, TimeoutError> = await rx.recv() | after 5000ms;
+        let got: Result<Option<Point>, TimeoutError> = rx.recv() | after 5000ms;
         let _ = tx;
         match got {
             .Ok(inner) => {

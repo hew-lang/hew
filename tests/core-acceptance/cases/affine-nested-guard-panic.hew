@@ -8,7 +8,7 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
     values
 }
 
@@ -32,6 +32,6 @@ fn choose(consume choice: Option<Choice>) -> string {
 fn main() {
     let label = "main".to_upper();
     defer println(label + " cleaned");
-    println(await choose(Some(Choice.Values(await started("guarded"), 3))));
+    println(choose(Some(Choice.Values(started("guarded"), 3))));
     println("unreachable");
 }

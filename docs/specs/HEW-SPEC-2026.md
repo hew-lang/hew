@@ -6443,7 +6443,7 @@ inside `std/`. A program that names one outside the standard library gets
 
 ## 13. Self-Hosting Roadmap
 
-> See HEW-FUTURE.md §5.1 for the self-hosting roadmap — targeted for
+> See HEW-FUTURE.md §6.1 for the self-hosting roadmap — targeted for
 > v1.0+. Bootstrap chain, minimum viable subset, kernel-language
 > concept, and WASM-as-portable-bootstrap belong to the post-
 > stability project.

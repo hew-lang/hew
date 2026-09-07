@@ -875,6 +875,45 @@ fn main() {
             .any(|block| block.terminator.op == "return"));
     }
 
+    /// `opt.expect(reason)` is the sandbox's only Option/Result extraction with
+    /// a panic arm; the arm must carry the same message the native lowering
+    /// builds, `expect failed: <reason>`.
+    #[test]
+    fn expect_emits_a_panic_arm_carrying_its_reason() {
+        let source = r#"
+fn main() {
+    let opt = Some(7);
+    println(opt.expect("the value was checked"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let ops = all_instruction_ops(&bytecode);
+        assert!(
+            ops.contains(&"panic"),
+            "expect must emit a panic arm: {ops:?}"
+        );
+        assert!(
+            ops.contains(&"string.concat"),
+            "the panic message concatenates the reason: {ops:?}"
+        );
+        let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
+        assert!(
+            serialized.contains("expect failed: "),
+            "the panic message must match the native prefix"
+        );
+        assert!(
+            serialized.contains("the value was checked"),
+            "the panic message must carry the caller's reason"
+        );
+    }
+
     #[test]
     fn vector_fixture_emits_new_push_len_and_get() {
         let output =

@@ -96,7 +96,11 @@ def classify(name):
     trapped = (
         os.path.exists(os.path.join(CELLS, name + ".trap"))
         and rc != 0
-        and ("trap in main context" in (err + out) or "Abort" in (err + out))
+        and (
+            "trap in main context" in (err + out)
+            or "Abort" in (err + out)
+            or "hew: failure:" in (err + out)
+        )
     )
     if rc == 0 or trapped:
         if out == expected:

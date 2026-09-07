@@ -1,0 +1,45 @@
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(self) {
+        println(f"close {self.label}{self.id}");
+    }
+}
+
+type Holder {
+    token: Token,
+    tag: i64,
+}
+
+fn hold() {
+    let held = Holder { token: Token { label: "h", id: 1 }, tag: 7 };
+    println(f"held {held.tag}");
+}
+
+fn collect() {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "v", id: 1 });
+    tokens.push(Token { label: "v", id: 2 });
+    println(f"len={tokens.len()}");
+}
+
+fn early(stop: bool) -> i64 {
+    let token = Token { label: "e", id: 1 };
+    if stop {
+        return 0
+    }
+    return token.id
+}
+
+fn main() {
+    hold();
+    collect();
+    let n = early(true);
+    println(f"early={n}");
+    let m = early(false);
+    println(f"late={m}");
+}

@@ -19,7 +19,7 @@ fn count_items(xs: Vec<Item>) -> i64 {\n\
     total\n\
 }\n\
 fn main() {\n\
-    let xs: Vec<Item> = Vec.new();\n\
+    var xs: Vec<Item> = Vec.new();\n\
     xs.push(Item { name: \"a\", n: 1 });\n\
     print(count_items(xs));\n\
 }\n";

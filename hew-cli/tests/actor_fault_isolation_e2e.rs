@@ -97,7 +97,7 @@ fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI6
 }
 
 fn main() {
-    let source = pipeline.run(pipeline.from(1));
+    var source = pipeline.run(pipeline.from(1));
     match await source.push(item(9, "crash-owned", true)) {
         .Ok(admitted) => if admitted {
             panic("crashing item was admitted")

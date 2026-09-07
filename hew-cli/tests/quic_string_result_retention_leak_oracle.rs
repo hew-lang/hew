@@ -34,19 +34,13 @@ fn require_ok(result: Result<(), net.NetError>) {{
     }}
 }}
 
-actor Client {{
+actor Client {{ 
     let address: string,
     var complete: i64,
 
     receive fn run(unused: i64) {{
-        let endpoint = quic.new_client();
-        let connection = endpoint.connect(address, "localhost");
-        let stream = connection.open_stream();
-        require_ok(stream.send_string("client-probe"));
-        let reply = stream.recv_string();
-        if reply != "retention-probe" {{
-            panic("QUIC retention reply mismatch");
-        }}
+        let endpoint = quic.new_client(), let connection = endpoint.connect(address, "localhost"), let stream = connection.open_stream(), require_ok(stream.send_string("client-probe")), let reply = stream.recv_string(), if reply != "retention-probe" {{
+            panic("QUIC retention reply mismatch") }}
         let eof = stream.recv();
         if eof.len() != 0 {{
             panic("QUIC retention expected EOF");

@@ -54,10 +54,10 @@ use support::{describe_output, require_codegen};
 /// buffer).
 fn fungible_tell_recover_loop_source(frames: usize) -> String {
     format!(
-        "actor Worker {{\n\
+        "actor Worker {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(s: string) {{\n\
-         \x20       if s.is_empty() {{ seen = seen; }} else {{ seen = seen + 1; }}\n\
+         \x20       if s.is_empty() {{ seen = seen }} else {{ seen = seen + 1; }}\n\
          \x20   }}\n\
          }}\n\
          \n\

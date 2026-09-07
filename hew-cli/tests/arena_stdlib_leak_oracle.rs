@@ -22,7 +22,7 @@ fn arena_holder_insert_remove_source(cycles: usize) -> String {
          type Holder {{ items: Vec<string> }}\n\
          \n\
          fn runCycle(i: i64) -> i64 {{\n\
-         \x20   let store: Arena<Holder> = arena.new();\n\
+         \x20   var store: Arena<Holder> = arena.new();\n\
          \x20   let key = store.insert(Holder {{\n\
          \x20       items: [f\"item-{{i}}\", f\"value-{{i}}\"],\n\
          \x20   }});\n\

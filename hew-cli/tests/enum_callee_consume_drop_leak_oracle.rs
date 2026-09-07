@@ -192,12 +192,12 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
 fn payload_forward_source(frames: usize) -> String {
     format!(
         "fn stash(s: string) -> i64 {{\n\
-         \x20   let v: Vec<string> = Vec.new();\n\
+         \x20   var v: Vec<string> = Vec.new();\n\
          \x20   v.push(s);\n\
          \x20   v.len()\n\
          }}\n\
          fn stash_after(s: string) -> i64 {{\n\
-         \x20   let v: Vec<string> = Vec.new();\n\
+         \x20   var v: Vec<string> = Vec.new();\n\
          \x20   v.push(s);\n\
          \x20   v.len() + s.len()\n\
          }}\n\

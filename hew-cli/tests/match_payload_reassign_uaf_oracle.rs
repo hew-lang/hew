@@ -41,7 +41,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 /// buffer of length 3 per call.
 const SEED_FN: &str = "\
 fn seed() -> Vec<i64> {\n\
-\x20   let v: Vec<i64> = Vec.new();\n\
+\x20   var v: Vec<i64> = Vec.new();\n\
 \x20   v.push(1);\n\
 \x20   v.push(2);\n\
 \x20   v.push(3);\n\
@@ -124,10 +124,10 @@ fn assert_scribbled_run_exit(shape_name: &str, source: &str, expected_exit: i32)
 /// MUST be rejected at compile time.
 fn reread_loop_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -158,10 +158,10 @@ fn reread_loop_source() -> String {
 /// Returns `3 + 3 = 6`.
 fn move_reassign_no_reread_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -188,10 +188,10 @@ fn move_reassign_no_reread_source() -> String {
 /// aborts. Returns `3 + 3 = 6`.
 fn move_scope_drop_no_reread_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -217,10 +217,10 @@ fn move_scope_drop_no_reread_source() -> String {
 /// re-read. Returns `3 + 3 + 3 = 9`.
 fn aggregate_payload_no_reread_source() -> String {
     format!(
-        "enum Pair {{\n\
-         \x20   Both((Vec<i64>, Vec<i64>));\n\
-         \x20   Neither;\n\
-         }}\n\
+        "enum Pair {{ \n\
+         \x20   Both((Vec<i64>, Vec<i64>)), \n\
+         \x20   Neither, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Pair.Both((seed(), seed()));\n\
@@ -248,10 +248,10 @@ fn aggregate_payload_no_reread_source() -> String {
 /// leak — the slope stays flat.
 fn fresh_scrutinee_loop_source(frames: usize) -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var i = 0;\n\
@@ -282,10 +282,10 @@ fn fresh_scrutinee_loop_source(frames: usize) -> String {
 /// `3 * 5 = 15`.
 fn borrow_only_loop_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -378,10 +378,10 @@ fn borrow_only_projection_keeps_scrutinee_live() {
 /// segfaults on the loop re-read. MUST reject at compile time.
 fn field_place_reread_loop_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
@@ -408,10 +408,10 @@ fn field_place_reread_loop_source() -> String {
 /// end state for a heap ownership transfer).
 fn field_place_no_reread_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -435,10 +435,10 @@ fn field_place_no_reread_source() -> String {
 /// rejects the later iteration before codegen.
 fn tuple_place_reread_loop_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() {{\n\
          \x20   let pair = (Box.Full(seed()), 0);\n\
@@ -462,10 +462,10 @@ fn tuple_place_reread_loop_source() -> String {
 /// place-root predicate must see through the projection chain. MUST reject.
 fn nested_field_place_reread_loop_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Inner {{ b: Box, }}\n\
          type Outer {{ inner: Inner, }}\n\
          \n\
@@ -492,10 +492,10 @@ fn nested_field_place_reread_loop_source() -> String {
 /// re-matches `h.b` every iteration and totals `3 * 5 = 15`.
 fn field_place_borrow_only_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -522,10 +522,10 @@ fn field_place_borrow_only_source() -> String {
 /// ephemeral path when tightening the place path. Returns `3 + 3 = 6`.
 fn call_scrutinee_move_reassign_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          fn mk() -> Box {{ Box.Full(seed()) }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -617,10 +617,10 @@ fn call_scrutinee_move_reassign_single_free() {
 /// (`match { h.b }`). Pre-F1b: compiled clean and double-freed 5/5. MUST reject.
 fn block_wrapped_field_place_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
@@ -646,10 +646,10 @@ fn block_wrapped_field_place_source() -> String {
 /// non-enumerated wrapper. MUST reject (fail-closed default).
 fn if_wrapped_field_place_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
@@ -724,8 +724,8 @@ fn if_wrapped_place_move_out_is_rejected() {
 /// rejected fail-closed. Pre-fix: compiled and leaked / double-freed.
 fn nested_enum_move_out_source() -> String {
     format!(
-        "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
-         enum Outer {{ Wrap(Inner); Bare; }}\n\
+        "enum Inner {{  Full(Vec<i64>), Hollow }}\n\
+         enum Outer {{  Wrap(Inner), Bare }}\n\
          fn mk() -> Outer {{ Outer.Wrap(Inner.Full(seed())) }}\n\
          fn main() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -746,8 +746,8 @@ fn nested_enum_move_out_source() -> String {
 /// reachable only through a transient copy the neutralize cannot null.
 fn nested_enum_move_out_binding_source() -> String {
     format!(
-        "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
-         enum Outer {{ Wrap(Inner); Bare; }}\n\
+        "enum Inner {{  Full(Vec<i64>), Hollow }}\n\
+         enum Outer {{  Wrap(Inner), Bare }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Outer.Wrap(Inner.Full(seed()));\n\
          \x20   var total = 0;\n\
@@ -768,8 +768,8 @@ fn nested_enum_move_out_binding_source() -> String {
 /// totals correctly with no double-free.
 fn nested_enum_borrow_only_source() -> String {
     format!(
-        "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
-         enum Outer {{ Wrap(Inner); Bare; }}\n\
+        "enum Inner {{  Full(Vec<i64>), Hollow }}\n\
+         enum Outer {{  Wrap(Inner), Bare }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Outer.Wrap(Inner.Full(seed()));\n\
          \x20   var total = 0;\n\
@@ -791,7 +791,7 @@ fn nested_enum_borrow_only_source() -> String {
 /// double-free 3/3 under the poisoned allocator.
 fn captured_binding_move_out_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var total = 0;\n\
@@ -814,7 +814,7 @@ fn captured_binding_move_out_source() -> String {
 /// runs clean (the env-copy is read, never moved out).
 fn captured_binding_borrow_only_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   let f = || -> i64 {{\n\
@@ -836,7 +836,7 @@ fn captured_binding_borrow_only_source() -> String {
 /// use-after-consume on the second move; no leak. Returns `3 + 3 = 6`.
 fn two_field_move_out_source() -> String {
     format!(
-        "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
+        "enum Pair {{  Both(Vec<i64>, Vec<i64>), Neither }}\n\
          fn mk() -> Pair {{ Pair.Both(seed(), seed()) }}\n\
          fn main() -> i64 {{\n\
          \x20   var out = 0;\n\
@@ -860,7 +860,7 @@ fn two_field_move_out_source() -> String {
 /// was consumed` on the SECOND field. Must compile and single-free. Returns 6.
 fn two_field_move_out_binding_source() -> String {
     format!(
-        "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
+        "enum Pair {{  Both(Vec<i64>, Vec<i64>), Neither }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Pair.Both(seed(), seed());\n\
          \x20   var out = 0;\n\
@@ -885,7 +885,7 @@ fn two_field_move_out_binding_source() -> String {
 /// forbids re-read (the consume state is not weakened).
 fn two_field_reread_source() -> String {
     format!(
-        "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
+        "enum Pair {{  Both(Vec<i64>, Vec<i64>), Neither }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Pair.Both(seed(), seed());\n\
          \x20   var out = 0;\n\
@@ -1004,7 +1004,7 @@ fn two_field_reread_is_use_after_move() {
 /// as a guard-fallthrough move rather than null-fault at runtime.
 fn guarded_consume_fallthrough_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
@@ -1026,7 +1026,7 @@ fn guarded_consume_fallthrough_source() -> String {
 /// rejected identically.
 fn true_guarded_consume_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
@@ -1048,7 +1048,7 @@ fn true_guarded_consume_source() -> String {
 /// correctly. Guard false → `v2.len()` = 3.
 fn borrow_only_guard_fallthrough_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
@@ -1104,7 +1104,7 @@ fn borrow_only_guard_fallthrough_runs_safely() {
 /// of the first iteration and leaves `b` holding null. Totals `3 * 5 = 15`.
 fn if_let_borrow_only_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var i = 0;\n\
@@ -1128,7 +1128,7 @@ fn if_let_borrow_only_source() -> String {
 /// memory on the second. Totals `3 * 4 = 12`.
 fn while_let_borrow_only_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var sum = 0;\n\

@@ -290,7 +290,7 @@ fn reporter() {{
     println(threads());
 }}
 
-actor Driver {{
+actor Driver {{ 
     receive fn go() -> i64 {{
         // Warm the shared `hew-timer-tick` thread before sampling the
         // baseline: it is spawned lazily on the first ctx-bearing `sleep`
@@ -298,11 +298,8 @@ actor Driver {{
         // blocking). Without this warm-up, `pre` would be sampled before the
         // timer thread exists and `during` after — a false +1 unrelated to
         // fork children.
-        sleep(1ms);
-        println("pre");
-        println(threads());
-        scope {{
-{napper_forks}            fork {{ reporter(); }};
+        sleep(1ms), println("pre"), println(threads()), scope {{
+{napper_forks}            fork {{ reporter() }};
         }};
         0
     }}

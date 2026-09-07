@@ -88,11 +88,11 @@ const NO_ABORT_ITERS: usize = 400;
 /// itself, making the post-fix leak slope a clean ≈0.
 fn cancelled_owned_reply_source(iters: usize) -> String {
     format!(
-        "actor SlowReplier {{\n\
+        "actor SlowReplier {{ \n\
          \x20   receive fn fetch() -> string {{\n\
-         \x20       sleep(5ms);\n\
+         \x20       sleep(5ms), \n\
          \x20       \"owned-reply-heap-payload\".to_upper()\n\
-         \x20   }}\n\
+         \x20 }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let slow = spawn SlowReplier;\n\

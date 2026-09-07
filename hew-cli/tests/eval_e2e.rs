@@ -1633,7 +1633,7 @@ fn eval_wasm_hashmap_string_i64_values_are_correct() {
         "wasm_hashmap_string_i64",
         r#"
 {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alpha", 17);
     m.insert("beta", 25);
 
@@ -1680,7 +1680,7 @@ type Point {
 }
 
 {
-    let m: HashMap<Point, i64> = HashMap.new();
+    var m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 3, y: 4 }, 88);
     m.insert(Point { x: 5, y: 6 }, 99);
 
@@ -1718,7 +1718,7 @@ fn eval_wasm_hashset_string_values_are_correct() {
         "wasm_hashset_string",
         r#"
 {
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     let inserted_alpha = s.insert("alpha");
     let inserted_beta = s.insert("beta");
     let duplicate_alpha = s.insert("alpha");

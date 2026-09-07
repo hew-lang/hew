@@ -1459,11 +1459,11 @@ fn gen_stream_string_early_return_source(frames: usize) -> String {
 fn gen_stream_bytes_early_return_source(frames: usize) -> String {
     let stop_at = frames / 2 + 1;
     format!(
-        "actor Maker {{\n\
+        "actor Maker {{ \n\
          \x20   receive gen fn frames() -> bytes {{\n\
          \x20       for i in 0..{frames} {{\n\
-         \x20           yield \"frame-data\".to_bytes();\n\
-         \x20       }}\n\
+         \x20           yield \"frame-data\".to_bytes(), \n\
+         \x20 }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\

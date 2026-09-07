@@ -36,7 +36,7 @@ fn vec_of_rc_source(body: &str) -> String {
 type Node {{ value: i64, }}
 
 fn make(seed: i64) -> Vec<Rc<Node>> {{
-    let holders: Vec<Rc<Node>> = Vec.new();
+    var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(Rc.new(Node {{ value: seed }}));
 {body}
 }}

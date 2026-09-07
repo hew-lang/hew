@@ -134,11 +134,11 @@ fn reject_base_reused_in_two_updates_is_use_after_consume() {
     let source = r#"
 type VHolder { items: Vec<i64>, tag: string }
 fn main() {
-    let init: Vec<i64> = Vec.new(); init.push(1);
+    var init: Vec<i64> = Vec.new(); init.push(1);
     let base = VHolder { items: init, tag: "base" };
-    let next1: Vec<i64> = Vec.new(); next1.push(2);
+    var next1: Vec<i64> = Vec.new(); next1.push(2);
     let updated1 = VHolder { items: next1, ..base };
-    let next2: Vec<i64> = Vec.new(); next2.push(3);
+    var next2: Vec<i64> = Vec.new(); next2.push(3);
     let updated2 = VHolder { items: next2, ..base };
     println(updated1.items.len());
     println(updated2.items.len());
@@ -159,9 +159,9 @@ fn reject_base_field_read_after_consume_is_use_after_consume() {
     let source = r#"
 type VHolder { items: Vec<i64>, tag: string }
 fn main() {
-    let init: Vec<i64> = Vec.new(); init.push(7);
+    var init: Vec<i64> = Vec.new(); init.push(7);
     let base = VHolder { items: init, tag: "base" };
-    let next: Vec<i64> = Vec.new(); next.push(8);
+    var next: Vec<i64> = Vec.new(); next.push(8);
     let updated = VHolder { items: next, ..base };
     println(updated.items.len());
     println(base.items.len());
@@ -185,7 +185,7 @@ fn reject_self_override_aliasing_consumed_base() {
     let source = r#"
 type VHolder { items: Vec<i64>, tag: string }
 fn main() {
-    let init: Vec<i64> = Vec.new(); init.push(7);
+    var init: Vec<i64> = Vec.new(); init.push(7);
     let s = VHolder { items: init, tag: "base" };
     let s2 = VHolder { items: s.items, ..s };
     println(s2.items.len());
@@ -210,11 +210,11 @@ fn accept_reassign_loop_idiom_runs_clean() {
     let source = r"
 type VecHolder { items: Vec<i64>, tag: i64 }
 fn main() {
-    let init: Vec<i64> = Vec.new(); init.push(99);
+    var init: Vec<i64> = Vec.new(); init.push(99);
     var h = VecHolder { items: init, tag: 0 };
     var i: i64 = 0;
     while i < 8 {
-        let next: Vec<i64> = Vec.new(); next.push(i);
+        var next: Vec<i64> = Vec.new(); next.push(i);
         h = VecHolder { items: next, ..h };
         i = i + 1;
     }
@@ -239,7 +239,7 @@ fn accept_clone_override_runs_clean() {
     let source = r"
 type VecHolder { items: Vec<i64>, tag: i64 }
 fn main() {
-    let init: Vec<i64> = Vec.new(); init.push(5);
+    var init: Vec<i64> = Vec.new(); init.push(5);
     let s = VecHolder { items: init, tag: 1 };
     let s2 = VecHolder { items: s.items.clone(), ..s };
     println(s2.items.len());
@@ -712,7 +712,7 @@ fn accept_index_of_live_binding_base_runs_clean() {
 import std.string;
 type Inner { label: string, n: i64 }
 fn main() {
-    let v: Vec<Inner> = Vec.new();
+    var v: Vec<Inner> = Vec.new();
     v.push(Inner { label: string.repeat("a", 32), n: 7 });
     let u = Inner { label: string.repeat("b", 32), ..v[0] };
     println(u.label);
@@ -749,7 +749,7 @@ type Inner { label: string, n: i64 }
 type Mid { inner: Inner, k: i64 }
 type Outer { items: Vec<Mid>, tag: i64 }
 fn main() {
-    let v: Vec<Mid> = Vec.new();
+    var v: Vec<Mid> = Vec.new();
     v.push(Mid { inner: Inner { label: string.repeat("a", 32), n: 7 }, k: 3 });
     let o = Outer { items: v, tag: 9 };
     let u = Inner { label: string.repeat("b", 32), ..o.items[0].inner };
@@ -1602,7 +1602,7 @@ fn main() { let r = mk(); println(r.tag); let first = r.pair.0; println(first.0)
 import std.string;
 type T { pair: (Vec<string>, i64), tag: string }
 fn mk() -> T {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push(string.repeat("k", 32));
     let b = T { pair: (v, 7), tag: string.repeat("x", 32) };
     T { tag: string.repeat("y", 32), ..b }
@@ -1806,7 +1806,7 @@ fn reject_carry_vec_closure_field_clean_no_panic() {
 import std.string;
 type P { keep: Vec<fn() -> string>, churn: string }
 fn main() {
-    let v: Vec<fn() -> string> = Vec.new();
+    var v: Vec<fn() -> string> = Vec.new();
     v.push(|| -> string { string.repeat("k", 8) });
     let b = P { keep: v, churn: string.repeat("a", 8) };
     let u = P { churn: string.repeat("b", 8), ..b };
@@ -2002,7 +2002,7 @@ fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
             depth: 2,
             ty: "Vec<Leaf>",
             declarations: "",
-            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            setup: "var leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
             value: "leaves",
             accepted: true,
         },
@@ -2011,7 +2011,7 @@ fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
             depth: 3,
             ty: "(Vec<Leaf>, i64)",
             declarations: "",
-            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            setup: "var leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
             value: "(leaves, 3)",
             accepted: true,
         },
@@ -2020,7 +2020,7 @@ fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
             depth: 4,
             ty: "((Vec<Leaf>, i64), i64)",
             declarations: "",
-            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            setup: "var leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
             value: "((leaves, 3), 4)",
             accepted: true,
         },

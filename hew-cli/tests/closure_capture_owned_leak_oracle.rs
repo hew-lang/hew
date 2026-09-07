@@ -140,7 +140,7 @@ fn captures_record_loop_source(frames: usize) -> String {
          \x20   counts: Vec<i64>,\n\
          }}\n\
          fn make_holder(n: i64) -> fn() -> i64 {{\n\
-         \x20   let counts: Vec<i64> = Vec.new();\n\
+         \x20   var counts: Vec<i64> = Vec.new();\n\
          \x20   counts.push(10);\n\
          \x20   counts.push(20);\n\
          \x20   let h = Holder {{ counts: counts }};\n\
@@ -468,10 +468,10 @@ fn borrow_capture_record_iter_any_loop_source(frames: usize) -> String {
          }}\n\
          fn probe() -> i64 {{\n\
          \x20   let claim = Claim {{ item: \"row-item\".to_upper(), run_id: \"row-run\".to_upper() }};\n\
-         \x20   let runs = Vec.new();\n\
+         \x20   var runs = Vec.new();\n\
          \x20   runs.push(\"ROW-RUN\");\n\
          \x20   let hit = iter.any(runs.into_iter(), |terminal: string| terminal == claim.run_id);\n\
-         \x20   let out = Vec.new();\n\
+         \x20   var out = Vec.new();\n\
          \x20   out.push(claim.item);\n\
          \x20   var score: i64 = 0;\n\
          \x20   if hit {{ score = score + 1; }}\n\

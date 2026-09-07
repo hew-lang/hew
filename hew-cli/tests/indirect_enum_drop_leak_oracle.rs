@@ -406,11 +406,11 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
         "import std.channel.channel;\n\
          indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
-         actor ProbeSink {{\n\
+         actor ProbeSink {{ \n\
          \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
-         \x20       ready.send(1);\n\
-         \x20       sleep(10s);\n\
-         \x20   }}\n\
+         \x20       ready.send(1), \n\
+         \x20       sleep(10s), \n\
+         \x20 }}\n\
          \x20   receive fn take(t: Tree) {{ let _ = sum(t); }}\n\
          \x20   receive fn tagged(tag: i64, t: Tree) {{ let _ = tag + sum(t); }}\n\
          }}\n\

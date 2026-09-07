@@ -190,11 +190,11 @@ fn record_yield_break_loop_source(frames: usize) -> String {
          \x20   name: string,\n\
          \x20   value: i64,\n\
          }}\n\
-         actor Maker {{\n\
+         actor Maker {{ \n\
          \x20   receive gen fn items() -> Item {{\n\
-         \x20       var i: i64 = 0;\n\
+         \x20       var i: i64 = 0, \n\
          \x20       loop {{\n\
-         \x20           yield Item {{ name: f\"it-{{i}}\", value: i }};\n\
+         \x20           yield Item {{ name: f\"it-{{i }}\", value: i }};\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20   }}\n\

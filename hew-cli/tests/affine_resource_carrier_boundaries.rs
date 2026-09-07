@@ -61,7 +61,7 @@ const ARENA_BODY: &str = r#"
 import std.arena;
 
 fn main() -> i64 {
-    let store: arena.Arena<Token> = arena.new();
+    var store: arena.Arena<Token> = arena.new();
     println("before insert");
     let _key = store.insert(Token { id: 41 });
     println("after insert");
@@ -100,7 +100,7 @@ fn store_or_drop(items: Vec<Token>, value: Token, store: bool) -> Vec<Token> {
 }
 
 fn main() -> i64 {
-    let items: Vec<Token> = Vec.new();
+    var items: Vec<Token> = Vec.new();
     let stored = store_or_drop(items, Token { id: 13 }, true);
     println(stored.len());
     0
@@ -210,7 +210,7 @@ import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    var receivers: Vec<channel.Receiver<Token>> = [rx];
     let _iter = receivers.iter();
     0
 }
@@ -256,7 +256,7 @@ impl Buf {
 }
 
 fn make(id: i64) -> Buf {
-    let data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new();
     data.push(id);
     Buf { data: data, id: id }
 }

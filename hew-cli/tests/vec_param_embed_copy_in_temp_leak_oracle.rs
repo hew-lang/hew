@@ -21,7 +21,7 @@ const PUSH_TEMPLATE: &str = r#"
 type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
-    let v: Vec<Wrap> = [];
+    var v: Vec<Wrap> = [];
     v.push(Wrap { f: Some(p) });
     v.len()
 }
@@ -40,7 +40,7 @@ const SET_TEMPLATE: &str = r#"
 type Wrap { f: Option<string> }
 
 fn setParam(p: string) -> i64 {
-    let v: Vec<Wrap> = [];
+    var v: Vec<Wrap> = [];
     v.push(Wrap { f: None });
     v.set(0, Wrap { f: Some(p) });
     v.len()
@@ -101,7 +101,7 @@ const REPEATED_OWNED_PARAM_READ_SOURCE: &str = r#"
 type SavedKey { value: string }
 
 fn borrowThenFree(key: string) -> i64 {
-    let saved: Vec<SavedKey> = [];
+    var saved: Vec<SavedKey> = [];
     saved.push(SavedKey { value: key });
     saved.len()
 }
@@ -128,7 +128,7 @@ const BOUND_FIRST_TEMPLATE: &str = r#"
 type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
-    let v: Vec<Wrap> = [];
+    var v: Vec<Wrap> = [];
     let w = Wrap { f: Some(p) };
     v.push(w);
     v.len()
@@ -149,7 +149,7 @@ type Wrap { f: Option<string> }
 
 fn main() -> i64 {
     for i in 0..$FRAMES {
-        let v: Vec<Wrap> = [];
+        var v: Vec<Wrap> = [];
         v.push(Wrap { f: Some(f"item-{i}") });
         if v.len() != 1 { return 41; }
     }
@@ -159,7 +159,7 @@ fn main() -> i64 {
 
 const TUPLE_TEMPLATE: &str = r#"
 fn pushParam(p: string) -> i64 {
-    let v: Vec<(string, i64)> = [];
+    var v: Vec<(string, i64)> = [];
     v.push((p, 1));
     v.len()
 }
@@ -201,7 +201,7 @@ impl<T> Arena<T> {
 }
 
 fn main() -> i64 {
-    let arena = newArena<string>();
+    var arena = newArena<string>();
     for i in 0..$FRAMES {
         let key = arena.insert(f"item-{i}");
         let got = arena.remove(key);
@@ -218,13 +218,13 @@ const PARAM_NOT_DOUBLE_FREED_SOURCE: &str = r#"
 type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
-    let v: Vec<Wrap> = [];
+    var v: Vec<Wrap> = [];
     v.push(Wrap { f: Some(p) });
     v.len()
 }
 
 fn setParam(p: string) -> i64 {
-    let v: Vec<Wrap> = [];
+    var v: Vec<Wrap> = [];
     v.push(Wrap { f: None });
     v.set(0, Wrap { f: Some(p) });
     v.len()
@@ -253,7 +253,7 @@ type Holder { items: Vec<string> }
 type MixedWrap { s: string, items: Vec<string> }
 
 fn pushMixed(p: string, h: Holder) -> i64 {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap { s: p, items: h.items });
     v.len()
 }
@@ -278,7 +278,7 @@ type Holder { items: Vec<string> }
 type MixedWrap { s: string, items: Vec<string> }
 
 fn pushMixed(p: string, h: Holder) -> i64 {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap { s: p, items: h.items });
     v.len()
 }
@@ -301,7 +301,7 @@ type Holder { mid: Inner, outer_keep: string }
 type MixedWrap { marker: string, items: Vec<string> }
 
 fn pushNested(h: Holder) -> i64 {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap {
         marker: "sink-marker".to_upper(),
         items: h.mid.items,
@@ -331,7 +331,7 @@ const TUPLE_PROJECTION_PARAM_TEMPLATE: &str = r#"
 type MixedWrap { marker: string, items: Vec<string> }
 
 fn pushTupleProjection(h: (Vec<string>, string)) -> i64 {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap {
         marker: "tuple-marker".to_upper(),
         items: h.0,
@@ -356,12 +356,12 @@ type Holder { mid: Inner, keep: string }
 type MixedWrap { marker: string, items: Vec<string> }
 
 fn nested(h: Holder) {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap { marker: "nested".to_upper(), items: h.mid.items });
 }
 
 fn tupled(h: (Vec<string>, string)) {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap { marker: "tuple".to_upper(), items: h.0 });
 }
 "#;
@@ -372,7 +372,7 @@ type Token { payload: string }
 
 impl Token {
     fn close(self) {
-        let sink: Vec<string> = [];
+        var sink: Vec<string> = [];
         sink.push(self.payload);
     }
 }
@@ -407,12 +407,12 @@ type Wrap { f: Option<Holder> }
 type MixedWrap { s: string, items: Vec<string> }
 
 fn pushParam(p: Holder) {
-    let v: Vec<Wrap> = [];
+    var v: Vec<Wrap> = [];
     v.push(Wrap { f: Some(p) });
 }
 
 fn pushMixed(p: string, h: Holder) {
-    let v: Vec<MixedWrap> = [];
+    var v: Vec<MixedWrap> = [];
     v.push(MixedWrap { s: p, items: h.items });
 }
 ";
@@ -429,13 +429,13 @@ enum Payload {
 
 impl Ops {
     fn storeRecord(h: Holder) -> i64 {
-        let v: Vec<Wrap> = [];
+        var v: Vec<Wrap> = [];
         v.push(Wrap { items: h.items });
         v.len()
     }
 
     fn storeTuple(h: (Vec<string>, string)) -> i64 {
-        let v: Vec<Wrap> = [];
+        var v: Vec<Wrap> = [];
         v.push(Wrap { items: h.0 });
         v.len()
     }
@@ -443,7 +443,7 @@ impl Ops {
     fn storeEnum(h: Payload) -> i64 {
         match h {
             Payload.Text(s) => {
-                let v: Vec<string> = [];
+                var v: Vec<string> = [];
                 v.push(s);
                 v.len()
             },

@@ -159,7 +159,7 @@ fn round_trip_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let tags: Vec<string> = Vec.new();\n\
+         \x20       var tags: Vec<string> = Vec.new();\n\
          \x20       tags.push(\"alpha-element\");\n\
          \x20       tags.push(\"beta-element\");\n\
          \x20       let p = Packet {{ label: \"payload-label-value\", tags: tags, inner: Inner {{ name: \"inner-owned-name\" }}, seq: i }};\n\
@@ -202,7 +202,7 @@ fn vec_struct_round_trip_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: Vec<Inner> = Vec.new();\n\
+         \x20       var xs: Vec<Inner> = Vec.new();\n\
          \x20       xs.push(Inner {{ v: 10 }});\n\
          \x20       xs.push(Inner {{ v: 20 }});\n\
          \x20       xs.push(Inner {{ v: 12 }});\n\
@@ -349,7 +349,7 @@ fn enum_owned_payload_round_trip_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let tags: Vec<string> = Vec.new();\n\
+         \x20       var tags: Vec<string> = Vec.new();\n\
          \x20       tags.push(\"alpha-element\");\n\
          \x20       tags.push(\"beta-element\");\n\
          \x20       let p = Payload.Full(\"payload-label-value\", tags, Inner {{ name: \"inner-owned-name\" }});\n\
@@ -379,7 +379,7 @@ const ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      enum PayloadBad { Empty, Full(string, i64, Inner), }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let tags: Vec<string> = Vec.new();\n\
+     \x20   var tags: Vec<string> = Vec.new();\n\
      \x20   tags.push(\"alpha-element\");\n\
      \x20   tags.push(\"beta-element\");\n\
      \x20   let p = PayloadGood.Full(\"owned-field-a-value\", tags, Inner { name: \"inner-owned-name\" });\n\
@@ -408,7 +408,7 @@ const VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      type BatchBad { items: Vec<Item> @1, tail: i64 @2, }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let xs: Vec<Item> = Vec.new();\n\
+     \x20   var xs: Vec<Item> = Vec.new();\n\
      \x20   xs.push(Item { name: \"alpha-owned-element\" });\n\
      \x20   xs.push(Item { name: \"beta-owned-element\" });\n\
      \x20   let g = BatchGood { items: xs, tail: \"owned-tail-value\" };\n\
@@ -434,7 +434,7 @@ const VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      type BagBad { items: Vec<Payload> @1, tail: i64 @2, }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let xs: Vec<Payload> = Vec.new();\n\
+     \x20   var xs: Vec<Payload> = Vec.new();\n\
      \x20   xs.push(Payload.Full(\"first-owned-element\"));\n\
      \x20   xs.push(Payload.Empty);\n\
      \x20   xs.push(Payload.Full(\"second-owned-element\"));\n\
@@ -468,11 +468,11 @@ fn actor_enum_decode_source(frames: usize, message_expr: &str) -> String {
          #[wire]\n\
          enum Narrow {{ A, B(i64), }}\n\
          \n\
-         actor Decoder {{\n\
+         actor Decoder {{ \n\
          \x20   let seq: i64,\n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
-         \x20       let back = Narrow.decode(raw);\n\
-         \x20       match back {{ Narrow.A => 0, Narrow.B(n) => n, }}\n\
+         \x20       let back = Narrow.decode(raw), \n\
+         \x20       match back {{ Narrow.A => 0, Narrow.B(n) => n }}\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -551,25 +551,25 @@ fn actor_vec_owned_struct_decode_source(frames: usize, mismatch: bool) -> String
     };
     format!(
         "#[wire]\n\
-         type Item {{ name: string @1; }}\n\
+         type Item {{  name: string @1 }}\n\
          #[wire]\n\
-         type BatchGood {{ items: Vec<Item> @1; tail: string @2; }}\n\
+         type BatchGood {{  items: Vec<Item> @1, tail: string @2 }}\n\
          #[wire]\n\
-         type BatchBad {{ items: Vec<Item> @1; tail: i64 @2; }}\n\
+         type BatchBad {{  items: Vec<Item> @1, tail: i64 @2 }}\n\
          \n\
-         actor Decoder {{\n\
-         \x20   let seq: i64;\n\
+         actor Decoder {{ \n\
+         \x20   let seq: i64, \n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
-         \x20       let bad = BatchBad.decode(raw);\n\
+         \x20       let bad = BatchBad.decode(raw), \n\
          \x20       bad.tail\n\
-         \x20   }}\n\
+         \x20 }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: Vec<Item> = Vec.new();\n\
+         \x20       var xs: Vec<Item> = Vec.new();\n\
          \x20       xs.push(Item {{ name: \"alpha-owned-element\" }});\n\
          \x20       xs.push(Item {{ name: \"beta-owned-element\" }});\n\
          \x20       {build}\n\
@@ -608,25 +608,25 @@ fn actor_vec_owned_enum_decode_source(frames: usize, mismatch: bool) -> String {
     };
     format!(
         "#[wire]\n\
-         enum Payload {{ Empty; Full(string); }}\n\
+         enum Payload {{  Empty, Full(string) }}\n\
          #[wire]\n\
-         type BagGood {{ items: Vec<Payload> @1; tail: string @2; }}\n\
+         type BagGood {{  items: Vec<Payload> @1, tail: string @2 }}\n\
          #[wire]\n\
-         type BagBad {{ items: Vec<Payload> @1; tail: i64 @2; }}\n\
+         type BagBad {{  items: Vec<Payload> @1, tail: i64 @2 }}\n\
          \n\
-         actor Decoder {{\n\
-         \x20   let seq: i64;\n\
+         actor Decoder {{ \n\
+         \x20   let seq: i64, \n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
-         \x20       let bad = BagBad.decode(raw);\n\
+         \x20       let bad = BagBad.decode(raw), \n\
          \x20       bad.tail\n\
-         \x20   }}\n\
+         \x20 }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: Vec<Payload> = Vec.new();\n\
+         \x20       var xs: Vec<Payload> = Vec.new();\n\
          \x20       xs.push(Payload.Full(\"first-owned-element\"));\n\
          \x20       xs.push(Payload.Empty);\n\
          \x20       xs.push(Payload.Full(\"second-owned-element\"));\n\

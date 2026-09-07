@@ -54,10 +54,10 @@ fn server_source(port: u16, deliveries: usize) -> String {
     format!(
         "import std.net.{{Connection, ConnectionHandler}};\n\
          \n\
-         actor ProbeSink {{\n\
+         actor ProbeSink {{ \n\
          \x20   receive fn on_data(data: bytes) {{\n\
-         \x20       println(\"DATA\");\n\
-         \x20   }}\n\
+         \x20       println(\"DATA\"), \n\
+         \x20 }}\n\
          \x20   receive fn on_close() {{}}\n\
          }}\n\
          \n\

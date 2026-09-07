@@ -17,7 +17,7 @@ fn direct_projection_source(frames: usize) -> String {
          }}\n\
          \n\
          fn frame() -> i64 {{\n\
-         \x20   let v: [Holder] = [];\n\
+         \x20   var v: [Holder] = [];\n\
          \x20   v.push(Holder {{ items: [\"left\", \"right\"] }});\n\
          \x20   v[0].items.len()\n\
          }}\n\
@@ -42,7 +42,7 @@ fn bound_projection_source(frames: usize) -> String {
          }}\n\
          \n\
          fn frame() -> i64 {{\n\
-         \x20   let v: [Holder] = [];\n\
+         \x20   var v: [Holder] = [];\n\
          \x20   v.push(Holder {{ items: [\"left\", \"right\"] }});\n\
          \x20   let h = v[0];\n\
          \x20   h.items.len()\n\
@@ -68,7 +68,7 @@ fn early_return_projection_source(frames: usize) -> String {
          }}\n\
          \n\
          fn frame(flag: bool) -> i64 {{\n\
-         \x20   let v: [Holder] = [];\n\
+         \x20   var v: [Holder] = [];\n\
          \x20   v.push(Holder {{ items: [\"left\", \"right\"] }});\n\
          \x20   if flag {{\n\
          \x20       return v[0].items.len();\n\
@@ -96,7 +96,7 @@ fn break_projection_source(frames: usize) -> String {
          }}\n\
          \n\
          fn frame() -> i64 {{\n\
-         \x20   let v: [Holder] = [];\n\
+         \x20   var v: [Holder] = [];\n\
          \x20   v.push(Holder {{ items: [\"left\", \"right\"] }});\n\
          \x20   var total: i64 = 0;\n\
          \x20   while total == 0 {{\n\
@@ -130,7 +130,7 @@ fn escaped_projection_source() -> String {
      }\n\
      \n\
      fn take_items() -> [string] {\n\
-     \x20   let v: [Holder] = [];\n\
+     \x20   var v: [Holder] = [];\n\
      \x20   v.push(Holder { items: [\"left\", \"right\"] });\n\
      \x20   let items = v[0].items;\n\
      \x20   items\n\

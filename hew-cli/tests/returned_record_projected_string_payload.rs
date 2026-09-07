@@ -93,14 +93,11 @@ fn repeated_source_with_alias(frames: usize, alias: bool) -> String {
     let second = if alias { "alias" } else { "message" };
     format!(
         r#"
-enum CleanupError {{
-    Dirty(string);
-}}
+enum CleanupError {{ 
+    Dirty(string) }}
 
-type Pair {{
-    first: string;
-    second: string;
-}}
+type Pair {{ 
+    first: string, second: string }}
 
 fn cleanup() -> Result<(), CleanupError> {{
     Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))

@@ -279,7 +279,7 @@ fn task_scope_stays_on_the_fail_closed_diagnostic_path_under_wasi() {
 actor Driver {
     receive fn run() -> i64 {
         scope {
-            fork task = worker();
+            let task = fork worker();
             await task;
         }
         7
@@ -453,7 +453,7 @@ const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"type Point {
 }
 
 fn main() {
-    let m: HashMap<Point, i64> = HashMap.new();
+    var m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 10);
     m.insert(Point { x: 3, y: 4 }, 20);
     let n = m.len();
@@ -483,7 +483,7 @@ fn main() {
     let n2 = m.len();
     println(f"len_after_remove={n2}");
 
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("alpha");
     s.insert("beta");
     s.insert("alpha");
@@ -582,7 +582,7 @@ fn native_hashmap_hashset_layout_matches_wasi_output() {
 // double-free / use-after-free of a released string buffer would trap under
 // wasmtime and fail this run. Native and wasm stdout must match byte-for-byte.
 const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
-    let m: HashMap<string, string> = HashMap.new();
+    var m: HashMap<string, string> = HashMap.new();
     m.insert("alpha", "first");
     m.insert("beta", "second");
 
@@ -615,7 +615,7 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
     println(f"map_len={n}");
 
     // String set: insert/remove exercise hew_string_drop on the element.
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("x");
     s.insert("y");
     s.insert("z");

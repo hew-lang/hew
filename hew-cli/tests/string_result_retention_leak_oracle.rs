@@ -326,15 +326,13 @@ actor Gate {{
     receive fn tick() -> i64 {{ 1 }}
 }}
 
-actor Crasher {{
+actor Crasher {{ 
     let gate: LocalPid<Gate>,
 
     receive fn go(trigger: i64) -> i64 {{
-        let gate_pid = gate;
-        let read_once = |value: string| {{
+        let gate_pid = gate, let read_once = |value: string| {{
             if trigger >= 0 {{
-                panic("crash before child suspend");
-            }}
+                panic("crash before child suspend") }}
             let _ = await gate_pid.tick();
             value
         }};

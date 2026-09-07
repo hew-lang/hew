@@ -21,10 +21,10 @@ fn source(frames: usize, move_payload: bool) -> String {
         "while-let-backedge-payload-abcdefghijklmnopqrstuvwxyz"
     };
     format!(
-        "enum Packet {{\n\
-         \x20   Payload(string);\n\
-         \x20   Done;\n\
-         }}\n\
+        "enum Packet {{ \n\
+         \x20   Payload(string), \n\
+         \x20   Done, \n\n\
+         \x20}}\n\
          fn next(i: i64, cap: i64) -> Packet {{\n\
          \x20   if i < cap {{\n\
          \x20       Packet.Payload(\"{payload}\".to_upper())\n\

@@ -92,7 +92,7 @@ fn whole_value_string_guard_return_source(frames: usize) -> String {
 fn whole_value_bytes_guard_return_source(frames: usize) -> String {
     format!(
         "fn decode_or_reject(reject: bool) -> bytes {{\n\
-         \x20   let out: bytes = bytes.new();\n\
+         \x20   var out: bytes = bytes.new();\n\
          \x20   out.push(1);\n\
          \x20   out.push(2);\n\
          \x20   out.push(3);\n\
@@ -163,7 +163,7 @@ fn build_or_bail(bail: bool, seed: string) -> string {\n\
 }\n\
 \n\
 fn decode_or_reject(reject: bool) -> bytes {\n\
-\x20   let out: bytes = bytes.new();\n\
+\x20   var out: bytes = bytes.new();\n\
 \x20   out.push(1);\n\
 \x20   out.push(2);\n\
 \x20   out.push(3);\n\

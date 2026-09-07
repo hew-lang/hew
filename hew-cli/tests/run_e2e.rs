@@ -633,7 +633,7 @@ fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
         }
 
         fn main() {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(42);
             println(first_or_zero(v.into_iter()));
         }
@@ -1267,7 +1267,7 @@ fn var_self_cowvalue_receiver_survives_storeback_without_double_drop() {
         &source,
         r#"
 fn main() {
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("first");
     words.push("second");
     var it = words.into_iter();
@@ -1489,7 +1489,7 @@ fn second_or_zero<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
 }
 
 fn main() {
-    let values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     println(second_or_zero(values.into_iter()));
@@ -4180,7 +4180,7 @@ fn owned_record_vec_field_by_value_round_trips() {
         }
 
         fn build() -> Histogram {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(10);
             v.push(20);
             Histogram { counts: v, total: 30 }
@@ -5537,9 +5537,9 @@ fn clone_vec_is_independent_copy() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec.new();\n\
+         \x20   var xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
-         \x20   let dup = clone xs;\n\
+         \x20   var dup = clone xs;\n\
          \x20   dup.push(99);\n\
          \x20   println(f\"original_len={xs.len()} dup_len={dup.len()}\");\n\
          }\n",
@@ -5569,9 +5569,9 @@ fn existing_vec_method_clone_still_runs() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec.new();\n\
+         \x20   var xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
-         \x20   let b = xs.clone();\n\
+         \x20   var b = xs.clone();\n\
          \x20   b.push(99);\n\
          \x20   println(f\"a={xs.len()} b={b.len()}\");\n\
          }\n",

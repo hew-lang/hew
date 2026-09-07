@@ -75,22 +75,22 @@ const SLOPE_TOLERANCE: usize = 5;
 /// final ones exactly once.
 fn collection_overwrite_source(frames: usize) -> String {
     format!(
-        "actor Cache {{\n\
+        "actor Cache {{ \n\
          \x20   var items: Vec<string>,\n\
          \x20   var index: HashMap<string, i64>,\n\
          \x20   var seen: HashSet<i64>,\n\
          \n\
          \x20   receive fn refresh(round: i64) {{\n\
-         \x20       let next: Vec<string> = Vec.new();\n\
-         \x20       next.push(\"entry\");\n\
-         \x20       items = next;\n\
-         \x20       let m: HashMap<string, i64> = HashMap.new();\n\
-         \x20       m.insert(\"k\", round);\n\
-         \x20       index = m;\n\
-         \x20       let s: HashSet<i64> = HashSet.new();\n\
-         \x20       s.insert(round);\n\
-         \x20       seen = s;\n\
-         \x20   }}\n\
+         \x20       var next: Vec<string> = Vec.new(), \n\
+         \x20       next.push(\"entry\"), \n\
+         \x20       items = next, \n\
+         \x20       var m: HashMap<string, i64> = HashMap.new(), \n\
+         \x20       m.insert(\"k\", round), \n\
+         \x20       index = m, \n\
+         \x20       var s: HashSet<i64> = HashSet.new(), \n\
+         \x20       s.insert(round), \n\
+         \x20       seen = s, \n\
+         \x20 }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
          \x20       items.len()\n\
@@ -329,13 +329,13 @@ fn enum_overwrite_source(frames: usize) -> String {
 /// buffer is orthogonal and already correct.
 fn string_inspect_overwrite_source(frames: usize) -> String {
     format!(
-        "actor Namer {{\n\
+        "actor Namer {{ \n\
          \x20   var name: string,\n\
          \n\
          \x20   receive fn tick() {{\n\
          \x20       if name.len() < 1000000 {{\n\
-         \x20           name = name + \"x\";\n\
-         \x20       }}\n\
+         \x20           name = name + \"x\", \n\
+         \x20 }}\n\
          \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
@@ -370,14 +370,14 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
 /// the load must classify `Borrowed` and alias the actor's still-owned Vec.
 fn collection_iterate_source(frames: usize) -> String {
     format!(
-        "actor Summer {{\n\
+        "actor Summer {{ \n\
          \x20   var items: Vec<i64>,\n\
          \n\
          \x20   receive fn spin() {{\n\
-         \x20       var s: i64 = 0;\n\
+         \x20       var s: i64 = 0, \n\
          \x20       for v in items {{\n\
-         \x20           s = s + v;\n\
-         \x20       }}\n\
+         \x20           s = s + v, \n\
+         \x20 }}\n\
          \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
@@ -386,7 +386,7 @@ fn collection_iterate_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let xs: Vec<i64> = Vec.new();\n\
+         \x20   var xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1);\n\
          \x20   xs.push(2);\n\
          \x20   xs.push(3);\n\
@@ -516,9 +516,9 @@ actor TwoVecs {
 }
 
 fn main() -> i64 {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(1); xs.push(2); xs.push(3);
-    let ys: Vec<i64> = Vec.new();
+    var ys: Vec<i64> = Vec.new();
     ys.push(10); ys.push(20); ys.push(30); ys.push(40);
     let a = spawn TwoVecs(x: xs, y: ys);
     var i: i64 = 0;
@@ -596,9 +596,9 @@ actor TwoBoxes {
 }
 
 fn main() -> i64 {
-    let xv: Vec<i64> = Vec.new();
+    var xv: Vec<i64> = Vec.new();
     xv.push(1); xv.push(2); xv.push(3);
-    let yv: Vec<i64> = Vec.new();
+    var yv: Vec<i64> = Vec.new();
     yv.push(10); yv.push(20); yv.push(30); yv.push(40);
     let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
     var i: i64 = 0;
@@ -642,7 +642,7 @@ actor Summer {
 }
 
 fn main() -> i64 {
-    let bv: Vec<i64> = Vec.new();
+    var bv: Vec<i64> = Vec.new();
     bv.push(10); bv.push(20); bv.push(30); bv.push(40);
     let a = spawn Summer(b: Box { v: bv });
     sleep(500ms);

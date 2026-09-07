@@ -15,12 +15,12 @@ use support::{describe_output, require_codegen};
 
 const LOCAL_INDEXED_INNER_SOURCE: &str = "\
 fn main() -> i64 {
-    let rows: Vec<Vec<i64>> = Vec.new();
-    let a: Vec<i64> = Vec.new();
+    var rows: Vec<Vec<i64>> = Vec.new();
+    var a: Vec<i64> = Vec.new();
     a.push(1);
     a.push(2);
     rows.push(a);
-    let b: Vec<i64> = Vec.new();
+    var b: Vec<i64> = Vec.new();
     b.push(3);
     b.push(4);
     rows.push(b);
@@ -39,12 +39,12 @@ fn main() -> i64 {
 // double-free into an abort, so a clean exit proves the loop variable borrows.
 const LOCAL_OUTER_ITER_SOURCE: &str = "\
 fn main() -> i64 {
-    let rows: Vec<Vec<i64>> = Vec.new();
-    let a: Vec<i64> = Vec.new();
+    var rows: Vec<Vec<i64>> = Vec.new();
+    var a: Vec<i64> = Vec.new();
     a.push(1);
     a.push(2);
     rows.push(a);
-    let b: Vec<i64> = Vec.new();
+    var b: Vec<i64> = Vec.new();
     b.push(3);
     b.push(4);
     rows.push(b);
@@ -70,8 +70,8 @@ actor Holder {
 }
 
 fn main() -> i64 {
-    let rows: Vec<Vec<i64>> = Vec.new();
-    let inner: Vec<i64> = Vec.new();
+    var rows: Vec<Vec<i64>> = Vec.new();
+    var inner: Vec<i64> = Vec.new();
     inner.push(7);
     inner.push(8);
     rows.push(inner);
@@ -95,9 +95,9 @@ fn actor_nested_vec_source(rows: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let rows: Vec<Vec<i64>> = Vec.new();\n\
+         \x20   var rows: Vec<Vec<i64>> = Vec.new();\n\
          \x20   for i in 0..{rows} {{\n\
-         \x20       let row: Vec<i64> = Vec.new();\n\
+         \x20       var row: Vec<i64> = Vec.new();\n\
          \x20       row.push(i);\n\
          \x20       row.push(i + 1);\n\
          \x20       rows.push(row);\n\
@@ -119,22 +119,22 @@ fn actor_nested_vec_source(rows: usize) -> String {
 // under-free at teardown would show as a per-row leak slope.
 fn actor_nested_vec_iterate_source(rows: usize) -> String {
     format!(
-        "actor Buckets {{\n\
+        "actor Buckets {{ \n\
          \x20   var rows: Vec<Vec<i64>>,\n\
          \n\
          \x20   receive fn sum_firsts() -> i64 {{\n\
-         \x20       var s: i64 = 0;\n\
+         \x20       var s: i64 = 0, \n\
          \x20       for row in rows {{\n\
-         \x20           s = s + row[0];\n\
-         \x20       }}\n\
+         \x20           s = s + row[0], \n\
+         \x20 }}\n\
          \x20       s\n\
          \x20   }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let rows: Vec<Vec<i64>> = Vec.new();\n\
+         \x20   var rows: Vec<Vec<i64>> = Vec.new();\n\
          \x20   for i in 0..{rows} {{\n\
-         \x20       let row: Vec<i64> = Vec.new();\n\
+         \x20       var row: Vec<i64> = Vec.new();\n\
          \x20       row.push(i);\n\
          \x20       row.push(i + 1);\n\
          \x20       rows.push(row);\n\
@@ -163,9 +163,9 @@ fn actor_nested_hashmap_source(rows: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let buckets: Vec<HashMap<string, i64>> = Vec.new();\n\
+         \x20   var buckets: Vec<HashMap<string, i64>> = Vec.new();\n\
          \x20   for i in 0..{rows} {{\n\
-         \x20       let m: HashMap<string, i64> = HashMap.new();\n\
+         \x20       var m: HashMap<string, i64> = HashMap.new();\n\
          \x20       m.insert(\"a\", i);\n\
          \x20       m.insert(\"b\", i + 1);\n\
          \x20       buckets.push(m);\n\

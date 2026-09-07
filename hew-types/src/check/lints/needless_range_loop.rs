@@ -214,10 +214,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_expr(ctx, levels, &duration.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Expr::Timeout { expr, duration } => {
-            find_in_expr(ctx, levels, &expr.0, out);
-            find_in_expr(ctx, levels, &duration.0, out);
-        }
         Expr::Await(inner)
         | Expr::AwaitRestart(inner)
         | Expr::ReturnError(inner)
@@ -606,7 +602,7 @@ impl BodyScan<'_> {
             | Expr::PostfixTry(inner)
             | Expr::Cast { expr: inner, .. }
             | Expr::FieldAccess { object: inner, .. } => self.expr(&inner.0),
-            Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+            Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
                 for item in items {
                     self.expr(&item.0);
                 }
@@ -727,10 +723,6 @@ impl BodyScan<'_> {
                     self.expr(&timeout.duration.0);
                     self.expr(&timeout.body.0);
                 }
-            }
-            Expr::Timeout { expr, duration } => {
-                self.expr(&expr.0);
-                self.expr(&duration.0);
             }
             Expr::Yield(value) | Expr::Return(value) => {
                 if let Some(v) = value {

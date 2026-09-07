@@ -480,30 +480,6 @@ impl Parser<'_> {
                 continue;
             }
 
-            // Timeout combinator: expr | after duration
-            // Checked before infix so `| after` is not consumed as bitwise OR.
-            if self.peek() == Some(&Token::Pipe) {
-                let saved = self.save_pos();
-                self.advance(); // consume |
-                if self.peek() == Some(&Token::After) {
-                    // Binding power 13 (same as bitwise OR left bp)
-                    if 13 >= min_bp {
-                        self.advance(); // consume after
-                        let duration = self.parse_expr_bp(14)?;
-                        let end = duration.1.end;
-                        lhs = (
-                            Expr::Timeout {
-                                expr: Box::new(lhs),
-                                duration: Box::new(duration),
-                            },
-                            start..end,
-                        );
-                        continue;
-                    }
-                }
-                self.restore_pos(saved);
-            }
-
             // Detect removed `=~` and `!~` regex operators.  The lexer never
             // produced `EqTilde`/`BangTilde` tokens, so the character sequences
             // tokenise as adjacent `=`+`~` or `!`+`~`.  Neither `=` nor `!` has
@@ -1527,27 +1503,6 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightBrace)?;
                 Expr::Race(branches)
-            }
-            Token::Join => {
-                self.advance();
-                // Accept either parentheses or braces for join
-                let (open, close) = if self.peek() == Some(&Token::LeftBrace) {
-                    (Token::LeftBrace, Token::RightBrace)
-                } else {
-                    (Token::LeftParen, Token::RightParen)
-                };
-                self.expect(&open)?;
-
-                let mut exprs = Vec::new();
-                while !self.at_end() && self.peek() != Some(&close) {
-                    exprs.push(self.parse_expr()?);
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-
-                self.expect(&close)?;
-                Expr::Join(exprs)
             }
             Token::Yield => {
                 self.advance();

@@ -290,8 +290,6 @@ pub enum Token<'src> {
     Select,
     #[token("race")]
     Race,
-    #[token("join")]
-    Join,
     #[token("after")]
     After,
     #[token("gen")]
@@ -704,7 +702,6 @@ define_keywords! {
     In         => "in",
     Select     => "select",
     Race       => "race",
-    Join       => "join",
     After      => "after",
     Gen        => "gen",
     Yield      => "yield",
@@ -844,14 +841,14 @@ mod tests {
                    one_for_one one_for_all rest_for_one simple_one_for_one pool \
                    scope fork spawn async await receive \
                    init type this dyn move try true false reserved optional deprecated \
-                   default unsafe extern foreign in select race join from after gen yield \
+                   default unsafe extern foreign in select race from after gen yield \
                    where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 70);
+        assert_eq!(toks.len(), 69);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
         assert_eq!(toks[3], Token::Mut);
-        assert_eq!(toks[69], Token::Is);
+        assert_eq!(toks[68], Token::Is);
     }
 
     #[test]

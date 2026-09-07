@@ -1351,24 +1351,6 @@ fn typecheck_await_close_local_pid_worker() {
 }
 
 #[test]
-fn typecheck_join_rejects_non_actor_sources() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let span = 0..0;
-    let expr = Expr::Join(vec![
-        make_int_literal(1, span.clone()),
-        make_int_literal(2, span.clone()),
-    ]);
-    let _ = checker.synthesize(&expr, &span);
-    assert!(
-        checker.errors.iter().any(|error| error
-            .message
-            .contains("join expression element must be actor.method(args)")),
-        "expected join source error, got: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
 fn typecheck_integer_literal_coerces_in_arithmetic() {
     // `n - 1` where n: i32 should work — literal 1 coerces to i32
     let source = concat!(

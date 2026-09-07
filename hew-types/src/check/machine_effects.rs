@@ -600,9 +600,7 @@ impl NodeVisitor for EffectVisitor<'_> {
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
             | Expr::Race(_)
-            | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Await(_)

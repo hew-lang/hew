@@ -2329,8 +2329,6 @@ impl Checker {
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
-            conn_await_reads: std::mem::take(&mut self.conn_await_reads),
-            listener_await_accepts: std::mem::take(&mut self.listener_await_accepts),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
@@ -3275,7 +3273,7 @@ impl Checker {
                     );
                 }
             }
-            Expr::Join(items) | Expr::Race(items) => {
+            Expr::Race(items) => {
                 for (e, s) in items {
                     self.classify_escapes_in_expr(
                         e,
@@ -3284,15 +3282,6 @@ impl Checker {
                         AnonContext::PassedToHigherOrder,
                     );
                 }
-            }
-            Expr::Timeout { expr, duration } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, ctx);
-                self.classify_escapes_in_expr(
-                    &duration.0,
-                    &duration.1,
-                    in_fork,
-                    AnonContext::Other,
-                );
             }
             Expr::UnsafeBlock(block) => self.classify_escapes_in_block(block, in_fork),
             // `yield <expr>` and `return <expr>` both carry the operand out of
@@ -3699,14 +3688,10 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&t.body.0, &t.body.1, out);
             }
         }
-        Expr::Join(items) | Expr::Race(items) => {
+        Expr::Race(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
-            collect_lambda_spans_in_expr(&duration.0, &duration.1, out);
         }
         Expr::UnsafeBlock(block) => collect_lambda_spans_in_block(block, out),
         Expr::Yield(opt) => {

@@ -915,7 +915,7 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&v.0, counts);
             }
         }
-        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) | Expr::Race(elems) => {
+        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Race(elems) => {
             for elem in elems {
                 count_idents_in_expr(&elem.0, counts);
             }
@@ -931,7 +931,6 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&t.body.0, counts);
             }
         }
-        Expr::Timeout { expr: e, .. } => count_idents_in_expr(&e.0, counts),
         Expr::Await(inner)
         | Expr::ReturnError(inner)
         | Expr::PostfixTry(inner)

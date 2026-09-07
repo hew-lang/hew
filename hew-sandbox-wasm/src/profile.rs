@@ -711,7 +711,7 @@ impl<'a> ProfileChecker<'a> {
                 );
                 self.check_expr(operand);
             }
-            Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+            Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
                 for item in items {
                     self.check_expr(item);
                 }
@@ -838,7 +838,6 @@ impl<'a> ProfileChecker<'a> {
             | Expr::ForkChild { .. }
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
-            | Expr::Timeout { .. }
             | Expr::Yield(_)
             | Expr::MachineEmit { .. } => self.reject(
                 span.clone(),

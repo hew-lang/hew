@@ -307,7 +307,6 @@ pub enum HirDiagnosticKind {
     },
     /// A `join { }` expression contains zero branches. An empty join
     /// produces no values and is rejected at the surface.
-    JoinNoBranches,
 
     /// A direct `emit(E)` cycle was detected: a transition's `on E` arm
     /// contains `emit E`, which would immediately re-trigger the same handler.

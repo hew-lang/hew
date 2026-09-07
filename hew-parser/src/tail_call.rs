@@ -180,7 +180,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::MachineEmit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
         Expr::ArrayRepeat { value, count } => {
@@ -259,9 +259,6 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                 || timeout.as_ref().is_some_and(|timeout| {
                     expr_contains_defer(&timeout.duration.0) || expr_contains_defer(&timeout.body.0)
                 })
-        }
-        Expr::Timeout { expr, duration } => {
-            expr_contains_defer(&expr.0) || expr_contains_defer(&duration.0)
         }
         Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
             expr_contains_defer(&expr.0)
@@ -414,7 +411,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut duration.0, false);
             mark_block(body, false);
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
             for (expr, _) in items {
                 mark_expr(expr, false);
             }
@@ -527,10 +524,6 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut timeout.duration.0, false);
                 mark_expr(&mut timeout.body.0, is_tail_position);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            mark_expr(&mut expr.0, false);
-            mark_expr(&mut duration.0, false);
         }
         Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
             mark_expr(&mut expr.0, false);

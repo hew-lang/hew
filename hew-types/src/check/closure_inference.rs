@@ -387,14 +387,10 @@ fn esc_visit_expr(
                 esc_visit_expr(&t.body.0, name, in_fork, acc, false);
             }
         }
-        Expr::Join(items) | Expr::Race(items) => {
+        Expr::Race(items) => {
             for (e, _) in items {
-                esc_visit_arg(e, name, in_fork || matches!(expr, Expr::Race(_)), acc);
+                esc_visit_arg(e, name, in_fork, acc);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            esc_visit_expr(&expr.0, name, in_fork, acc, is_tail);
-            esc_visit_expr(&duration.0, name, in_fork, acc, false);
         }
         Expr::UnsafeBlock(block) => esc_visit_block(block, name, in_fork, acc),
         Expr::Yield(opt) => {

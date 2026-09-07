@@ -800,7 +800,7 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         | Expr::PostfixTry(inner)
         | Expr::Cast { expr: inner, .. }
         | Expr::FieldAccess { object: inner, .. } => walk_expr(&inner.0, &inner.1, visitor),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
             for item in items {
                 walk_expr(&item.0, &item.1, visitor);
             }
@@ -894,10 +894,6 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
                 walk_expr(&timeout.duration.0, &timeout.duration.1, visitor);
                 walk_expr(&timeout.body.0, &timeout.body.1, visitor);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            walk_expr(&expr.0, &expr.1, visitor);
-            walk_expr(&duration.0, &duration.1, visitor);
         }
         Expr::Yield(value) | Expr::Return(value) => {
             if let Some(v) = value {

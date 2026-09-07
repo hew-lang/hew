@@ -459,20 +459,6 @@ pub struct TypeCheckOutput {
     ///
     /// MIR/codegen consumers: wired in slice 6.
     pub machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
-    /// Checker-resolved `await conn.read()` / `await conn.read_string()` sites,
-    /// keyed by the inner method-call span (NEW-1). Populated when an `await`
-    /// wraps a `net.Connection::read`/`read_string` call. HIR lowering consumes
-    /// this to emit `HirExprKind::ConnAwaitRead` (the non-blocking suspending
-    /// read) instead of the blocking method call. The `bool` is `true` for
-    /// `read_string` (bytes-to-string wrap), `false` for raw `read`.
-    pub conn_await_reads: HashMap<SpanKey, bool>,
-    /// Checker-resolved `await listener.accept()` sites, keyed by the inner
-    /// method-call span (NEW-2). Populated when an `await` wraps a
-    /// `net.Listener::accept` call. HIR lowering consumes this to emit
-    /// `HirExprKind::ListenerAwaitAccept` (the non-blocking suspending accept)
-    /// instead of the blocking method call — the listener-readiness sibling of
-    /// [`TypeCheckOutput::conn_await_reads`].
-    pub listener_await_accepts: HashSet<SpanKey>,
     /// Function tail expressions the checker Ok-wraps to satisfy an explicit
     /// `-> Result<Ok, Err>` return, keyed by the tail expression's span. A
     /// `Result`-returning function whose tail yields the `Ok` payload type
@@ -1408,8 +1394,6 @@ impl Default for TypeCheckOutput {
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: HashSet::new(),
             tail_ok_coercions: HashSet::new(),
             result_return_coercions: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
@@ -2817,16 +2801,6 @@ pub struct Checker {
     pub(super) actor_overflow_policies: HashMap<String, hew_parser::ast::OverflowPolicy>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
-    /// `await conn.read()` suspending-read sites. Mirrors
-    /// [`TypeCheckOutput::conn_await_reads`].
-    pub(super) conn_await_reads: HashMap<SpanKey, bool>,
-    /// `await listener.accept()` suspending-accept sites. Mirrors
-    /// [`TypeCheckOutput::listener_await_accepts`].
-    pub(super) listener_await_accepts: HashSet<SpanKey>,
-    /// Exact receiver nominal proven when a suspending network method is
-    /// admitted. Ownership publication requires this witness in addition to
-    /// the public lowering side-table membership.
-    pub(super) suspending_io_receiver_nominals: HashMap<SpanKey, String>,
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
@@ -3868,9 +3842,6 @@ impl Checker {
             actor_delivery_calls: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: HashSet::new(),
-            suspending_io_receiver_nominals: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             result_return_coercions: HashMap::new(),
             tail_ok_armed: false,

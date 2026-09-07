@@ -2288,10 +2288,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
             | Expr::Race(_)
             | Expr::Send(_)
-            | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)

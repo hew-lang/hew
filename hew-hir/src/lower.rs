@@ -7602,14 +7602,6 @@ struct LowerCtx {
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
     machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
-    /// Checker-owned `await conn.read()` suspending-read sites keyed by the inner
-    /// method-call span (NEW-1). `true` = `read_string` (string-wrapped), `false`
-    /// = raw `read`. HIR's `Expr::Await` arm consumes this to emit `ConnAwaitRead`.
-    conn_await_reads: HashMap<SpanKey, bool>,
-    /// Checker-owned `await listener.accept()` suspending-accept sites keyed by
-    /// the inner method-call span (NEW-2). HIR's `Expr::Await` arm consumes this
-    /// to emit `ListenerAwaitAccept` — the sibling of `conn_await_reads`.
-    listener_await_accepts: std::collections::HashSet<SpanKey>,
     /// Checker-owned function-tail Ok-coercion sites keyed by the tail
     /// expression's span. Each entry marks a `Result<Ok, Err>`-returning
     /// function tail whose value is the `Ok` payload; `lower_expr` wraps the
@@ -8384,8 +8376,6 @@ impl LowerCtx {
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             actor_delivery_calls: tc_output.actor_delivery_calls.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
-            conn_await_reads: tc_output.conn_await_reads.clone(),
-            listener_await_accepts: tc_output.listener_await_accepts.clone(),
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
             result_return_coercions: tc_output.result_return_coercions.clone(),
             recovery_kinds: tc_output.recovery_kinds.clone(),
@@ -10071,7 +10061,7 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_private_refs(&e.0, pf, out);
             }
@@ -10188,10 +10178,6 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
                 scan_expr_for_private_refs(&t.duration.0, pf, out);
                 scan_expr_for_private_refs(&t.body.0, pf, out);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
-            scan_expr_for_private_refs(&duration.0, pf, out);
         }
         Expr::UnsafeBlock(b) => scan_block_for_private_refs(b, pf, out),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
@@ -18698,7 +18684,6 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
-            Expr::Join(branches) => self.lower_join(branches, span.clone()),
             Expr::Race(branches) => self.lower_race(branches, span.clone()),
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
@@ -19353,24 +19338,6 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     ),
                 }
-            }
-            Expr::Timeout {
-                expr: timeout_inner,
-                duration,
-            } => {
-                let source = self.lower_await_deadline(timeout_inner, duration, &span, intent);
-                let ty = source.ty.clone();
-                return HirExpr {
-                    node: self.ids.node(),
-                    site,
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
-                    ty,
-                    intent,
-                    kind: HirExprKind::SubsumedValue {
-                        source: Box::new(source),
-                    },
-                    span: span.clone(),
-                };
             }
             // `b"AB"` — byte-string literal. The parser already decoded the
             // escape sequences; `inner` is the raw byte sequence.
@@ -20444,13 +20411,6 @@ impl LowerCtx {
         checked: Option<&hew_types::check::CheckedSelectSource>,
     ) -> HirSelectArmKind {
         use hew_types::check::CheckedSelectSource;
-        // Retain the diagnostic for malformed synthetic trees containing an
-        // arm-position timer; parsed timers use the dedicated timeout clause.
-        if let Expr::Timeout { duration, .. } = &source.0 {
-            return HirSelectArmKind::AfterTimer {
-                duration: Box::new(self.lower_expr(duration, IntentKind::Read)),
-            };
-        }
         let operand = match &source.0 {
             Expr::Await(inner) => inner.as_ref(),
             _ => source,
@@ -28467,283 +28427,6 @@ impl LowerCtx {
         self.scopes.pop();
     }
 
-    /// Lower the NEW-6b `await <op> | after <duration>` deadline combinator.
-    ///
-    /// Only `await <actor>.<askmethod>(...) | after <DurationLiteral>` is wired:
-    /// it lowers to the same `HirExprKind::ActorAsk` (`Result<R, AskError>`) as a
-    /// plain suspending ask, with `deadline_ns` attached so codegen schedules a
-    /// fail-closed timeout against the suspend's cancel registration (deadline →
-    /// `Err(AskError::Timeout)`). Every other form fails closed at CHECK time with
-    /// a precise, deferred diagnostic — never a runtime `NotYetImplemented`, never
-    /// a hang, never a fabricated value.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "three recognized deadline forms (actor-ask, conn-read, listener-accept) \
-                  each with their own HIR rewrite branch — splitting would scatter the \
-                  fail-closed fallthrough logic that must be co-located with all three guards"
-    )]
-    fn lower_await_deadline(
-        &mut self,
-        inner: &Spanned<Expr>,
-        duration: &Spanned<Expr>,
-        span: &Span,
-        intent: IntentKind,
-    ) -> HirExpr {
-        let Some(deadline_ns) = Self::duration_literal_ns(&duration.0) else {
-            self.unsupported(
-                span.clone(),
-                "`await … | after <duration>` with a non-literal duration (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "non-literal deadline duration");
-        };
-        if deadline_ns <= 0 {
-            self.unsupported(
-                span.clone(),
-                "`await … | after <duration>` with a non-positive duration (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "non-positive deadline duration");
-        }
-        let Expr::Await(await_inner) = &inner.0 else {
-            self.unsupported(
-                span.clone(),
-                "`| after <duration>` on a non-await expression (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "non-await deadline combinator");
-        };
-        // The suspendable awaits whose timeout `Result` is concretely specced are
-        // local actor asks (`Result<R, AskError>`, `AskError::Timeout`), raw
-        // connection reads (`Result<bytes, NetError>`, `NetError::TimedOut`), and
-        // listener accepts (`Result<Connection, NetError>`, `NetError::TimedOut`).
-        let inner_key = self.mk_key(&await_inner.1);
-        let is_local_ask = matches!(
-            self.actor_method_dispatch.get(&inner_key),
-            Some(ActorMethodKind::Ask { .. })
-        );
-        if is_local_ask {
-            let mut ask_expr = self.lower_expr(inner, intent);
-            let mut ask_source = &mut ask_expr;
-            let updated = loop {
-                match &mut ask_source.kind {
-                    HirExprKind::SubsumedValue { source } => ask_source = source,
-                    HirExprKind::ActorAsk {
-                        deadline_ns: slot, ..
-                    } => {
-                        *slot = Some(deadline_ns);
-                        break true;
-                    }
-                    _ => break false,
-                }
-            };
-            if updated {
-                return ask_expr;
-            }
-            // The await lowered to something other than a local `ActorAsk` (e.g. a
-            // remote ask or a blocking-caller path). Out of scope — fail closed.
-            self.unsupported(
-                span.clone(),
-                "`await <…>(...) | after d` is only supported for a local actor ask in a \
-                 suspendable context (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported actor-ask deadline form");
-        }
-        if self.conn_await_reads.contains_key(&inner_key) {
-            let mut read_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ConnAwaitRead {
-                deadline_ns: slot,
-                to_string,
-                ..
-            } = &mut read_expr.kind
-            {
-                let is_to_string = *to_string;
-                *slot = Some(deadline_ns);
-                let io_error_ty = ResolvedTy::Named {
-                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                    is_opaque: false,
-                };
-                // `read_string | after d` yields `Result<string, NetError>`;
-                // raw `read | after d` yields `Result<bytes, NetError>`.
-                let ok_ty = if is_to_string {
-                    ResolvedTy::String
-                } else {
-                    ResolvedTy::Bytes
-                };
-                read_expr.ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![ok_ty, io_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                read_expr.value_class = ValueClass::of_ty(&read_expr.ty, &self.type_classes);
-                self.try_register_enum_instantiation(span);
-                return read_expr;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await conn.read() | after d` is only supported for a raw connection read in a \
-                 suspendable context",
-                "new6c-read-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported read deadline form");
-        }
-        if self.listener_await_accepts.contains(&inner_key) {
-            let mut accept_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ListenerAwaitAccept {
-                deadline_ns: slot, ..
-            } = &mut accept_expr.kind
-            {
-                *slot = Some(deadline_ns);
-                let io_error_ty = ResolvedTy::Named {
-                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                    is_opaque: false,
-                };
-                // `await ln.accept() | after d` yields `Result<Connection, NetError>`;
-                // the Ok arm carries the accepted connection type from the plain accept.
-                let ok_ty = accept_expr.ty.clone();
-                accept_expr.ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![ok_ty, io_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                accept_expr.value_class = ValueClass::of_ty(&accept_expr.ty, &self.type_classes);
-                self.try_register_enum_instantiation(span);
-                return accept_expr;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await ln.accept() | after d` is only supported for a listener accept in a \
-                 suspendable context",
-                "new6d-accept-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported accept deadline form");
-        }
-        // NEW-6b: `await rx.recv() | after d` — channel recv with a deadline.
-        if self.is_channel_recv_await(&inner_key) {
-            if let Expr::MethodCall { receiver, .. } = &await_inner.0 {
-                let recv_expr = self.lower_expr(receiver, IntentKind::Read);
-                // The plain `await rx.recv()` type is `Option<T>` — the checker
-                // recorded it for the inner `rx.recv()` call at `await_inner.1`.
-                let option_ty = self
-                    .resolved_expr_types
-                    .get(&inner_key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty =
-                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
-                        .expect("generated builtin enum catalog must contain TimeoutError");
-                let result_ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![option_ty.clone(), timeout_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                // Register `Result<Option<T>, TimeoutError>` and its nested
-                // `Option<T>` instantiation with the enum layout registry so
-                // that MIR/codegen can resolve the tagged-union struct layout.
-                // `try_register_enum_instantiation(span)` looks up the type by
-                // span in the checker's type map, which holds the pre-deadline
-                // plain type — so call _ty directly instead.
-                self.try_register_enum_instantiation_ty(&result_ty, span);
-
-                let source = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    value_class,
-                    ty: result_ty,
-                    intent,
-                    kind: HirExprKind::ChannelRecvAwait {
-                        receiver: Box::new(recv_expr),
-                        deadline_ns: Some(deadline_ns),
-                    },
-                    span: inner.1.clone(),
-                };
-
-                return source;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await rx.recv() | after d` expected a method-call receiver (internal)",
-                "new6b-recv-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported channel recv deadline form");
-        }
-        // NEW-6b: `await stream.recv() | after d` — stream recv with a deadline.
-        if self.is_stream_recv_await(&inner_key) {
-            if let Expr::MethodCall { receiver, .. } = &await_inner.0 {
-                let stream_expr = self.lower_expr(receiver, IntentKind::Read);
-                // The plain `await stream.recv()` type is `Option<T>` — the checker
-                // recorded it for the inner `stream.recv()` call at `await_inner.1`.
-                let option_ty = self
-                    .resolved_expr_types
-                    .get(&inner_key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty =
-                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
-                        .expect("generated builtin enum catalog must contain TimeoutError");
-                let result_ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![option_ty.clone(), timeout_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                // Same registration as ChannelRecvAwait above.
-                self.try_register_enum_instantiation_ty(&result_ty, span);
-
-                let source = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    value_class,
-                    ty: result_ty,
-                    intent,
-                    kind: HirExprKind::StreamRecvAwait {
-                        stream: Box::new(stream_expr),
-                        deadline_ns: Some(deadline_ns),
-                    },
-                    span: inner.1.clone(),
-                };
-
-                return source;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await stream.recv() | after d` expected a method-call receiver (internal)",
-                "new6b-stream-recv-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported stream recv deadline form");
-        }
-        // Out-of-scope await sources: task-await, suspending closure.
-        // Channel recv and stream recv are now handled above (NEW-6b).
-        self.unsupported(
-            span.clone(),
-            "`await <…> | after d` deadline is only supported for actor-ask awaits, \
-             connection reads (read/read_string), listener accepts, channel recv, and \
-             stream recv; task-await and suspending-closure deadlines are deferred to v0.6",
-            "new6c-read-deadline",
-        );
-        self.unsupported_expr(span.clone(), "unsupported await-deadline source")
-    }
-
-    /// Extract the nanosecond value of a literal `Duration` deadline. Non-literal
-    /// durations (variables, arithmetic) are not constant-foldable here and fail
-    /// closed at CHECK time (the codegen deadline is carried as a constant).
-    fn duration_literal_ns(expr: &Expr) -> Option<i64> {
-        match expr {
-            Expr::Literal(Literal::Duration(ns)) => Some(*ns),
-            _ => None,
-        }
-    }
-
     fn unsupported(
         &mut self,
         span: std::ops::Range<usize>,
@@ -30559,7 +30242,7 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
             scan_expr_for_blocking_recv(&right.0, diagnostics);
         }
         Expr::Unary { operand, .. } => scan_expr_for_blocking_recv(&operand.0, diagnostics),
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_blocking_recv(&e.0, diagnostics);
             }
@@ -30655,10 +30338,6 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
                 scan_expr_for_blocking_recv(&t.duration.0, diagnostics);
                 scan_expr_for_blocking_recv(&t.body.0, diagnostics);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
-            scan_expr_for_blocking_recv(&duration.0, diagnostics);
         }
         Expr::UnsafeBlock(b) => scan_block_for_blocking_recv(b, diagnostics),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
@@ -31151,7 +30830,7 @@ fn scan_expr_for_binop_gates(
                 scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
             }
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
             }
@@ -31247,10 +30926,6 @@ fn scan_expr_for_binop_gates(
                 scan_expr_for_binop_gates(&t.duration.0, &t.duration.1, false, ctx);
                 scan_expr_for_binop_gates(&t.body.0, &t.body.1, false, ctx);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
-            scan_expr_for_binop_gates(&duration.0, &duration.1, false, ctx);
         }
         Expr::UnsafeBlock(b) => scan_block_for_binop_gates(b, ctx),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
@@ -32303,7 +31978,7 @@ fn scan_expr_for_supervisor_spawn(
         Expr::Unary { operand, .. } => {
             scan_expr_for_supervisor_spawn(&operand.0, current_module, registry, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
             }
@@ -32403,10 +32078,6 @@ fn scan_expr_for_supervisor_spawn(
                 );
                 scan_expr_for_supervisor_spawn(&t.body.0, current_module, registry, diagnostics);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
-            scan_expr_for_supervisor_spawn(&duration.0, current_module, registry, diagnostics);
         }
         Expr::UnsafeBlock(b) => {
             scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
@@ -32663,7 +32334,7 @@ fn scan_expr_for_vec_index_gate(
         Expr::Unary { operand, .. } => {
             scan_expr_for_vec_index_gate(operand, expr_types, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
             }
@@ -32759,13 +32430,6 @@ fn scan_expr_for_vec_index_gate(
                 scan_expr_for_vec_index_gate(&t.duration, expr_types, diagnostics);
                 scan_expr_for_vec_index_gate(&t.body, expr_types, diagnostics);
             }
-        }
-        Expr::Timeout {
-            expr: inner,
-            duration,
-        } => {
-            scan_expr_for_vec_index_gate(inner, expr_types, diagnostics);
-            scan_expr_for_vec_index_gate(duration, expr_types, diagnostics);
         }
         Expr::UnsafeBlock(b) => scan_block_for_vec_index_gate(b, expr_types, diagnostics),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {

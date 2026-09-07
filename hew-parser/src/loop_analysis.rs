@@ -338,7 +338,7 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         }
 
         // ── Aggregate constructors ────────────────────────────────────────
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
             exprs.iter().any(|e| ast_expr_has_break(&e.0, query, depth))
         }
         Expr::ArrayRepeat { value, count } => {
@@ -453,11 +453,6 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
             }
             false
         }
-        Expr::Timeout { expr, duration } => {
-            ast_expr_has_break(&expr.0, query, depth)
-                || ast_expr_has_break(&duration.0, query, depth)
-        }
-
         // ── Control-flow expressions ──────────────────────────────────────
         // `return` and `yield` both carry an optional value expression.
         Expr::Return(opt) | Expr::Yield(opt) => opt

@@ -18,59 +18,6 @@ pub(super) struct ForkCallInputs {
 }
 
 impl LowerCtx {
-    /// Join shares the structured task batch and its checked input captures.
-    /// Preparation stays in the parent; the full batch starts before any wait.
-    pub(super) fn lower_join(
-        &mut self,
-        branches: &[Spanned<Expr>],
-        span: Span,
-    ) -> (HirExprKind, ResolvedTy) {
-        if branches.is_empty() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::JoinNoBranches,
-                span,
-                "join expression contains no branches",
-            ));
-            return (
-                HirExprKind::Unsupported("empty join".into()),
-                ResolvedTy::Unit,
-            );
-        }
-        let Some(output_ty) = self.checker_expr_ty_if_present(&span) else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "join".into(),
-                    reason: "missing checked result type".into(),
-                },
-                span,
-                "join lowering requires the checked source result type",
-            ));
-            return (
-                HirExprKind::Unsupported("untyped join".into()),
-                ResolvedTy::Unit,
-            );
-        };
-        let calls: Vec<_> = branches
-            .iter()
-            .map(|branch| match &branch.0 {
-                Expr::Await(inner) => inner.as_ref().clone(),
-                _ => branch.clone(),
-            })
-            .collect();
-        let child = if calls.len() == 1 {
-            self.lower_fork_invocation(&calls[0])
-        } else {
-            self.lower_fork_batch(&calls, output_ty.clone(), span)
-        };
-        (
-            HirExprKind::AwaitTask {
-                operand: Box::new(child),
-                output_ty: output_ty.clone(),
-            },
-            output_ty,
-        )
-    }
-
     pub(super) fn fork_input(&mut self, span: &Span, intent: IntentKind) -> Option<HirExpr> {
         let key = self.mk_key(span);
         let inputs = self.fork_call_inputs.as_ref()?;

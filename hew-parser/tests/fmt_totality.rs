@@ -160,8 +160,7 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::MethodCall { .. } => {}
         Expr::StructInit { .. } => {}
         Expr::Select { .. } => {}
-        Expr::Join(_) | Expr::Race(_) => {}
-        Expr::Timeout { .. } => {}
+        Expr::Race(_) => {}
         Expr::UnsafeBlock(_) => {}
         Expr::Yield(_) => {}
         Expr::Return(_) => {}

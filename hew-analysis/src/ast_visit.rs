@@ -775,10 +775,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Return(Some(operand)) => {
                 self.walk_expr(&operand.0, &operand.1, body);
             }
-            Expr::Tuple(elements)
-            | Expr::Array(elements)
-            | Expr::Join(elements)
-            | Expr::Race(elements) => {
+            Expr::Tuple(elements) | Expr::Array(elements) | Expr::Race(elements) => {
                 for element in elements {
                     self.walk_expr(&element.0, &element.1, body);
                 }
@@ -899,10 +896,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&timeout.duration.0, &timeout.duration.1, body);
                     self.walk_expr(&timeout.body.0, &timeout.body.1, body);
                 }
-            }
-            Expr::Timeout { expr, duration } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.walk_expr(&duration.0, &duration.1, body);
             }
             Expr::FieldAccess { object, .. } => {
                 self.walk_expr(&object.0, &object.1, body);

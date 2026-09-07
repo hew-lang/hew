@@ -122,31 +122,26 @@ fn vec_index_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_slice_unsupported_element_types_rejected() {
-    // Range-slice on element ABIs with no slice substrate still emits a
-    // VecSliceElementTypeUnsupported diagnostic. Named records/enums and
-    // platform-sized integers are accepted by the G5 slice substrate below.
+    // Range-slice on an element ABI with no slice substrate still emits a
+    // VecSliceElementTypeUnsupported diagnostic at the HIR gate. `bytes` has
+    // a semantic clone but no runtime slice ABI, so it reaches this gate.
     let out = lower(
         r"
         fn double(x: i64) -> i64 { x * 2 }
         fn pick_bytes(xs: Vec<bytes>) -> Vec<bytes> { xs[0..1] }
-        fn pick_fn(xs: Vec<fn(i64) -> i64>) -> Vec<fn(i64) -> i64> { xs[0..1] }
         ",
     );
 
     let diags = slice_diagnostics(&out);
     assert_eq!(
         diags.len(),
-        2,
-        "expected exactly 2 VecSliceElementTypeUnsupported diagnostics, got: {:#?}",
+        1,
+        "expected exactly 1 VecSliceElementTypeUnsupported diagnostic, got: {:#?}",
         out.diagnostics
     );
     assert!(
         diags.contains(&"bytes".to_string()),
         "missing bytes: {diags:?}"
-    );
-    assert!(
-        diags.contains(&"fn(i64) -> i64".to_string()),
-        "missing function element: {diags:?}"
     );
 
     for d in &out.diagnostics {
@@ -169,6 +164,38 @@ fn vec_slice_unsupported_element_types_rejected() {
     assert!(
         out.into_result().is_err(),
         "into_result() must be Err when any VecSliceElementTypeUnsupported diagnostic is present"
+    );
+}
+
+#[test]
+fn vec_slice_over_non_clonable_element_rejected_at_type_check() {
+    // A range-slice copies each selected element into a fresh `Vec`, so an
+    // element with no semantic clone/retain (a closure/fn value) is refused
+    // structurally at type-check, before HIR lowering's ABI gate ever sees
+    // it. This is a stricter, earlier check than the ABI-substrate gate
+    // above (D432): the direct `for` loop over the same element would
+    // borrow instead of refusing, but a slice cannot borrow — it produces
+    // an independently owned `Vec`.
+    let parsed = hew_parser::parse(
+        r"
+        fn pick_fn(xs: Vec<fn(i64) -> i64>) -> Vec<fn(i64) -> i64> { xs[0..1] }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot be range-sliced")
+                && e.message.contains("fn(i64) -> i64")),
+        "slicing a Vec of closures must be refused at type-check: {:#?}",
+        tc_output.errors
     );
 }
 

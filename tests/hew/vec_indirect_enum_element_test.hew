@@ -1,22 +1,19 @@
-//! Regression test for #2150 — a direct (non-indirect) `enum` `Vec` element
-//! keeps the layout-descriptor Vec path.
-//!
-//! #2150's defect: codegen found an enum's tagged-union struct in
-//! `record_layouts` (every enum is registered there) and built a layout-aware
-//! Vec regardless of indirection, while the checker and MIR getter routed an
-//! indirect enum's element through the pointer ABI. A `Vec<indirect_enum>` push
-//! then tripped the runtime "Vec layout-aware operation is not implemented"
-//! abort. The fix gates the codegen descriptor decision on `is_indirect_enum`,
-//! so a direct enum keeps the layout path (asserted here) and an indirect enum
-//! rides the pointer ABI.
+//! A `Vec` element keeps the layout-descriptor path for a direct `enum` and
+//! carries a boxed node for an `indirect enum`. Both round-trip through push
+//! and index, and both release their elements when the vector goes out of
+//! scope.
 
 import std.testing;
 
-// Direct (non-indirect) enum Vec must keep the layout-descriptor path.
 enum Dir {
     North,
     South,
     East(i64),
+}
+
+indirect enum Tree {
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn dir_name(d: Dir) -> string {
@@ -27,13 +24,30 @@ fn dir_name(d: Dir) -> string {
     }
 }
 
+fn total(consume t: Tree) -> i64 {
+    match t {
+        .Leaf(n) => n,
+        .Node(left, right) => total(left) + total(right),
+    }
+}
+
 #[test]
-fn direct_enum_vec_unaffected() {
-    let v: Vec<Dir> = Vec.new();
+fn direct_enum_vec_keeps_the_layout_path() {
+    var v: Vec<Dir> = Vec.new();
     v.push(Dir.North);
     v.push(Dir.East(7));
     v.push(Dir.South);
     testing.assert_eq_str(dir_name(v[0]), "N");
     testing.assert_eq_str(dir_name(v[1]), "E7");
     testing.assert_eq_str(dir_name(v[2]), "S");
+}
+
+#[test]
+fn indirect_enum_vec_round_trips_its_boxed_elements() {
+    var v: Vec<Tree> = Vec.new();
+    v.push(Tree.Leaf(4));
+    v.push(Tree.Node(Tree.Leaf(1), Tree.Node(Tree.Leaf(2), Tree.Leaf(3))));
+    testing.assert_eq(v.len(), 2);
+    testing.assert_eq(total(v.pop()), 6);
+    testing.assert_eq(total(v.pop()), 4);
 }

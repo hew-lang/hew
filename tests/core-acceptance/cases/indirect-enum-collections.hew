@@ -1,0 +1,55 @@
+indirect enum Item {
+    Tag(string),
+    Count(i64),
+    Nest(Item, Item),
+}
+
+fn render(consume item: Item) -> string {
+    match item {
+        .Tag(label) => label,
+        .Count(value) => f"{value}",
+        .Nest(head, tail) => render(head) + "/" + render(tail),
+    }
+}
+
+/// Returns early with a live vector and map still in scope; both must release
+/// on that edge as well as on the ordinary one.
+fn first_tag(consume items: Vec<Item>) -> string {
+    var index = 0;
+    while index < items.len() {
+        match items[index] {
+            .Tag(label) => return label,
+            _ => {}
+        }
+        index = index + 1;
+    }
+    "none"
+}
+
+fn main() -> i64 {
+    var items: Vec<Item> = Vec.new();
+    items.push(Item.Count(7));
+    items.push(Item.Nest(Item.Tag("head"), Item.Count(2)));
+    items.push(Item.Tag("late"));
+    println(first_tag(items));
+
+    var stack: Vec<Item> = Vec.new();
+    stack.push(Item.Tag("bottom"));
+    stack.push(Item.Nest(Item.Tag("l"), Item.Nest(Item.Tag("m"), Item.Count(9))));
+    println(render(stack.pop()));
+    println(render(stack.pop()));
+
+    var index: HashMap<string, Item> = HashMap.new();
+    index.insert("one", Item.Nest(Item.Tag("a"), Item.Count(1)));
+    index.insert("two", Item.Tag("b"));
+    match index.remove("one") {
+        .Some(found) => println(render(found)),
+        .None => println("missing"),
+    }
+    println(index.len());
+
+    var live: Vec<Item> = Vec.new();
+    live.push(Item.Nest(Item.Tag("faulting"), Item.Count(0)));
+    println(render(live[live.len()]));
+    0
+}

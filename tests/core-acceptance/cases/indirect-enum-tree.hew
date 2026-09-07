@@ -1,0 +1,52 @@
+indirect enum Expr {
+    Num(i64),
+    Name(string),
+    Add(Expr, Expr),
+    Sum(Vec<Expr>),
+}
+
+fn leaf(label: string, value: i64) -> Expr {
+    Expr.Add(Expr.Name(label), Expr.Num(value))
+}
+
+fn eval(consume e: Expr) -> i64 {
+    match e {
+        .Num(value) => value,
+        .Name(label) => label.len(),
+        .Add(left, right) => eval(left) + eval(right),
+        .Sum(terms) => {
+            var total = 0;
+            for term in terms {
+                total = total + eval(term);
+            }
+            total
+        }
+    }
+}
+
+fn show(consume e: Expr) -> string {
+    match e {
+        .Num(value) => f"{value}",
+        .Name(label) => label,
+        .Add(left, right) => f"({show(left)} + {show(right)})",
+        .Sum(terms) => {
+            var out = "sum";
+            for term in terms {
+                out = out + ":" + show(term);
+            }
+            out
+        }
+    }
+}
+
+fn main() -> i64 {
+    let tree = Expr.Add(leaf("ab", 40), Expr.Add(Expr.Num(1), Expr.Num(1)));
+    println(show(tree));
+    println(eval(Expr.Add(leaf("ab", 40), Expr.Add(Expr.Num(1), Expr.Num(1)))));
+    var terms: Vec<Expr> = Vec.new();
+    terms.push(Expr.Num(3));
+    terms.push(leaf("xyz", 4));
+    println(eval(Expr.Sum(terms)));
+    println("released");
+    0
+}

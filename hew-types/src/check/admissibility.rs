@@ -1148,51 +1148,63 @@ impl Checker {
                 if let Some(indirected) = visiting.enter(&visit_key) {
                     return (!indirected).then(|| format!("recursive value layout `{visit_key}`"));
                 }
-                let blocker = type_def
-                    .fields
-                    .values()
-                    .map(|field_ty| {
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
-                    })
-                    .find_map(|field_ty| self.vec_iter_clone_blocker(&field_ty, visiting))
-                    .or_else(|| {
-                        self.tuple_record_constructor_fields(name, &type_def)
-                            .iter()
-                            .find_map(|field_ty| {
-                                let field_ty = Self::instantiate_type_def_member(
-                                    field_ty,
-                                    &type_def.type_params,
-                                    args,
-                                );
-                                self.vec_iter_clone_blocker(&field_ty, visiting)
-                            })
-                    })
-                    .or_else(|| {
-                        type_def
-                            .variants
-                            .values()
-                            .find_map(|variant| match variant {
-                                VariantDef::Unit => None,
-                                VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
+                // An `indirect enum` boxes every value, so a recursive
+                // occurrence reached through its variants crosses heap
+                // indirection exactly as a `Vec` element does.
+                let walk = |visiting: &mut CollectionClonePath| {
+                    type_def
+                        .fields
+                        .values()
+                        .map(|field_ty| {
+                            Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
+                        })
+                        .find_map(|field_ty| self.vec_iter_clone_blocker(&field_ty, visiting))
+                        .or_else(|| {
+                            self.tuple_record_constructor_fields(name, &type_def)
+                                .iter()
+                                .find_map(|field_ty| {
                                     let field_ty = Self::instantiate_type_def_member(
                                         field_ty,
                                         &type_def.type_params,
                                         args,
                                     );
                                     self.vec_iter_clone_blocker(&field_ty, visiting)
-                                }),
-                                VariantDef::Struct(fields) => {
-                                    fields.iter().find_map(|(_, field_ty)| {
-                                        let field_ty = Self::instantiate_type_def_member(
-                                            field_ty,
-                                            &type_def.type_params,
-                                            args,
-                                        );
-                                        self.vec_iter_clone_blocker(&field_ty, visiting)
-                                    })
-                                }
-                            })
-                    });
+                                })
+                        })
+                        .or_else(|| {
+                            type_def
+                                .variants
+                                .values()
+                                .find_map(|variant| match variant {
+                                    VariantDef::Unit => None,
+                                    VariantDef::Tuple(fields) => {
+                                        fields.iter().find_map(|field_ty| {
+                                            let field_ty = Self::instantiate_type_def_member(
+                                                field_ty,
+                                                &type_def.type_params,
+                                                args,
+                                            );
+                                            self.vec_iter_clone_blocker(&field_ty, visiting)
+                                        })
+                                    }
+                                    VariantDef::Struct(fields) => {
+                                        fields.iter().find_map(|(_, field_ty)| {
+                                            let field_ty = Self::instantiate_type_def_member(
+                                                field_ty,
+                                                &type_def.type_params,
+                                                args,
+                                            );
+                                            self.vec_iter_clone_blocker(&field_ty, visiting)
+                                        })
+                                    }
+                                })
+                        })
+                };
+                let blocker = if type_def.is_indirect {
+                    visiting.through_container(walk)
+                } else {
+                    walk(visiting)
+                };
                 visiting.leave(&visit_key);
                 blocker
             }

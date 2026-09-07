@@ -1,5 +1,6 @@
-fn main() -> string {
+fn main() {
   let s = "hello";
   let t = s;
-  return s;
+  let _ = t;
+  let _ = s;
 }

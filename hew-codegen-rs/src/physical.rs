@@ -3132,6 +3132,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_sleep(*duration, normal, cancel, unwind),
+            PhysicalTerminator::SleepUntil {
+                deadline,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_sleep_until(*deadline, normal, cancel, unwind),
             PhysicalTerminator::EnterDefer { park, body, .. } => self.emit_enter_defer(*park, body),
             PhysicalTerminator::FinishDefer { park, next, .. } => {
                 self.emit_finish_defer(*park, next)

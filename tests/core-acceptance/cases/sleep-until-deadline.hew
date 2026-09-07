@@ -1,0 +1,41 @@
+// `sleep_until(t)` suspends on a monotonic deadline rather than a span: the
+// instant crosses to the runtime intact and the remaining wait is measured
+// when the timer is armed, so a deadline already in the past returns at once.
+// Two actor handlers napping concurrently finish in about one interval, which
+// is the observable proof that a suspended handler releases its worker.
+actor Sleeper {
+    receive fn nap() -> i64 {
+        sleep_until(instant.now() + 300ms);
+        1
+    }
+}
+
+fn main() {
+    let solo = instant.now();
+    sleep_until(solo + 50ms);
+    println(solo.elapsed().millis() >= 50);
+
+    let past = instant.now() - 1s;
+    sleep_until(past);
+    println("past deadline returned");
+
+    let a = spawn Sleeper();
+    let b = spawn Sleeper();
+    let start = instant.now();
+    let first = fork a.nap();
+    let second = fork b.nap();
+    match await first {
+        .Ok(n) => println(n),
+        .Err(_) => panic("first nap failed"),
+    }
+    match await second {
+        .Ok(n) => println(n),
+        .Err(_) => panic("second nap failed"),
+    }
+    let elapsed = start.elapsed().millis();
+    println(elapsed >= 300);
+    println(elapsed < 500);
+    close(a);
+    close(b);
+    println("closed");
+}

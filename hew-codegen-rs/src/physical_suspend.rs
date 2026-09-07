@@ -223,6 +223,30 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         cancel: &PhysicalEdge,
         unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        self.emit_timer_suspend("hew_coro_sleep_new", duration, normal, cancel, unwind)
+    }
+
+    /// A deadline suspension. The operand is a monotonic `instant`; the runtime
+    /// constructor measures the remaining wait when it arms the timer, so this
+    /// shares every block, poll and cleanup edge with an ordinary sleep.
+    pub(super) fn emit_sleep_until(
+        &self,
+        deadline: StorageId,
+        normal: &PhysicalEdge,
+        cancel: &PhysicalEdge,
+        unwind: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        self.emit_timer_suspend("hew_coro_sleep_until_new", deadline, normal, cancel, unwind)
+    }
+
+    fn emit_timer_suspend(
+        &self,
+        start_symbol: &str,
+        operand: StorageId,
+        normal: &PhysicalEdge,
+        cancel: &PhysicalEdge,
+        unwind: &PhysicalEdge,
+    ) -> CodegenResult<()> {
         let frame = self
             .frame
             .as_ref()
@@ -241,10 +265,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         let start = coro::external(
             self.llvm,
-            "hew_coro_sleep_new",
+            start_symbol,
             pointer.fn_type(&[self.ctx.i64_type().into(), pointer.into()], false),
         )?;
-        let duration = self.load(duration, "sleep.duration")?;
+        let duration = self.load(operand, "sleep.operand")?;
         let operation = call_value(
             &self.builder,
             start,

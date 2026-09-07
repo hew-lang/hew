@@ -106,6 +106,11 @@ pub(super) struct Region {
 
 pub(super) type Plan = BTreeMap<BlockId, Region>;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat arm per terminator shape; splitting it would hide which \
+              shapes carry which edges"
+)]
 pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     match term {
         PhysicalTerminator::StreamSend {
@@ -146,6 +151,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             ..
         }
         | PhysicalTerminator::Sleep {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::SleepUntil {
             normal,
             cancel,
             unwind,
@@ -379,6 +390,7 @@ pub(super) fn verify_calls(
                 }
             }
             PhysicalTerminator::Sleep { .. }
+            | PhysicalTerminator::SleepUntil { .. }
             | PhysicalTerminator::TaskSelect { .. }
             | PhysicalTerminator::GeneratorYield { .. }
             | PhysicalTerminator::GeneratorNext { .. }

@@ -7436,6 +7436,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_sleep(expr, args)?;
                 Ok(None)
             }
+            CallTarget::Builtin { endpoint } if endpoint == "sleep_until" => {
+                self.lower_sleep_until(expr, args)?;
+                Ok(None)
+            }
             CallTarget::Extern {
                 declaration,
                 endpoint,

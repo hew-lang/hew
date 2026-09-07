@@ -1827,6 +1827,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1622] = {
      "{\"native\": \"fn hew_coro_sleep_status( *const HewCoroSleep) -> i32\"}",
      "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coro_sleep_until_new",
+     "{\"native\": \"fn hew_coro_sleep_until_new( i64, *const HewWaker, ) -> "
+     "*mut HewCoroSleep\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_coro_state_cancel",
      "{\"native\": \"fn hew_coro_state_cancel( *const HewCoroState)\"}",
      "native", "codegen-stable", "not-applicable", "no-in-signature-extent",

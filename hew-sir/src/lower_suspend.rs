@@ -9,23 +9,43 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         args: &[HirExpr],
     ) -> Result<(), String> {
-        let [duration] = args else {
-            return Err("sleep requires exactly one duration".into());
+        self.lower_timer_suspend(expression, args, SuspendKind::Sleep, &ResolvedTy::Duration)
+    }
+
+    /// `sleep_until(t)` suspends on a deadline, not on a span. The instant
+    /// crosses the boundary intact (`instant` is `i64` by the time SIR sees
+    /// it); the runtime measures the remaining wait against the same monotonic
+    /// clock when it arms the timer, so the compiler never subtracts.
+    pub(super) fn lower_sleep_until(
+        &mut self,
+        expression: &HirExpr,
+        args: &[HirExpr],
+    ) -> Result<(), String> {
+        self.lower_timer_suspend(expression, args, SuspendKind::SleepUntil, &ResolvedTy::I64)
+    }
+
+    fn lower_timer_suspend(
+        &mut self,
+        expression: &HirExpr,
+        args: &[HirExpr],
+        kind: SuspendKind,
+        input_ty: &ResolvedTy,
+    ) -> Result<(), String> {
+        let [input] = args else {
+            return Err("a timer suspension requires exactly one input".into());
         };
-        if self.ty(&duration.ty) != ResolvedTy::Duration
-            || self.ty(&expression.ty) != ResolvedTy::Unit
-        {
-            return Err("sleep requires a duration input and unit output".into());
+        if self.ty(&input.ty) != *input_ty || self.ty(&expression.ty) != ResolvedTy::Unit {
+            return Err("a timer suspension requires a scalar input and unit output".into());
         }
-        let duration = self.lower_expr(duration)?;
+        let input = self.lower_expr(input)?;
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
         let cancel = self.new_block(Vec::new());
         let unwind = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::Sleep,
+            kind,
             inputs: vec![BoundaryOperand {
-                operand: Operand { value: duration },
+                operand: Operand { value: input },
                 decision: BoundaryDecision::Copy,
             }],
             result: CallResult::Unit,

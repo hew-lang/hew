@@ -1374,6 +1374,7 @@ codegen-stable = [
   "hew_coro_sleep_free",
   "hew_coro_sleep_new",
   "hew_coro_sleep_status",
+  "hew_coro_sleep_until_new",
   "hew_coro_state_cancel",
   "hew_coro_state_cancel_code",
   "hew_coro_state_child",

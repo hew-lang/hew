@@ -81,6 +81,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::DynCall { .. }
                     | PhysicalTerminator::NativeIo { .. }
                     | PhysicalTerminator::Sleep { .. }
+                    | PhysicalTerminator::SleepUntil { .. }
                     | PhysicalTerminator::TaskSelect { .. }
                     | PhysicalTerminator::TaskAwait { .. }
                     | PhysicalTerminator::ActorAsk { .. }

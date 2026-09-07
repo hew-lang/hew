@@ -2319,8 +2319,22 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation))
         };
+        // A `fails` handler spells failure exactly as every `fails` fn does:
+        // `return error e`, `?`, and a bare success tail the compiler wraps.
+        // The body is checked against the success type, and the declared
+        // `Result` stays in `current_return_type` for `return` and `?`.
+        let prev_fails = self.current_fails;
+        self.current_fails = !rf.is_generator
+            && matches!(
+                rf.return_type.as_ref().map(|ty| &ty.0),
+                Some(TypeExpr::Fallible { .. })
+            );
         let expected_ret = if rf.is_generator {
             Ty::Unit
+        } else if self.current_fails {
+            declared_ret
+                .as_result()
+                .map_or(Ty::Error, |(success, _)| success.clone())
         } else {
             declared_ret.clone()
         };
@@ -2351,7 +2365,25 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
+        let prev_tail_ok_armed = self.tail_ok_armed;
+        if self.current_fails {
+            self.tail_ok_armed = false;
+        }
         let actual = self.check_block(&rf.body, block_expected);
+        if self.current_fails && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+            if let Some(tail) = &rf.body.trailing_expr {
+                self.tail_ok_coercions
+                    .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
+            } else if actual == Ty::Unit {
+                if let Some(annotation) = &rf.return_type {
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(&annotation.1, self.current_module_idx),
+                        super::ResultReturnKind::Success,
+                    );
+                }
+            }
+        }
+        self.tail_ok_armed = prev_tail_ok_armed;
         if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
             self.expect_type(
                 &expected_ret,
@@ -2363,6 +2395,7 @@ impl Checker {
             );
         }
 
+        self.current_fails = prev_fails;
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
         self.in_actor_handler_context = prev_actor_handler_context;

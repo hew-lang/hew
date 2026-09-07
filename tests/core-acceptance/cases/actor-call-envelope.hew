@@ -6,10 +6,10 @@ actor Vault {
 
     receive fn withdraw(amount: i64) -> i64 fails string {
         if amount > balance {
-            return Err("insufficient funds");
+            return error "insufficient funds";
         }
         balance = balance - amount;
-        Ok(balance)
+        balance
     }
 }
 

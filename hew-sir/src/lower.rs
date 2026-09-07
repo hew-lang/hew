@@ -2384,7 +2384,8 @@ fn callable_signature_with_substitution(
         let ty = substitution.apply(&parameter.ty);
         if !is_supported_call_value(module, facts, &ty) {
             return Err(format!(
-                "parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, aggregate, or variant contract",
+                "`{}` parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, aggregate, or variant contract",
+                function.name,
                 ty.user_facing()
             ));
         }

@@ -1034,16 +1034,13 @@ impl Ty {
             .expect("generated builtin enum catalog must contain SendError")
     }
 
-    /// Construct `ActorError<E, M>` — the error of every completion call on an
+    /// Construct `ActorError<E>` — the error of every completion call on an
     /// actor handle. `error` is the handler's declared `fails` type and
     /// `message` the call's sealed message type; both are `Never` when the
     /// call cannot produce that variant.
     #[must_use]
-    pub fn actor_error(error: Ty, message: Ty) -> Ty {
-        crate::actor_delivery::nominal(
-            crate::actor_delivery::ACTOR_ERROR_TYPE,
-            vec![error, message],
-        )
+    pub fn actor_error(error: Ty) -> Ty {
+        crate::actor_delivery::nominal(crate::actor_delivery::ACTOR_ERROR_TYPE, vec![error])
     }
 
     /// Construct `Never` — the uninhabited stdlib enum that stands in for an

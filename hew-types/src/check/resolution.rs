@@ -2845,11 +2845,29 @@ impl Checker {
             .map(|qualified| Ty::named(qualified, args.to_vec()))
     }
 
+    /// `ActorError` written with no type arguments means `ActorError<Never>`:
+    /// the envelope of a call on a handler that cannot fail, which is the
+    /// spelling most source annotations want.
+    pub(super) fn resolve_type_expr_tracking_holes_with_context(
+        &mut self,
+        te: &Spanned<TypeExpr>,
+        hole_vars: &mut Vec<TypeVar>,
+        context: TypeResolutionContext,
+    ) -> Ty {
+        let ty = self.resolve_named_type_expr(te, hole_vars, context);
+        if matches!(&ty, Ty::Named { name, args, builtin: None }
+            if name == crate::actor_delivery::ACTOR_ERROR_TYPE && args.is_empty())
+        {
+            return Ty::actor_error(Ty::never_type());
+        }
+        ty
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "generic instantiation requires many cases"
     )]
-    pub(super) fn resolve_type_expr_tracking_holes_with_context(
+    fn resolve_named_type_expr(
         &mut self,
         te: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,

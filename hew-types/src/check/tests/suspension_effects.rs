@@ -167,7 +167,7 @@ fn main() {
 ";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    // A completion call yields `Result<R, ActorError<E, M>>`: `E` is the
+    // A completion call yields `Result<R, ActorError<E>>`: `E` is the
     // handler's declared failure (`Never` here — neither handler declares
     // `fails`) and `M` is the call's own sealed message type, so the error arm
     // is pinned by shape rather than by one spelling shared across call sites.

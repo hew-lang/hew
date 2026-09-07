@@ -1,4 +1,4 @@
-// An infallible handler's completion call is `Result<R, ActorError<Never, M>>`.
+// An infallible handler's completion call is `Result<R, ActorError<Never>>`.
 // `Never` has no values, so `Failed(_)` can never arrive and the match needs no
 // arm for it. The `fails` handler below is the control: its envelope carries an
 // inhabited `E`, so its match still spells `Failed`.

@@ -1,6 +1,6 @@
-// A completion call fails with `ActorError<E, M>`: `Failed(e)` carries the
+// A completion call fails with `ActorError<E>`: `Failed(e)` carries the
 // handler's declared error and the lifecycle variants report a target that is
-// gone. Only `Rejected` is safely retryable, so nothing here resubmits.
+// gone. Only `Rejected` means nothing was accepted, so nothing here retries.
 actor Vault {
     var balance: i64 = 100,
 

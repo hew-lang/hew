@@ -2997,11 +2997,15 @@ pub fn lower_program_with_mono_cap(
     // `std/builtins.hew` program rather than the module graph, but they are
     // lowered under the same `std.builtins` owner every downstream stage looks
     // them up by. Publish their identities alongside the graph's.
-    ctx.source_type_identities.extend(
-        hew_types::actor_delivery::DECLARATIONS
-            .iter()
-            .map(|name| format!("std.builtins.{name}")),
-    );
+    for name in hew_types::actor_delivery::DECLARATIONS {
+        let canonical = format!("std.builtins.{name}");
+        ctx.source_type_identities.insert(canonical.clone());
+        // A bare reference at root binds to the same owner. A root
+        // declaration of the same name still wins: the local-declaration
+        // check in `resolve_named_type_ref` runs before this alias.
+        ctx.file_import_root_type_aliases
+            .insert((*name).to_string(), canonical);
+    }
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
             if *module_id == module_graph.root {
@@ -12106,7 +12110,7 @@ impl LowerCtx {
     }
 
     /// Interpolating a value whose `impl Display` block is generic
-    /// (`impl<E, M> Display for ActorError<E, M>`) needs the same
+    /// (`impl<E> Display for ActorError<E>`) needs the same
     /// per-instantiation monomorphisation an ordinary `value.fmt()` call gets.
     /// The f-string spine synthesises its own call site, so no checker
     /// `call_type_args` entry exists for it; the concrete type's own arguments
@@ -22431,6 +22435,25 @@ impl LowerCtx {
         )
     }
 
+    /// `ActorError` written with no type arguments means `ActorError<Never>`,
+    /// the envelope of a call on a handler that cannot fail. The checker
+    /// applies the same default; both must agree on the lowered identity.
+    fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        let resolved = self.resolve_named_type_ref_inner(name, args);
+        if matches!(&resolved, ResolvedTy::Named { name, args, builtin: None, .. }
+            if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE && args.is_empty())
+        {
+            return ResolvedTy::named_user(
+                hew_types::actor_delivery::ACTOR_ERROR_TYPE.to_string(),
+                vec![ResolvedTy::named_user(
+                    hew_types::actor_delivery::NEVER_TYPE.to_string(),
+                    Vec::new(),
+                )],
+            );
+        }
+        resolved
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single match over every TypeExpr variant; splitting would scatter the type-lowering authority"
@@ -22440,7 +22463,7 @@ impl LowerCtx {
     /// annotation as written (possibly module-qualified); `args` are the
     /// already-lowered generic arguments. Split out of `lower_type` to keep
     /// that dispatcher under the line budget.
-    fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+    fn resolve_named_type_ref_inner(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
         if let Some(checked) = self.checked_encoding_type(name, &args) {
             return checked;
         }

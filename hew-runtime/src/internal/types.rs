@@ -506,7 +506,7 @@ pub enum PublicAskResultTag {
     Err(i32),
 }
 
-/// Translate a runtime ask tag into the public `ActorError<E, M>` domain.
+/// Translate a runtime ask tag into the public `ActorError<E>` domain.
 ///
 /// The public discriminants are `ActorError`'s declaration order in
 /// `std/builtins.hew`: `Rejected` 0, `Failed` 1, `Trapped` 2, `Dead` 3,

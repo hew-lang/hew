@@ -1025,10 +1025,7 @@ impl Checker {
         let call_ty = match &dispatch {
             ActorMethodKind::Ask {
                 reply_ty: reply, ..
-            } => Ty::result(
-                reply.clone(),
-                Ty::actor_error(Ty::never_type(), Ty::never_type()),
-            ),
+            } => Ty::result(reply.clone(), Ty::actor_error(Ty::never_type())),
             _ => reply_ty,
         };
         self.actor_method_dispatch
@@ -4208,10 +4205,7 @@ impl Checker {
                 if matches!(resolved_r, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(
-                        resolved_r,
-                        Ty::actor_error(Ty::never_type(), Ty::never_type()),
-                    )
+                    Ty::result(resolved_r, Ty::actor_error(Ty::never_type()))
                 }
             }
             "try_send" => {
@@ -4406,10 +4400,7 @@ impl Checker {
                 if matches!(resolved_r, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(
-                        resolved_r,
-                        Ty::actor_error(Ty::never_type(), Ty::never_type()),
-                    )
+                    Ty::result(resolved_r, Ty::actor_error(Ty::never_type()))
                 }
             }
             "close" => {

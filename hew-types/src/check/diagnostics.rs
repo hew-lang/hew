@@ -617,7 +617,7 @@ impl Checker {
     }
 
     /// A variant carrying an uninhabited payload has no values, so no `match`
-    /// needs an arm for it. `ActorError<Never, M>.Failed(Never)` is the case
+    /// needs an arm for it. `ActorError<Never>.Failed(Never)` is the case
     /// this exists for: an infallible handler's completion call can never
     /// report a declared failure.
     fn variant_is_unconstructable(&self, shape: &super::patterns::VariantPayloadShape) -> bool {

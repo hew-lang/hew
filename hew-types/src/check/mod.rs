@@ -2309,6 +2309,7 @@ impl Checker {
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
             borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
+            borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),
             type_facts,
             type_fact_context,
             resolved_expr_types: resolved_expr_types_typed,

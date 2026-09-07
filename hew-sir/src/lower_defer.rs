@@ -199,10 +199,12 @@ impl Builder<'_, '_> {
                 self.emit_deferred_body(&action)?;
                 ran = true;
             }
+            // A loan is a dependent of what it borrows: it ends before the
+            // bindings whose storage it names.
+            self.end_scope_loans(index)?;
             for binding in self.scopes[index].clone().into_iter().rev() {
                 self.end_binding_scope(binding)?;
             }
-            self.end_scope_loans(index)?;
         }
         self.cleanup_draining = previous_draining;
         if ran || self.cleanup_may_fail {

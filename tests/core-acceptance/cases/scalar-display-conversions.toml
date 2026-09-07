@@ -1,0 +1,10 @@
+[[case]]
+id = "scalar-display-conversions"
+intent = "Every scalar width, char and bool render through their runtime string conversion; narrow widths widen to the canonical ABI width first."
+source = "cases/scalar-display-conversions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "-7 -300 -70000 65535 4000000000 9000000000000000000\n1.5 3 é true\n"
+exit = 0

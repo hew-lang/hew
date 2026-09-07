@@ -143,6 +143,8 @@ pub enum RuntimeValueKind {
     I64,
     U64,
     F64,
+    /// A Unicode scalar. The C ABI carries it as `i32`.
+    Char,
     String,
     Bytes,
     /// The signature's receiver, constrained by canonical builtin identity.
@@ -167,6 +169,7 @@ impl RuntimeValueKind {
                 | (Self::I64, ResolvedTy::I64)
                 | (Self::U64, ResolvedTy::U64)
                 | (Self::F64, ResolvedTy::F64)
+                | (Self::Char, ResolvedTy::Char)
                 | (Self::String, ResolvedTy::String)
                 | (Self::Bytes, ResolvedTy::Bytes)
         )
@@ -197,6 +200,7 @@ impl RuntimeValueKind {
             Self::I64 => ResolvedTy::I64,
             Self::U64 => ResolvedTy::U64,
             Self::F64 => ResolvedTy::F64,
+            Self::Char => ResolvedTy::Char,
             Self::String => ResolvedTy::String,
             Self::Bytes => ResolvedTy::Bytes,
             Self::Receiver(expected) => {
@@ -981,6 +985,42 @@ const SIR_BOOL_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
     ty: RuntimeValueKind::Bool,
     effect: RuntimeArgumentEffect::Copy,
 }];
+const SIR_I32_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::I32,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+const SIR_U32_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::U32,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+const SIR_U64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::U64,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+const SIR_F64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::F64,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+const SIR_STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::String,
+    effect: RuntimeArgumentEffect::Borrow,
+}];
+const SIR_STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
+    &[SIR_STRING_BORROW[0], SIR_STRING_BORROW[0]];
+const SIR_BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::Bytes,
+    effect: RuntimeArgumentEffect::Borrow,
+}];
+const SIR_U8_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::U8,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+const SIR_NO_FAILURES: &[RuntimeLogicalFailure] = &[];
+const SIR_INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
+const SIR_CHAR_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::Char,
+    effect: RuntimeArgumentEffect::Copy,
+}];
 
 impl ConsumeVerdict {
     /// `true` iff the verdict directs the callee to own/drop the argument —
@@ -1567,7 +1607,12 @@ pub enum RuntimeCallFamily {
     StringToUppercase,
     StringTrim,
     U8ToString,
+    I32ToString,
     I64ToString,
+    U32ToString,
+    U64ToString,
+    F64ToString,
+    CharToString,
     /// The selected type and newline choice are required in addition to the
     /// shared C symbol; they cannot be reconstructed from that symbol alone.
     Print {
@@ -2245,7 +2290,12 @@ impl RuntimeCallFamily {
                 newline: false,
             }),
             "to_string_u8" => Some(Self::U8ToString),
+            "to_string_i32" => Some(Self::I32ToString),
             "to_string_i64" => Some(Self::I64ToString),
+            "to_string_u32" => Some(Self::U32ToString),
+            "to_string_u64" => Some(Self::U64ToString),
+            "to_string_f64" => Some(Self::F64ToString),
+            "to_string_char" => Some(Self::CharToString),
             "to_string_bool" => Some(Self::BoolToString),
             "string_concat" => Some(Self::StringConcat),
             "bytes::new" => Some(Self::BytesNew),
@@ -2505,7 +2555,12 @@ impl RuntimeCallFamily {
             Self::StringToUppercase => "hew_string_to_uppercase",
             Self::StringTrim => "hew_string_trim",
             Self::U8ToString => "hew_u8_to_string",
+            Self::I32ToString => "hew_int_to_string",
             Self::I64ToString => "hew_i64_to_string",
+            Self::U32ToString => "hew_uint_to_string",
+            Self::U64ToString => "hew_u64_to_string",
+            Self::F64ToString => "hew_float_to_string",
+            Self::CharToString => "hew_char_to_string",
             Self::Print { .. } => "hew_print_value",
             Self::ProcessExit => "hew_exit",
             Self::StderrWrite => "hew_io_write_err",
@@ -2901,7 +2956,12 @@ impl RuntimeCallFamily {
             "hew_string_to_uppercase" => Self::StringToUppercase,
             "hew_string_trim" => Self::StringTrim,
             "hew_u8_to_string" => Self::U8ToString,
+            "hew_int_to_string" => Self::I32ToString,
             "hew_i64_to_string" => Self::I64ToString,
+            "hew_uint_to_string" => Self::U32ToString,
+            "hew_u64_to_string" => Self::U64ToString,
+            "hew_float_to_string" => Self::F64ToString,
+            "hew_char_to_string" => Self::CharToString,
             "hew_exit" => Self::ProcessExit,
             "hew_io_write_err" => Self::StderrWrite,
             "hew_bool_to_string" => Self::BoolToString,
@@ -3502,28 +3562,6 @@ impl RuntimeCallFamily {
         use RuntimeResultEffect::{BitCopy, FreshOwned, Never, Unit, UpdatedReceiver};
         use RuntimeValueKind::{Bool, Bytes, String, I64, U8};
 
-        const STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: String,
-            effect: Borrow,
-        }];
-        const STRING_PAIR_BORROW: &[RuntimeArgumentContract] = &[
-            RuntimeArgumentContract {
-                ty: String,
-                effect: Borrow,
-            },
-            RuntimeArgumentContract {
-                ty: String,
-                effect: Borrow,
-            },
-        ];
-        const U8_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: U8,
-            effect: Copy,
-        }];
-        const BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: Bytes,
-            effect: Borrow,
-        }];
         const BYTES_INDEX: &[RuntimeArgumentContract] = &[
             RuntimeArgumentContract {
                 ty: Bytes,
@@ -3544,8 +3582,6 @@ impl RuntimeCallFamily {
                 effect: Copy,
             },
         ];
-        const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
-        const INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
 
         if let Some(contract) = self.collection_semantic_contract() {
             return Some(contract);
@@ -3567,35 +3603,63 @@ impl RuntimeCallFamily {
                     effect: Borrow,
                 }],
                 FreshOwned(RuntimeValueKind::Receiver(BuiltinType::JsonValue)),
-                NO_FAILURES,
+                SIR_NO_FAILURES,
             ),
             Self::StringEquals | Self::StringStartsWith | Self::StringContains => {
-                runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
+                runtime_semantic_contract(SIR_STRING_PAIR_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
             }
             Self::StringIsEmpty => {
-                runtime_semantic_contract(STRING_BORROW, BitCopy(Bool), NO_FAILURES)
+                runtime_semantic_contract(SIR_STRING_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
             }
-            Self::StringConcat => {
-                runtime_semantic_contract(STRING_PAIR_BORROW, FreshOwned(String), NO_FAILURES)
+            Self::StringConcat => runtime_semantic_contract(
+                SIR_STRING_PAIR_BORROW,
+                FreshOwned(String),
+                SIR_NO_FAILURES,
+            ),
+            Self::StringLen => {
+                runtime_semantic_contract(SIR_STRING_BORROW, BitCopy(I64), SIR_NO_FAILURES)
             }
-            Self::StringLen => runtime_semantic_contract(STRING_BORROW, BitCopy(I64), NO_FAILURES),
-            Self::U8ToString => runtime_semantic_contract(U8_COPY, FreshOwned(String), NO_FAILURES),
+            Self::U8ToString => {
+                runtime_semantic_contract(SIR_U8_COPY, FreshOwned(String), SIR_NO_FAILURES)
+            }
             Self::I64ToString => {
-                runtime_semantic_contract(SIR_I64_COPY, FreshOwned(String), NO_FAILURES)
+                runtime_semantic_contract(SIR_I64_COPY, FreshOwned(String), SIR_NO_FAILURES)
+            }
+            // The remaining scalar conversions differ only in the width they
+            // copy in; every one returns a fresh owned string and cannot fail.
+            Self::I32ToString
+            | Self::U32ToString
+            | Self::U64ToString
+            | Self::F64ToString
+            | Self::CharToString => {
+                let argument = match self {
+                    Self::I32ToString => SIR_I32_COPY,
+                    Self::U32ToString => SIR_U32_COPY,
+                    Self::U64ToString => SIR_U64_COPY,
+                    Self::F64ToString => SIR_F64_COPY,
+                    _ => SIR_CHAR_COPY,
+                };
+                runtime_semantic_contract(argument, FreshOwned(String), SIR_NO_FAILURES)
             }
             Self::Print { kind, .. } => {
-                runtime_semantic_contract(kind.arguments(), Unit, NO_FAILURES)
+                runtime_semantic_contract(kind.arguments(), Unit, SIR_NO_FAILURES)
             }
-            Self::ProcessExit => runtime_semantic_contract(SIR_I64_COPY, Never, NO_FAILURES),
-            Self::StderrWrite => runtime_semantic_contract(STRING_BORROW, Unit, NO_FAILURES),
+            Self::ProcessExit => runtime_semantic_contract(SIR_I64_COPY, Never, SIR_NO_FAILURES),
+            Self::StderrWrite => {
+                runtime_semantic_contract(SIR_STRING_BORROW, Unit, SIR_NO_FAILURES)
+            }
             Self::BoolToString => {
-                runtime_semantic_contract(SIR_BOOL_COPY, FreshOwned(String), NO_FAILURES)
+                runtime_semantic_contract(SIR_BOOL_COPY, FreshOwned(String), SIR_NO_FAILURES)
             }
-            Self::BytesNew => runtime_semantic_contract(&[], FreshOwned(Bytes), NO_FAILURES),
-            Self::BytesLen => runtime_semantic_contract(BYTES_BORROW, BitCopy(I64), NO_FAILURES),
-            Self::BytesIndex => runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), INDEX_FAILURES),
+            Self::BytesNew => runtime_semantic_contract(&[], FreshOwned(Bytes), SIR_NO_FAILURES),
+            Self::BytesLen => {
+                runtime_semantic_contract(SIR_BYTES_BORROW, BitCopy(I64), SIR_NO_FAILURES)
+            }
+            Self::BytesIndex => {
+                runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), SIR_INDEX_FAILURES)
+            }
             Self::BytesPush => {
-                runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), NO_FAILURES)
+                runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
             }
             _ => return None,
         })
@@ -3627,6 +3691,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::I64
                     | RuntimeValueKind::U64
                     | RuntimeValueKind::F64
+                    | RuntimeValueKind::Char
                     | RuntimeValueKind::Receiver(_)
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)
@@ -3982,7 +4047,12 @@ impl RuntimeCallFamily {
             | F::StringToUppercase
             | F::StringTrim
             | F::U8ToString
+            | F::I32ToString
             | F::I64ToString
+            | F::U32ToString
+            | F::U64ToString
+            | F::F64ToString
+            | F::CharToString
             | F::Print { .. }
             | F::SupervisorDirectId
             | F::SupervisorChildGet

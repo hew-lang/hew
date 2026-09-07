@@ -11916,13 +11916,10 @@ impl LowerCtx {
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
+            | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Bool
-            | ResolvedTy::Char => {
-                let builtin = scalar_display_builtin(&ty);
-                self.build_catalog_call(builtin, vec![value], span)
-            }
-            ResolvedTy::F32 => self.lower_f32_display(value, span),
+            | ResolvedTy::Char => self.lower_scalar_display(value, &ty, span),
             // `duration` has a pure-Hew `impl Display for duration` in
             // `std/builtins.hew`, discovered and lowered like any imported
             // module's impl (see `insert_builtins_display_module`), so
@@ -11948,8 +11945,7 @@ impl LowerCtx {
                 // satisfaction path. Handled before the general `Named` arm,
                 // which would otherwise route to a non-existent `instant::fmt`
                 // impl symbol and fail closed.
-                let builtin = scalar_display_builtin(&ResolvedTy::I64);
-                self.build_catalog_call(builtin, vec![value], span)
+                self.lower_scalar_display(value, &ResolvedTy::I64, span)
             }
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::NodeId),
@@ -12047,22 +12043,31 @@ impl LowerCtx {
         }
     }
 
-    fn lower_f32_display(&mut self, value: HirExpr, span: Span) -> HirExpr {
-        // `hew_float_to_string` takes an f64, matching the stdlib Display impl.
-        let widened = HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::F64, &self.type_classes),
-            ty: ResolvedTy::F64,
-            intent: IntentKind::Read,
-            kind: HirExprKind::NumericCast {
-                value: Box::new(value),
-                from_ty: ResolvedTy::F32,
-                to_ty: ResolvedTy::F64,
-            },
-            span: span.clone(),
+    /// Render one scalar through its `to_string_*` catalog builtin, widening
+    /// first when the scalar is narrower than the conversion's ABI type
+    /// (`f32`/`i8`/`i16`/`u16`/`isize`/`usize`). The runtime exports one entry
+    /// per canonical width, so the cast is what lets the narrow widths share
+    /// it, and it keeps the argument type equal to the runtime contract's.
+    fn lower_scalar_display(&mut self, value: HirExpr, ty: &ResolvedTy, span: Span) -> HirExpr {
+        let (builtin, abi_ty) = scalar_display_builtin(ty);
+        let argument = if *ty == abi_ty {
+            value
+        } else {
+            HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                value_class: ValueClass::of_ty(&abi_ty, &self.type_classes),
+                ty: abi_ty.clone(),
+                intent: IntentKind::Read,
+                kind: HirExprKind::NumericCast {
+                    value: Box::new(value),
+                    from_ty: ty.clone(),
+                    to_ty: abi_ty,
+                },
+                span: span.clone(),
+            }
         };
-        self.build_catalog_call("to_string_f64", vec![widened], span)
+        self.build_catalog_call(builtin, vec![argument], span)
     }
 
     /// Dispatch a `Display::fmt` call to a concrete named/builtin type's impl
@@ -32800,17 +32805,16 @@ fn scan_expr_for_vec_index_gate(
 /// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
 /// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
 /// non-scalar type is a caller bug (the dispatch match never routes it here).
-fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
+fn scalar_display_builtin(ty: &ResolvedTy) -> (&'static str, ResolvedTy) {
     match ty {
-        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",
-        ResolvedTy::I64 | ResolvedTy::Isize => "to_string_i64",
-        ResolvedTy::U8 => "to_string_u8",
-        ResolvedTy::U16 => "to_string_u16",
-        ResolvedTy::U32 => "to_string_u32",
-        ResolvedTy::U64 | ResolvedTy::Usize => "to_string_u64",
-        ResolvedTy::F32 | ResolvedTy::F64 => "to_string_f64",
-        ResolvedTy::Bool => "to_string_bool",
-        ResolvedTy::Char => "to_string_char",
+        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => ("to_string_i32", ResolvedTy::I32),
+        ResolvedTy::I64 | ResolvedTy::Isize => ("to_string_i64", ResolvedTy::I64),
+        ResolvedTy::U8 => ("to_string_u8", ResolvedTy::U8),
+        ResolvedTy::U16 | ResolvedTy::U32 => ("to_string_u32", ResolvedTy::U32),
+        ResolvedTy::U64 | ResolvedTy::Usize => ("to_string_u64", ResolvedTy::U64),
+        ResolvedTy::F32 | ResolvedTy::F64 => ("to_string_f64", ResolvedTy::F64),
+        ResolvedTy::Bool => ("to_string_bool", ResolvedTy::Bool),
+        ResolvedTy::Char => ("to_string_char", ResolvedTy::Char),
         _ => unreachable!("scalar_display_builtin called on non-scalar type {ty:?}"),
     }
 }

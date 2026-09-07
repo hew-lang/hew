@@ -3707,6 +3707,54 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
+            PhysicalRuntimeAction::I32ToString
+            | PhysicalRuntimeAction::U32ToString
+            | PhysicalRuntimeAction::CharToString => {
+                // `char` crosses the C ABI as the i32 the runtime expects,
+                // so the three share one 32-bit scalar shape.
+                let symbol = match action {
+                    PhysicalRuntimeAction::I32ToString => "hew_int_to_string",
+                    PhysicalRuntimeAction::U32ToString => "hew_uint_to_string",
+                    _ => "hew_char_to_string",
+                };
+                let function = get_or_declare_external(
+                    self.llvm,
+                    symbol,
+                    ptr.fn_type(&[self.ctx.i32_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "scalar32.to.string.input")?.into()],
+                    "scalar32.to.string",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::U64ToString => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_u64_to_string",
+                    ptr.fn_type(&[self.ctx.i64_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "u64.to.string.input")?.into()],
+                    "u64.to.string",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::F64ToString => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_float_to_string",
+                    ptr.fn_type(&[self.ctx.f64_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "f64.to.string.input")?.into()],
+                    "f64.to.string",
+                )?;
+                self.store(required_result()?, value)?;
+            }
             PhysicalRuntimeAction::U8ToString => {
                 let function = get_or_declare_external(
                     self.llvm,

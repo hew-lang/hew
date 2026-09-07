@@ -237,13 +237,7 @@ impl Checker {
                 self.reject_replying_handler_through_view(&method_id, span);
                 return Ty::Error;
             }
-            let completion = self.completion_call_type(
-                &method_id,
-                &reply_ty,
-                target,
-                Ty::Tuple(payload),
-                SendPolicy::Wait,
-            );
+            let completion = self.completion_call_type(&method_id, &reply_ty);
             self.record_completion_call_edge(&method_id, span);
             self.actor_method_dispatch.insert(
                 key,
@@ -259,13 +253,7 @@ impl Checker {
             // The call on an actor handle is a completion call: it waits for
             // the handler to finish and yields its unit reply, exactly as a
             // value-returning handler yields its own.
-            let completion = self.completion_call_type(
-                &method_id,
-                &Ty::Unit,
-                target,
-                Ty::Tuple(payload),
-                SendPolicy::Wait,
-            );
+            let completion = self.completion_call_type(&method_id, &Ty::Unit);
             self.record_completion_call_edge(&method_id, span);
             self.actor_method_dispatch.insert(
                 key,
@@ -373,35 +361,17 @@ impl Checker {
     }
 
     /// The result of a completion call: the handler's success value, or an
-    /// `ActorError` carrying the handler's declared failure and the call's own
-    /// sealed message. A handler without a `fails` clause can never produce
-    /// `Failed`, so its error parameter is the uninhabited `Never`.
-    fn completion_call_type(
-        &mut self,
-        method_id: &str,
-        reply_ty: &Ty,
-        target: &Ty,
-        payload: Ty,
-        policy: SendPolicy,
-    ) -> Ty {
-        // An actor-state field annotated with the bare actor name is still a
-        // handle; the sealed message names the handle, which is the form every
-        // downstream stage has a contract for.
-        let target = if target.as_local_actor_ref().is_some() {
-            target.clone()
-        } else {
-            Ty::local_pid(target.clone())
-        };
+    /// `ActorError` carrying the handler's declared failure. A handler without
+    /// a `fails` clause can never produce `Failed`, so its error parameter is
+    /// the uninhabited `Never`.
+    fn completion_call_type(&mut self, method_id: &str, reply_ty: &Ty) -> Ty {
         let (success, failure) = match reply_ty.as_result() {
             Some((success, failure)) if self.receive_fails_methods.contains(method_id) => {
                 (success.clone(), failure.clone())
             }
             _ => (reply_ty.clone(), Ty::never_type()),
         };
-        Ty::result(
-            success,
-            Ty::actor_error(failure, delivery::message_type(target, payload, policy)),
-        )
+        Ty::result(success, Ty::actor_error(failure))
     }
 
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {

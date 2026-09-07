@@ -218,7 +218,7 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
 
         fn main() {
             let remote: RemotePid<Worker>;
-            let result: Result<i64, ActorError<Never, Never>> = remote.ask(Job { n: 9 }, 250);
+            let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
         }
     ";
     let (_tc, lower) = lower_with_types(source);

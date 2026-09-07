@@ -2596,10 +2596,7 @@ impl Checker {
                 if matches!(reply_ty, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(
-                        reply_ty,
-                        Ty::actor_error(Ty::never_type(), Ty::never_type()),
-                    )
+                    Ty::result(reply_ty, Ty::actor_error(Ty::never_type()))
                 }
             }
             _ => {

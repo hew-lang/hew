@@ -199,7 +199,7 @@ impl Display for LookupError {
 
 /// The error of a handler that cannot fail.
 ///
-/// `Never` has no values, so `ActorError<Never, M>.Failed` can never be
+/// `Never` has no values, so `ActorError<Never>.Failed` can never be
 /// constructed: a call on an infallible handler reports transport and
 /// lifecycle outcomes only.
 pub enum Never {
@@ -214,16 +214,15 @@ impl Display for Never {
 /// Error of a completion call on an actor handle.
 ///
 /// `E` is the handler's declared `fails` type — `Never` when the handler
-/// cannot fail — and `M` is the call's sealed message type.
+/// cannot fail. Written bare, `ActorError` means `ActorError<Never>`.
 ///
-/// Only `Rejected` is safely retryable: nothing was accepted, and the sealed
-/// message inside it still owns the complete unsent request. Every other
-/// variant means the request was accepted or its fate is unknown, so
-/// resubmitting it would duplicate work.
-pub enum ActorError<E, M> {
-    /// Nothing was accepted. The sealed message can be resubmitted with
-    /// `.retry()` or readdressed with `.to(target)`.
-    Rejected(SendFailure<M>),
+/// Only `Rejected` is safely retryable: nothing was accepted, so the caller
+/// may make the same call again. Every other variant means the request was
+/// accepted or its fate is unknown, so repeating it would duplicate work.
+pub enum ActorError<E> {
+    /// Nothing was accepted, for the reason it carries. The same call can be
+    /// made again.
+    Rejected(SendError),
     /// The handler ran and returned its declared error.
     Failed(E),
     /// The handler faulted; its actor retains ownership of the fault.
@@ -244,8 +243,8 @@ pub enum ActorError<E, M> {
     Partition,
 }
 
-impl<E, M> Display for ActorError<E, M> {
-    fn fmt(err: ActorError<E, M>) -> string {
+impl<E> Display for ActorError<E> {
+    fn fmt(err: ActorError<E>) -> string {
         match err {
             ActorError.Rejected(_) => "the request was refused and nothing was accepted",
             ActorError.Failed(_) => "the handler returned its declared error",
@@ -442,7 +441,7 @@ impl<T: ActorMsg> RemotePid<T> {
     /// Ask this remote actor for a reply, failing with `ActorError` if the
     /// caller-supplied timeout elapses or routing/reply delivery fails. A
     /// remote call carries no sealed message, so it never reports `Rejected`.
-    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
+    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never>> {
         Err(ActorError.NodeNotRunning)
     }
 }

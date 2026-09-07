@@ -339,7 +339,7 @@ fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
             }
         }
 
-        fn request_value() -> Result<i64, ActorError<Never, Never>> {
+        fn request_value() -> Result<i64, ActorError<Never>> {
             let g = spawn Getter;
             let v = g.get();
             return v;

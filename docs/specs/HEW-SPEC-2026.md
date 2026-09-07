@@ -129,11 +129,12 @@ rather than an incarnation, and re-resolves on every call (§5.6).
 
 **Completion calls.** A call on a `receive fn` through an actor handle waits
 for the handler to finish, exactly as a call on a function does.
-`<pid>.<method>(<args>)` has type `Result<R, ActorError<E, M>>`, where `R` is
-the handler's return type and `()` when it declares none, `E` is its declared
-`fails` type and `Never` when it declares none, and `M` is the call's sealed
-message type. `fork <pid>.<method>(<args>)` starts the same call concurrently
-as a `Task<Result<R, ActorError<E, M>>>` that `await` then joins. The call carries no
+`<pid>.<method>(<args>)` has type `Result<R, ActorError<E>>`, where `R` is
+the handler's return type and `()` when it declares none, and `E` is its
+declared `fails` type and `Never` when it declares none. Written bare,
+`ActorError` means `ActorError<Never>`, so one signature accepts the envelopes
+of calls on different actors. `fork <pid>.<method>(<args>)` starts the same call concurrently
+as a `Task<Result<R, ActorError<E>>>` that `await` then joins. The call carries no
 operator: an ordinary call waits, `fork` starts concurrent work, and `await`
 joins a task. The handler does not run locally; the call returns when the
 handler's turn has finished, which means processed, not durable.

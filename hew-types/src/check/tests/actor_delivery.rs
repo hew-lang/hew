@@ -287,17 +287,13 @@ fn a_call_on_a_handle_completes_with_a_unit_result() {
         .expect("completion call type");
     let (success, failure) = call.as_result().expect("completion result");
     assert_eq!(success, &crate::Ty::Unit, "{call:?}");
-    // The handler declares no `fails`, so the error can never be `Failed`; the
-    // sealed message is the call's own, so `Rejected` names exactly this call.
+    // The handler declares no `fails`, so the error can never be `Failed`: the
+    // envelope's only parameter is the uninhabited `Never`.
     let crate::Ty::Named { name, args, .. } = failure else {
         panic!("completion error is not nominal: {failure:?}");
     };
     assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
-    assert_eq!(args[0], crate::Ty::never_type(), "{failure:?}");
-    assert!(
-        crate::actor_delivery::message_parts(&args[1]).is_some(),
-        "{failure:?}"
-    );
+    assert_eq!(args.as_slice(), [crate::Ty::never_type()], "{failure:?}");
 }
 
 /// A mailbox view only submits, so a value-returning handler has no reply to

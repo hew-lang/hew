@@ -758,7 +758,7 @@ fn concrete_builtin_variant_shape(
 }
 
 /// A variant no value can inhabit: one of its payload types has no values.
-/// `ActorError<Never, M>.Failed(Never)` is the case this exists for — an
+/// `ActorError<Never>.Failed(Never)` is the case this exists for — an
 /// infallible handler's completion call can never report a declared failure.
 fn is_unconstructable_variant(module: &HirModule, variant: &SemVariant) -> bool {
     variant

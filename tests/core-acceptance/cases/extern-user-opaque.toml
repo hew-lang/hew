@@ -1,0 +1,11 @@
+[[case]]
+id = "extern-user-opaque"
+intent = "A user-declared `#[opaque]` handle over its own `extern \"C\"` create, use and free crosses the C ABI: released once by an explicit consuming close, once by scope exit, once from inside a Vec, and once on a fault path."
+source = "cases/extern-user-opaque.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n9\n1\n17\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

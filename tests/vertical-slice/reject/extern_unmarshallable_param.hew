@@ -1,0 +1,12 @@
+// A tuple has no C-ABI representation, so it cannot be an `extern`
+// parameter. The refusal names the offending type at its own span rather
+// than failing later in codegen with an internal representation error.
+extern "C" {
+    fn hew_takes_a_pair(pair: (i64, i64)) -> i64;
+}
+
+fn main() -> i64 {
+    unsafe {
+        hew_takes_a_pair((1, 2))
+    }
+}

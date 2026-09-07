@@ -1,0 +1,16 @@
+// A `consume` parameter on an extern transfers the owner, so the binding
+// cannot be handed to a second call.
+extern "C" {
+    fn hew_string_drop(consume s: string);
+}
+
+fn main() -> i64 {
+    let text = "a" + "b";
+    unsafe {
+        hew_string_drop(text)
+    };
+    unsafe {
+        hew_string_drop(text)
+    };
+    0
+}

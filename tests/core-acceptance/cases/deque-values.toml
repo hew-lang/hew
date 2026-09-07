@@ -1,0 +1,11 @@
+[[case]]
+id = "deque-values"
+intent = "A deque handle crosses the C ABI for every operation: push and pop at both ends, iteration to empty, an explicit close, and a second deque released by scope exit."
+source = "cases/deque-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3\n1\n3\n1\n2\n1\n"
+stderr = ""
+exit = 0

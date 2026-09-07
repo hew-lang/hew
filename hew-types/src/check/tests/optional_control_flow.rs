@@ -36,19 +36,28 @@ fn fallible_returns_reject_wrong_boundary_and_nested_context() {
 }
 
 #[test]
-fn fallible_receive_completion_is_explicitly_unadmitted() {
-    let checked = check_source("actor Worker { receive fn read() -> i64 fails string { 7 } }");
-    assert!(
-        checked
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::InvalidOperation
-                && error
-                    .message
-                    .contains("fallible message completion lowering")),
-        "{:?}",
-        checked.errors
-    );
+fn fallible_receive_completion_carries_its_declared_failure() {
+    let source = "actor Worker { receive fn read() -> i64 fails string { Ok(7) } } \
+         fn main() { let w = spawn Worker(); let _ = w.read(); }";
+    let checked = check_source(source);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let start = source.find("w.read()").expect("call site");
+    let call = checked
+        .expr_types
+        .get(&crate::check::SpanKey::in_module(
+            &(start..start + "w.read()".len()),
+            0,
+        ))
+        .expect("completion call type");
+    let (success, failure) = call.as_result().expect("completion result");
+    assert_eq!(success, &crate::Ty::I64, "{call:?}");
+    // `fails string` becomes the envelope's `Failed(string)`; the handler's own
+    // `Result` never reaches the caller as a nested value.
+    let crate::Ty::Named { name, args, .. } = failure else {
+        panic!("completion error is not nominal: {failure:?}");
+    };
+    assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
+    assert_eq!(args[0], crate::Ty::String, "{failure:?}");
 }
 
 #[test]

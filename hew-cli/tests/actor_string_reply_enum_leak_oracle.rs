@@ -14,11 +14,11 @@
 //!     }
 //! }
 //! …
-//! let r = await d.describe("-suffix", i);   // r: Result<Status, AskError>
+//! let r = await d.describe("-suffix", i);   // r: Result<Status, ActorError>
 //! match r { .Ok(st) => match st { Described(s) => …, Loaded(v) => … }, .Err(_) => {} }
 //! ```
 //!
-//! The ask reply is byte-copied into the caller as `Result<Status, AskError>`.
+//! The ask reply is byte-copied into the caller as `Result<Status, ActorError>`.
 //! The nested `match .Ok(st) => match st { … }` destructures the inner `Status`
 //! enum out of the outer `Result`. Both composites are heap-owning enum
 //! candidates; the outer composite's recursive `EnumInPlace` drop is the single
@@ -39,7 +39,7 @@
 //! reply. Measured on trunk: ~1 leak / reply (2000 replies → 1999 leaks / 95 952
 //! bytes). Surfaced under `leaks --atExit` while validating #2641.
 //!
-//! A plain-`string` reply (`Result<string, AskError>`, a leaf payload with no
+//! A plain-`string` reply (`Result<string, ActorError>`, a leaf payload with no
 //! nested scalar sibling) never hit the bitcopy-escape path and did NOT leak;
 //! both a concat and a constant plain-string reply are pinned here as controls.
 //!
@@ -77,7 +77,7 @@ use support::{describe_output, require_codegen};
 
 /// Headline #2717 shape: actor returns an enum with a heap variant
 /// (`Described(string)`, built by concat) and a scalar sibling
-/// (`Loaded(i64)`). The reply is `Result<Status, AskError>`; the caller
+/// (`Loaded(i64)`). The reply is `Result<Status, ActorError>`; the caller
 /// double-matches. The handler alternates variants so both drop paths run.
 fn actor_enum_reply_source(frames: usize) -> String {
     format!(
@@ -179,7 +179,7 @@ fn actor_string_plain_reply_source(frames: usize) -> String {
 /// Non-actor substrate reproduction: a plain function returning
 /// `Result<Status, i64>`, double-matched exactly like the ask path. This is the
 /// minimal shape the prover fix targets — the ask boundary just always wraps a
-/// reply in `Result<R, AskError>`, so the same nested-enum-with-scalar-sibling
+/// reply in `Result<R, ActorError>`, so the same nested-enum-with-scalar-sibling
 /// destructure reaches the prover.
 fn result_enum_scalar_sibling_source(frames: usize) -> String {
     format!(

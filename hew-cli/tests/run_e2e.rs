@@ -5171,20 +5171,17 @@ fn run_package_module_actor_spawns_and_calls() {
         &main,
         "import hew.bank;\n\
          \n\
-         fn report(label: string, r: Result<i64, AskError>) {\n\
-         \x20   match r {\n\
-         \x20       .Ok(v) => println(f\"{label}={v}\"),\n\
-         \x20       .Err(_) => println(f\"{label}=ERR\"),\n\
-         \x20   }\n\
+         fn report(label: string, value: i64) {\n\
+         \x20   println(f\"{label}={value}\");\n\
          }\n\
          \n\
          fn main() {\n\
          \x20   let acct = spawn bank.Account(opening: 100);\n\
-         \x20   report(\"after_open\", acct.peek());\n\
-         \x20   report(\"after_deposit\", acct.deposit(50));\n\
-         \x20   report(\"after_overdraw\", acct.withdraw(1000));\n\
-         \x20   report(\"after_withdraw\", acct.withdraw(30));\n\
-         \x20   report(\"final\", acct.peek());\n\
+         \x20   match acct.peek() { .Ok(v) => report(\"after_open\", v), .Err(_) => println(\"after_open=ERR\"), }\n\
+         \x20   match acct.deposit(50) { .Ok(v) => report(\"after_deposit\", v), .Err(_) => println(\"after_deposit=ERR\"), }\n\
+         \x20   match acct.withdraw(1000) { .Ok(v) => report(\"after_overdraw\", v), .Err(_) => println(\"after_overdraw=ERR\"), }\n\
+         \x20   match acct.withdraw(30) { .Ok(v) => report(\"after_withdraw\", v), .Err(_) => println(\"after_withdraw=ERR\"), }\n\
+         \x20   match acct.peek() { .Ok(v) => report(\"final\", v), .Err(_) => println(\"final=ERR\"), }\n\
          }\n",
     )
     .unwrap();

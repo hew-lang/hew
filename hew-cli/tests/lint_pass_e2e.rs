@@ -878,7 +878,7 @@ fn must_use_inline_directive_suppresses() {
 // ── checker-stage lint: must_use on a discarded `actor.msg()` result ───
 
 /// A program whose only diagnostic is `E_SEND_RESULT_DROPPED`: `d.process(5)`
-/// is discarded in statement position, dropping the `Result<i64, AskError>`
+/// is discarded in statement position, dropping the `Result<i64, ActorError>`
 /// the completion call returns — a silently lost timeout / full-mailbox /
 /// stopped-actor signal. This is a compile error, not a lint.
 const ASK_MUST_USE_DISCARD: &str = "actor Doubler {\n\
@@ -914,8 +914,8 @@ fn discarded_call_result_is_refused_by_default() {
         "expected the discarded-result refusal to render:\n{stderr}"
     );
     assert!(
-        stderr.contains("AskError"),
-        "the error should name the AskError type:\n{stderr}"
+        stderr.contains("ActorError"),
+        "the error should name the ActorError type:\n{stderr}"
     );
     assert!(
         stderr.contains("let _ = <expr>;"),

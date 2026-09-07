@@ -1561,7 +1561,7 @@ fn gen_fn_return_type_spelling_yield_type_accepted() {
 }
 
 /// Only a `receive gen fn` produces a stream a `for` loop can drain. A plain
-/// `receive fn` is an ask whose call value is `Result<Stream<string>, AskError>`
+/// `receive fn` is an ask whose call value is `Result<Stream<string>, ActorError>`
 /// (U383), so the loop is refused rather than silently draining the reply.
 #[test]
 fn for_over_a_plain_receive_fn_is_refused() {

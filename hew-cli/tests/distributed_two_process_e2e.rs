@@ -953,7 +953,7 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     assert!(
         stdout.contains("PASS partition_ask reason="),
         "expected a typed fail-closed PASS (the ask must resolve to a typed \
-         AskError before its deadline, not hang); client stdout:\n{stdout}"
+         ActorError before its deadline, not hang); client stdout:\n{stdout}"
     );
     // A timeout is the hang-to-deadline failure this gate exists to catch: the ask
     // waited its whole deadline because no proactive fail-closed path fired.

@@ -62,6 +62,120 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     }))
 }
 
+/// A completion call waits for admission the same way a `.Wait` submission
+/// does, but it carries the reply channel the handler answers on. Unlike a
+/// one-way submission, the request wrapper owns the transferred fields, so an
+/// abandoned admission releases them.
+#[derive(Debug)]
+pub struct HewNativeAsk {
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut super::HewMsgEnvelope,
+    channel: *mut std::ffi::c_void,
+    _waker: Arc<OwnedWaker>,
+}
+
+impl Drop for HewNativeAsk {
+    fn drop(&mut self) {
+        if !self.envelope.is_null() {
+            // SAFETY: an unadmitted request owns its transferred fields and one
+            // reply-channel reference. Admission clears both slots first.
+            unsafe {
+                super::hew_msg_envelope_release(self.envelope);
+                crate::reply_channel::hew_reply_channel_free(self.channel.cast());
+            }
+        }
+    }
+}
+
+/// Register readiness before the first admission attempt of a completion call.
+///
+/// # Safety
+/// The payload is a unique malloc wrapper whose fields have transferred to this
+/// request. The channel, waker and destructor are valid for that request.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_wait_new(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    payload: *mut std::ffi::c_void,
+    size: usize,
+    drop_payload: super::HewMsgEnvelopeDropFn,
+    channel: *mut std::ffi::c_void,
+    waker: *const HewWaker,
+) -> *mut HewNativeAsk {
+    // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
+    let (envelope, waker) = unsafe {
+        (
+            super::hew_msg_envelope_new(payload, size, Some(drop_payload)),
+            Arc::new(OwnedWaker::retain(&*waker)),
+        )
+    };
+    if envelope.is_null() {
+        // SAFETY: allocation failed; the wrapper still owns the typed fields.
+        unsafe {
+            drop_payload(payload);
+            libc::free(payload);
+        }
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the request holds one reference for the duration of admission.
+    unsafe { crate::reply_channel::hew_reply_channel_retain(channel.cast()) };
+    crate::actor::register_native_capacity(token, &waker);
+    Box::into_raw(Box::new(HewNativeAsk {
+        token,
+        message,
+        envelope,
+        channel,
+        _waker: waker,
+    }))
+}
+
+/// Return -1 while full, 0 after admitting the request, or the `AskError` code
+/// of a terminal admission failure.
+///
+/// # Safety
+/// The handle is null or uniquely borrowed until a terminal poll and release.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32 {
+    use crate::internal::types::AskError;
+    // SAFETY: the caller exclusively drives this operation.
+    let Some(wait) = (unsafe { wait.as_mut() }) else {
+        return AskError::SendFailed as i32;
+    };
+    // SAFETY: this operation owns its unpublished request until admission.
+    let outcome = unsafe {
+        crate::actor::try_submit_native_request(
+            wait.token,
+            wait.message,
+            wait.envelope,
+            wait.channel,
+        )
+    };
+    match outcome {
+        super::SendOutcome::Enqueued => {
+            wait.envelope = std::ptr::null_mut();
+            wait.channel = std::ptr::null_mut();
+            AskError::None as i32
+        }
+        super::SendOutcome::Failed => -1,
+        super::SendOutcome::Closed => AskError::ActorStopped as i32,
+        super::SendOutcome::Oom => AskError::SendFailed as i32,
+        _ => unreachable!("native admission does not select an overflow policy"),
+    }
+}
+
+/// Release readiness, an unadmitted request and its reply-channel reference.
+///
+/// # Safety
+/// `wait` is null or the unique owner returned by `hew_actor_ask_wait_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_wait_free(wait: *mut HewNativeAsk) {
+    if !wait.is_null() {
+        // SAFETY: the caller relinquishes its unique handle.
+        drop(unsafe { Box::from_raw(wait) });
+    }
+}
+
 /// Return -1 while full, 0 after transferring the message, 2 when closed, or 3
 /// on allocation failure. Terminal failures preserve the caller's typed fields.
 ///

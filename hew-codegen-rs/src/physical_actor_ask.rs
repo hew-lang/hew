@@ -160,10 +160,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             0,
         )?;
         let cycle = self.ctx.append_basic_block(self.value, "ask.cycle.fault");
-        let submit_fn = coro::external(
+        // A completion call waits for admission as well as for the reply: a
+        // full mailbox parks the caller instead of refusing the call.
+        let admit_new = coro::external(
             self.llvm,
-            "hew_actor_ask_submit_native",
-            self.ctx.i32_type().fn_type(
+            "hew_actor_ask_wait_new",
+            ptr.fn_type(
                 &[
                     size_ty.into(),
                     self.ctx.i32_type().into(),
@@ -171,13 +173,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty.into(),
                     ptr.into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
         )?;
-        let submitted = call_value(
+        let admission = call_value(
             &self.builder,
-            submit_fn,
+            admit_new,
             &[
                 self.load_actor_target(sources[0], "ask.target")?.into(),
                 self.ctx
@@ -188,13 +191,74 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 size_ty.const_int(size, false).into(),
                 drop_request.as_global_value().as_pointer_value().into(),
                 channel.into(),
+                waker.into(),
             ],
             "ask.admission",
         )?
-        .into_int_value();
+        .into_pointer_value();
         for source in &sources {
             self.clear_owned(*source)?;
         }
+        let admit_poll = self.ctx.append_basic_block(self.value, "ask.admit.poll");
+        let admit_inspect = self.ctx.append_basic_block(self.value, "ask.admit.inspect");
+        let admit_pending = self.ctx.append_basic_block(self.value, "ask.admit.pending");
+        let admit_done = self.ctx.append_basic_block(self.value, "ask.admit.done");
+        let admit_cancelled = self
+            .ctx
+            .append_basic_block(self.value, "ask.admit.cancelled");
+        let admit_destroyed = self.ctx.append_basic_block(self.value, "ask.admit.destroy");
+        self.builder
+            .build_unconditional_branch(admit_poll)
+            .llvm_ctx("poll request admission")?;
+        self.builder.position_at_end(admit_poll);
+        self.free_handle("hew_actor_wait_edge_prepare", wait_edge)?;
+        let cancelling = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelling = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                cancelling,
+                self.ctx.i32_type().const_zero(),
+                "ask.admit.cancel.requested",
+            )
+            .llvm_ctx("inspect caller cancellation during admission")?;
+        self.builder
+            .build_conditional_branch(cancelling, admit_cancelled, admit_inspect)
+            .llvm_ctx("select caller cancellation during admission")?;
+        self.builder.position_at_end(admit_inspect);
+        let admitted_status = self.state_value("hew_actor_ask_wait_poll", admission)?;
+        let full = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                admitted_status,
+                self.ctx.i32_type().const_all_ones(),
+                "ask.admit.full",
+            )
+            .llvm_ctx("inspect mailbox capacity")?;
+        self.builder
+            .build_conditional_branch(full, admit_pending, admit_done)
+            .llvm_ctx("select mailbox capacity")?;
+        self.builder.position_at_end(admit_pending);
+        self.check_actor_wait_cycle(wait_edge, cycle)?;
+        frame.suspend(
+            self.ctx,
+            self.llvm,
+            &self.builder,
+            admit_poll,
+            admit_destroyed,
+            false,
+        )?;
+        self.builder.position_at_end(admit_destroyed);
+        self.reject_invalid_task_state()?;
+        self.builder.position_at_end(admit_cancelled);
+        self.free_handle("hew_actor_ask_wait_free", admission)?;
+        self.close_ask(channel, timer, wait_edge)?;
+        self.initialize_cancellation_fault()?;
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(admit_done);
+        self.free_handle("hew_actor_ask_wait_free", admission)?;
+        let submitted = admitted_status;
         let reply_layout = callable(self.module, handler.callable)?
             .return_layout
             .as_ref();

@@ -1654,6 +1654,22 @@ expect_check_fail_contains \
     'ResourceBoundaryParamMustConsume' \
     "trait-signature resource param missing consume"
 
+# An `extern` signature admits only types with a C-ABI representation. A
+# tuple parameter is named at its own span by the checker instead of
+# reaching the physical target resolver as an internal error.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/extern_unmarshallable_param.hew" \
+    'is a tuple and has no C-ABI representation' \
+    "extern unmarshallable param"
+
+# `consume` on an extern parameter transfers the owner: the second call
+# cannot be handed the same binding.
+# shellcheck disable=SC2016  # backticks in the pattern are literal
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/extern_consume_wall.hew" \
+    'use of moved value `text`' \
+    "extern consume wall"
+
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the diagnostic text, not a command substitution.
 expect_check_fail_contains \

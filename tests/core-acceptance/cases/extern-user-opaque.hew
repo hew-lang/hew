@@ -1,0 +1,88 @@
+// A user-declared opaque handle over C-ABI symbols the runtime exports.
+// The compiler knows nothing about `Slot` beyond this file's declarations.
+#[opaque]
+type Slot {
+}
+
+#[resource]
+type Bag {
+    slot: Slot,
+}
+
+trait BagMethods {
+    fn put(self, value: i64);
+    fn take(self) -> i64;
+    fn count(self) -> i64;
+}
+
+impl BagMethods for Bag {
+    fn put(bag: Bag, value: i64) {
+        unsafe {
+            hew_deque_push_back(bag.slot, value)
+        };
+    }
+    fn take(bag: Bag) -> i64 {
+        unsafe {
+            hew_deque_pop_front(bag.slot)
+        }
+    }
+    fn count(bag: Bag) -> i64 {
+        unsafe {
+            hew_deque_len(bag.slot)
+        }
+    }
+}
+
+impl Bag {
+    fn close(consume self) {
+        unsafe {
+            hew_deque_free(self.slot)
+        };
+    }
+}
+
+fn make() -> Bag {
+    unsafe {
+        Bag { slot: hew_deque_new() }
+    }
+}
+
+fn drained(consume bag: Bag) -> i64 {
+    let total = bag.take() + bag.take();
+    bag.close();
+    total
+}
+
+fn faulted(consume bag: Bag, divisor: i64) -> i64 {
+    bag.put(6);
+    // Traps while `bag` is still live, so the release runs on the fault path.
+    100 / divisor
+}
+
+fn main() -> i64 {
+    let explicit = make();
+    explicit.put(4);
+    explicit.put(5);
+    println(explicit.count());
+    println(drained(explicit));
+
+    let scoped = make();
+    scoped.put(7);
+    println(scoped.count());
+
+    let bags = [make(), make()];
+    bags[0].put(8);
+    bags[1].put(9);
+    println(bags[0].take() + bags[1].take());
+
+    println(faulted(make(), 0));
+    0
+}
+
+extern "C" {
+    fn hew_deque_new() -> Slot;
+    fn hew_deque_push_back(slot: Slot, value: i64);
+    fn hew_deque_pop_front(slot: Slot) -> i64;
+    fn hew_deque_len(slot: Slot) -> i64;
+    fn hew_deque_free(slot: Slot);
+}

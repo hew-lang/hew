@@ -1,0 +1,27 @@
+import std.deque;
+
+fn drain(consume dq: deque.Deque) -> i64 {
+    var total = 0;
+    while !dq.is_empty() {
+        total = total + dq.pop_front();
+    }
+    dq.close();
+    total
+}
+
+fn main() -> i64 {
+    let dq = deque.new();
+    dq.push_back(2);
+    dq.push_back(3);
+    dq.push_front(1);
+    println(dq.len());
+    println(dq.pop_front());
+    println(dq.pop_back());
+    println(dq.len());
+    println(drain(dq));
+
+    let scoped = deque.new();
+    scoped.push_back(9);
+    println(scoped.len());
+    0
+}

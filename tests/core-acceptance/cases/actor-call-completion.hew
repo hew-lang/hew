@@ -27,6 +27,6 @@ fn main() {
         .Ok(n) => println(n),
         .Err(_) => panic("count query failed"),
     }
-    await close(worker);
+    close(worker);
     println("closed");
 }

@@ -1,0 +1,32 @@
+//! Accept: a guard on a record match-destructure arm.
+//!
+//! Record arms lower as an ordered candidate chain: each candidate probes the
+//! scrutinee's fields under a loan, and only the selected arm destructures the
+//! aggregate. A `false` guard therefore falls through to the next arm with the
+//! scrutinee still whole, exactly as a guarded enum arm does.
+//!
+//! Observable contract: prints `b-payload` — the second arm's binding, not the
+//! guarded first arm's. A lowering that consumed the scrutinee before the guard
+//! resolved would print `a-payload` or fail closed.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    let p = make_pair();
+    let v = match p {
+        Pair { a: x, b: _ } if false => x,
+        Pair { a: _, b: y } => y,
+    };
+    println(v);
+    0
+}

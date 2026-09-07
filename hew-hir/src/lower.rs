@@ -7254,24 +7254,6 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_call_sites_in_expr(scrutinee, out, trait_out);
-            collect_call_sites_in_block(body, out, trait_out);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_call_sites_in_expr(scrutinee, out, trait_out);
-            collect_call_sites_in_block(body, out, trait_out);
-            if let Some(eb) = else_body {
-                collect_call_sites_in_block(eb, out, trait_out);
-            }
-        }
         HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_call_sites_in_expr(value, out, trait_out);
@@ -10791,6 +10773,76 @@ impl LowerCtx {
         }
     }
 
+    /// Build the `match` that `if let` and `while let` desugar to: the
+    /// resolved constructor arm carrying the pattern's payload bindings and
+    /// nested checks, then a wildcard arm for the fallthrough. Everything
+    /// downstream sees one ordered match instead of a second pattern form.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one desugar assembles the whole resolved arm in a single place"
+    )]
+    fn pattern_conditional_match(
+        &mut self,
+        scrutinee: HirExpr,
+        arm_scope: ScopeId,
+        variant_match: hew_types::VariantMatch,
+        variant_idx: u32,
+        bindings: Vec<HirMatchArmBinding>,
+        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
+        body: HirBlock,
+        fallthrough: HirExpr,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        let body_ty = body.ty.clone();
+        let body_expr = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: body_ty.clone(),
+            value_class: ValueClass::of_ty(&body_ty, &self.type_classes),
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(body),
+            span: span.clone(),
+        };
+        let arms = vec![
+            HirMatchArm {
+                scope: Some(arm_scope),
+                predicate: HirMatchArmPredicate::EnumVariant {
+                    variant_match,
+                    variant_idx,
+                },
+                bindings,
+                payload_predicates: Vec::new(),
+                payload_variant_predicates,
+                guard: None,
+                body: body_expr,
+                span: span.clone(),
+            },
+            HirMatchArm {
+                scope: None,
+                predicate: HirMatchArmPredicate::Wildcard,
+                bindings: Vec::new(),
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: fallthrough,
+                span: span.clone(),
+            },
+        ];
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: result_ty.clone(),
+            value_class: ValueClass::of_ty(result_ty, &self.type_classes),
+            intent: IntentKind::Read,
+            kind: HirExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span: span.clone(),
+        }
+    }
+
     fn wrap_var_self_function_returns(
         &mut self,
         block: &mut HirBlock,
@@ -10932,24 +10984,6 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
-            }
-            HirExprKind::WhileLet {
-                scrutinee, body, ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
-            }
-            HirExprKind::IfLet {
-                scrutinee,
-                body,
-                else_body,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
-                if let Some(eb) = else_body {
-                    self.wrap_var_self_explicit_returns_in_block(eb, receiver, abi_return_ty);
-                }
             }
             HirExprKind::Loop { body, .. } => {
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
@@ -16333,6 +16367,8 @@ impl LowerCtx {
                     binding_specs.push((field_idx, payload.binding_name.clone(), ty));
                 }
 
+                let arm_scope = self.ids.scope();
+                let previous_scope_id = std::mem::replace(&mut self.current_scope_id, arm_scope);
                 self.push_scope();
                 let bindings: Vec<HirMatchArmBinding> = if binding_error {
                     Vec::new()
@@ -16363,6 +16399,7 @@ impl LowerCtx {
                     }
                 }
                 let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                self.current_scope_id = previous_scope_id;
                 self.pop_scope();
 
                 if binding_error || pvp_error {
@@ -16384,24 +16421,59 @@ impl LowerCtx {
                     };
                 }
 
-                let while_let_expr = HirExpr {
+                // `while let PAT = e { body }` is a bare loop whose every
+                // iteration re-matches `e` and breaks on the fallthrough arm.
+                // `break` and `continue` inside `body` target this loop, and
+                // the arm body's scope gives per-iteration defer cleanup.
+                let break_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
-                    kind: HirExprKind::WhileLet {
-                        label: label.clone(),
-                        scrutinee: Box::new(scrutinee_hir),
-                        variant_match,
-                        variant_idx,
-                        bindings,
-                        payload_variant_predicates,
-                        body: body_block,
+                    kind: HirExprKind::Break {
+                        label: None,
+                        value: None,
                     },
                     span: span.clone(),
                 };
-                HirStmtKind::Expr(while_let_expr)
+                let match_expr = self.pattern_conditional_match(
+                    scrutinee_hir,
+                    arm_scope,
+                    variant_match,
+                    variant_idx,
+                    bindings,
+                    payload_variant_predicates,
+                    body_block,
+                    break_expr,
+                    &ResolvedTy::Unit,
+                    &span,
+                );
+                let loop_body = HirBlock {
+                    node: self.ids.node(),
+                    scope: self.ids.scope(),
+                    statements: vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(match_expr),
+                        span: span.clone(),
+                    }],
+                    tail: None,
+                    ty: ResolvedTy::Unit,
+                    span: span.clone(),
+                };
+                let loop_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Loop {
+                        label: label.clone(),
+                        body: loop_body,
+                    },
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(loop_expr)
             }
             Stmt::For {
                 label,
@@ -17312,6 +17384,8 @@ impl LowerCtx {
             binding_specs.push((field_idx, payload.binding_name.clone(), ty));
         }
 
+        let arm_scope = self.ids.scope();
+        let previous_scope_id = std::mem::replace(&mut self.current_scope_id, arm_scope);
         self.push_scope();
         let bindings: Vec<HirMatchArmBinding> = if binding_error {
             Vec::new()
@@ -17341,6 +17415,7 @@ impl LowerCtx {
             }
         }
         let body_block = self.lower_block(body, result_ty);
+        self.current_scope_id = previous_scope_id;
         self.pop_scope();
 
         let else_block = else_body.as_ref().map(|eb| self.lower_block(eb, result_ty));
@@ -17349,16 +17424,37 @@ impl LowerCtx {
             return None;
         }
 
-        Some(HirExprKind::IfLet {
-            scrutinee: Box::new(scrutinee_hir),
-            variant_match,
-            variant_idx,
-            bindings,
-            payload_variant_predicates,
-            body: body_block,
-            else_body: else_block,
-            result_ty: result_ty.clone(),
-        })
+        // `if let PAT = e { a } else { b }` is `match e { PAT => a, _ => b }`.
+        let fallthrough = match else_block {
+            Some(block) => {
+                let else_ty = block.ty.clone();
+                HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: else_ty.clone(),
+                    value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Block(block),
+                    span: span.clone(),
+                }
+            }
+            None => self.make_unit_expr(span.clone()),
+        };
+        Some(
+            self.pattern_conditional_match(
+                scrutinee_hir,
+                arm_scope,
+                variant_match,
+                variant_idx,
+                bindings,
+                payload_variant_predicates,
+                body_block,
+                fallthrough,
+                result_ty,
+                span,
+            )
+            .kind,
+        )
     }
 
     fn literal_pattern_condition(
@@ -29688,24 +29784,6 @@ fn collect_captures_walk(
                 collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
-            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
-            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
-            if let Some(eb) = else_body {
-                collect_captures_walk_block(eb, param_ids, seen, captures, self_id);
-            }
-        }
         HirExprKind::Loop { body, .. } => {
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
@@ -29989,24 +30067,6 @@ fn collect_general_closure_captures_walk(
                     collect_general_closure_captures_walk(guard, outer_bindings, seen, captures);
                 }
                 collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
-            }
-        }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
-            if let Some(eb) = else_body {
-                collect_general_closure_captures_walk_block(eb, outer_bindings, seen, captures);
             }
         }
         HirExprKind::Loop { body, .. } => {
@@ -32038,24 +32098,6 @@ fn scan_expr_for_call_shape(
                     scan_expr_for_call_shape(guard, callable, diagnostics);
                 }
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
-            }
-        }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
-            scan_block_for_call_shape(body, callable, diagnostics);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
-            scan_block_for_call_shape(body, callable, diagnostics);
-            if let Some(eb) = else_body {
-                scan_block_for_call_shape(eb, callable, diagnostics);
             }
         }
         HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {

@@ -1302,59 +1302,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, elem, indent + 4);
             }
         }
-        HirExprKind::WhileLet {
-            label,
-            scrutinee,
-            variant_match,
-            variant_idx,
-            bindings,
-            payload_variant_predicates,
-            body,
-        } => {
-            writeln!(
-                out,
-                "{pad}  while-let {}::{} [variant_idx={variant_idx}, bindings={}, nested={}, label={label:?}]",
-                variant_match.type_name,
-                variant_match.variant_name,
-                bindings.len(),
-                payload_variant_predicates.len(),
-            )
-            .expect("write to string");
-            dump_expr(out, scrutinee, indent + 4);
-            for pvp in payload_variant_predicates {
-                dump_payload_variant_predicate(out, pvp, indent + 4);
-            }
-            dump_block(out, body, indent + 4);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            variant_match,
-            variant_idx,
-            bindings,
-            payload_variant_predicates,
-            body,
-            else_body,
-            result_ty,
-        } => {
-            writeln!(
-                out,
-                "{pad}  if-let {}::{} [variant_idx={variant_idx}, bindings={}, nested={}, result_ty={result_ty:?}]",
-                variant_match.type_name,
-                variant_match.variant_name,
-                bindings.len(),
-                payload_variant_predicates.len(),
-            )
-            .expect("write to string");
-            dump_expr(out, scrutinee, indent + 4);
-            for pvp in payload_variant_predicates {
-                dump_payload_variant_predicate(out, pvp, indent + 4);
-            }
-            dump_block(out, body, indent + 4);
-            if let Some(eb) = else_body {
-                writeln!(out, "{pad}  else").expect("write to string");
-                dump_block(out, eb, indent + 4);
-            }
-        }
         HirExprKind::Break { label, value } => {
             writeln!(out, "{pad}  break label={label:?}").expect("write to string");
             if let Some(value) = value {

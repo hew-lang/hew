@@ -89,8 +89,7 @@ fn expr_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(expr: &hew_hir::HirExpr, pr
     match &expr.kind {
         HirExprKind::Loop { body, .. }
         | HirExprKind::While { body, .. }
-        | HirExprKind::ForRange { body, .. }
-        | HirExprKind::WhileLet { body, .. } => block_has_kind(body, pred),
+        | HirExprKind::ForRange { body, .. } => block_has_kind(body, pred),
         HirExprKind::Block(block) => block_has_kind(block, pred),
         HirExprKind::Break {
             value: Some(value), ..

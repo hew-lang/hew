@@ -1,0 +1,41 @@
+//! A record pattern nested inside an enum payload. The owned `label` moves
+//! into the arm's binding while its sibling `unit` stays readable, and the
+//! record scrutinee itself is still live after the match.
+
+type Sample {
+    label: string,
+    unit: string,
+}
+
+enum Signal {
+    Reading(Sample),
+    Silence,
+}
+
+fn make(text: string) -> Signal {
+    Signal.Reading(Sample {
+        label: string_concat("label-", text),
+        unit: string_concat("unit-", text),
+    })
+}
+
+fn main() -> i64 {
+    let taken = match make("a") {
+        .Reading(Sample { label: label, unit: unit }) => string_concat(label, string_concat(" ", unit)),
+        .Silence => "silent",
+    };
+    println(taken);
+
+    let sample = Sample {
+        label: string_concat("label-", "b"),
+        unit: string_concat("unit-", "b"),
+    };
+    let moved = match sample {
+        Sample { label: label, unit: _ } => label,
+    };
+    println(moved);
+    println(sample.unit);
+
+    println(match make("c") { .Reading(Sample { label: _, unit: _ }) => "reading", .Silence => "silence" });
+    0
+}

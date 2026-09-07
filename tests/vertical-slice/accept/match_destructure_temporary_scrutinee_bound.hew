@@ -1,0 +1,34 @@
+//! Accept: a partial extraction from a temporary record scrutinee.
+//!
+//! `match make() { Pair { a: x, b: _ } => x }` binds one owning field out of a
+//! temporary and leaves its sibling to the arm's cleanup set. The extracted
+//! binder owns its value for the rest of the enclosing scope; the wildcarded
+//! sibling is released exactly once (A393 partial move).
+//!
+//! Observable contract: prints `a-payload` across many iterations with bounded
+//! RSS.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var last = "";
+    while i < 100000 {
+        last = match make() {
+            Pair { a: x, b: _ } => x,
+        };
+        i = i + 1;
+    }
+    println(last);
+    0
+}

@@ -1,0 +1,29 @@
+//! Accept: a record scrutinee stays live after an arm moves a field out.
+//!
+//! `match p { Pair { a: x, b: _ } => x }` matches a copy of `p`, so the arm's
+//! binding owns its own `a` and `p`'s own storage is intact. Reading `p.b`
+//! after the match observes the original value.
+//!
+//! Observable contract: prints the extracted `a` and then `p.b`.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    let p = make_pair();
+    let x = match p {
+        Pair { a: x, b: _ } => x,
+    };
+    println(x);
+    println(p.b);
+    0
+}

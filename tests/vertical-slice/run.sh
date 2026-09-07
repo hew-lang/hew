@@ -5356,22 +5356,11 @@ if "${HEW}" compile \
 fi
 grep -q 'non-literal duration' "${reject_output}"
 
-# `lower_match_project` discharges a wildcard `_` on an owned-aggregate
-# field (record/tuple/enum/fixed-array carrying heap payload) through
-# `Instr::FieldDropInPlace` — see
-# `accept/match_record_wildcard_owned_aggregate_field.hew`. Shapes the
-# in-place classifier cannot place (closures, affine handles, slices,
-# `dyn Trait` fields) still fail closed at MIR construction time: a
-# closure field hides an env box behind a non-owning `fn` surface, so a
-# structural free would leak or free with the wrong ABI. This pins the
-# fail-closed boundary diagnostic.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_wildcard_closure_field.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_wildcard_closure_field fixture to fail" >&2
-    exit 1
-fi
-grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"
+# The selected arm destructures the record once, so an unbound closure-typed
+# field is an ordinary owned result in the arm's cleanup set — no
+# field-addressed in-place drop, and no special discharge route for the
+# captured environment.
+run_accept_expect_stdout "match_destructure_wildcard_closure_field"
 
 # Reject (#2359 / #2647): a generator yielding `Vec<indirect-enum>` fails
 # CLOSED at check time. The indirect-enum element's per-element node free is
@@ -5456,128 +5445,34 @@ grep -q 'can never release a capturing closure' "${reject_output}"
 # by construction, so the generator's flat env copy has nothing to leak.
 run_accept_expect_stdout "gen_fn_null_env_fn_values"
 
-# A `BindingRef` scrutinee
-# whose owned fields are destructured (full or partial) must transition to
-# `Consumed` at the destructure site so the dataflow checker rejects a
-# post-match read — without the consume mark, partial extraction would
-# wildcard-drop `p.b` inline and then leak / UAF on a later `p.b` read.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_use_after_consume.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_use_after_consume fixture to fail" >&2
-    exit 1
-fi
-grep -q 'UseAfterConsume' "${reject_output}"
-
-# A `FieldAccess`
-# / `TupleIndex` / `Index` / `Slice` (or captured `BindingRef`) scrutinee is
-# re-readable through the same shape after the match. There is no binding
-# for the dataflow checker to mark `Consumed`, so MIR refuses the shape
-# fail-closed rather than emit a structurally undetectable UAF.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_projection_scrutinee.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_projection_scrutinee fixture to fail" >&2
-    exit 1
-fi
-grep -q 'non-BitCopy match destructure on projection scrutinee' "${reject_output}"
-
-# A temporary (fresh-value) scrutinee has no composite drop: with an
-# all-wildcard arm nothing frees the discarded aggregate's owned fields, so
-# every field would leak. MIR refuses fail-closed and tells the user to bind
-# the scrutinee to a local first (whose composite drop frees the fields).
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_temporary_scrutinee.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_temporary_scrutinee fixture to fail" >&2
-    exit 1
-fi
-grep -q 'non-BitCopy match destructure on temporary scrutinee' "${reject_output}"
-
-# The same gate covers a temporary scrutinee with a binding arm: with no
-# binding to consume-mark, the extracted binder stays tainted as a projection
-# alias and its payload would leak. Refused fail-closed with the same
-# temporary-scrutinee diagnostic.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_temporary_scrutinee_bound.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_temporary_scrutinee_bound fixture to fail" >&2
-    exit 1
-fi
-grep -q 'non-BitCopy match destructure on temporary scrutinee' "${reject_output}"
-
-# A guard on a record destructure arm has no fallthrough target: the project
-# pattern is irrefutable, so the first arm is taken unconditionally and the
-# guard would be silently ignored (a miscompile that runs the wrong arm).
-# Rejected fail-closed; the condition belongs in the arm body or an enum match.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_guarded_record.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_guarded_record fixture to fail" >&2
-    exit 1
-fi
-grep -q 'guarded record/tuple match destructure' "${reject_output}"
-
-# The same gate covers a guard on a tuple destructure arm — the tuple project
-# pattern is irrefutable exactly like the record case, so the guard is rejected
-# fail-closed with the same diagnostic.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_guarded_tuple.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_destructure_guarded_tuple fixture to fail" >&2
-    exit 1
-fi
-grep -q 'guarded record/tuple match destructure' "${reject_output}"
-
-# Literal-predicate project chains retain the same fail-closed boundaries as
-# ordinary owned destructures. Guards cannot roll back selected-arm transfers.
-for fixture in match_predicate_guarded_record match_predicate_guarded_tuple; do
-    if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" \
-        >"${reject_output}" 2>&1; then
-        echo "expected ${fixture} fixture to fail" >&2
-        exit 1
-    fi
-    grep -q 'guarded record/tuple match destructure' "${reject_output}"
+# A record or tuple match arm matches its own copy of the scrutinee, so the
+# source binding, projection or capture stays readable afterwards; a temporary
+# scrutinee is the match's own owned aggregate, and the selected arm's cleanup
+# set releases every field it does not bind. Guards are ordinary candidate
+# predicates: a false guard falls through to the next arm with the aggregate
+# whole.
+for fixture in \
+    match_destructure_scrutinee_live_after_move \
+    match_destructure_projection_scrutinee \
+    match_destructure_temporary_scrutinee \
+    match_destructure_temporary_scrutinee_bound \
+    match_destructure_guarded_record \
+    match_destructure_guarded_tuple; do
+    run_accept_expect_stdout "${fixture}"
 done
 
-# Projection and captured-binding scrutinees have no safe consume anchor.
-for fixture in match_predicate_projection_scrutinee match_predicate_captured_scrutinee; do
-    if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" \
-        >"${reject_output}" 2>&1; then
-        echo "expected ${fixture} fixture to fail" >&2
-        exit 1
-    fi
-    grep -q 'non-BitCopy match destructure on projection scrutinee' "${reject_output}"
+# Literal-predicate project chains reach the same outcomes through the same
+# ordered candidate machinery.
+for fixture in \
+    match_predicate_guarded_record \
+    match_predicate_guarded_tuple \
+    match_predicate_projection_scrutinee \
+    match_predicate_captured_scrutinee \
+    match_predicate_temporary_scrutinee \
+    match_predicate_wildcard_closure_field \
+    match_predicate_scrutinee_live_after_move; do
+    run_accept_expect_stdout "${fixture}"
 done
-
-# A temporary owned aggregate likewise has no binding to consume-mark.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_predicate_temporary_scrutinee.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_predicate_temporary_scrutinee fixture to fail" >&2
-    exit 1
-fi
-grep -q 'non-BitCopy match destructure on temporary scrutinee' "${reject_output}"
-
-# Every selected arm must discharge all unbound owned fields before an owned
-# extraction chain is admitted; closure fields have no safe discharge route.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_predicate_wildcard_closure_field.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_predicate_wildcard_closure_field fixture to fail" >&2
-    exit 1
-fi
-grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"
-
-# Uniformly consuming predicate chains make the original binding unavailable
-# after the match, just like ordinary owned extraction.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_predicate_use_after_consume.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected match_predicate_use_after_consume fixture to fail" >&2
-    exit 1
-fi
-grep -q 'UseAfterConsume' "${reject_output}"
 
 # Regression: file-imported trait impl methods emit as definitions, not
 # external declarations. The fourth-pass (module-graph walk) previously

@@ -207,24 +207,6 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(&arm.body, out);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            visit_expr(scrutinee, out);
-            visit_block(body, out);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            visit_expr(scrutinee, out);
-            visit_block(body, out);
-            if let Some(eb) = else_body {
-                visit_block(eb, out);
-            }
-        }
         HirExprKind::Loop { body, .. } => visit_block(body, out),
         HirExprKind::RecordCloneCall { src, .. } => visit_expr(src, out),
         HirExprKind::Select(_)

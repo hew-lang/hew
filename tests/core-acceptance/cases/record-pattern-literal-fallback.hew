@@ -1,0 +1,27 @@
+//! An ordered record pattern chain: literal field tests select the arm, the
+//! last arm binds the remaining shape, and each candidate leaves the
+//! scrutinee whole for the next one.
+
+type Reading {
+    code: i64,
+    label: string,
+}
+
+fn make(code: i64) -> Reading {
+    Reading { code: code, label: string_concat("reading-", "x") }
+}
+
+fn describe(r: Reading) -> string {
+    match r {
+        Reading { code: 0, label: _ } => "zero",
+        Reading { code: 1, label: label } => label,
+        Reading { code: _, label: _ } => "other",
+    }
+}
+
+fn main() -> i64 {
+    println(describe(make(0)));
+    println(describe(make(1)));
+    println(describe(make(7)));
+    0
+}

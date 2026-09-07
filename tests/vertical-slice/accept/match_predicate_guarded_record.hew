@@ -1,0 +1,19 @@
+//! Accept: a guard on a literal-predicate record arm.
+//!
+//! The literal field test and the guard are both candidate predicates: a
+//! `false` guard falls through with the scrutinee whole, so the later arm's
+//! result is the one observed.
+//!
+//! Observable contract: prints `2`.
+
+type Pair { tag: i64, a: string, b: string }
+
+fn main() -> i64 {
+    let value = Pair { tag: 0, a: "a" + "x", b: "b" + "y" };
+    let result = match value {
+        Pair { tag: 0, a, b: _ } if false => a.len(),
+        Pair { tag: _, a: _, b: _ } => 2,
+    };
+    println(result);
+    0
+}

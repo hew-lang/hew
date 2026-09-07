@@ -107,12 +107,15 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // Returning `None` here is the safe default for any call site that has not
         // yet added the resolution guard (false-accept rather than false-reject).
         Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
-        // Plain binding (bare identifier), wildcard, literal predicates, and tuple
-        // payload aggregates are supported or deferred to the call site.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Tuple(_) | Pattern::Identifier(_) => {
-            None
-        }
-        Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
+        // Plain binding (bare identifier), wildcard, literal predicates, and
+        // aggregate payload destructures are supported or deferred to the call
+        // site; HIR binds an aggregate slot to a temp and destructures it.
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Tuple(_)
+        | Pattern::Struct { .. }
+        | Pattern::RecordShorthand { .. }
+        | Pattern::Identifier(_) => None,
         Pattern::Constructor { .. } | Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
             Some("nested constructor")
         }
@@ -339,6 +342,9 @@ impl Checker {
                         .zip(elem_tys.iter())
                         .all(|((sub, _), elem_ty)| self.is_payload_irrefutable_for_ty(sub, elem_ty))
             }
+            // A record payload subpattern covers its slot on exactly the terms
+            // a top-level record project pattern covers its scrutinee.
+            Pattern::Struct { .. } => self.is_project_irrefutable_for_ty(pattern, payload_ty),
             _ => false,
         }
     }

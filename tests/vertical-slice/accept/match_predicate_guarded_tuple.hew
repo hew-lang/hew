@@ -1,0 +1,15 @@
+//! Accept: a guard on a literal-predicate tuple arm.
+//!
+//! The tuple sibling of `match_predicate_guarded_record`.
+//!
+//! Observable contract: prints `2`.
+
+fn main() -> i64 {
+    let value = (0, "a" + "x", "b" + "y");
+    let result = match value {
+        (0, a, _) if false => a.len(),
+        (_, _, _) => 2,
+    };
+    println(result);
+    0
+}

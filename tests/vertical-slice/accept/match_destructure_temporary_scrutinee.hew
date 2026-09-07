@@ -1,0 +1,37 @@
+//! Accept: an all-wildcard record match destructure on a temporary scrutinee.
+//!
+//! A temporary owned aggregate is the match's own value: the selected arm
+//! destructures it and every unbound owning field joins the arm's cleanup set,
+//! so nothing leaks even though no binding names them.
+//!
+//! Observable contract: prints `discarded` across many iterations with bounded
+//! RSS. A regression that dropped the unbound fields' cleanup would grow RSS
+//! linearly; a double free would abort.
+
+type Inner {
+    value: string,
+}
+
+type Outer {
+    name: string,
+    inner: Inner,
+}
+
+fn make() -> Outer {
+    Outer {
+        name: string_concat("name-", "x"),
+        inner: Inner { value: string_concat("v-", "x") },
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        let _r = match make() {
+            Outer { name: _, inner: _ } => 0,
+        };
+        i = i + 1;
+    }
+    println("discarded");
+    0
+}

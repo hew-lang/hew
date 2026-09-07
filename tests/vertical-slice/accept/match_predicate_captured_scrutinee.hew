@@ -1,0 +1,19 @@
+//! Accept: a closure captures the scrutinee of a literal-predicate record
+//! match.
+//!
+//! The closure's capture is its own value, and the match inside the closure
+//! matches a copy of it, so the extraction is confined to the call.
+//!
+//! Observable contract: prints `3` — the length of the extracted `a`.
+
+type Pair { tag: i64, a: string, b: string }
+
+fn main() -> i64 {
+    let value = Pair { tag: 0, a: "a" + "x", b: "b" + "y" };
+    let classify = || match value {
+        Pair { tag: 0, a, b: _ } => a.len(),
+        Pair { tag: _, a: _, b: _ } => 2,
+    };
+    println(classify());
+    0
+}

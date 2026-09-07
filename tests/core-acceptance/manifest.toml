@@ -1756,3 +1756,47 @@ timeout_seconds = 15
 [case.expected]
 stdout = "item:item\nitem:item\nitem:item\n3\nitem:item\nitem:item\n5\n10\nclosed\n"
 exit = 0
+
+[[case]]
+id = "record-pattern-literal-fallback"
+intent = "An ordered record pattern chain selects on literal field tests and leaves the scrutinee whole for each later candidate."
+source = "cases/record-pattern-literal-fallback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "zero\nreading-x\nother\n"
+exit = 0
+
+[[case]]
+id = "record-pattern-nested-payload"
+intent = "A record pattern nested in an enum payload moves one owned field out while its sibling and the record scrutinee stay readable."
+source = "cases/record-pattern-nested-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "label-a unit-a\nlabel-b\nunit-b\nreading\n"
+exit = 0
+
+[[case]]
+id = "if-let-owned-payload"
+intent = "`if let` over an owned payload takes the else branch on the fallthrough arm in both statement and expression position."
+source = "cases/if-let-owned-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "value-x\nmissing-statement\nvalue-x\nmissing-expression\n"
+exit = 0
+
+[[case]]
+id = "while-let-drain"
+intent = "`while let` re-evaluates its scrutinee each iteration, runs per-iteration deferred cleanup and ends through both break and the fallthrough arm."
+source = "cases/while-let-drain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "item-x\nreleased\nitem-x\nreleased\nitem-x\nreleased\ndrained\nitem-x\nreleased\nitem-x\nreleased\nstopped\n"
+exit = 0

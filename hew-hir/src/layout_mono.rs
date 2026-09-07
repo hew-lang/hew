@@ -744,24 +744,6 @@ fn walk_expr(
                 walk_expr(&arm.body, subst, residual_domain, disc);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            walk_expr(scrutinee, subst, residual_domain, disc);
-            walk_block(body, subst, residual_domain, disc);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            walk_expr(scrutinee, subst, residual_domain, disc);
-            walk_block(body, subst, residual_domain, disc);
-            if let Some(eb) = else_body {
-                walk_block(eb, subst, residual_domain, disc);
-            }
-        }
         HirExprKind::Break {
             value: Some(value), ..
         }

@@ -943,44 +943,6 @@ impl Verifier {
                 self.expr(step);
                 self.block(body);
             }
-            HirExprKind::WhileLet {
-                scrutinee,
-                bindings,
-                payload_variant_predicates,
-                body,
-                ..
-            } => {
-                self.expr(scrutinee);
-                self.nested_payload_literals(payload_variant_predicates, expr.span.clone());
-                for binding in bindings {
-                    // While-let payload bindings are scoped to the body
-                    // (one fresh BindingId allocated by HIR lowering);
-                    // register them here so the duplicate-binding check
-                    // covers the new shape, mirroring `Match` arm bindings.
-                    self.binding(binding.binding, expr.span.clone());
-                }
-                self.block(body);
-            }
-            HirExprKind::IfLet {
-                scrutinee,
-                bindings,
-                payload_variant_predicates,
-                body,
-                else_body,
-                ..
-            } => {
-                self.expr(scrutinee);
-                self.nested_payload_literals(payload_variant_predicates, expr.span.clone());
-                for binding in bindings {
-                    // If-let payload bindings are scoped to the then-body;
-                    // register them here mirroring `WhileLet` and `Match`.
-                    self.binding(binding.binding, expr.span.clone());
-                }
-                self.block(body);
-                if let Some(eb) = else_body {
-                    self.block(eb);
-                }
-            }
             HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
                 if let Some(value) = value {
                     self.expr(value);

@@ -9,7 +9,7 @@
 //!
 //! Shapes neither the leaf release nor the in-place classifier can place
 //! (closures, affine handles, slices) still fail closed — see
-//! `reject/match_destructure_wildcard_closure_field.hew`.
+//! `accept/match_destructure_wildcard_closure_field.hew`.
 //!
 //! Observable contract: across many iterations the program prints `done`
 //! and exits 0. A regression that re-admitted the scrutinee's composite

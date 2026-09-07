@@ -930,6 +930,8 @@ pub mod hew_node;
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod transport_checked;
 // Deterministic in-process SimTransport — gated behind `cfg(test)` for unit
 // tests inside the crate and the `sim-transport` feature for integration
 // tests. Never compiled into a release runtime; the module's own attribute

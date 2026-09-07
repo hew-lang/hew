@@ -152,7 +152,7 @@ fn file_read_write_own_inputs_and_preserve_binary_contents() {
             contents.as_ptr(),
             u32::try_from(contents.len()).unwrap(),
         );
-        let operation = hew_async_file_write(path, bytes, &descriptor(&written));
+        let operation = hew_async_file_write(path, &raw const bytes, &descriptor(&written));
         crate::bytes::hew_bytes_drop(bytes.ptr);
         string_release(path);
         operation
@@ -427,7 +427,7 @@ fn queued_file_cancellation_never_blocks_submission_or_writes_after_abandonment(
     // before any pool worker can run the operation.
     let operation = unsafe {
         let data = crate::bytes::hew_bytes_from_static(b"data".as_ptr(), 4);
-        let operation = hew_async_file_write(path, data, &descriptor(&signal));
+        let operation = hew_async_file_write(path, &raw const data, &descriptor(&signal));
         string_release(path);
         crate::bytes::hew_bytes_drop(data.ptr);
         assert_eq!(

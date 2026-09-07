@@ -21,6 +21,9 @@ mod var_self;
 #[path = "lower_suspend.rs"]
 mod suspend;
 
+#[path = "lower_native_io.rs"]
+mod native_io;
+
 #[path = "lower_generators.rs"]
 mod generators;
 
@@ -6317,6 +6320,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
+
+        if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
+            return self.lower_native_io(expr, operation, args);
+        }
 
         let contract = family.semantic_contract().ok_or_else(|| {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")

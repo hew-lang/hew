@@ -21,6 +21,8 @@ mod partial;
 mod coro;
 #[path = "physical_generators.rs"]
 mod generators;
+#[path = "physical_io.rs"]
+mod io;
 #[path = "physical_select.rs"]
 mod select;
 #[path = "physical_suspend.rs"]
@@ -1642,7 +1644,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let failure = self.ctx.append_basic_block(wrapper, "failure");
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
-        self.emit_actor_runtime_start(&builder, wrapper)?;
+        self.emit_process_runtime_start(&builder, wrapper)?;
         let result = if let Some(layout) = &callable.return_layout {
             Some(
                 builder
@@ -1702,14 +1704,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_call(drop, &[fault_value.into()], "entry.fault.drop")
             .llvm_ctx("drop physical entry fault")?;
-        let status = self.emit_actor_runtime_finish(&builder, status)?;
+        let status = self.emit_process_runtime_finish(&builder, status)?;
         builder
             .build_return(Some(&status))
             .llvm_ctx("return physical failure status")?;
 
         builder.position_at_end(success);
         let exit = emit_entry_success(self.ctx, &builder, result, plan.action.clone(), callable)?;
-        let exit = self.emit_actor_runtime_finish(&builder, exit)?;
+        let exit = self.emit_process_runtime_finish(&builder, exit)?;
         builder
             .build_return(Some(&exit))
             .llvm_ctx("return physical process status")?;
@@ -2560,6 +2562,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_task_scope_join(*scope, *cancel, normal, unwind),
+            PhysicalTerminator::NativeIo {
+                operation,
+                args,
+                result,
+                normal,
+                cancel,
+                ..
+            } => self.emit_native_io(*operation, args, *result, normal, cancel),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,

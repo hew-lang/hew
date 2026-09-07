@@ -149,6 +149,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
         for block in &function.blocks {
             match &block.terminator {
                 PhysicalTerminator::RecoverFault { .. }
+                | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::Sleep { .. }
                 | PhysicalTerminator::TaskSelect { .. }
                 | PhysicalTerminator::GeneratorYield { .. }

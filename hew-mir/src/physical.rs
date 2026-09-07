@@ -874,6 +874,15 @@ pub enum PhysicalTerminator {
         normal: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// Submit once, suspend without blocking, and drain resource loans before exit.
+    NativeIo {
+        operation: hew_types::runtime_call::AsyncIoOp,
+        args: Vec<ArgumentTransfer>,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     Sleep {
         duration: StorageId,
         normal: PhysicalEdge,
@@ -2624,6 +2633,21 @@ impl FunctionLowerer<'_> {
                     unwind: self.lower_edge(unwind)?,
                 })
             }
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::NativeIo { operation },
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::NativeIo {
+                operation: *operation,
+                args: self.argument_transfers(inputs)?,
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Sleep,
                 inputs,
@@ -5072,6 +5096,38 @@ fn terminator_successors(
                 Ok(vec![completed, apply_edge(function, unwind, state, block)?])
             }
         }
+        PhysicalTerminator::NativeIo {
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut successors = call_successors(
+                function,
+                args,
+                Some(*result),
+                Some(normal),
+                Some(unwind),
+                state.clone(),
+                block,
+            )?;
+            let (_, mut cancelled) = call_successors(
+                function,
+                args,
+                Some(*result),
+                Some(normal),
+                Some(cancel),
+                state,
+                block,
+            )?
+            .pop()
+            .expect("native I/O cancel successor");
+            cancelled.exit = defer::CANCEL;
+            successors.push((cancel.target, cancelled));
+            Ok(successors)
+        }
         PhysicalTerminator::Sleep {
             duration,
             normal,
@@ -5537,6 +5593,33 @@ fn verify_terminator(
         }
         PhysicalTerminator::TaskScopeJoin { normal, unwind, .. } => {
             edge(normal)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::NativeIo {
+            operation,
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let arguments = args
+                .iter()
+                .map(|argument| match argument {
+                    ArgumentTransfer::Borrow(id) => Ok(slot(*id)?.ty.clone()),
+                    _ => Err(PhysicalError::new("native I/O requires borrowed inputs")),
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            if !operation
+                .contract()
+                .matches_signature(&arguments, &slot(*result)?.ty)
+            {
+                return Err(PhysicalError::new(
+                    "native I/O inputs or result differ from the operation contract",
+                ));
+            }
+            edge(normal)?;
+            edge(cancel)?;
             edge(unwind)
         }
         PhysicalTerminator::Sleep {

@@ -1538,6 +1538,8 @@ impl<'a> Flow<'a> {
                 // Calls prove a non-retaining borrow. Selection retains its
                 // own observation references before parking and releases them
                 // on every exit; it never transfers the borrowed task result.
+                // Native I/O copies submission inputs or proves producer
+                // quiescence before its input-resource loans can end.
                 let scoped_borrow = matches!(
                     terminator,
                     SemTerminator::Suspend {
@@ -1550,7 +1552,8 @@ impl<'a> Flow<'a> {
                         | SemTerminator::IndirectCall { .. }
                         | SemTerminator::Panic { .. }
                         | SemTerminator::Suspend {
-                            kind: crate::SuspendKind::Select { .. },
+                            kind: crate::SuspendKind::Select { .. }
+                                | crate::SuspendKind::NativeIo { .. },
                             ..
                         }
                 ) && matches!(

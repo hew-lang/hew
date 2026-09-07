@@ -452,6 +452,10 @@ pub struct TaskScopeId(pub u32);
 ///   neither reading is foreclosed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SuspendKind {
+    /// An owned native request with an exact result and input-loan contract.
+    NativeIo {
+        operation: hew_types::runtime_call::AsyncIoOp,
+    },
     Await,
     RestartWait,
     ActorSend,

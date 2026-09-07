@@ -1,0 +1,35 @@
+machine Retry {
+    events { Fail, Reset }
+    state Idle,
+    state Failing { attempts: i64 },
+    on Fail: Idle => Failing {
+        .Failing { attempts: 1 }
+    }
+    on Fail: Failing => Failing {
+        .Failing { attempts: self.attempts + 1 }
+    }
+    on Reset: Failing => Failing {
+        state
+    }
+    on Reset: Idle => Idle {
+        state
+    }
+}
+
+fn report(current: Retry) {
+    match current {
+        .Idle => println("idle"),
+        .Failing { attempts } => println(f"failing {attempts}"),
+    }
+}
+
+fn main() {
+    var retry: Retry = .Idle;
+    let _ = retry.step(.Reset);
+    report(retry);
+    let _ = retry.step(.Fail);
+    let _ = retry.step(.Fail);
+    report(retry);
+    let _ = retry.step(.Reset);
+    report(retry);
+}

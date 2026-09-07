@@ -563,7 +563,12 @@ impl Builder {
                 );
             }
             if transition.target_state != "_"
-                && !returns_variant(&transition.body.0, &transition.target_state, &machine.name)
+                && !returns_variant(
+                    &transition.body.0,
+                    &transition.target_state,
+                    &transition.source_state,
+                    &machine.name,
+                )
             {
                 return Err(self.error(format!(
                     "transition to `{}` must produce that state on every normal path",
@@ -1254,9 +1259,16 @@ fn rules_for<'a>(
     rules
 }
 
-fn returns_variant(expr: &Expr, target: &str, machine: &str) -> bool {
+/// Does `expr` produce `target` on every normal path?
+///
+/// `source` is the rule's source state. `self` and `state` name the refined
+/// source payload, so a rule whose source and target are the same state
+/// produces that state by naming it, and one whose source is a wildcard or a
+/// different state does not.
+fn returns_variant(expr: &Expr, target: &str, source: &str, machine: &str) -> bool {
     match expr {
         Expr::ContextVariant(context) => context.name == target,
+        Expr::Identifier(name) if name == "self" || name == "state" => source == target,
         Expr::Identifier(name) => name == target,
         Expr::StructInit { name, .. } => name == target || name == &format!("{machine}.{target}"),
         Expr::FieldAccess { object, field } => {
@@ -1265,20 +1277,20 @@ fn returns_variant(expr: &Expr, target: &str, machine: &str) -> bool {
         Expr::Block(block) => block
             .trailing_expr
             .as_ref()
-            .is_some_and(|value| returns_variant(&value.0, target, machine)),
+            .is_some_and(|value| returns_variant(&value.0, target, source, machine)),
         Expr::If {
             then_block,
             else_block: Some(other),
             ..
         } => {
-            returns_variant(&then_block.0, target, machine)
-                && returns_variant(&other.0, target, machine)
+            returns_variant(&then_block.0, target, source, machine)
+                && returns_variant(&other.0, target, source, machine)
         }
         Expr::Match { arms, .. } => {
             !arms.is_empty()
                 && arms
                     .iter()
-                    .all(|arm| returns_variant(&arm.body.0, target, machine))
+                    .all(|arm| returns_variant(&arm.body.0, target, source, machine))
         }
         _ => false,
     }

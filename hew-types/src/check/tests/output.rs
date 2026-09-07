@@ -419,7 +419,7 @@ fn scope_body_with_spawned_call_and_trailing_value_checks_cleanly() {
         fn main() {
             scope {
                 let worker = spawn Worker();
-                worker.run();
+                let _ = worker.run();
                 0
             };
         }

@@ -133,7 +133,6 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Binary { .. } => {}
         Expr::Unary { .. } => {}
         Expr::Clone(_) => {}
-        Expr::Send(_) => {}
         Expr::Literal(_) => {}
         Expr::Identifier(_) => {}
         Expr::ContextVariant(_) => {}

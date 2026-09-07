@@ -766,7 +766,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             }
             Expr::Unary { operand, .. }
             | Expr::ReturnError(operand)
-            | Expr::Send(operand)
             | Expr::Clone(operand)
             | Expr::Await(operand)
             | Expr::AwaitRestart(operand)

@@ -638,7 +638,7 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
             let s = spawn SnapshotSink(_id: 0);
             let h = bytes.new();
             let q = bytes.new();
-            s.consume(h);
+            let _ = s.consume(h);
             let _eq: bool = h == q;
         }
     ";

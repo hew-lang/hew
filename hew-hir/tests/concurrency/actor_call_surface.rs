@@ -267,8 +267,8 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
 
         fn main() -> i64 {
             let c = spawn Counter(count: 0);
-            c.increment(10);
-            _ = await c.print_total();
+            let _ = c.increment(10);
+            _ = c.print_total();
             return 0;
         }
         ",
@@ -299,12 +299,21 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
         "spawn Counter site should lower to HirExprKind::Spawn: {:#?}",
         main.body
     );
+    // The call is the send: one site builds the addressed description and
+    // submits it, so the `ActorMessage` node is the submission's operand.
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorMessage { method_id, .. } if method_id == "Counter::increment"
+            HirExprKind::ActorDelivery {
+                receiver,
+                operation: hew_types::actor_delivery::ActorDeliveryCall::Submit { .. },
+                ..
+            } if matches!(
+                &receiver.kind,
+                HirExprKind::ActorMessage { method_id, .. } if method_id == "Counter::increment"
+            )
         )),
-        "c.increment(10) should lower to HirExprKind::ActorMessage: {:#?}",
+        "c.increment(10) should lower to a Submit over HirExprKind::ActorMessage: {:#?}",
         main.body
     );
     assert!(
@@ -312,19 +321,18 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
             &expr.kind,
             HirExprKind::ActorAsk { method_id, .. } if method_id == "Counter::print_total"
         )),
-        "await c.print_total() should lower to HirExprKind::ActorAsk: {:#?}",
+        "c.print_total() should lower to HirExprKind::ActorAsk: {:#?}",
         main.body
     );
 }
 
 #[test]
-fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
-    // The `await` keyword on an actor method call is required (R-ASK surface:
-    // bare call without `await` is rejected at the type-checker). The HIR node
-    // produced must be `HirExprKind::ActorAsk` carrying the handler's declared
-    // return type (the inner `i64`), not the wrapped `Result<i64, AskError>`.
-    // The `let v = await g.get()` binding stores the full `Result` value;
-    // the `ActorAsk` node itself records the inner reply type for codegen sizing.
+fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
+    // An actor ask is an ordinary call (U383): no `await`. The HIR node must be
+    // `HirExprKind::ActorAsk` carrying the handler's declared return type (the
+    // inner `i64`), not the wrapped `Result<i64, AskError>`. The
+    // `let v = g.get()` binding stores the full `Result` value; the `ActorAsk`
+    // node itself records the inner reply type for codegen sizing.
     let output = lower_checked(
         r"
         actor Getter {
@@ -335,7 +343,7 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
 
         fn request_value() -> Result<i64, AskError> {
             let g = spawn Getter;
-            let v = await g.get();
+            let v = g.get();
             return v;
         }
         ",
@@ -343,7 +351,7 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
 
     assert!(
         output.diagnostics.is_empty(),
-        "awaited actor ask let-value should lower without HIR diagnostics: {:?}",
+        "actor-ask let-value should lower without HIR diagnostics: {:?}",
         output.diagnostics
     );
 
@@ -359,7 +367,7 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
 
     let HirStmtKind::Let(binding, Some(value)) = &main.body.statements[1].kind else {
         panic!(
-            "second statement should be `let v = await g.get()`; got {:#?}",
+            "second statement should be `let v = g.get()`; got {:#?}",
             main.body.statements[1]
         );
     };
@@ -374,17 +382,13 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
             ..
         } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
     ));
-    let HirExprKind::SubsumedValue { source } = &value.kind else {
-        panic!("await must preserve its checked call occurrence: {value:#?}");
-    };
-    assert_eq!(source.ty, value.ty);
-    let (method_id, reply_ty) = match &source.kind {
+    let (method_id, reply_ty) = match &value.kind {
         HirExprKind::ActorAsk {
             method_id,
             reply_ty,
             ..
         } => (method_id.as_str(), reply_ty),
-        other => panic!("awaited actor ask should lower to HirExprKind::ActorAsk, got {other:#?}"),
+        other => panic!("an actor ask should lower to HirExprKind::ActorAsk, got {other:#?}"),
     };
 
     assert_eq!(

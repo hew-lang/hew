@@ -1226,7 +1226,7 @@ fn typecheck_await_local_pid_returns_unit() {
         }
         fn main() {
             let g = spawn Greeter;
-            g.greet("hi");
+            let _ = g.greet("hi");
             close(g);
             await g;
         }

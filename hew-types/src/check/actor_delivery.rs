@@ -88,26 +88,6 @@ impl Checker {
         delivery::sender_type(target_ty, policy)
     }
 
-    pub(super) fn check_actor_submission(&mut self, message: &Spanned<Expr>, span: &Span) -> Ty {
-        let ty = self.synthesize(&message.0, &message.1);
-        let ty = self.subst.resolve(&ty);
-        let Some((_, _, policy)) = delivery::message_parts(&ty) else {
-            self.report_error(
-                TypeErrorKind::InvalidSend,
-                span,
-                "`send` requires an owned actor message description".to_string(),
-            );
-            return Ty::Error;
-        };
-        self.mark_expr_moved(&message.0, &message.1);
-        self.actor_delivery_calls.insert(
-            SpanKey::in_module(span, self.current_module_idx),
-            ActorDeliveryCall::Submit { policy },
-        );
-        self.record_submission_suspension(span, policy.may_suspend());
-        delivery::result_type(ty)
-    }
-
     pub(super) fn check_actor_delivery_method(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -130,11 +110,23 @@ impl Checker {
             ));
         }
         let (target, payload, old_policy) = delivery::message_parts(ty)?;
+        // A returned message has exactly two moves left: resubmit it as it
+        // stands, or readdress it to a compatible actor and resubmit. Both
+        // yield the same delivery outcome an ordinary call does.
+        if method == "retry" && args.is_empty() {
+            self.mark_expr_moved(&receiver.0, &receiver.1);
+            self.actor_delivery_calls.insert(
+                SpanKey::in_module(span, self.current_module_idx),
+                ActorDeliveryCall::Submit { policy: old_policy },
+            );
+            self.record_submission_suspension(span, old_policy.may_suspend());
+            return Some(delivery::result_type(ty.clone()));
+        }
         if method != "to" || args.len() != 1 || args[0].name().is_some() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "an owned message supports `.to(actor)` to change its destination".to_string(),
+                "a returned message supports `.retry()` and `.to(actor)`".to_string(),
             );
             return Some(Ty::Error);
         }
@@ -152,12 +144,12 @@ impl Checker {
                 target_is_view: view.is_some(),
             },
         );
-        self.record_submission_suspension(span, false);
-        Some(delivery::message_type(
+        self.record_submission_suspension(span, policy.may_suspend());
+        Some(delivery::result_type(delivery::message_type(
             target.clone(),
             payload.clone(),
             policy,
-        ))
+        )))
     }
 
     pub(super) fn finish_actor_receive_call(
@@ -248,15 +240,21 @@ impl Checker {
                 argument_order,
             },
         );
-        self.record_submission_suspension(span, false);
-        delivery::message_type(target.clone(), Ty::Tuple(payload), policy)
+        // The call is the send: a `receive fn` without a reply submits at its
+        // call site, under the policy its receiver view carries.
+        self.record_submission_suspension(span, policy.may_suspend());
+        delivery::result_type(delivery::message_type(
+            target.clone(),
+            Ty::Tuple(payload),
+            policy,
+        ))
     }
 
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {
         if matches!(ty, Ty::Named { name, builtin: None, .. } if matches!(name.as_str(), delivery::MESSAGE_TYPE | delivery::SENDER_TYPE))
         {
             self.report_error(TypeErrorKind::InvalidOperation, span,
-                "actor message and sender fields are sealed; use receive calls, `policy`, `.to`, and `send`".to_string());
+                "actor message and sender fields are sealed; use receive calls, `policy`, `.retry` and `.to`".to_string());
             true
         } else {
             false

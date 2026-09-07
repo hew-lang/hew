@@ -176,7 +176,7 @@ fn actor_handle_param_is_not_flagged() {
         "    var n: i64 = 0,\n",
         "    receive fn bump() { self.n = self.n + 1; }\n",
         "}\n",
-        "fn poke(var p: LocalPid<Probe>) { p.bump(); }\n",
+        "fn poke(var p: LocalPid<Probe>) { let _ = p.bump(); }\n",
     ));
 }
 
@@ -188,7 +188,7 @@ fn record_local_pid_field_projection_is_not_flagged() {
         "    receive fn bump() { n = n + 1; }\n",
         "}\n",
         "type Holder { pid: LocalPid<Probe>, }\n",
-        "fn poke(var holder: Holder) { holder.pid.bump(); }\n",
+        "fn poke(var holder: Holder) { let _ = holder.pid.bump(); }\n",
     ));
 }
 

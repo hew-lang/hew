@@ -1770,7 +1770,7 @@ fn weak_rejected_at_actor_send_boundary() {
             let rc = Rc.new(1);
             let weak = rc.downgrade();
             let sink = spawn BoundarySink(_unused: 0);
-            sink.consume(weak);
+            let _ = sink.consume(weak);
         }
         ",
     );
@@ -1898,7 +1898,7 @@ fn rc_rejected_at_actor_send_boundary() {
         fn main() {
             let rc: Rc<i64> = Rc.new(1);
             let a = spawn BoundarySink(_unused: 0);
-            a.consume(rc);
+            let _ = a.consume(rc);
         }
         ",
     );
@@ -1926,8 +1926,8 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
         fn main() {
             let sink = spawn BoundarySink(_unused: 0);
             var value = Boxed { payload: [1, 2] };
-            sink.take(value);
-            sink.take(value);
+            let _ = sink.take(value);
+            let _ = sink.take(value);
             value.payload.push(3);
             println(value.payload[2]);
         }
@@ -1988,8 +1988,8 @@ fn nested_rc_and_weak_send_rejections_do_not_cascade() {
             let weak = rc.downgrade();
             let boxed = RcBox { value: rc.clone() };
             let pair = (2, weak);
-            sink.take_box(boxed);
-            sink.take_tuple(pair);
+            let _ = sink.take_box(boxed);
+            let _ = sink.take_tuple(pair);
             println(boxed.value.strong_count());
             println(pair.0);
         }
@@ -2136,7 +2136,7 @@ fn actor_receive_fn_option_reply_accepted() {
 
         fn main() {
             let q = spawn Queue(items: Vec.new());
-            let _item = await q.dequeue();
+            let _item = q.dequeue();
         }
         ",
     );
@@ -5825,7 +5825,7 @@ fn await_stream_recv_bytes_typechecks() {
          \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
-         fn main() { let r = spawn Runner(); r.go(0); }\n",
+         fn main() { let r = spawn Runner(); let _ = r.go(0); }\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -5857,7 +5857,7 @@ fn await_stream_recv_int_element_admitted() {
          \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
-         fn main() { let r = spawn Runner(); r.go(0); }\n",
+         fn main() { let r = spawn Runner(); let _ = r.go(0); }\n",
     );
     assert!(
         output.errors.is_empty(),

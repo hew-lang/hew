@@ -867,7 +867,7 @@ impl<'a> Flow<'a> {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
             SemTerminator::Suspend {
-                kind: crate::SuspendKind::ValueClose { place },
+                kind: crate::SuspendKind::ValueClose { place, .. },
                 resumes,
                 ..
             } => {

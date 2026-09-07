@@ -453,3 +453,39 @@ fn affine_vector_accepts_nested_non_clone_values_without_copy_capability() {
         .filter(|(key, _)| hew_types::runtime_call::vector_element_type(&key.0).is_some())
         .all(|(_, facts)| facts.clone == hew_types::CloneKind::None));
 }
+
+#[test]
+fn selected_value_close_rejects_an_owner_used_as_its_index() {
+    let mut module = lower_source(
+        r"
+        gen fn numbers() -> i64 { yield 1; }
+        fn main() {
+            var values: Vec<Generator<i64, ()>> = [];
+            values.push(numbers());
+            values.set(0, numbers());
+        }
+        ",
+    );
+    let inputs = module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            SemTerminator::Suspend {
+                kind:
+                    hew_sir::SuspendKind::ValueClose {
+                        selection: hew_sir::ValueCloseSelection::VectorElement,
+                        ..
+                    },
+                inputs,
+                ..
+            } => Some(inputs),
+            _ => None,
+        })
+        .expect("replacement must close its selected element");
+    inputs[1].operand.value = inputs[0].operand.value;
+    assert!(verify_module(&module)
+        .iter()
+        .any(|diagnostic| format!("{diagnostic:?}")
+            .contains("no matching input/result/resume contract")));
+}

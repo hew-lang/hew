@@ -6420,19 +6420,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             )?;
         }
 
-        // Consumed arguments stay owned during later argument evaluation so
-        // a fault can clean them. The runtime owns them once the call begins.
-        for argument in &lowered_args {
-            if argument.decision == crate::BoundaryDecision::Move {
-                self.owned_live.remove(&argument.operand.value);
-            }
-        }
-
         // Argument temporaries precede the receiver's actual transfer.
         let argument_temporaries: Vec<_> = self
             .owned_live
             .keys()
-            .filter(|value| !live_before_arguments.contains(value))
+            .filter(|value| {
+                !live_before_arguments.contains(value)
+                    && !lowered_args.iter().any(|arg| {
+                        arg.decision == crate::BoundaryDecision::Move
+                            && arg.operand.value == **value
+                    })
+            })
             .copied()
             .collect();
         let mut transformed_projection = None;
@@ -6447,6 +6445,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 &place.leaf_ty,
                 SemOpKind::LoadTake { place: projected },
             )?;
+            if matches!(
+                family,
+                hew_types::RuntimeCallFamily::Vector(
+                    hew_types::runtime_call::VecValueOp::Clear
+                        | hew_types::runtime_call::VecValueOp::Set
+                )
+            ) && self.value_needs_close(&place.leaf_ty)
+            {
+                let index = matches!(
+                    family,
+                    hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Set)
+                )
+                .then(|| lowered_args[0].operand.value);
+                let loan_depth = self.argument_receiver_loans.len();
+                self.argument_receiver_loans.extend(loans.iter().copied());
+                self.close_selected_value(None, Some(source), index)?;
+                self.dispatch_value_cleanup()?;
+                self.argument_receiver_loans.truncate(loan_depth);
+            }
             self.owned_live.remove(&source);
             let moved = self.emit_typed(
                 provenance,
@@ -6463,6 +6480,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     decision: crate::BoundaryDecision::Move,
                 },
             );
+        }
+        // Keep transferred values available to cleanup until pre-mutation close succeeds.
+        for argument in &lowered_args {
+            if argument.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&argument.operand.value);
+            }
         }
         let live_at_call = self.owned_live.clone();
         if let RuntimeResultEffect::FreshOwnedVariant(kind) = contract.result {

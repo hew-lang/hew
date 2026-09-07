@@ -4114,28 +4114,37 @@ fn verify_terminator_shape(
                             .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
                 }
-                crate::SuspendKind::ValueClose { place } => {
+                crate::SuspendKind::ValueClose { place, selection } => {
                     resumes.len() == 1
                         && resumes.first() == Some(cancel)
                         && resumes.first() == Some(unwind)
                         && matches!(result, crate::CallResult::Unit)
-                        && match place {
-                            Some(place) => {
-                                inputs.is_empty()
-                                    && function.places.iter().any(|declaration| {
-                                        declaration.id == *place
-                                            && declaration.origin == crate::PlaceOrigin::Local
-                                            && crate::OwnKind::of_ty(
-                                                &declaration.ty,
-                                                variants.facts,
-                                            )
+                        && if let Some(place) = place {
+                            *selection == crate::ValueCloseSelection::Whole
+                                && inputs.is_empty()
+                                && function.places.iter().any(|declaration| {
+                                    declaration.id == *place
+                                        && declaration.origin == crate::PlaceOrigin::Local
+                                        && crate::OwnKind::of_ty(&declaration.ty, variants.facts)
                                             .ok()
-                                                == Some(crate::OwnKind::Owned)
+                                            == Some(crate::OwnKind::Owned)
+                                })
+                        } else {
+                            let expected_len = if *selection == crate::ValueCloseSelection::Whole {
+                                1
+                            } else {
+                                2
+                            };
+                            inputs.len() == expected_len
+                                    && inputs[0].decision == crate::BoundaryDecision::Borrow
+                                    && types.get(&inputs[0].operand.value).is_some_and(|ty| {
+                                        crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned)
+                                            && (*selection == crate::ValueCloseSelection::Whole
+                                                || matches!(ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Vec), args, .. } if args.len() == 1))
                                     })
-                            }
-                            None => matches!(inputs.as_slice(), [input]
-                                if input.decision == crate::BoundaryDecision::Borrow
-                                && types.get(&input.operand.value).is_some_and(|ty| crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned))),
+                                    && (*selection == crate::ValueCloseSelection::Whole
+                                        || (inputs[1].decision == crate::BoundaryDecision::Copy
+                                            && types.get(&inputs[1].operand.value) == Some(&ResolvedTy::I64)))
                         }
                 }
                 crate::SuspendKind::Join { .. } => {

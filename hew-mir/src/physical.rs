@@ -856,6 +856,7 @@ pub enum PhysicalTerminator {
         unwind: PhysicalEdge,
     },
     ValueClose {
+        index: Option<StorageId>,
         destroy: Option<DestroyAction>,
         generator: StorageId,
         conditional: bool,
@@ -8298,6 +8299,29 @@ mod tests {
             DestroyAction::Set(original.set_glue[0].id),
         )
         .expect_err("set drop cannot consume a map");
+    }
+
+    #[test]
+    fn verifier_rejects_selected_close_with_a_non_integer_index() {
+        let mut module = vector_fixture();
+        module.callables[0].is_resumable = true;
+        let descriptor = module.vector_glue[0].id;
+        let block = vector_block(&mut module.functions[0], VecValueOp::Set);
+        let PhysicalTerminator::RuntimeCall { args, normal, .. } = &block.terminator else {
+            unreachable!()
+        };
+        let ArgumentTransfer::Move(owner) = args[0] else {
+            panic!("set must own its receiver");
+        };
+        block.terminator = PhysicalTerminator::ValueClose {
+            index: Some(owner),
+            generator: owner,
+            destroy: Some(DestroyAction::Vector(descriptor)),
+            conditional: false,
+            next: normal.clone(),
+        };
+        let error = verify_physical_module(&module).expect_err("vector pointer cannot be an index");
+        assert!(error.message.contains("copied i64 index"), "{error}");
     }
 
     fn vector_fixture() -> PhysicalModule {

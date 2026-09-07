@@ -439,6 +439,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_value_close(
         &self,
         owner: StorageId,
+        index: Option<StorageId>,
         destroy: Option<super::DestroyAction>,
         conditional: bool,
         next: &PhysicalEdge,
@@ -479,12 +480,34 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .llvm_ctx("select owned value")?;
             }
             self.builder.position_at_end(visit);
-            self.value_emitter().visit_close(
-                self.slots[storage.0 as usize],
-                &self.storage(storage)?.layout,
-                action,
-                context,
-            )?;
+            if let Some(index) = index {
+                let visit = coro::external(
+                    self.llvm,
+                    "hew_vec_visit_element_close",
+                    self.ctx.void_type().fn_type(
+                        &[pointer.into(), self.ctx.i64_type().into(), pointer.into()],
+                        false,
+                    ),
+                )?;
+                self.builder
+                    .build_call(
+                        visit,
+                        &[
+                            self.load(storage, "close.vector")?.into(),
+                            self.load(index, "close.index")?.into(),
+                            context.into(),
+                        ],
+                        "",
+                    )
+                    .llvm_ctx("collect replaced vector element")?;
+            } else {
+                self.value_emitter().visit_close(
+                    self.slots[storage.0 as usize],
+                    &self.storage(storage)?.layout,
+                    action,
+                    context,
+                )?;
+            }
             self.builder
                 .build_unconditional_branch(after)
                 .llvm_ctx("finish child selection")?;

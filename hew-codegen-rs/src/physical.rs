@@ -2542,11 +2542,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
             } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
             PhysicalTerminator::ValueClose {
+                index,
                 destroy,
                 generator,
                 conditional,
                 next,
-            } => self.emit_value_close(*generator, *destroy, *conditional, next),
+            } => self.emit_value_close(*generator, *index, *destroy, *conditional, next),
             PhysicalTerminator::TaskAwait {
                 task,
                 result,

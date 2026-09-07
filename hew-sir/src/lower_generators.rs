@@ -280,15 +280,35 @@ impl Builder<'_, '_> {
         place: Option<PlaceId>,
         value: Option<ValueId>,
     ) -> Result<(), String> {
+        self.close_selected_value(place, value, None)
+    }
+
+    pub(super) fn close_selected_value(
+        &mut self,
+        place: Option<PlaceId>,
+        value: Option<ValueId>,
+        index: Option<ValueId>,
+    ) -> Result<(), String> {
         let next = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::ValueClose { place },
+            kind: SuspendKind::ValueClose {
+                place,
+                selection: if index.is_some() {
+                    crate::ValueCloseSelection::VectorElement
+                } else {
+                    crate::ValueCloseSelection::Whole
+                },
+            },
             inputs: value
                 .into_iter()
                 .map(|value| BoundaryOperand {
                     operand: Operand { value },
                     decision: BoundaryDecision::Borrow,
                 })
+                .chain(index.map(|value| BoundaryOperand {
+                    operand: Operand { value },
+                    decision: BoundaryDecision::Copy,
+                }))
                 .collect(),
             result: CallResult::Unit,
             resumes: vec![edge(next)],

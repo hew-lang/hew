@@ -69,6 +69,9 @@ pub enum CallableInstance {
     Generic(SirInstanceKey),
     /// A concrete closure body, resolved by its environment descriptor.
     Closure(ClosureId),
+    /// The synthesized process-entry body that realizes a `Result` exit plan
+    /// under the entry declaration's identity.
+    EntryAdapter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -613,7 +616,9 @@ pub struct SemModule {
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
     /// selected program.
     pub root_unit_callables: Vec<CallableId>,
-    /// Checker-selected process entry and its complete typed exit contract.
+    /// Checker-selected process entry and the exit action physical lowering
+    /// realizes. A `Result` action never reaches here: SIR consumes it in
+    /// the entry adapter and publishes the integer status that body returns.
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     /// Resolved entry callable, projected by joining the entry plan's `DefId`.
     /// Neither lowering nor the verifier rediscovers an entry from a

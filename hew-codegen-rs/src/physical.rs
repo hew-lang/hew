@@ -5348,7 +5348,7 @@ fn emit_entry_success<'ctx>(
             normalize_entry_integer(ctx, builder, value, kind)
         }
         EntryExitAction::Result { .. } => Err(CodegenError::FailClosed(
-            "Result process exits are not yet admitted by physical codegen".into(),
+            "Result process exits are realized by the SIR entry adapter".into(),
         )),
     }
 }

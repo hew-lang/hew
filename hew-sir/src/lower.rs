@@ -24,6 +24,9 @@ mod suspend;
 #[path = "lower_native_io.rs"]
 mod native_io;
 
+#[path = "lower_entry.rs"]
+mod entry;
+
 #[path = "lower_generators.rs"]
 mod generators;
 
@@ -46,7 +49,10 @@ use hew_hir::{
     ResolvedRef,
 };
 use hew_types::runtime_call::collection_type_arguments;
-use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
+use hew_types::{
+    CallTarget, DefId, EntryExitAction, ResolvedTy, TypeCheckOutput, TypeFactService,
+    TypeInstanceKey,
+};
 
 use crate::ownership::{Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable};
 use crate::{
@@ -560,6 +566,7 @@ struct InstanceService<'a> {
     actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>)>,
     closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
     closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
+    entry_adapter: Option<EntryAdapter>,
     /// Only template headers that back a requested concrete SIR instance are
     /// emitted into the SIR module. HIR remains the authority for unselected
     /// generic definitions, so SIR does not accumulate an unrelated second
@@ -1021,6 +1028,7 @@ impl<'a> InstanceService<'a> {
             actor_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
             closure_sources: Vec::new(),
+            entry_adapter: None,
             used_templates: std::collections::HashSet::new(),
             pending: VecDeque::new(),
             functions: Vec::new(),
@@ -1269,9 +1277,92 @@ impl<'a> InstanceService<'a> {
     /// A module without one is not an executable program, so it has no demand
     /// and lowers nothing.
     fn request_entry(&mut self) {
-        if let Some(entry) = self.table.entry_callable {
+        let Some(entry) = self.table.entry_callable else {
+            return;
+        };
+        let result_plan = self
+            .table
+            .entry_exit_plan
+            .as_ref()
+            .is_some_and(|plan| matches!(plan.action, EntryExitAction::Result { .. }));
+        if !result_plan {
             self.request_body(entry);
+            return;
         }
+        // A Result entry exits through a synthesized adapter. SIR consumes the
+        // checker's action here; the module publishes the integer status the
+        // adapter returns as the physical-facing exit action.
+        let source = self
+            .table
+            .callable(entry)
+            .cloned()
+            .expect("entry callable exists in its table");
+        let id = CallableId(
+            u32::try_from(self.table.callables.len())
+                .expect("SIR callable count exceeds the module-local ID range"),
+        );
+        self.table.callables.push(SemCallable {
+            id,
+            function: source.function,
+            declaration: source.declaration,
+            instance: CallableInstance::EntryAdapter,
+            symbol: "__hew_entry".to_string(),
+            source_origin: source.source_origin,
+            signature: SemSignature {
+                params: Vec::new(),
+                return_ty: ResolvedTy::I64,
+            },
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+        });
+        self.states.push(CallableState::Unreached);
+        self.statuses.push(None);
+        self.table.root_unit_callables.push(id);
+        self.table.entry_callable = Some(id);
+        let plan = self
+            .table
+            .entry_exit_plan
+            .as_mut()
+            .expect("a Result entry plan was just observed");
+        let action = std::mem::replace(
+            &mut plan.action,
+            EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
+        );
+        self.entry_adapter = Some(EntryAdapter {
+            callable: id,
+            entry,
+            action,
+        });
+        self.request_body(id);
+    }
+
+    /// The checker-selected `Display::fmt` body for the entry error type.
+    fn resolve_entry_display(
+        &mut self,
+        display: &hew_types::EntryDisplayTarget,
+    ) -> Result<SemCallable, String> {
+        let id = match &display.instance {
+            hew_types::EntryCallableInstance::Declared => {
+                let id = *self
+                    .table
+                    .monomorphic_by_declaration
+                    .get(&display.declaration)
+                    .ok_or_else(|| {
+                        format!(
+                            "entry Display target `{}` has no SIR callable",
+                            display.declaration.full_path()
+                        )
+                    })?;
+                self.request_body(id);
+                id
+            }
+            hew_types::EntryCallableInstance::Generic { type_args } => {
+                self.request_instance(&display.declaration, type_args.clone())?
+            }
+        };
+        self.callable(id)
+            .cloned()
+            .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
     }
 
     /// Seed exact caller-selected declarations after validating the complete
@@ -1433,8 +1524,23 @@ impl<'a> InstanceService<'a> {
                     callable_meta.symbol
                 )
             })?;
+        if callable_meta.instance == CallableInstance::EntryAdapter {
+            let adapter = self
+                .entry_adapter
+                .clone()
+                .filter(|adapter| adapter.callable == callable)
+                .ok_or("entry adapter has no exit plan")?;
+            return Ok(LoweringInput {
+                function: Cow::Borrowed(function),
+                callable: callable_meta,
+                substitution: TypeSubstitution::empty(),
+                source: BodySource::EntryAdapter(adapter),
+            });
+        }
         let substitution = match &callable_meta.instance {
-            CallableInstance::Closure(_) => unreachable!("closure inputs are resolved above"),
+            CallableInstance::Closure(_) | CallableInstance::EntryAdapter => {
+                unreachable!("closure and entry adapter inputs are resolved above")
+            }
             CallableInstance::Monomorphic => {
                 if !function.type_params.is_empty() {
                     return Err(format!(
@@ -1932,12 +2038,25 @@ enum BodySource {
         actor: crate::ActorId,
         state_bindings: Vec<HirBinding>,
     },
+    EntryAdapter(EntryAdapter),
+}
+
+/// The synthesized parameterless body that realizes a `Result` entry exit
+/// plan. It reuses the entry's declaration identity and HIR provenance; the
+/// checker's action is consumed here and physical lowering sees an integer
+/// exit status.
+#[derive(Debug, Clone)]
+struct EntryAdapter {
+    callable: CallableId,
+    entry: CallableId,
+    action: EntryExitAction,
 }
 
 impl BodySource {
     fn parameters<'a>(&'a self, function: &'a HirFn) -> Result<&'a [HirBinding], String> {
         match self {
             Self::Function | Self::Actor { .. } => Ok(&function.params),
+            Self::EntryAdapter(_) => Ok(&[]),
             Self::Closure(expression) => match &expression.kind {
                 HirExprKind::Closure { params, .. } => Ok(params),
                 _ => Err("closure body source is not a checked literal".to_string()),
@@ -2682,6 +2801,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         ) {
             (CallableInstance::Monomorphic, true) => {}
             (CallableInstance::Closure(_), _) if matches!(source, BodySource::Closure(_)) => {}
+            (CallableInstance::EntryAdapter, _)
+                if matches!(source, BodySource::EntryAdapter(_)) => {}
             (CallableInstance::Generic(key), false)
                 if key.template.declaration == self.function.declaration
                     && key.type_args == self.substitution.args => {}
@@ -2750,6 +2871,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             BodySource::Function | BodySource::Actor { .. } => {
                 let body = self.function.body.clone();
                 self.lower_block(&body, OwnedBindingUse::Return)
+            }
+            BodySource::EntryAdapter(adapter) => {
+                self.lower_entry_adapter(&adapter)?;
+                Ok(None)
             }
             BodySource::Closure(expression) => {
                 let HirExprKind::Closure { body, ret_ty, .. } = &expression.kind else {

@@ -173,3 +173,99 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
         "a non-root entry callable must be rejected: {diagnostics:#?}"
     );
 }
+
+const RESULT_ENTRY: &str = r#"
+    enum AppError {
+        Failed(string),
+    }
+
+    impl Display for AppError {
+        fn fmt(self) -> string {
+            match self {
+                AppError.Failed(message) => message,
+            }
+        }
+    }
+
+    impl Error for AppError {}
+
+    fn main() -> Result<(), AppError> {
+        let held = "held";
+        println(held);
+        Err(AppError.Failed("displayed failure"))
+    }
+    "#;
+
+/// A `Result` entry exits through a synthesized adapter: the adapter is the
+/// module's entry, the checker's action is consumed and the physical-facing
+/// plan is the integer status the adapter returns.
+#[test]
+fn a_result_entry_exits_through_the_sir_entry_adapter() {
+    let (hir, type_facts) = lower_hir(RESULT_ENTRY);
+    assert!(
+        matches!(
+            hir.entry_exit_plan.as_ref().map(|plan| &plan.action),
+            Some(EntryExitAction::Result { .. })
+        ),
+        "the checker selects a Result exit action for this entry"
+    );
+    let lowered = lower_module(&hir, &type_facts);
+    let entry = lowered
+        .module
+        .entry_callable
+        .expect("the Result entry selects an adapter callable");
+    let adapter = lowered.module.callable(entry).expect("adapter header");
+    assert_eq!(adapter.symbol, "__hew_entry");
+    assert_eq!(adapter.instance, hew_sir::CallableInstance::EntryAdapter);
+    assert_eq!(adapter.declaration, declaration_of(&hir, "main"));
+    assert_eq!(
+        lowered
+            .module
+            .entry_exit_plan
+            .as_ref()
+            .map(|plan| &plan.action),
+        Some(&EntryExitAction::Integer(EntryIntegerType::I64))
+    );
+    let index = lowered.module.function_index();
+    assert!(index.function(entry).is_some(), "the adapter has a body");
+    let main = lowered
+        .module
+        .callable_for_declaration(&declaration_of(&hir, "main"))
+        .expect("the source entry keeps its own callable");
+    assert!(
+        index.function(main.id).is_some(),
+        "the source entry body is demanded by the adapter"
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "the adapter must verify: {:#?}",
+        verify_module(&lowered.module)
+    );
+}
+
+/// Negative control: a `Result` action that reaches the verifier was never
+/// realized, so the module is refused instead of leaving the exit to codegen.
+#[test]
+fn a_result_action_reaching_the_verifier_is_rejected() {
+    let (hir, type_facts) = lower_hir(RESULT_ENTRY);
+    let checker_action = hir
+        .entry_exit_plan
+        .as_ref()
+        .map(|plan| plan.action.clone())
+        .expect("checker plan");
+    let mut module = lower_module(&hir, &type_facts).module;
+    module
+        .entry_exit_plan
+        .as_mut()
+        .expect("lowered plan")
+        .action = checker_action;
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidEntryCallable { reason, .. }
+                if reason.contains("entry adapter")
+        )),
+        "an unrealized Result action must be rejected: {diagnostics:#?}"
+    );
+}

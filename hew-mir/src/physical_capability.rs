@@ -191,7 +191,7 @@ fn verify_user(
         .filter(|callable| callable.id == id)
         .ok_or_else(|| PhysicalError::new("physical capability has no callable"))?;
     let exact_instance = match &callable.instance {
-        hew_sir::CallableInstance::Closure(_) => false,
+        hew_sir::CallableInstance::Closure(_) | hew_sir::CallableInstance::EntryAdapter => false,
         hew_sir::CallableInstance::Monomorphic => type_args.is_empty(),
         hew_sir::CallableInstance::Generic(key) => {
             &key.template.declaration == declaration && key.type_args == type_args

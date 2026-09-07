@@ -1309,6 +1309,14 @@ fn verify_callable_table<'a>(
                     }));
                 }
             }
+            CallableInstance::EntryAdapter => {
+                if module.entry_callable != Some(callable.id) {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "entry adapter is not the module's entry callable".to_string(),
+                    }));
+                }
+            }
             CallableInstance::Generic(key) => {
                 generic_declarations.insert(callable.declaration.clone());
                 if monomorphic_declarations.contains(&callable.declaration) {
@@ -1475,12 +1483,28 @@ fn verify_callable_table<'a>(
                     reason: "entry callable must be a listed root-unit callable".to_string(),
                 }));
             }
-            Some(callable) if !matches!(callable.instance, CallableInstance::Monomorphic) => {
+            Some(callable)
+                if !matches!(
+                    callable.instance,
+                    CallableInstance::Monomorphic | CallableInstance::EntryAdapter
+                ) =>
+            {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
                     callable: entry,
                     reason:
                         "entry callable must be a monomorphic source body, not a generic instance"
                             .to_string(),
+                }));
+            }
+            Some(_)
+                if module.entry_exit_plan.as_ref().is_some_and(|plan| {
+                    matches!(plan.action, hew_types::EntryExitAction::Result { .. })
+                }) =>
+            {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                    callable: entry,
+                    reason: "Result entry actions are realized by the SIR entry adapter before verification"
+                        .to_string(),
                 }));
             }
             Some(callable) if !callable.signature.params.is_empty() => {

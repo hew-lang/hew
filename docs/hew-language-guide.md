@@ -54,10 +54,10 @@ for the documented resolver precedence.
 - Read collection elements with `v[i]` (returns `T`, traps on out-of-bounds) or `.get(i)` (returns `Option<T>`, never traps) — both universal across element types.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
 - Build maps/sets with `Type.new()` + `.insert()`; bind with `var`, since `.insert()` mutates the receiver.
-- Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
+- Look up `HashMap`/`Option`/`Result` with `match`, not subscript. `unwrap()` is not the language's crash form; `expect(reason)` is, and it is not in this build yet.
 - **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
-- Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`LocalPid<Self>`), not a field prefix.
+- Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`Pid<Self>`, spelled `LocalPid<Self>` in this build), not a field prefix. `this` is not a word in Hew.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
 - Ask (request-reply) is `await ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
@@ -1295,7 +1295,9 @@ fn main() {
 }
 ```
 
-The handle type is `LocalPid<T>` (the actor type itself). Let it infer, or annotate when storing the handle in a field. Each `receive fn` takes zero or one argument — bundle multiple values into a struct.
+The handle type is `Pid<T>` (the actor type itself). Let it infer, or annotate when storing the handle in a field. Each `receive fn` takes zero or one argument — bundle multiple values into a struct.
+
+> **Spelling in this build.** One actor identity `Pid<A>` covers local and remote actors (HEW-SPEC-2026 §2.1.1). The compiler still spells the local case `LocalPid<A>` and the remote case `RemotePid<A>`, which is what the examples in this guide write.
 
 ### Fire-and-forget send
 
@@ -1392,14 +1394,14 @@ actor Counter {
 }
 fn run() -> Result<i64, AskError> {
     let c = spawn Counter(count: 0);
-    let v? = await c.bump();
-    let w? = await c.bump();
+    let v = (await c.bump())?;
+    let w = (await c.bump())?;
     Ok(v + w)
 }
 fn main() { match run() { .Ok(t) => println(f"total={t}"), .Err(_) => println("failed") } }
 ```
 
-Inside a fn returning `Result<_, AskError>`, use `let v? = await ...` to unwrap the Ok and auto-propagate Err. The `?` goes on the binding, not the expression.
+Inside a fn returning `Result<_, AskError>`, use `let v = (await ...)?;` to take the Ok and auto-propagate Err. There is one propagation spelling: `?` goes on the expression, and the parentheses are what keep it outside the `await`.
 
 ### Lifecycle hooks #[on(start)] and #[on(stop)]
 
@@ -1733,12 +1735,14 @@ actor Server {
 }
 ```
 
-`await listener.accept()` and `await conn.read()` park the actor on the
-runtime's reactor rather than blocking the worker thread, so other actors keep
-being scheduled while this one waits. A `main()`-body blocking accept (outside
-any receive handler, as in `std/net/net.hew`'s own example) is a different,
-unflagged pattern — the lint only fires inside a receive handler, where the
-scheduler-thread cost applies.
+`listener.accept()` and `conn.read()` park the actor on the runtime's reactor
+rather than blocking the worker thread, so other actors keep being scheduled
+while this one waits. Both are plain suspending calls in the ratified surface
+(HEW-SPEC-2026 §4.0) and carry no `await`; this build still requires the word,
+which is what the example above writes. A `main()`-body blocking accept
+(outside any receive handler, as in `std/net/net.hew`'s own example) is a
+different, unflagged pattern — the lint only fires inside a receive handler,
+where the scheduler-thread cost applies.
 
 ## State machines
 
@@ -2281,7 +2285,7 @@ fn main() {
 }
 ```
 
-For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use `.unwrap()`/`.unwrap_or()` method form.
+For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use the `.unwrap()`/`.unwrap_or()` method form.
 
 ### Option .is_some() / .is_none()
 
@@ -2363,7 +2367,7 @@ fn load_port(path: string) -> Result<i64, dyn Error> {
 }
 ```
 
-`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.unwrap()` or `.expect(msg)`.
+`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.expect(reason)`, the one deliberate invariant assertion; `unwrap()` is removed from the language, and this build still accepts it only because the replacement has not landed.
 
 `fn main() -> Result<(), E>` needs `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr and exits 1.
 
@@ -3585,45 +3589,45 @@ supervisor-restart clone gate. Full client+server program (two routes):
 [`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)
 (run with `HEW_WORKERS=1` to see the single-worker serve+fetch proof).
 
-### Deadline forms — `await conn.read_string() | after d` and `await ln.accept() | after d`
+### Deadline forms — `scope within d`, a `select` timer arm, and socket timeouts
 
-The `| after duration` timeout combinator works with the two blocking network
-operations, converting a plain suspend into a timed suspend that returns
-`Result` on expiry:
+There is no timeout combinator. A read or an accept is a plain suspending
+call, and a deadline over it comes from one of three places:
 
-| Suspend form                          | Return type                       |
-| ------------------------------------- | --------------------------------- |
-| `await conn.read_string()`            | `string`                          |
-| `await conn.read_string() \| after d` | `Result<string, IoError>`         |
-| `await conn.read()`                   | `bytes`                           |
-| `await conn.read() \| after d`        | `Result<bytes, IoError>`          |
-| `await ln.accept()`                   | `net.Connection`                  |
-| `await ln.accept() \| after d`        | `Result<net.Connection, IoError>` |
+| Deadline                             | Bounds                                    |
+| ------------------------------------ | ----------------------------------------- |
+| `scope within d { .. } handle failure { .. }` | every child started in the block   |
+| `after d => ..` inside `select { }`  | the wait for the first of several sources |
+| `conn.set_read_timeout(ms)` / `set_write_timeout(ms)` | that socket's own operations |
 
-If explicit runtime shutdown begins while a deadline-form read or accept is
-already parked, it resumes as `Err(NetError.Cancelled(0))`. Its own deadline
-still reports `Err(NetError.TimedOut(_))`. Plain forms have no `Result` error
-surface and retain their existing fail-closed empty/invalid value behaviour.
+If explicit runtime shutdown begins while a read or accept is already parked,
+it resumes as `Err(NetError.Cancelled(0))`. A socket timeout reports
+`Err(NetError.TimedOut(_))`.
 
-Use inside a `scope` body to bound how long a handler waits for a peer:
+Bounding how long a handler waits for a peer:
 
 <!-- doctest: skip -->
 
 ```hew
-scope {
+scope within 5s {
     fork {
-        match await conn.read_string() | after 5s {
+        match conn.read_string() {
             .Ok(data) => conn.write_string(data),
             .Err(_)   => conn.close(),
         }
     }
+} handle failure {
+    conn.close();
 }
 ```
 
-The deadline form requires `await` — `conn.read_string() | after d` without
-`await` is a type error (checker expressions.rs:1778-1800).
+> **Not yet in this build.** `scope within d { } handle failure { }` and the
+> `await`-free spelling of `read_string()`/`accept()` are the ratified surface
+> (HEW-SPEC-2026 §4.0, §4.11.3). Today the compiler still requires `await` on
+> those two calls and does not accept `within`; the `| after d` combinator it
+> accepts is deleted surface and should not be written in new code.
 
-### Remote ask suspension — `RemotePid<T>.ask` from an actor handler
+### Remote ask suspension — a remote `Pid<T>.ask` from an actor handler
 
 ```hew
 actor Echo {
@@ -3652,13 +3656,22 @@ actor Client {
 }
 ```
 
-`RemotePid<T>` names an actor discovered through the node registry. From an
-actor handler, `peer.ask(msg, timeout_ms)` lowers to the cross-node suspending
-remote-ask path and returns `Result<T.Reply, AskError>` on resume; match
-`Ok`/`Err` instead of assuming a reply. A same-node lookup can still return a
-`RemotePid<T>`, but the local-mailbox bridge for the remote-ask path is scoped
-to fail closed as `AskError.RoutingFailed`; use a `LocalPid<T>` direct actor
-call when both actors are intentionally local. Full example:
+`Pid<T>` names an actor, wherever it lives; a lookup through the node registry
+returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
+lowers to the cross-node suspending remote-ask path and returns
+`Result<T.Reply, AskError>` on resume; match `Ok`/`Err` instead of assuming a
+reply. A same-node lookup can still return a handle that routes through the
+remote path, and the local-mailbox bridge for that path is scoped to fail
+closed as `AskError.RoutingFailed`; use a direct actor call when both actors
+are intentionally local.
+
+> **Not yet in this build.** The one-identity surface is ratified
+> (HEW-SPEC-2026 §2.1.1): `Pid<A>` names a local or remote actor and
+> `RemotePid` is the internal wire form. The compiler still spells the two
+> types separately, which is why the example above writes `RemotePid<Echo>`
+> and `LocalPid<T>` appears elsewhere in this guide.
+
+Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
 
@@ -3737,7 +3750,7 @@ authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
-higher session. `RemotePid<T>` carries the complete `Location`:
+higher session. A remote handle carries the complete `Location`:
 
 ```text
 { node: NodeId, slot: u64, incarnation: u32 }
@@ -3750,7 +3763,7 @@ if the replacement process reuses the same actor slot.
 
 Registry names are discovery aliases. Repointing a name affects future
 `Node.lookup` calls but does not rewrite or revoke a previously issued
-`RemotePid`.
+handle.
 
 The registry knows what it holds. `Node.register(name, pid)` returns
 `Result<(), RegisterError>` and records the actor's declaration identity beside

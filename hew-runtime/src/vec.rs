@@ -2789,6 +2789,39 @@ pub unsafe extern "C" fn hew_vec_get_clone(
     }
 }
 
+/// Copy the bytes of one descriptor-owned element into `out` without cloning
+/// it and without changing the Vec's length.
+///
+/// This is the borrowed element read (D432): the Vec keeps ownership of the
+/// slot and `out` is a readable alias of it, valid only while the Vec is not
+/// mutated or reallocated. The compiler proves that window with a loan on the
+/// receiver, and checks the index before calling.
+///
+/// # Safety
+///
+/// `v` must be an owned-element Vec and `out` must point to at least
+/// `descriptor.size` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_borrow_owned(
+    v: *const HewVec,
+    index: i64,
+    out: *mut core::ffi::c_void,
+) -> bool {
+    cabi_guard!(v.is_null() || out.is_null(), false);
+    // SAFETY: null pointers were rejected and owned_descriptor validates the
+    // descriptor-backed representation.
+    unsafe {
+        if index < 0 || index as usize >= (*v).len {
+            return false;
+        }
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let src = (*v).data.add(index as usize * elem_size);
+        core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
+        true
+    }
+}
+
 /// Move one descriptor-owned element into `out` without changing Vec length.
 ///
 /// This is the consuming-iterator choke for drop-only elements. The slot bytes

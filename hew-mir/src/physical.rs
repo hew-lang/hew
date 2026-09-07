@@ -515,11 +515,18 @@ pub enum PhysicalVectorOp {
     New,
     Len,
     Index,
-    Get { result: PhysicalVariantId },
+    Get {
+        result: PhysicalVariantId,
+    },
     Push,
     Set,
-    Pop { result: PhysicalAggregateId },
+    Pop {
+        result: PhysicalAggregateId,
+    },
     Clear,
+    /// A loan of the element the vector still owns: the slot bytes are read
+    /// without a clone and the result carries no release obligation.
+    IndexBorrow,
     Slice,
     SliceFrom,
 }
@@ -535,6 +542,7 @@ impl PhysicalVectorOp {
             Self::Set => VecValueOp::Set,
             Self::Pop { .. } => VecValueOp::Pop,
             Self::Clear => VecValueOp::Clear,
+            Self::IndexBorrow => VecValueOp::IndexBorrow,
             Self::Slice => VecValueOp::Slice,
             Self::SliceFrom => VecValueOp::SliceFrom,
         }
@@ -2133,6 +2141,41 @@ fn lower_function(
         }
     }
 
+    // A runtime family whose contract result is a loan names argument zero as
+    // the owner the result depends on. The dependency travels to the normal
+    // successor's parameter, which is the loan the body reads.
+    for block in &function.blocks {
+        let hew_sir::SemTerminator::RtCall {
+            family,
+            args,
+            result: hew_sir::CallResult::Value(value),
+            normal,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        if !matches!(
+            family.semantic_contract().map(|contract| contract.result),
+            Some(hew_types::RuntimeResultEffect::Borrowed(_))
+        ) {
+            continue;
+        }
+        let owner = args
+            .first()
+            .ok_or_else(|| PhysicalError::new("borrowed runtime read has no receiver"))?;
+        let source = lowerer.value(owner.operand.value)?;
+        let dest = lowerer.value(value.id)?;
+        lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
+        for parameter in blocks_by_id(function, normal.target)
+            .map(|target| target.args.iter().map(|arg| arg.value).collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
+            let parameter = lowerer.value(parameter)?;
+            lowerer.storage[parameter.0 as usize].borrow_parent = Some(source);
+        }
+    }
+
     let cfg = hew_sir::build_cfg_index(function);
     let blocks = function
         .blocks
@@ -2220,6 +2263,13 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
         | SemTerminator::RecoverFault { result, .. } => Some(result),
         _ => None,
     }
+}
+
+fn blocks_by_id(
+    function: &hew_sir::SemFunction,
+    id: hew_sir::BlockId,
+) -> Option<&hew_sir::SemBlock> {
+    function.blocks.iter().find(|block| block.id == id)
 }
 
 fn physical_runtime_action(
@@ -3427,6 +3477,7 @@ impl FunctionLowerer<'_> {
                     result: self.aggregate_id(&value.ty)?,
                 },
                 VecValueOp::Clear => PhysicalVectorOp::Clear,
+                VecValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
                 VecValueOp::Slice => PhysicalVectorOp::Slice,
                 VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
             };
@@ -5236,6 +5287,26 @@ fn define(
     Ok(())
 }
 
+/// Uninitialize every loan whose owner chain reaches `source`.
+fn invalidate_dependent_loans(
+    function: &PhysicalFunction,
+    state: &mut FlowState,
+    source: StorageId,
+) {
+    let dependents: Vec<StorageId> = function
+        .storage
+        .iter()
+        .filter(|slot| {
+            slot.borrow_parent
+                .is_some_and(|parent| callable::depends_on(function, parent, source))
+        })
+        .map(|slot| slot.id)
+        .collect();
+    for slot in dependents {
+        invalidate_storage(function, state, slot);
+    }
+}
+
 fn require_no_live_borrows(
     function: &PhysicalFunction,
     state: &FlowState,
@@ -5440,6 +5511,9 @@ fn apply_operation(
         }
         PhysicalOp::EndBorrow { source } => {
             initialized(function, state, *source, block, "end-borrow")?;
+            // A loan derived from this one ends with it: the alias it named is
+            // exactly the region this borrow held open.
+            invalidate_dependent_loans(function, state, *source);
             require_no_live_borrows(function, state, *source)?;
             invalidate_storage(function, state, *source);
         }
@@ -5494,6 +5568,13 @@ fn apply_edge(
     // supply another destination in a loop permutation.
     for (source, _) in &edge.transfers {
         consume_if_owned(function, &mut state, *source)?;
+        // A loan rename moves the alias: the source name is gone in the
+        // successor, so it must not stay live to the function exit.
+        if storage(function, *source)?.own == OwnKind::Guaranteed
+            && storage(function, *source)?.borrow_parent.is_some()
+        {
+            invalidate_storage(function, &mut state, *source);
+        }
     }
     for (source, destination) in &edge.transfers {
         if source == destination && storage(function, *source)?.own == OwnKind::None {
@@ -6252,9 +6333,15 @@ fn verify_terminator(
         partial::verify_edge(function, edge)?;
         if blocks.contains(&edge.target) {
             for (source, destination) in &edge.transfers {
+                // A loan may be renamed across an edge, but only onto a
+                // parameter that names the same owner: the transfer copies the
+                // alias, never an obligation.
+                let loan_rename = slot(*source)?.own == OwnKind::Guaranteed
+                    && slot(*source)?.borrow_parent.is_some()
+                    && slot(*source)?.borrow_parent == slot(*destination)?.borrow_parent;
                 if slot(*source)?.ty != slot(*destination)?.ty
                     || slot(*source)?.own != slot(*destination)?.own
-                    || slot(*source)?.own == OwnKind::Guaranteed
+                    || (slot(*source)?.own == OwnKind::Guaranteed && !loan_rename)
                 {
                     return Err(PhysicalError::new(format!(
                         "physical edge to block {} transfers incompatible storage",
@@ -7015,6 +7102,7 @@ fn verify_terminator(
                 }
                 (
                     RuntimeResultEffect::BitCopy(_)
+                    | RuntimeResultEffect::Borrowed(_)
                     | RuntimeResultEffect::FreshOwned(_)
                     | RuntimeResultEffect::UpdatedReceiver(_)
                     | RuntimeResultEffect::IndependentValue(_)
@@ -7023,6 +7111,7 @@ fn verify_terminator(
                 ) => {
                     let expected_own = match contract.result {
                         RuntimeResultEffect::BitCopy(_) => OwnKind::None,
+                        RuntimeResultEffect::Borrowed(_) => OwnKind::Guaranteed,
                         RuntimeResultEffect::FreshOwned(_)
                         | RuntimeResultEffect::UpdatedReceiver(_)
                         | RuntimeResultEffect::UpdatedReceiverAndValue(_) => OwnKind::Owned,
@@ -7147,7 +7236,8 @@ fn verify_vector_call(
         | PhysicalVectorOp::Index
         | PhysicalVectorOp::Push
         | PhysicalVectorOp::Set
-        | PhysicalVectorOp::Clear => {}
+        | PhysicalVectorOp::Clear
+        | PhysicalVectorOp::IndexBorrow => {}
         PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {
             if result != &glue.ty {
                 return Err(PhysicalError::new(

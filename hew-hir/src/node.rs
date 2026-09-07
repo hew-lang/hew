@@ -1665,6 +1665,13 @@ pub enum HirExprKind {
     /// LESSONS: `checker-authority` (P0) — produced only after the
     /// checker has confirmed the receiver is `Vec<T>` and the endpoints
     /// are integer-typed.
+    /// `xs[i]` where the checker decided the element is bound as a loan of
+    /// the slot the container still owns (D432). The result carries no
+    /// ownership obligation and cannot outlive the container's loan.
+    BorrowedIndex {
+        container: Box<HirExpr>,
+        index: Box<HirExpr>,
+    },
     Slice {
         /// The container expression (type `Vec<T>`).
         container: Box<HirExpr>,

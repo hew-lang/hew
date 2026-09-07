@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-borrowed-iteration"
+intent = "A Vec of a clone-free `#[resource]` type iterates twice by borrow, calls a borrowing method on each element, and is drained by the owning removal with every element released exactly once."
+source = "cases/vector-borrowed-iteration.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "show t1\nshow t2\nshow t3\n1\n2\n3\nlen=3\nsum=6\nshow t3\nclose t3\nshow t2\nclose t2\nshow t1\nclose t1\ndrained\n"
+exit = 0
+stderr = ""

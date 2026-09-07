@@ -211,7 +211,7 @@ impl Builder<'_, '_> {
         self.current = valid;
 
         let outer_floor = self.scopes.len();
-        self.scopes.push(Vec::new());
+        self.open_scope();
         self.bind_source_value(loop_binding, initial.value)?;
         let mut carried = self.mutable_bindings();
         carried.push(loop_binding.id);

@@ -117,7 +117,25 @@ impl Builder<'_, '_> {
         self.drain_scopes(floor, true)
     }
 
+    pub(super) fn open_scope(&mut self) {
+        self.scopes.push(Vec::new());
+        self.scope_loan_floors.push(self.scope_loans.len());
+    }
+
+    /// End every scope loan taken inside the scope at `index`.
+    pub(super) fn end_scope_loans(&mut self, index: usize) -> Result<(), String> {
+        let floor = self
+            .scope_loan_floors
+            .get(index)
+            .copied()
+            .unwrap_or(self.scope_loans.len())
+            .min(self.scope_loans.len());
+        let loans = self.scope_loans.split_off(floor);
+        self.end_call_loans(&loans)
+    }
+
     pub(super) fn leave_scope(&mut self) {
+        self.scope_loan_floors.pop();
         for binding in self.scopes.pop().expect("active declaration scope") {
             self.bindings.remove(&binding);
             self.binding_declarations.remove(&binding);

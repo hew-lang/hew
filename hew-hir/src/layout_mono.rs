@@ -696,7 +696,8 @@ fn walk_expr(
             walk_block(body, subst, residual_domain, disc);
         }
         HirExprKind::TupleIndex { tuple, .. } => walk_expr(tuple, subst, residual_domain, disc),
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             walk_expr(container, subst, residual_domain, disc);
             walk_expr(index, subst, residual_domain, disc);
         }

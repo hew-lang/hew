@@ -187,7 +187,7 @@ impl Builder<'_, '_> {
             .map(|duration| self.lower_expr(duration).map(|value| Operand { value }))
             .transpose()?;
         let floor = self.scopes.len();
-        self.scopes.push(Vec::new());
+        self.open_scope();
         self.enter_task_scope_with_deadline(duration)?;
         self.task_scopes
             .last_mut()

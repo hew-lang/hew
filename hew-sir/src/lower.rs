@@ -2700,6 +2700,8 @@ struct ControlState {
     owned_live: BTreeMap<ValueId, ResolvedTy>,
     loans: Vec<ValueId>,
     scopes: Vec<Vec<BindingId>>,
+    scope_loans: Vec<ValueId>,
+    scope_loan_floors: Vec<usize>,
     defers: Vec<deferred::PendingDefer>,
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
@@ -2843,6 +2845,14 @@ struct Builder<'hir, 'service> {
     /// Lexical declarations only. Storage activity and payload availability
     /// belong to the verified place lifetime relation.
     scopes: Vec<Vec<BindingId>>,
+    /// Loans held for the length of a lexical scope: the receiver loan behind
+    /// a borrowed runtime read, whose result stays readable for as long as the
+    /// binding that names it.
+    scope_loans: Vec<ValueId>,
+    /// One entry per open scope: the [`Self::scope_loans`] depth when the scope
+    /// opened. A loan taken inside the scope ends at every exit from it,
+    /// including a loop back-edge, `break` and `return`.
+    scope_loan_floors: Vec<usize>,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -2978,6 +2988,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             binding_declarations,
             owned_live,
             borrow_parents: HashMap::new(),
+            scope_loans: Vec::new(),
+            scope_loan_floors: vec![0],
             scopes: vec![Vec::new()],
             source_bindings,
             params,
@@ -3324,6 +3336,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+        let movable_owner = self
+            .service
+            .checked_facts
+            .rows()
+            .get(&TypeInstanceKey(ty.clone()))
+            .is_some_and(|row| row.clone == hew_types::CloneKind::None);
         if own == OwnKind::Owned {
             let movable = self
                 .service
@@ -3392,7 +3410,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         let source = self.lower_expr_with_binding_use(expr, binding_use)?;
-        if own == OwnKind::Owned && self.value_own_kind(source) == Some(OwnKind::Guaranteed) {
+        // A loan of a clone-free value has no owned copy to make: the binding
+        // holds the loan and the wall against consuming it is the loan itself.
+        if own == OwnKind::Owned
+            && !movable_owner
+            && self.value_own_kind(source) == Some(OwnKind::Guaranteed)
+        {
             self.emit(
                 expr,
                 SemOpKind::CopyValue {
@@ -3701,6 +3724,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             owned_live: self.owned_live.clone(),
             loans: self.argument_receiver_loans.clone(),
             scopes: self.scopes.clone(),
+            scope_loans: self.scope_loans.clone(),
+            scope_loan_floors: self.scope_loan_floors.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
             cleanup_may_fail: self.cleanup_may_fail,
@@ -3716,6 +3741,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.owned_live = state.owned_live.clone();
         self.argument_receiver_loans.clone_from(&state.loans);
         self.scopes.clone_from(&state.scopes);
+        self.scope_loans.clone_from(&state.scope_loans);
+        self.scope_loan_floors.clone_from(&state.scope_loan_floors);
         self.defers.clone_from(&state.defers);
         self.task_scopes.clone_from(&state.task_scopes);
         self.cleanup_may_fail = state.cleanup_may_fail;
@@ -3991,7 +4018,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         tail_binding_use: OwnedBindingUse,
     ) -> Result<Option<Operand>, String> {
         let floor = self.scopes.len();
-        self.scopes.push(Vec::new());
+        self.open_scope();
         let result = self.lower_block(block, tail_binding_use)?;
         if self.is_open() {
             self.end_scopes(floor)?;
@@ -4836,6 +4863,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.end_call_loans(&loans)?;
                 Ok(copy)
             }
+            // D432: the checker decided this read is a loan of the element the
+            // vector still owns.
+            HirExprKind::BorrowedIndex { container, index } => self
+                .lower_runtime_operation(
+                    expr,
+                    hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::IndexBorrow),
+                    &[container.as_ref(), index.as_ref()],
+                    true,
+                )?
+                .ok_or_else(|| "borrowed element read must produce a SIR value".to_string()),
             HirExprKind::Index { container, index }
                 if self.ty(&container.ty) == ResolvedTy::Bytes =>
             {
@@ -7730,9 +7767,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.set_terminator(SemTerminator::Unreachable)?;
             return Ok(None);
         }
+        let borrowed_result = matches!(contract.result, RuntimeResultEffect::Borrowed(_));
         let (result, normal, continuation) = if let Some(result_ty) = semantic_result_ty {
             self.service.require_type_facts(&result_ty)?;
-            let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
+            let own = if borrowed_result {
+                OwnKind::Guaranteed
+            } else {
+                OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?
+            };
             if matches!(contract.result, RuntimeResultEffect::FreshOwnedVariant(_))
                 && own != OwnKind::Owned
             {
@@ -7811,7 +7853,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         self.current = normal_target;
         self.owned_live = live_at_call;
-        self.end_call_loans(&loans)?;
+        if borrowed_result {
+            // The result is a loan of argument zero: its owner must stay
+            // borrowed for as long as the result is readable, and the loan the
+            // result itself names ends with the scope that reads it. The
+            // enclosing scope ends both on every exit, including a loop
+            // back-edge, innermost first.
+            self.scope_loans.extend(loans.iter().copied());
+            if let Some(continuation) = continuation {
+                self.scope_loans.push(continuation);
+            }
+        } else {
+            self.end_call_loans(&loans)?;
+        }
         for value in argument_temporaries.into_iter().rev() {
             self.emit_destroy(value)?;
         }

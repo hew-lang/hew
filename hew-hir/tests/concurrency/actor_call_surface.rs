@@ -152,7 +152,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(body, out);
         }
         HirExprKind::TupleIndex { tuple, .. } => visit_expr(tuple, out),
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             visit_expr(container, out);
             visit_expr(index, out);
         }

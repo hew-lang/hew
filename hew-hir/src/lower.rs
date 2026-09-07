@@ -7208,7 +7208,8 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out, trait_out),
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             collect_call_sites_in_expr(container, out, trait_out);
             collect_call_sites_in_expr(index, out, trait_out);
         }
@@ -7727,6 +7728,8 @@ struct LowerCtx {
     /// and the enclosing scope are both in hand, so lowering consumes the
     /// answer rather than re-deriving it from a mirror of the field names.
     actor_self_state_fields: HashSet<SpanKey>,
+    /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
+    borrowed_element_for_loops: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
@@ -8404,6 +8407,7 @@ impl LowerCtx {
             current_return_type: None,
             current_actor_self: None,
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
+            borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -11101,7 +11105,8 @@ impl LowerCtx {
             HirExprKind::StreamRecvAwait { stream, .. } => {
                 self.wrap_var_self_explicit_expr_returns(stream, receiver, abi_return_ty);
             }
-            HirExprKind::Index { container, index } => {
+            HirExprKind::Index { container, index }
+            | HirExprKind::BorrowedIndex { container, index } => {
                 self.wrap_var_self_explicit_expr_returns(container, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(index, receiver, abi_return_ty);
             }
@@ -24970,49 +24975,61 @@ impl LowerCtx {
     /// codepoints and `bytes` indexes bytes, matching `s[i]` exactly.
     #[expect(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         reason = "one linear expansion: source temp, length, counter, element binding and loop"
     )]
     fn lower_for_sequence_index_desugar(
         &mut self,
         sequence: HirExpr,
-        element: (&str, &Span),
+        element: (&str, &Span, &ResolvedTy),
         body: &Block,
         label: Option<&String>,
         span: Span,
-        iterable_span: &Span,
+        source: (&Span, Option<&Spanned<Expr>>),
+        borrowed: bool,
     ) -> HirExprKind {
-        let (var_name, pattern_span) = element;
+        let (var_name, pattern_span, element_ty) = element;
+        let (iterable_span, place_source) = source;
+        let element_ty = element_ty.clone();
         let sequence_ty = sequence.ty.clone();
-        let (element_ty, length_family) = if sequence_ty == ResolvedTy::String {
-            (ResolvedTy::Char, hew_types::RuntimeCallFamily::StringLen)
+        let length_family = if sequence_ty == ResolvedTy::String {
+            hew_types::RuntimeCallFamily::StringLen
+        } else if sequence_ty == ResolvedTy::Bytes {
+            hew_types::RuntimeCallFamily::BytesLen
         } else {
-            (ResolvedTy::U8, hew_types::RuntimeCallFamily::BytesLen)
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len)
         };
 
         self.push_scope();
         let block_scope = self.ids.scope();
 
-        let sequence_name = format!("__hew_for_seq_{}", self.ids.binding().0);
-        let sequence_binding = self.bind(
-            sequence_name.clone(),
-            sequence_ty.clone(),
-            false,
-            iterable_span.clone(),
-        );
-        let sequence_id = sequence_binding.id;
-        let sequence_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(sequence_binding, Some(sequence)),
-            span: iterable_span.clone(),
+        let mut statements = Vec::new();
+        let mut sequence_ref: Option<(String, BindingId)> = None;
+        let length_receiver = if let Some(place) = place_source {
+            self.lower_expr(place, IntentKind::Read)
+        } else {
+            let sequence_name = format!("__hew_for_seq_{}", self.ids.binding().0);
+            let sequence_binding = self.bind(
+                sequence_name.clone(),
+                sequence_ty.clone(),
+                false,
+                iterable_span.clone(),
+            );
+            let sequence_id = sequence_binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(sequence_binding, Some(sequence)),
+                span: iterable_span.clone(),
+            });
+            sequence_ref = Some((sequence_name.clone(), sequence_id));
+            self.make_binding_ref(
+                sequence_name,
+                sequence_id,
+                sequence_ty.clone(),
+                IntentKind::Read,
+                iterable_span.clone(),
+            )
         };
-
-        let length_receiver = self.make_binding_ref(
-            sequence_name.clone(),
-            sequence_id,
-            sequence_ty.clone(),
-            IntentKind::Read,
-            iterable_span.clone(),
-        );
         let length_kind = self.collection_call_kind(
             length_family,
             vec![length_receiver],
@@ -25044,13 +25061,17 @@ impl LowerCtx {
             false,
             pattern_span.clone(),
         );
-        let container = self.make_binding_ref(
-            sequence_name,
-            sequence_id,
-            sequence_ty,
-            IntentKind::Read,
-            iterable_span.clone(),
-        );
+        let container = match (&sequence_ref, place_source) {
+            (Some((name, id)), _) => self.make_binding_ref(
+                name.clone(),
+                *id,
+                sequence_ty,
+                IntentKind::Read,
+                iterable_span.clone(),
+            ),
+            (None, Some(place)) => self.lower_expr(place, IntentKind::Read),
+            (None, None) => unreachable!("a sequence walk has a temp or a place source"),
+        };
         let index = self.make_binding_ref(
             index_name,
             index_id,
@@ -25058,15 +25079,18 @@ impl LowerCtx {
             IntentKind::Read,
             iterable_span.clone(),
         );
-        let element = self.make_expr(
+        let read = if borrowed {
+            HirExprKind::BorrowedIndex {
+                container: Box::new(container),
+                index: Box::new(index),
+            }
+        } else {
             HirExprKind::Index {
                 container: Box::new(container),
                 index: Box::new(index),
-            },
-            element_ty,
-            IntentKind::Read,
-            pattern_span.clone(),
-        );
+            }
+        };
+        let element = self.make_expr(read, element_ty, IntentKind::Read, pattern_span.clone());
         let element_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Let(element_binding, Some(element)),
@@ -25098,10 +25122,11 @@ impl LowerCtx {
         };
         self.pop_scope();
 
+        statements.push(loop_stmt);
         HirExprKind::Block(HirBlock {
             node: self.ids.node(),
             scope: block_scope,
-            statements: vec![sequence_stmt, loop_stmt],
+            statements,
             tail: None,
             ty: ResolvedTy::Unit,
             span,
@@ -25138,14 +25163,49 @@ impl LowerCtx {
         // no clone recipe to prove. The sequence is bound once so a
         // side-effectful source runs once and the length is read once.
         if matches!(lowered_iterable.ty, ResolvedTy::String | ResolvedTy::Bytes) {
+            let element_ty = if lowered_iterable.ty == ResolvedTy::String {
+                ResolvedTy::Char
+            } else {
+                ResolvedTy::U8
+            };
             return self.lower_for_sequence_index_desugar(
                 lowered_iterable,
-                (&var_name, &pattern.1),
+                (&var_name, &pattern.1, &element_ty),
                 body,
                 label,
                 span,
-                &iterable.1,
+                (&iterable.1, None),
+                false,
             );
+        }
+
+        // D432: the checker admitted this loop in borrow mode, so each element
+        // is a loan of the slot the vector still owns rather than a copy.
+        if self
+            .borrowed_element_for_loops
+            .contains(&SpanKey::in_module(&iterable.1, self.current_module_idx))
+        {
+            if let ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::Vec),
+                ..
+            } = lowered_iterable.ty.clone()
+            {
+                let element_ty = args[0].clone();
+                // A place source is re-read per use: binding it to a temp would
+                // TRANSFER the vector (its element has no clone), leaving the
+                // source uninitialized for the rest of the body.
+                let source = Self::for_in_iterable_is_place(&iterable.0).then_some(iterable);
+                return self.lower_for_sequence_index_desugar(
+                    lowered_iterable,
+                    (&var_name, &pattern.1, &element_ty),
+                    body,
+                    label,
+                    span,
+                    (&iterable.1, source),
+                    true,
+                );
+            }
         }
 
         // Statements that must run before the iterator-cursor `Let` in the
@@ -29650,7 +29710,8 @@ fn collect_captures_walk(
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_captures_walk(tuple, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             collect_captures_walk(container, param_ids, seen, captures, self_id);
             collect_captures_walk(index, param_ids, seen, captures, self_id);
         }
@@ -29938,7 +29999,8 @@ fn collect_general_closure_captures_walk(
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_general_closure_captures_walk(tuple, outer_bindings, seen, captures);
         }
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(index, outer_bindings, seen, captures);
         }
@@ -31879,7 +31941,8 @@ fn scan_expr_for_call_shape(
         HirExprKind::TupleIndex { tuple, .. } => {
             scan_expr_for_call_shape(tuple, callable, diagnostics);
         }
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             scan_expr_for_call_shape(container, callable, diagnostics);
             scan_expr_for_call_shape(index, callable, diagnostics);
         }

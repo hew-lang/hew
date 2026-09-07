@@ -73,7 +73,7 @@ for the documented resolver precedence.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
 - Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`Pid<Self>`, spelled `LocalPid<Self>` in this build), not a field prefix. `this` is not a word in Hew.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
-- Ask (request-reply) is `ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
+- Ask (request-reply) is `ref.method(arg)` and returns `Result<R, ActorError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
 - Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
@@ -1033,7 +1033,7 @@ fn main() {
 }
 ```
 
-Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
+Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `actor.method(...)` on a request-reply fn returns `Result<R, ActorError>` — match it.
 
 ### Strings and scalars are freely reusable
 
@@ -1328,7 +1328,7 @@ fn main() {
 }
 ```
 
-A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), AskError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored failure loses work silently.
+A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), ActorError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored failure loses work silently.
 
 ### Submitting without waiting
 
@@ -1364,7 +1364,7 @@ fn main() {
 }
 ```
 
-Write request-reply as `ref.method(args)` and match `Ok`/`Err` — the call waits on its own, with no `await`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, AskError>`, never bare `R`. To run an ask concurrently, `fork` it and `await` the task.
+Write request-reply as `ref.method(args)` and match `Ok`/`Err` — the call waits on its own, with no `await`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, ActorError>`, never bare `R`. To run an ask concurrently, `fork` it and `await` the task.
 
 ### What `await` waits for
 
@@ -1419,16 +1419,24 @@ actor Counter {
     var count: i64 = 0,
     receive fn bump() -> i64 { count = count + 1; count }
 }
-fn run() -> Result<i64, AskError> {
+fn run() -> i64 fails string {
     let c = spawn Counter(count: 0);
-    let v = c.bump()?;
-    let w = c.bump()?;
-    Ok(v + w)
+    match c.bump() {
+        .Ok(v) => match c.bump() {
+            .Ok(w) => v + w,
+            .Err(_) => { return error "call failed"; },
+        },
+        .Err(_) => { return error "call failed"; },
+    }
 }
 fn main() { match run() { .Ok(t) => println(f"total={t}"), .Err(_) => println("failed") } }
 ```
 
-Inside a fn returning `Result<_, AskError>`, use `let v = ref.method(args)?;` to take the Ok and auto-propagate Err. There is one propagation spelling: `?` goes on the expression, so a forked ask propagates as `(await task)?`.
+A completion call's error names the call's own sealed message, so its type is
+written only where inference supplies it — match the call, or propagate with `?`
+inside a fn whose own failure is that same envelope. There is one propagation
+spelling: `?` goes on the expression, so a forked ask propagates as
+`(await task)?`.
 
 ### Lifecycle hooks #[on(start)] and #[on(stop)]
 
@@ -1560,7 +1568,7 @@ fn main() {
 }
 ```
 
-Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, AskError>` like any ask.
+Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, ActorError>` like any ask.
 
 ### Avoid reference cycles in actor state
 
@@ -3710,10 +3718,10 @@ actor Client {
 `Pid<T>` names an actor, wherever it lives; a lookup through the node registry
 returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
 lowers to the cross-node suspending remote-ask path and returns
-`Result<T.Reply, AskError>` on resume; match `Ok`/`Err` instead of assuming a
+`Result<T.Reply, ActorError>` on resume; match `Ok`/`Err` instead of assuming a
 reply. A same-node lookup can still return a handle that routes through the
 remote path, and the local-mailbox bridge for that path is scoped to fail
-closed as `AskError.RoutingFailed`; use a direct actor call when both actors
+closed as `ActorError.RoutingFailed`; use a direct actor call when both actors
 are intentionally local.
 
 > **Not yet in this build.** The one-identity surface is ratified

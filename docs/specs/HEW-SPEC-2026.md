@@ -129,10 +129,11 @@ rather than an incarnation, and re-resolves on every call (§5.6).
 
 **Completion calls.** A call on a `receive fn` through an actor handle waits
 for the handler to finish, exactly as a call on a function does.
-`<pid>.<method>(<args>)` has type `Result<R, AskError>`, where `R` is the
-handler's return type and `()` when it declares none, and
-`fork <pid>.<method>(<args>)` starts the same call concurrently as a
-`Task<Result<R, AskError>>` that `await` then joins. The call carries no
+`<pid>.<method>(<args>)` has type `Result<R, ActorError<E, M>>`, where `R` is
+the handler's return type and `()` when it declares none, `E` is its declared
+`fails` type and `Never` when it declares none, and `M` is the call's sealed
+message type. `fork <pid>.<method>(<args>)` starts the same call concurrently
+as a `Task<Result<R, ActorError<E, M>>>` that `await` then joins. The call carries no
 operator: an ordinary call waits, `fork` starts concurrent work, and `await`
 joins a task. The handler does not run locally; the call returns when the
 handler's turn has finished, which means processed, not durable.
@@ -177,7 +178,7 @@ completion, and the receiver type — handle or mailbox view — decides whether
 the call waits or only submits. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
 If the receiving handler faults before replying, the ask resolves to
-`.Err(AskError.HandlerTrapped)`. The receiving actor retains ownership of the
+`.Err(ActorError.Trapped)`. The receiving actor retains ownership of the
 fault and its supervision policy; the caller may handle the error and continue.
 Awaiting an actor does not join its lifetime to the caller's task scope. Caller
 cancellation still follows the caller's own cancellation and cleanup edges.
@@ -205,8 +206,8 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), AskError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, SendFailure<M>>`.
-- **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, AskError>`. Inside a `select` arm the call is the arm's source, so the arm's `from` clause is what waits.
+- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), ActorError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, SendFailure<M>>`.
+- **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, ActorError>`. Inside a `select` arm the call is the arm's source, so the arm's `from` clause is what waits.
 
 **Calling named actors:**
 
@@ -3002,7 +3003,7 @@ failure in the type system or not at all. Three rules cover the whole surface:
 3. **Nothing returns a status integer or a sentinel.** A negative `i64`, a
    zero-length string standing for "unset", and an error enum variant meaning
    "no error" are all fail-open shapes: the caller who forgets to test them
-   runs on with wrong data. `AskError` has no `NoError` variant.
+   runs on with wrong data. `ActorError` has no `NoError` variant.
 
 The one stated exception is **indexing**. `v[i]`, `m[k]`, and `Vec.set` out of
 bounds trap ("Bracket indexing" below), because a bounds failure is a
@@ -3995,7 +3996,7 @@ task's result, and that is the whole surface.
 handle, a value, a generator's `next()` — is a diagnostic whose fix-it
 deletes the word. An ask is written `worker.compute(x)` and waits; a
 concurrent ask is `fork worker.compute(x)`, which yields a
-`Task<Result<R, AskError>>` like any other fork and is joined with `await`.
+`Task<Result<R, ActorError>>` like any other fork and is joined with `await`.
 An actor's end is waited for by `close(actor)` or `closed(actor)` (§4.10),
 and another actor's stream by an ordinary `for x in pid.stream()` (§4.12).
 
@@ -4342,7 +4343,7 @@ An actor has its own life. Waiting for it is a plain call, not an `await`
 - `closed(pid)` waits for the actor's termination and requests nothing. It
   does not stop the actor and does not join its lifetime to the caller's
   task scope; it waits for an end another party brings about.
-- `pid.method(args)` is the ask (§2.1.1) and yields `Result<R, AskError>`.
+- `pid.method(args)` is the ask (§2.1.1) and yields `Result<R, ActorError>`.
   It waits on its own, with no `await`; `fork pid.method(args)` runs it
   concurrently and `await` then joins that task.
 - `for x in pid.stream()` consumes another actor's stream producer (§4.12)
@@ -4403,7 +4404,7 @@ cleanup columns; the difference is which side initiates the teardown.
 
 | Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
+| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Receiver<T>` | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                              | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.                                             |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
@@ -4803,9 +4804,8 @@ error, with the fix-it `let _ = pid.m();`. There is no `must_use` lint tier — 
 rule is the same for an unbounded mailbox and a policy-sensitive one, because
 both can now report `Dead`.
 
-`AskError` carries `Dead` and `StaleRef` for the same reason, so a remote ask's
-failure kinds are one enum rather than a split between the ask path and the
-send path.
+`ActorError` carries `Dead` for the same reason, so a remote call's failure
+kinds are one enum rather than a split between the ask path and the send path.
 
 > **Implementation status.** Today an unbounded send is unit-typed, `SendError`
 > spells the closed case `Closed`, and a send to a supervised child whose
@@ -5955,7 +5955,7 @@ carries the same identity comparison.
 **Shipped cross-node surface:**
 
 - Remote `send` and `ask` (`<- actor.method()` / `<id> from actor.method()`)
-  with typed `SendError` and `AskError` result envelopes.
+  with typed `SendError` and `ActorError` result envelopes.
 - Cross-node actor monitoring (`monitor` / `demonitor`) with exactly-once
   `DOWN` delivery; pruning on watcher-node death.
 - Explicit cross-node links with `CrashLinked` cascade semantics.

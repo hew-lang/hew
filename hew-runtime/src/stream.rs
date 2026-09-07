@@ -961,7 +961,7 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
         std::process::abort();
     }
     // SAFETY: the pair was just allocated by `hew_stream_channel`.
-    let pair = unsafe { Box::from_raw(pair) };
+    let mut pair = unsafe { Box::from_raw(pair) };
     let layout = hew_cabi::vec::HewValueLayout {
         size: elem_size,
         align: 1,
@@ -982,7 +982,10 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
         *sink_out = pair.sink;
     }
     let stream = pair.stream;
-    std::mem::forget(pair);
+    // The halves now belong to the caller; the pair drop frees only itself.
+    pair.sink = std::ptr::null_mut();
+    pair.stream = std::ptr::null_mut();
+    drop(pair);
     stream
 }
 

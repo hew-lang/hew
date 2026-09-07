@@ -3737,7 +3737,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
 /// State is a unique malloc allocation of `size` bytes, with initialized
 /// fields described by `state_drop` and `state_clone`. Callbacks and dispatch
 /// remain valid for the actor's lifetime. The function consumes state on every
-/// outcome. `fault` is a writable, initially null fault slot.
+/// outcome. `terminate` is null or the generated `#[on(stop)]` sequence, which
+/// runs once with the initialized state at the terminal transition. `fault`
+/// is a writable, initially null fault slot.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 #[allow(

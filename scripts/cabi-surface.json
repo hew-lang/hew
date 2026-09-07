@@ -1028,7 +1028,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, i32, i32, usize, *mut *mut HewFault, ) -> HewLocalPidId"
+        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *mut *mut HewFault, ) -> HewLocalPidId"
       },
       "symbol": "hew_actor_spawn_native"
     },
@@ -1149,6 +1149,19 @@
         "native": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, ) -> i32"
       },
       "symbol": "hew_actor_submit_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_terminate_set_fault( *mut HewFault)"
+      },
+      "symbol": "hew_actor_terminate_set_fault"
     },
     {
       "availability": [
@@ -14712,6 +14725,19 @@
       "availability": [
         "native"
       ],
+      "classification": "codegen-stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_sink_send_native( *mut HewSink, *const HewWaker, *const c_void, usize, ) -> i32"
+      },
+      "symbol": "hew_sink_send_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -15313,6 +15339,19 @@
       "availability": [
         "native"
       ],
+      "classification": "codegen-stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_next_native( *mut HewStream, *const HewWaker, *mut c_void, usize, ) -> i32"
+      },
+      "symbol": "hew_stream_next_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -15425,6 +15464,19 @@
         "native": "fn hew_stream_pipe( *mut HewStream, *mut HewSink)"
       },
       "symbol": "hew_stream_pipe"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_pipe_native( i64, usize, Option<hew_cabi::vec::HewValueDropThunk>, *mut *mut HewSink, ) -> *mut HewStream"
+      },
+      "symbol": "hew_stream_pipe_native"
     },
     {
       "availability": [

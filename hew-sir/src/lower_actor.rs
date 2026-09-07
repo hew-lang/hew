@@ -166,7 +166,11 @@ impl InstanceService<'_> {
                     self.actors[id.0 as usize].start = Some(body);
                 }
                 hew_hir::HirLifecycleHookKind::Stop => self.actors[id.0 as usize].stop.push(body),
-                _ => unreachable!("other hook kinds are refused above"),
+                hew_hir::HirLifecycleHookKind::Crash
+                | hew_hir::HirLifecycleHookKind::Exit
+                | hew_hir::HirLifecycleHookKind::Down => {
+                    unreachable!("supervision and link hooks are refused above")
+                }
             }
         }
         for method in &source.methods {

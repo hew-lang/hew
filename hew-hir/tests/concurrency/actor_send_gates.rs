@@ -118,10 +118,12 @@ fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
 }
 
 #[test]
-fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
-    // Same rejection when the anonymous send is nested inside a machine
-    // transition body.  The type-checker runs before HIR, so the rejection
-    // is at check time regardless of the enclosing construct.
+fn actor_spawn_and_send_in_machine_transition_refused_by_purity() {
+    // A transition body is a pure evaluator (A371): it cannot spawn an actor
+    // or send to one. The refusal comes from machine normalization, which runs
+    // before method resolution, so this program never reaches the anonymous
+    // `.send()` gate that `actor_bare_send_no_handler_rejected_at_typecheck`
+    // covers outside a machine.
     let tco = typecheck(
         r"
         actor Calculator {
@@ -154,9 +156,9 @@ fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
     assert!(
         tco.errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod),
-        "anonymous `.send()` inside a machine transition must produce \
-         UndefinedMethod at type-check; got: {:#?}",
+            .any(|e| e.message.contains("pure machine evaluator")),
+        "spawning and sending inside a machine transition must be refused as \
+         impure at type-check; got: {:#?}",
         tco.errors
     );
 }

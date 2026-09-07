@@ -37,7 +37,7 @@ struct ExpectedOutcome {
 #[derive(Debug)]
 struct Options {
     suite: String,
-    case: Option<String>,
+    cases: Vec<String>,
     hew_bin: PathBuf,
     timeout_seconds: Option<u64>,
 }
@@ -86,7 +86,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let root = workspace_root()?;
     let manifest = load_manifest(&root)?;
     validate_manifest(&manifest, &root)?;
-    let selected = select_cases(&manifest, &options.suite, options.case.as_deref())?;
+    let selected = select_cases(&manifest, &options.suite, &options.cases)?;
     let fingerprint = compiler_fingerprint(&options.hew_bin)?;
     let instrumentation_request = if options.suite == "safety" {
         if !cfg!(target_os = "linux") {
@@ -135,7 +135,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
 fn parse_options(args: &[String]) -> Result<Options> {
     let root = workspace_root()?;
     let mut suite = "acceptance".to_string();
-    let mut case = None;
+    let mut cases = Vec::new();
     let mut hew_bin = root.join("target/debug/hew");
     let mut timeout_seconds = None;
     let mut index = 0;
@@ -147,7 +147,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
                 suite = required_value(args, &mut index, "--suite")?.to_string();
             }
             "--case" => {
-                case = Some(required_value(args, &mut index, "--case")?.to_string());
+                cases.push(required_value(args, &mut index, "--case")?.to_string());
             }
             "--hew-bin" => {
                 hew_bin = PathBuf::from(required_value(args, &mut index, "--hew-bin")?);
@@ -179,7 +179,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     }
     Ok(Options {
         suite,
-        case,
+        cases,
         hew_bin,
         timeout_seconds,
     })
@@ -291,20 +291,24 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
 fn select_cases<'a>(
     manifest: &'a Manifest,
     suite: &str,
-    selected_id: Option<&str>,
+    selected_ids: &[String],
 ) -> Result<Vec<&'a Case>> {
-    if let Some(selected_id) = selected_id {
-        let case = manifest
-            .cases
-            .iter()
-            .find(|case| case.id == selected_id)
-            .ok_or_else(|| format!("unknown core acceptance case: {selected_id}"))?;
-        if !case.suites.iter().any(|member| member == suite) {
-            return Err(format!(
-                "core acceptance case {selected_id:?} does not belong to suite {suite:?}"
-            ));
+    if !selected_ids.is_empty() {
+        let mut selected = Vec::with_capacity(selected_ids.len());
+        for selected_id in selected_ids {
+            let case = manifest
+                .cases
+                .iter()
+                .find(|case| case.id == *selected_id)
+                .ok_or_else(|| format!("unknown core acceptance case: {selected_id}"))?;
+            if !case.suites.iter().any(|member| member == suite) {
+                return Err(format!(
+                    "core acceptance case {selected_id:?} does not belong to suite {suite:?}"
+                ));
+            }
+            selected.push(case);
         }
-        return Ok(vec![case]);
+        return Ok(selected);
     }
     let selected = manifest
         .cases
@@ -746,8 +750,22 @@ mod tests {
     }
 
     #[test]
+    fn repeated_case_flags_select_each_case_in_order() {
+        let mut manifest = manifest();
+        manifest.cases[1].suites = vec!["acceptance".into()];
+        let selected = select_cases(
+            &manifest,
+            "acceptance",
+            &["safety-case".to_string(), "acceptance-case".to_string()],
+        )
+        .expect("both cases belong to the acceptance suite");
+        let selected_ids: Vec<&str> = selected.iter().map(|case| case.id.as_str()).collect();
+        assert_eq!(selected_ids, ["safety-case", "acceptance-case"]);
+    }
+
+    #[test]
     fn selected_case_must_exist() {
-        let error = select_cases(&manifest(), "acceptance", Some("missing"))
+        let error = select_cases(&manifest(), "acceptance", &["missing".to_string()])
             .expect_err("unknown focused case must fail rather than silently running a suite");
         assert!(error.contains("unknown core acceptance case"));
     }
@@ -763,7 +781,7 @@ mod tests {
         case.fixtures = Some("fixtures".into());
         let options = Options {
             suite: "acceptance".into(),
-            case: None,
+            cases: Vec::new(),
             hew_bin: directory.path().join("hew"),
             timeout_seconds: None,
         };
@@ -816,7 +834,7 @@ mod tests {
         case.expected.exit = 23;
         let options = Options {
             suite: "safety".to_string(),
-            case: None,
+            cases: Vec::new(),
             hew_bin: binary.clone(),
             timeout_seconds: None,
         };
@@ -845,17 +863,17 @@ mod tests {
         )
         .unwrap();
         for suite in ["acceptance", "safety"] {
-            assert_eq!(select_cases(&manifest, suite, None).unwrap()[0].id, "owned");
+            assert_eq!(select_cases(&manifest, suite, &[]).unwrap()[0].id, "owned");
         }
     }
 
     #[test]
     fn focused_case_cannot_replace_the_requested_suite() {
         let manifest = manifest();
-        let error = select_cases(&manifest, "safety", Some("acceptance-case"))
+        let error = select_cases(&manifest, "safety", &["acceptance-case".to_string()])
             .expect_err("ordinary execution cannot substitute for safety validation");
         assert!(error.contains("does not belong to suite"));
-        let selected = select_cases(&manifest, "safety", Some("safety-case"))
+        let selected = select_cases(&manifest, "safety", &["safety-case".to_string()])
             .expect("a focused case within its suite remains selectable");
         assert_eq!(selected[0].id, "safety-case");
     }

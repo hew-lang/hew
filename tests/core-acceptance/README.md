@@ -15,7 +15,8 @@ missing tools or instrumentation fail the run. No leak suppressions are used.
 The safety cases include bounds faults and nested-call failure with live owners;
 their expected fault reports do not excuse leaks or post-failure execution.
 
-Use `CORE_ACCEPTANCE_ARGS='--case bytes-copy-mutate'` to focus either command.
+Use `CORE_ACCEPTANCE_ARGS='--case bytes-copy-mutate --case string-trim-values'` to focus either
+command on one or more cases.
 A case must belong to the requested suite. A passing focused run does not prove
 the rest of the suite. `CORE_SAFETY_TARGET_DIR` selects the sanitizer build cache.
 

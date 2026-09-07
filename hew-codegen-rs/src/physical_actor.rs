@@ -32,9 +32,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         output: Option<PointerValue<'ctx>>,
         fault: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
-        if handler.return_ty == ResolvedTy::Unit {
-            return Ok(());
-        }
+        // A void handler replies too: its completion is the unit reply a
+        // completion call waits for. `hew_actor_reply_native` discards the
+        // reply when the message arrived through a one-way mailbox view and
+        // carries no channel.
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);

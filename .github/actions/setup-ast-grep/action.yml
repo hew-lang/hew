@@ -12,16 +12,16 @@ runs:
   using: composite
   steps:
     # Keyed on every input the build consumes: the pinned lock (ast-grep and
-    # tree-sitter-cli versions, grammar revision and archive digest, ABI), the
-    # two scripts that assemble the tree, and the source dialect patch. The
+    # tree-sitter-cli versions, grammar revision and archive digest, ABI) and
+    # the two scripts that assemble the tree. The
     # compiled grammar is a native shared object, so the runner OS and arch
     # are part of the key. A miss costs the cargo installs; a hit costs the
     # verification only.
     - name: Cache pinned ast-grep toolchain
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: .ast-grep
-        key: ast-grep-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ast-grep.lock', 'tools/tree-sitter-hew-consume-parameter.patch', 'scripts/ast-grep-lint.sh', 'scripts/build-ast-grep-lang.sh') }}
+        key: ast-grep-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ast-grep.lock', 'scripts/ast-grep-lint.sh', 'scripts/build-ast-grep-lang.sh') }}
 
     # Fail-closed by construction: the bootstrap re-checks the installed
     # binary's --version against tools/ast-grep.lock and the cached grammar

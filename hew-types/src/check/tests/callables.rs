@@ -1009,3 +1009,26 @@ fn mutable_clone_parameter_owns_an_independent_once_copy() {
         output.errors
     );
 }
+
+#[test]
+fn reassigning_an_inferred_closure_binding_joins_the_two_closures() {
+    // `var f = |v| ...; f = |v| ...` needs no annotation: the binding widens
+    // to the callable shape both closures satisfy, the same join `if`/`else`
+    // and array literals already perform.
+    let output =
+        check_source("fn main() { var f = |v: i64| v * 2; f = |v: i64| v * 3; let r = f(7); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn reassigning_a_closure_binding_still_rejects_a_different_shape() {
+    let output = check_source("fn main() { var f = |v: i64| v * 2; f = |v: i64, w: i64| v + w; }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("each closure literal has its own type")),
+        "a closure of a different shape must still be refused: {:?}",
+        output.errors
+    );
+}

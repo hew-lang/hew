@@ -253,6 +253,37 @@ impl Checker {
         Some(self.project_assoc_types(&item_projection))
     }
 
+    /// Reassigning a `var` whose type was inferred from a closure literal
+    /// joins the two closures the way `if`/`else` and array literals already
+    /// join them: the binding widens to the written callable shape both hold.
+    /// A binding whose callable type was written stays authoritative, so its
+    /// assignment goes through the ordinary check.
+    fn rebind_inferred_closure_binding(
+        &mut self,
+        target: &Expr,
+        value: &Spanned<Expr>,
+        target_ty: &Ty,
+    ) -> Option<Ty> {
+        let Expr::Identifier(name) = target else {
+            return None;
+        };
+        // `Ty::Closure` is the type of one closure literal; a written binding
+        // type is a `Ty::Function`, which needs no widening.
+        if !matches!(self.subst.resolve(target_ty), Ty::Closure { .. }) {
+            return None;
+        }
+        let value_ty = self.synthesize(&value.0, &value.1);
+        if !matches!(
+            self.subst.resolve(&value_ty),
+            Ty::Closure { .. } | Ty::Function { .. }
+        ) {
+            return None;
+        }
+        let joined = self.join_callable_values(target_ty, &value_ty, &value.1);
+        self.env.widen_ty(name, joined.clone());
+        Some(joined)
+    }
+
     fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
@@ -1595,7 +1626,9 @@ impl Checker {
                     }
                     self.env.mark_written(name);
                 }
-                let value_ty = self.check_against(&value.0, &value.1, &target_ty);
+                let value_ty = self
+                    .rebind_inferred_closure_binding(&target.0, value, &target_ty)
+                    .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
                 self.record_callable_value_transfer(&value.0, &value.1);
                 // An unannotated literal binding (`var best = 0`) carries a
                 // literal-defaulting `Ty::Var` that `check_against` cannot

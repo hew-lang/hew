@@ -888,6 +888,19 @@ impl TypeEnv {
         None
     }
 
+    /// Widen a binding's recorded type without marking it as used.
+    ///
+    /// Used when a reassignment joins an inferred closure binding to the
+    /// callable shape that holds every closure assigned to it.
+    pub fn widen_ty(&mut self, name: &str, ty: Ty) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                binding.ty = ty;
+                return;
+            }
+        }
+    }
+
     /// Look up a variable by name without marking it as used.
     #[must_use]
     pub fn lookup_ref(&self, name: &str) -> Option<&Binding> {

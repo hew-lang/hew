@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-vec"
+intent = "A heterogeneous `Vec<dyn Named>` accepts both implementors, an owning removal dispatches on each, and the element left behind is released with the vector."
+source = "cases/dyn-trait-vec.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "count=3\nperson lin\nmachine 7\nseen=2\nleft=1\n"
+exit = 0

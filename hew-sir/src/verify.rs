@@ -519,8 +519,11 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                 continue;
             };
             if receiver.ty != vtable.concrete_ty
-                || receiver.passing != slot.receiver
-                || arguments != slot.signature.params.as_slice()
+                || arguments.iter().map(|param| &param.ty).ne(slot
+                    .signature
+                    .params
+                    .iter()
+                    .map(|param| &param.ty))
                 || callee.signature.return_ty != slot.signature.return_ty
             {
                 refuse(format!(

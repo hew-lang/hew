@@ -510,7 +510,8 @@ fn verify_dyn_make(
     if dest.ty != table.dyn_ty
         || dest.own != OwnKind::Owned
         || source.ty != table.concrete_ty
-        || source.own != OwnKind::Owned
+        || source.own
+            != OwnKind::of_ty(&table.concrete_ty, &module.type_facts).map_err(PhysicalError::new)?
     {
         return Err(PhysicalError::new(
             "physical erasure disagrees with its dispatch table's types or ownership",

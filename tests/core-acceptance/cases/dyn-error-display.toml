@@ -1,14 +1,8 @@
-# This `dyn Error` case is the erased half of the same story and does not
-# pass yet: SIR has no value contract for a trait object. The entry case
-# additionally needs a `Display::fmt` target an erased value can supply, which
-# the process-entry exit plan resolves as a concrete declaration. Held for the
-# lane that gives dyn objects a value contract.
-
 [[case]]
 id = "dyn-error-display"
 intent = "A failure erased to `dyn Error` reaches its `handle` block and the recovery value flows on."
 source = "cases/dyn-error-display.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]

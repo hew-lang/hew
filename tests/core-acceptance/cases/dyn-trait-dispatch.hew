@@ -1,0 +1,40 @@
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+type Person {
+    label: string,
+}
+
+impl Named for Person {
+    fn name(val: Person) -> string {
+        f"person {val.label}"
+    }
+}
+
+type Machine {
+    id: i64,
+}
+
+impl Named for Machine {
+    fn name(val: Machine) -> string {
+        f"machine {val.id}"
+    }
+}
+
+fn announce(value: dyn Named) {
+    println(value.name());
+}
+
+fn build(id: i64) -> dyn Named {
+    let made: dyn Named = Machine { id: id };
+    made
+}
+
+fn main() {
+    let first: dyn Named = Person { label: "grace" };
+    announce(first);
+    announce(build(7));
+    let held: dyn Named = Person { label: "ada" };
+    println(held.name());
+}

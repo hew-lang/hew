@@ -1205,14 +1205,14 @@ impl<'a> ProfileChecker<'a> {
                 ..
             } => matches!(
                 method,
-                "is_some" | "is_none" | "unwrap" | "unwrap_or" | "to_string"
+                "is_some" | "is_none" | "expect" | "unwrap_or" | "to_string"
             ),
             Ty::Named {
                 builtin: Some(BuiltinType::Result),
                 ..
             } => matches!(
                 method,
-                "is_ok" | "is_err" | "unwrap" | "unwrap_or" | "to_string"
+                "is_ok" | "is_err" | "expect" | "unwrap_or" | "to_string"
             ),
             // User-defined records and other named types admit `clone` (deep
             // structural copy via the VM's `local.set` → `cloneValue` path) and

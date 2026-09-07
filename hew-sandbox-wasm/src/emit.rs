@@ -3617,28 +3617,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
-            "unwrap" => {
+            "expect" => {
                 let receiver_ty = self.ty_for_expr(receiver);
-                let is_option = matches!(
+                let is_option_or_result = matches!(
                     receiver_ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Option),
+                        builtin: Some(BuiltinType::Option | BuiltinType::Result),
                         ..
                     }
                 );
-                let is_result = matches!(
-                    receiver_ty,
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Result),
-                        ..
-                    }
-                );
-                if !is_option && !is_result {
+                let Some(reason_arg) = args.first().filter(|_| is_option_or_result) else {
                     self.emit_unsupported(Some(span.clone()));
                     return Ok(self.emit_const_unit(Some(span)));
-                }
+                };
                 self.package.ensure_option_result_layout(&receiver_ty);
-                Ok(self.lower_option_result_unwrap(receiver_local, is_option, span))
+                let reason_local = self.lower_expr(reason_arg.expr())?;
+                Ok(self.lower_option_result_expect(receiver_local, reason_local, span))
             }
             "unwrap_or" => {
                 let receiver_ty = self.ty_for_expr(receiver);
@@ -3693,22 +3687,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
-    /// Lower `opt.unwrap()` / `res.unwrap()` for Option and Result.
+    /// Lower `opt.expect(reason)` / `res.expect(reason)` for Option and Result.
     ///
     /// Emits an enum-tag check: tag == 0 (Some/Ok) → extract and return
-    /// payload[0]; tag != 0 (None/Err) → panic.
-    fn lower_option_result_unwrap(
+    /// payload[0]; tag != 0 (None/Err) → panic with the native message,
+    /// `expect failed: <reason>`.
+    fn lower_option_result_expect(
         &mut self,
         receiver_local: String,
-        is_option: bool,
+        reason_local: String,
         span: std::ops::Range<usize>,
     ) -> String {
         let result_ty = self.ty_for_span(&span);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
         let span_ref = self.package.spans.span_ref(&span);
-        let (some_idx, some_id) = self.new_block("unwrap_some", span_ref.clone());
-        let (panic_idx, panic_id) = self.new_block("unwrap_panic", span_ref.clone());
-        let (exit_idx, exit_id) = self.new_block("unwrap_exit", span_ref.clone());
+        let (some_idx, some_id) = self.new_block("expect_some", span_ref.clone());
+        let (panic_idx, panic_id) = self.new_block("expect_panic", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("expect_exit", span_ref.clone());
 
         let tag_local = self.temp_local(&Ty::I64, Some(span.clone()));
         self.emit_instruction(
@@ -3766,12 +3761,18 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         // None/Err branch: panic
         self.switch_to(panic_idx);
-        let msg_text = if is_option {
-            "unwrap called on None"
-        } else {
-            "unwrap called on Err"
-        };
-        let msg_local = self.lower_literal(&Literal::String(msg_text.to_string()), span.clone());
+        let prefix_local = self.lower_literal(
+            &Literal::String("expect failed: ".to_string()),
+            span.clone(),
+        );
+        let msg_local = self.temp_local(&Ty::String, Some(span.clone()));
+        self.emit_instruction(
+            "string.concat",
+            Some(msg_local.clone()),
+            vec![Operand::local(prefix_local), Operand::local(reason_local)],
+            Some(span.clone()),
+            None,
+        );
         self.emit_instruction(
             "panic",
             None,

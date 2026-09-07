@@ -1,0 +1,11 @@
+[[case]]
+id = "indirect-enum-tree"
+intent = "A recursive indirect enum with string and Vec payloads is built, rendered and evaluated by consuming match, and every boxed node is released once."
+source = "cases/indirect-enum-tree.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "((ab + 40) + (1 + 1))\n44\n10\nreleased\n"
+stderr = ""
+exit = 0

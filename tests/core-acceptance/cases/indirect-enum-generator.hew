@@ -1,0 +1,37 @@
+indirect enum Frame {
+    Label(string),
+    Depth(i64),
+    Wrap(Frame),
+}
+
+fn render(consume frame: Frame) -> string {
+    match frame {
+        .Label(text) => text,
+        .Depth(value) => f"{value}",
+        .Wrap(inner) => "[" + render(inner) + "]",
+    }
+}
+
+gen fn frames(count: i64) -> Frame {
+    defer println("generator cleaned");
+    for step in 0..count {
+        yield Frame.Wrap(Frame.Label(f"step{step}"));
+        yield Frame.Wrap(Frame.Wrap(Frame.Depth(step)));
+    }
+}
+
+fn main() -> i64 {
+    for frame in frames(2) {
+        println(render(frame));
+    }
+    var seen = 0;
+    for frame in frames(100) {
+        println(render(frame));
+        seen = seen + 1;
+        if seen == 3 {
+            break;
+        }
+    }
+    println("done");
+    0
+}

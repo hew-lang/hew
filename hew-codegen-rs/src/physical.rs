@@ -264,12 +264,24 @@ fn realize_layout(
         target.insert_environment_layout(ty.clone(), environment);
     }
     if let Some(shape) = variant_shapes.get(ty) {
-        if shape.is_indirect {
-            return Err(CodegenError::FailClosed(format!(
-                "physical indirect enum `{}` is not yet admitted",
-                ty.user_facing()
-            )));
-        }
+        // An indirect enum value is a pointer to its heap node, so the value
+        // layout lands before the node fields: a recursive occurrence finds
+        // it and terminates, and nothing behind the box is by-value containment.
+        let mut node_visiting = BTreeSet::new();
+        let field_visiting = if shape.is_indirect {
+            let (size, align) = measure_layout(data, llvm_type(ctx, &PhysicalRepr::Pointer)?);
+            target.insert_layout(
+                ty.clone(),
+                PhysicalLayout {
+                    size,
+                    align,
+                    repr: PhysicalRepr::Pointer,
+                },
+            );
+            &mut node_visiting
+        } else {
+            &mut *visiting
+        };
         let mut variant_layouts = Vec::with_capacity(shape.variants.len());
         for fields in &shape.variants {
             let mut layouts = Vec::with_capacity(fields.len());
@@ -281,7 +293,7 @@ fn realize_layout(
                     field,
                     aggregate_fields,
                     variant_shapes,
-                    visiting,
+                    field_visiting,
                 )?;
                 layouts.push(target.layout(field).cloned().ok_or_else(|| {
                     CodegenError::FailClosed(format!(
@@ -355,10 +367,12 @@ fn realize_layout(
         let repr = PhysicalRepr::Struct(vec![tag_layout, payload_layout]);
         let (size, align) = measure_layout(data, llvm_type(ctx, &repr)?);
         let object = PhysicalLayout { size, align, repr };
-        target.insert_layout(ty.clone(), object.clone());
+        if !shape.is_indirect {
+            target.insert_layout(ty.clone(), object.clone());
+        }
         target.insert_variant_layout(PhysicalVariantLayout {
             ty: ty.clone(),
-            is_indirect: false,
+            is_indirect: shape.is_indirect,
             object,
             variants: variant_layouts,
         });
@@ -759,6 +773,142 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         self.builder
             .build_struct_gep(object_ty, object, 1, "variant.payload.ptr")
             .llvm_ctx("address physical variant payload")
+    }
+
+    /// The tag-and-payload object behind one enum value slot: the slot itself
+    /// for a direct enum, the heap node an indirect enum slot points at.
+    fn variant_object_ptr(
+        &self,
+        slot: PointerValue<'ctx>,
+        layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        if !layout.is_indirect {
+            return Ok(slot);
+        }
+        Ok(self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                slot,
+                "variant.node",
+            )
+            .llvm_ctx("load indirect variant node")?
+            .into_pointer_value())
+    }
+
+    fn load_variant_tag(
+        &self,
+        object: PointerValue<'ctx>,
+        layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
+        let tag_ty = object_ty
+            .get_field_type_at_index(0)
+            .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?;
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(object_ty, object, 0, "variant.tag.ptr")
+            .llvm_ctx("address physical variant tag")?;
+        Ok(self
+            .builder
+            .build_load(tag_ty, tag_ptr, "variant.tag")
+            .llvm_ctx("read physical variant tag")?
+            .into_int_value())
+    }
+
+    fn variant_node_size(
+        &self,
+        layout: &PhysicalVariantLayout,
+    ) -> [BasicMetadataValueEnum<'ctx>; 2] {
+        let size_ty = self.ctx.i64_type();
+        [
+            size_ty.const_int(layout.object.size, false).into(),
+            size_ty
+                .const_int(u64::from(layout.object.align), false)
+                .into(),
+        ]
+    }
+
+    /// Allocate one indirect enum node. The enum value owns it until its
+    /// destructure, switch or drop glue releases it.
+    fn alloc_variant_node(
+        &self,
+        layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let size_ty = self.ctx.i64_type();
+        let alloc = get_or_declare_external(
+            self.llvm,
+            "hew_alloc",
+            self.ctx
+                .ptr_type(AddressSpace::default())
+                .fn_type(&[size_ty.into(), size_ty.into()], false),
+        )?;
+        Ok(self
+            .builder
+            .build_call(alloc, &self.variant_node_size(layout), "variant.node.alloc")
+            .llvm_ctx("allocate indirect variant node")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("node allocation returned void".into()))?
+            .into_pointer_value())
+    }
+
+    fn free_variant_node(
+        &self,
+        node: PointerValue<'ctx>,
+        layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<()> {
+        let size_ty = self.ctx.i64_type();
+        let dealloc = get_or_declare_external(
+            self.llvm,
+            "hew_dealloc",
+            self.ctx.void_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    size_ty.into(),
+                    size_ty.into(),
+                ],
+                false,
+            ),
+        )?;
+        let [size, align] = self.variant_node_size(layout);
+        self.builder
+            .build_call(dealloc, &[node.into(), size, align], "")
+            .llvm_ctx("release indirect variant node")?;
+        Ok(())
+    }
+
+    /// Emit or reuse one internal glue function. A recursive indirect enum's
+    /// recipe reaches its own glue through a call instead of unrolling.
+    fn glue_function(
+        &self,
+        name: &str,
+        signature: FunctionType<'ctx>,
+        body: impl FnOnce(&ValueEmitter<'_, 'ctx>, FunctionValue<'ctx>) -> CodegenResult<()>,
+    ) -> CodegenResult<FunctionValue<'ctx>> {
+        if let Some(existing) = self.llvm.get_function(name) {
+            return Ok(existing);
+        }
+        let function = self
+            .llvm
+            .add_function(name, signature, Some(Linkage::Internal));
+        let builder = self.ctx.create_builder();
+        let entry = self.ctx.append_basic_block(function, "entry");
+        let body_block = self.ctx.append_basic_block(function, "body");
+        builder.position_at_end(entry);
+        builder
+            .build_unconditional_branch(body_block)
+            .llvm_ctx("enter variant glue")?;
+        builder.position_at_end(body_block);
+        let emitter = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: self.llvm,
+            builder: &builder,
+            value: function,
+        };
+        body(&emitter, function)?;
+        Ok(function)
     }
 
     fn emit_invalid_variant_tag(&self) -> CodegenResult<()> {
@@ -1184,9 +1334,33 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         let glue = self.variant_glue(id)?;
         let variant_layout = self.variant_layout(&glue.ty)?;
         if variant_layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant cloning is not yet admitted".into(),
-            ));
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let clone = self.glue_function(
+                &format!("__hew_variant_clone_{}", id.0),
+                pointer.fn_type(&[pointer.into()], false),
+                |emitter, function| {
+                    let source = function
+                        .get_nth_param(0)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("variant clone lacks its node".into())
+                        })?
+                        .into_pointer_value();
+                    let destination = emitter.alloc_variant_node(variant_layout)?;
+                    emitter.clone_variant_object(source, destination, glue, variant_layout)?;
+                    emitter
+                        .builder
+                        .build_return(Some(&destination))
+                        .llvm_ctx("finish indirect variant clone")?;
+                    Ok(())
+                },
+            )?;
+            return self
+                .builder
+                .build_call(clone, &[value.into()], "variant.clone.node")
+                .llvm_ctx("clone indirect variant")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("variant clone returned void".into()));
         }
         let object_ty = llvm_type(self.ctx, &variant_layout.object.repr)?.into_struct_type();
         let source = self.entry_scratch(object_ty.into(), "variant.clone.source")?;
@@ -1194,11 +1368,24 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         self.builder
             .build_store(source, value)
             .llvm_ctx("store physical variant clone source")?;
-        let tag = self
-            .builder
-            .build_extract_value(value.into_struct_value(), 0, "variant.clone.tag")
-            .llvm_ctx("read physical variant clone tag")?
-            .into_int_value();
+        self.clone_variant_object(source, destination, glue, variant_layout)?;
+        self.builder
+            .build_load(object_ty, destination, "variant.clone.result")
+            .llvm_ctx("load cloned physical variant")
+    }
+
+    /// Copy the active case of `source` into the uninitialized `destination`
+    /// object; both are tag-and-payload objects of one variant layout.
+    fn clone_variant_object(
+        &self,
+        source: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+        glue: &PhysicalVariantGlue,
+        variant_layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<()> {
+        let id = glue.id;
+        let object_ty = llvm_type(self.ctx, &variant_layout.object.repr)?.into_struct_type();
+        let tag = self.load_variant_tag(source, variant_layout)?;
         let invalid = self
             .ctx
             .append_basic_block(self.value, "variant.clone.invalid");
@@ -1283,9 +1470,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         self.builder.position_at_end(invalid);
         self.emit_invalid_variant_tag()?;
         self.builder.position_at_end(complete);
-        self.builder
-            .build_load(object_ty, destination, "variant.clone.result")
-            .llvm_ctx("load cloned physical variant")
+        Ok(())
     }
 
     fn destroy_variant_value(
@@ -1297,20 +1482,48 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         let glue = self.variant_glue(id)?;
         let variant_layout = self.variant_layout(&glue.ty)?;
         if variant_layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant destruction is not yet admitted".into(),
-            ));
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let drop = self.glue_function(
+                &format!("__hew_variant_drop_{}", id.0),
+                self.ctx.void_type().fn_type(&[pointer.into()], false),
+                |emitter, function| {
+                    let node = function
+                        .get_nth_param(0)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("variant drop lacks its node".into())
+                        })?
+                        .into_pointer_value();
+                    emitter.destroy_variant_object(node, glue, variant_layout)?;
+                    emitter.free_variant_node(node, variant_layout)?;
+                    emitter
+                        .builder
+                        .build_return(None)
+                        .llvm_ctx("finish indirect variant drop")?;
+                    Ok(())
+                },
+            )?;
+            self.builder
+                .build_call(drop, &[value.into()], "")
+                .llvm_ctx("destroy indirect variant")?;
+            return Ok(());
         }
         let object_ty = llvm_type(self.ctx, &variant_layout.object.repr)?.into_struct_type();
         let source = self.entry_scratch(object_ty.into(), "variant.destroy.source")?;
         self.builder
             .build_store(source, value)
             .llvm_ctx("store physical variant destroy source")?;
-        let tag = self
-            .builder
-            .build_extract_value(value.into_struct_value(), 0, "variant.destroy.tag")
-            .llvm_ctx("read physical variant destroy tag")?
-            .into_int_value();
+        self.destroy_variant_object(source, glue, variant_layout)
+    }
+
+    /// Release the owned fields of the active case in `source`, a
+    /// tag-and-payload object; the object's own storage stays the caller's.
+    fn destroy_variant_object(
+        &self,
+        source: PointerValue<'ctx>,
+        glue: &PhysicalVariantGlue,
+        variant_layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<()> {
+        let tag = self.load_variant_tag(source, variant_layout)?;
         let invalid = self
             .ctx
             .append_basic_block(self.value, "variant.destroy.invalid");
@@ -2285,7 +2498,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 variant,
                 glue,
             } => {
-                let (tag, _) = self.load_variant_tag(*source, *glue)?;
+                let (tag, _, _) = self.load_variant_tag(*source, *glue)?;
                 let matches = self
                     .builder
                     .build_int_compare(
@@ -2346,7 +2559,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 fields,
                 glue,
             } => {
-                if let Some(payload) = self.load_variant_payload(*source, *variant, *glue)? {
+                let (payload, layout, object) =
+                    self.load_variant_payload(*source, *variant, *glue)?;
+                if let Some(payload) = payload {
                     for (index, field) in fields.iter().enumerate() {
                         let index = u32::try_from(index).map_err(|_| {
                             CodegenError::FailClosed("variant field index exceeds u32".into())
@@ -2357,6 +2572,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             .llvm_ctx("extract physical variant payload field")?;
                         self.store(*field, value)?;
                     }
+                }
+                if layout.is_indirect {
+                    self.value_emitter().free_variant_node(object, layout)?;
                 }
                 self.clear_owned(*source)
             }
@@ -2433,24 +2651,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     ) -> CodegenResult<()> {
         let glue = self.value_emitter().variant_glue(glue_id)?;
         let layout = self.value_emitter().variant_layout(&glue.ty)?;
-        if layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant construction is not yet admitted".into(),
-            ));
-        }
+        let object = if layout.is_indirect {
+            self.value_emitter().alloc_variant_node(layout)?
+        } else {
+            destination
+        };
         let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
         let tag_ty = object_ty
             .get_field_type_at_index(0)
             .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?
             .into_int_type();
         let tag = tag_ty.const_int(u64::from(variant), false);
-        let object = self
+        let header = self
             .builder
             .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
             .llvm_ctx("write physical variant tag")?
             .into_struct_value();
         self.builder
-            .build_store(destination, object)
+            .build_store(object, header)
             .llvm_ctx("initialize physical variant storage")?;
         let case = glue.variants.get(variant as usize).ok_or_else(|| {
             CodegenError::FailClosed("variant construction tag is invalid".into())
@@ -2478,50 +2696,47 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("write physical variant payload field")?
                     .into_struct_value();
             }
-            let payload_ptr = self
-                .value_emitter()
-                .variant_payload_ptr(destination, layout)?;
+            let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
             self.builder
                 .build_store(payload_ptr, payload)
                 .llvm_ctx("store physical variant payload")?;
         }
+        if layout.is_indirect {
+            self.builder
+                .build_store(destination, object)
+                .llvm_ctx("store indirect variant node")?;
+        }
         Ok(())
     }
 
-    /// Read the tag of one direct variant object and its layout.
+    /// Read the tag of one enum value with its layout and tag-and-payload object.
     fn load_variant_tag(
         &self,
         source: StorageId,
         glue_id: PhysicalVariantId,
-    ) -> CodegenResult<(IntValue<'ctx>, &PhysicalVariantLayout)> {
-        let glue = self.value_emitter().variant_glue(glue_id)?;
-        let layout = self.value_emitter().variant_layout(&glue.ty)?;
-        if layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant projection is not yet admitted".into(),
-            ));
-        }
-        let object = self
-            .load(source, "variant.project.source")?
-            .into_struct_value();
-        let tag = self
-            .builder
-            .build_extract_value(object, 0, "variant.project.tag")
-            .llvm_ctx("read physical variant tag")?
-            .into_int_value();
-        Ok((tag, layout))
+    ) -> CodegenResult<(IntValue<'ctx>, &PhysicalVariantLayout, PointerValue<'ctx>)> {
+        let values = self.value_emitter();
+        let glue = values.variant_glue(glue_id)?;
+        let layout = values.variant_layout(&glue.ty)?;
+        let object = values.variant_object_ptr(self.slots[source.0 as usize], layout)?;
+        let tag = values.load_variant_tag(object, layout)?;
+        Ok((tag, layout, object))
     }
 
-    /// Load one tested case's payload, absent for a payload-free case. A
-    /// different runtime tag is corrupt representation and traps, exactly
-    /// like an unmatched switch arm.
+    /// Load one tested case's payload, absent for a payload-free case, with
+    /// the object it came from. A different runtime tag is corrupt
+    /// representation and traps, exactly like an unmatched switch arm.
     fn load_variant_payload(
         &self,
         source: StorageId,
         variant: u32,
         glue_id: PhysicalVariantId,
-    ) -> CodegenResult<Option<StructValue<'ctx>>> {
-        let (tag, layout) = self.load_variant_tag(source, glue_id)?;
+    ) -> CodegenResult<(
+        Option<StructValue<'ctx>>,
+        &PhysicalVariantLayout,
+        PointerValue<'ctx>,
+    )> {
+        let (tag, layout, object) = self.load_variant_tag(source, glue_id)?;
         let matches = self
             .builder
             .build_int_compare(
@@ -2542,17 +2757,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let payload_ty =
             llvm_type(self.ctx, &layout.variants[variant as usize].repr)?.into_struct_type();
         if payload_ty.count_fields() == 0 {
-            return Ok(None);
+            return Ok((None, layout, object));
         }
-        let payload_ptr = self
-            .value_emitter()
-            .variant_payload_ptr(self.slots[source.0 as usize], layout)?;
-        Ok(Some(
-            self.builder
-                .build_load(payload_ty, payload_ptr, "variant.project.payload")
-                .llvm_ctx("load physical variant payload")?
-                .into_struct_value(),
-        ))
+        let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
+        let payload = self
+            .builder
+            .build_load(payload_ty, payload_ptr, "variant.project.payload")
+            .llvm_ctx("load physical variant payload")?
+            .into_struct_value();
+        Ok((Some(payload), layout, object))
     }
 
     /// The payload a field projection reads; a projected case always has one.
@@ -2563,6 +2776,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         glue_id: PhysicalVariantId,
     ) -> CodegenResult<StructValue<'ctx>> {
         self.load_variant_payload(source, variant, glue_id)?
+            .0
             .ok_or_else(|| {
                 CodegenError::FailClosed("variant projection reads a payload-free case".into())
             })
@@ -2574,21 +2788,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         glue_id: PhysicalVariantId,
         arms: &[PhysicalVariantArm],
     ) -> CodegenResult<()> {
-        let glue = self.value_emitter().variant_glue(glue_id)?;
-        let layout = self.value_emitter().variant_layout(&glue.ty)?;
-        if layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant switch is not yet admitted".into(),
-            ));
-        }
-        let object = self
-            .load(scrutinee, "variant.switch.source")?
-            .into_struct_value();
-        let tag = self
-            .builder
-            .build_extract_value(object, 0, "variant.switch.tag")
-            .llvm_ctx("read physical variant tag")?
-            .into_int_value();
+        let (tag, layout, object) = self.load_variant_tag(scrutinee, glue_id)?;
         let invalid = self.ctx.append_basic_block(self.value, "variant.invalid");
         let arm_blocks = arms
             .iter()
@@ -2608,9 +2808,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             let payload_layout = &layout.variants[arm.variant as usize];
             if !arm.fields.is_empty() {
                 let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
-                let payload_ptr = self
-                    .value_emitter()
-                    .variant_payload_ptr(self.slots[scrutinee.0 as usize], layout)?;
+                let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
                 let payload = self
                     .builder
                     .build_load(payload_ty, payload_ptr, "variant.switch.payload")
@@ -2626,6 +2824,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .llvm_ctx("extract physical variant payload field")?;
                     self.store(*field, value)?;
                 }
+            }
+            if layout.is_indirect {
+                self.value_emitter().free_variant_node(object, layout)?;
             }
             self.clear_owned(scrutinee)?;
             self.emit_edge(&arm.target)?;

@@ -3785,7 +3785,14 @@ fn verify_variant_glue(
             glue.id.0
         )));
     }
-    if module.target.layout(&glue.ty) != Some(&layout.object)
+    // An indirect enum value is one pointer to its heap node; the node keeps
+    // the tag-and-payload object layout. A direct enum value is that object.
+    let value_matches = match module.target.layout(&glue.ty) {
+        Some(value) if glue.is_indirect => value.repr == PhysicalRepr::Pointer,
+        Some(value) => value == &layout.object,
+        None => false,
+    };
+    if !value_matches
         || layout.is_indirect != glue.is_indirect
         || layout.variants.len() != glue.variants.len()
     {
@@ -7522,6 +7529,16 @@ mod tests {
                 },
             );
         }
+        for variant in inventory.variants().filter(|variant| variant.is_indirect) {
+            target.insert_layout(
+                variant.ty.clone(),
+                PhysicalLayout {
+                    size: 8,
+                    align: 8,
+                    repr: PhysicalRepr::Pointer,
+                },
+            );
+        }
         let mut aggregates = inventory.aggregates().collect::<Vec<_>>();
         let mut variants = inventory.variants().collect::<Vec<_>>();
         while !aggregates.is_empty() || !variants.is_empty() {
@@ -7578,7 +7595,9 @@ mod tests {
                     },
                     payload,
                 ]);
-                target.insert_layout(variant.ty.clone(), object.clone());
+                if !variant.is_indirect {
+                    target.insert_layout(variant.ty.clone(), object.clone());
+                }
                 target.insert_variant_layout(PhysicalVariantLayout {
                     ty: variant.ty.clone(),
                     is_indirect: variant.is_indirect,

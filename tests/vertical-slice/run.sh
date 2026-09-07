@@ -4862,23 +4862,6 @@ expect_check_fail_contains \
 # captured environment.
 run_accept_expect_stdout "match_destructure_wildcard_closure_field"
 
-# Reject (#2359 / #2647): a generator yielding `Vec<indirect-enum>` fails
-# CLOSED at check time. The indirect-enum element's per-element node free is
-# unwired, so the yielded frame's only release would be the buffer-only
-# `hew_vec_free` — a per-frame element-node leak. As of #2647 the
-# `Vec<indirect-enum>` construction is rejected AT the type-checker boundary
-# (the earliest fail-closed point), which preempts the generator yield-seam
-# release-verdict refusal for this fixture; that yield-seam refusal remains in
-# MIR as a backstop for any shape that reaches it without local construction.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected gen_yield_vec_indirect_enum fixture to fail" >&2
-    exit 1
-fi
-# shellcheck disable=SC2016  # backticks are literal diagnostic text.
-grep -q '`Wrapped` cannot be a `Vec` element: it is an indirect enum whose per-element release protocol is not yet wired, so its heap nodes would leak at scope exit' "${reject_output}"
-
 # Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 # UPSTREAM by the channel element-layout witness at check time — the recv
 # surface cannot type this element class, so the recv-`Some` release seam is

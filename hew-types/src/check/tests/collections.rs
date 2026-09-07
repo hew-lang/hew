@@ -2411,50 +2411,6 @@ fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
 }
 
 #[test]
-fn vec_indirect_enum_element_rejected_at_checker_boundary() {
-    // #2647 — checker/MIR Vec-element admission convergence. An `indirect enum`
-    // element takes the `Ptr` token in `classify_element` (its `Vec` buffer is
-    // one heap-boxed node pointer per slot, built by codegen's `hew_vec_new_ptr`
-    // arm), so it bypasses the `Layout`-gated `vec_owned_element_admissible`
-    // check the record/enum arms consult — the checker ADMITTED it, then MIR
-    // rejected it deep in lowering with `Unsupported(NoReleaseProtocol)` because
-    // the per-element node free is unwired. That divergence (authoritative
-    // type-checker clean, downstream MIR fail-closed) is closed here: the
-    // release-protocol reject now fires at the checker boundary where the
-    // element type is already known.
-    //
-    // The pointer-token ABI invariant is UNCHANGED and lives at the
-    // `classify_element`/`resolve_runtime_symbol` authority
-    // (`is_owned && abi != Ptr`), pinned by `vec_local_pid_push_routes_to_pointer_abi`
-    // — this reject sits ABOVE that routing, it does not replace it.
-    let output = check_source(
-        r"
-        indirect enum StrNode {
-            Str(string),
-            Empty,
-        }
-
-        fn main() {
-            let nodes: Vec<StrNode> = Vec.new();
-            let _ = nodes.len();
-        }
-        ",
-    );
-
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("cannot be a `Vec` element")
-                && e.message.contains("indirect enum")
-                && e.message.contains("release protocol")),
-        "Vec<StrNode> (indirect enum) must be rejected AT the checker with the \
-         release-protocol reason, converging with the MIR reject: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
 fn vec_trait_object_element_is_admitted_at_checker_boundary() {
     let output = check_source(
         r"

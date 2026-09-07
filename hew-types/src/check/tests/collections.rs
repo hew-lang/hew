@@ -2568,7 +2568,7 @@ fn local_pid_actor_dispatch_uses_builtin_discriminator() {
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
         output.actor_method_dispatch.values().any(
-            |dispatch| matches!(dispatch, ActorMethodKind::Message { method_id, .. } if method_id == "Worker::ping")
+            |dispatch| matches!(dispatch, ActorMethodKind::Ask { method_id, .. } if method_id == "Worker::ping")
         ),
         "LocalPid<Worker> actor dispatch must be recorded by typed builtin discriminator: {:?}",
         output.actor_method_dispatch

@@ -126,17 +126,22 @@ form the runtime uses to carry an identity between nodes, not a type a program
 writes. `ChildRef<A>` stays distinct because it names a supervised *role*
 rather than an incarnation, and re-resolves on every call (§5.6).
 
-**Submission and reply.** A `receive fn` with a return type `R` is asked;
-`<pid>.<method>(<args>)` waits for its reply and has type
-`Result<R, AskError>`, and `fork <pid>.<method>(<args>)` starts the same ask
-concurrently as a `Task<Result<R, AskError>>` that `await` then joins. An ask
-carries no operator: an ordinary call waits, `fork` starts concurrent work,
-and `await` joins a task. A `receive fn` without a return type is
-submitted, and the call is the submission: `<pid>.<method>(<args>)` has the
-value `Result<Delivery, SendFailure<M>>`. There is no submission keyword. The
-call does not run the handler locally, and its completion means accepted, not
-processed and not durable. `Delivery` reports `.Accepted` or an explicitly
-chosen `.Discarded`.
+**Completion calls.** A call on a `receive fn` through an actor handle waits
+for the handler to finish, exactly as a call on a function does.
+`<pid>.<method>(<args>)` has type `Result<R, AskError>`, where `R` is the
+handler's return type and `()` when it declares none, and
+`fork <pid>.<method>(<args>)` starts the same call concurrently as a
+`Task<Result<R, AskError>>` that `await` then joins. The call carries no
+operator: an ordinary call waits, `fork` starts concurrent work, and `await`
+joins a task. The handler does not run locally; the call returns when the
+handler's turn has finished, which means processed, not durable.
+
+One-way delivery is a separate, explicit surface: `mailbox(target, on_full:
+...)` yields a view whose calls submit and return as soon as the message is
+accepted, with the value `Result<Delivery, SendFailure<M>>`. `Delivery`
+reports `.Accepted` or an explicitly chosen `.Discarded`. A value-returning
+handler cannot be called through a mailbox view; the diagnostic names
+`fork target.m(..)` for concurrency.
 
 A rejected submission hands the whole unaccepted message back inside
 `SendFailure`, so a consumed payload is never lost on the failure path. That
@@ -153,9 +158,9 @@ is no lint tier: an unbounded mailbox reports `SendError.Dead` for a dead
 target exactly as a policy-sensitive one does, so every send has something to
 say.
 
-**Mailbox policy at the sender.** `policy(worker, on_full: .Wait)` yields an
-immutable typed view of the same actor and mailbox; a receive call through
-that view submits under that policy. It mutates nothing and grants no
+**Mailbox policy at the sender.** `mailbox(worker, on_full: .Wait)` yields an
+immutable typed one-way view of the same actor and mailbox; a receive call
+through that view submits under that policy. It mutates nothing and grants no
 authority over other senders' work; it selects what *this* sender does when
 the mailbox is full. The default is `.Reject`, which fails
 immediately and hands the unaccepted payload back — transferred resources
@@ -166,7 +171,9 @@ message and reports that disposition distinctly. Coalescing requires the
 actor's own mailbox support for its key policy (§6.3). Capacity and queue-wide
 eviction belong to the actor and its supervisor, never to a sender view.
 
-No token marks an actor call site: an unmarked call is the ask or the submission, decided by the handler's return type. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
+No token marks an actor call site: an unmarked call on a handle waits for
+completion, and the receiver type — handle or mailbox view — decides whether
+the call waits or only submits. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
 If the receiving handler faults before replying, the ask resolves to
 `.Err(AskError.HandlerTrapped)`. The receiving actor retains ownership of the
@@ -178,12 +185,12 @@ cancellation still follows the caller's own cancellation and cleanup edges.
 actor Counter {
     var count: i64 = 0,
 
-    // Submission: no return type, the call submits
+    // No return type: the call still waits until the handler has finished
     receive fn increment(n: i64) {
         count += n;
     }
 
-    // Request-response: has return type, caller must await
+    // Request-response: has a return type, the call waits for the reply
     receive fn get() -> i64 {
         count
     }
@@ -197,8 +204,8 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → submission. The call submits, and its value is `Result<Delivery, SendFailure<M>>` whatever the mailbox policy.
-- **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, AskError>`. Inside a `select` arm the ask is the arm's source, so the arm's `from` clause is what waits.
+- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), AskError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, SendFailure<M>>`.
+- **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, AskError>`. Inside a `select` arm the call is the arm's source, so the arm's `from` clause is what waits.
 
 **Calling named actors:**
 
@@ -207,8 +214,11 @@ actor Counter {
 ```hew
 let counter = spawn Counter(count: 0);
 
-// Submission: no return type, typed delivery outcome
+// No return type: the call waits until the handler has finished
 counter.increment(10)?;
+
+// One-way: submit without waiting
+mailbox(counter, on_full: .Reject).increment(10)?;
 
 // Request-response: has return type, the call waits for the reply
 let n = counter.get()?;
@@ -225,7 +235,7 @@ Lambda actors receive messages via call-syntax. Named actors expose typed receiv
 let worker = actor |msg: i64| { println(msg * 2); };
 worker.send(42);                // fire-and-forget
 
-// Named actor: the call submits, and the outcome is not discardable
+// Named actor: the call waits, and the outcome is not discardable
 let _ = counter.increment(10);
 ```
 

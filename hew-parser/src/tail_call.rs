@@ -181,7 +181,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::MachineEmit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
         Expr::ArrayRepeat { value, count } => {
@@ -416,7 +416,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut duration.0, false);
             mark_block(body, false);
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
             for (expr, _) in items {
                 mark_expr(expr, false);
             }

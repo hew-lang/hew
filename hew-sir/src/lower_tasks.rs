@@ -74,6 +74,13 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct TaskScopeFrame {
+    pub scope: TaskScopeId,
+    pub depth: usize,
+    pub race: bool,
+}
+
 impl Builder<'_, '_> {
     pub(super) fn enter_task_scope(&mut self) -> Result<TaskScopeId, String> {
         self.enter_task_scope_with_deadline(None)
@@ -87,12 +94,16 @@ impl Builder<'_, '_> {
         self.emit_place_operation(
             SemOpKind::TaskScopeEnter {
                 scope,
-                parent: self.task_scopes.last().map(|(scope, _)| *scope),
+                parent: self.task_scopes.last().map(|frame| frame.scope),
                 duration,
             },
             Provenance::Synthesized,
         )?;
-        self.task_scopes.push((scope, self.scopes.len() - 1));
+        self.task_scopes.push(TaskScopeFrame {
+            scope,
+            depth: self.scopes.len() - 1,
+            race: false,
+        });
         Ok(scope)
     }
 
@@ -100,9 +111,16 @@ impl Builder<'_, '_> {
         while self
             .task_scopes
             .last()
-            .is_some_and(|(_, depth)| *depth >= floor)
+            .is_some_and(|frame| frame.depth >= floor)
         {
-            let (scope, _) = self.task_scopes.pop().expect("active task scope");
+            let frame = self.task_scopes.pop().expect("active task scope");
+            let scope = frame.scope;
+            let mode = match (frame.race, cancel) {
+                (false, false) => crate::TaskScopeJoinMode::Wait,
+                (false, true) => crate::TaskScopeJoinMode::PropagateFault,
+                (true, false) => crate::TaskScopeJoinMode::CancelLosers,
+                (true, true) => crate::TaskScopeJoinMode::CancelLosersAfterFault,
+            };
             let live = self.owned_live.clone();
             let normal = self.new_block(Vec::new());
             let fault = if cancel {
@@ -111,7 +129,7 @@ impl Builder<'_, '_> {
                 self.new_block(Vec::new())
             };
             self.set_terminator(SemTerminator::Suspend {
-                kind: SuspendKind::Join { scope, cancel },
+                kind: SuspendKind::Join { scope, mode },
                 inputs: Vec::new(),
                 result: CallResult::Unit,
                 resumes: vec![edge(normal)],
@@ -145,6 +163,19 @@ impl Builder<'_, '_> {
         body: &HirBlock,
         duration: Option<&HirExpr>,
     ) -> Result<Option<ValueId>, String> {
+        self.lower_task_scope_body(body, duration, false)
+    }
+
+    pub(super) fn lower_race(&mut self, body: &HirBlock) -> Result<Option<ValueId>, String> {
+        self.lower_task_scope_body(body, None, true)
+    }
+
+    fn lower_task_scope_body(
+        &mut self,
+        body: &HirBlock,
+        duration: Option<&HirExpr>,
+        race: bool,
+    ) -> Result<Option<ValueId>, String> {
         // Deferred bodies cannot create children or suspend. A plain scope
         // there only supplies lexical cleanup; it needs no asynchronous drain.
         if duration.is_none() && self.in_deferred_body() {
@@ -158,6 +189,10 @@ impl Builder<'_, '_> {
         let floor = self.scopes.len();
         self.scopes.push(Vec::new());
         self.enter_task_scope_with_deadline(duration)?;
+        self.task_scopes
+            .last_mut()
+            .expect("entered child scope")
+            .race = race;
         let result = self.lower_block(body, OwnedBindingUse::Return)?;
         if self.is_open() {
             if result
@@ -190,7 +225,7 @@ impl Builder<'_, '_> {
             .task_scopes
             .last()
             .ok_or("fork has no lexical task scope")?
-            .0;
+            .scope;
         let mut closure = expression.clone();
         closure.ty = ResolvedTy::Closure {
             capabilities: hew_types::CallableCapabilities {

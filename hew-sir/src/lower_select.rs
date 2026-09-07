@@ -98,6 +98,7 @@ impl Builder<'_, '_> {
         self.set_terminator(SemTerminator::Suspend {
             kind: SuspendKind::Select {
                 has_timeout: timer.is_some(),
+                order: select.order,
             },
             inputs,
             result: CallResult::Value(ValueDef {
@@ -197,10 +198,18 @@ impl Builder<'_, '_> {
             }
             let result = self.lower_selected_body(&arm.body, &result_ty)?;
             if self.is_open() {
+                let mut protected_live = outer_live.clone();
+                if let Some(result) = &result {
+                    if let Some(ty) = self.owned_live.get(&result.value) {
+                        protected_live.insert(result.value, ty.clone());
+                    }
+                }
+                // The selected result survives normal candidate cleanup, but
+                // must still be released if closing another owner fails.
+                self.cleanup_match_candidate(&protected_live, &outer_bindings)?;
                 if let Some(result) = &result {
                     self.owned_live.remove(&result.value);
                 }
-                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
                 exits.push(MatchExit {
                     state: self.control_state(),
                     result,

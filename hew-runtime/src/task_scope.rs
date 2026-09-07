@@ -309,15 +309,21 @@ pub unsafe extern "C" fn hew_cancel_token_is_requested(token: *mut HewCancellati
 /// # Safety
 /// `token` is null or a live token retained through this call.
 pub(crate) unsafe fn cancel_token_reason(mut token: *mut HewCancellationToken) -> i32 {
+    let mut race_lost = 0;
     while !token.is_null() {
         // SAFETY: the caller retains the token and each token retains its parent.
         let current = unsafe { &*token };
         if token_state(current).is_requested() {
-            return current.reason.load(Ordering::Acquire);
+            let reason = current.reason.load(Ordering::Acquire);
+            if reason != crate::fault::HEW_FAULT_RACE_LOST {
+                return reason;
+            }
+            // Losing a race never masks cancellation of an enclosing operation.
+            race_lost = reason;
         }
         token = current.parent;
     }
-    0
+    race_lost
 }
 
 fn cancel_token_is_requested(token: *mut HewCancellationToken) -> bool {

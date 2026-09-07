@@ -43,7 +43,10 @@ fn task_select_rejects_invalid_observation_contracts() {
             }
             5 => {
                 inputs.clear();
-                *kind = SuspendKind::Select { has_timeout: false };
+                *kind = SuspendKind::Select {
+                    has_timeout: false,
+                    order: hew_sir::TaskSelectionOrder::Source,
+                };
             }
             _ => unreachable!(),
         }

@@ -473,7 +473,7 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }

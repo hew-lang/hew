@@ -1190,7 +1190,7 @@ mod ast_surface {
             }
             Expr::StructInit { .. } => Some("record StructInit + field access"),
             Expr::Select { .. } => Some("scope / structured-concurrency block"),
-            Expr::Join(_) => Some("scope / structured-concurrency block"),
+            Expr::Join(_) | Expr::Race(_) => Some("scope / structured-concurrency block"),
             Expr::Timeout { .. } => Some("scope / structured-concurrency block"),
             Expr::UnsafeBlock(_) => Some("unsafe block"),
             Expr::Yield(_) => Some("scope / structured-concurrency block"),
@@ -1851,7 +1851,7 @@ fn walk_expr(
                 walk_expr(base, owners);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
             for item in items {
                 walk_expr(item, owners);
             }

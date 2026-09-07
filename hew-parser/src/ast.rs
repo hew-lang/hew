@@ -363,6 +363,8 @@ pub enum Expr {
         timeout: Option<Box<TimeoutClause>>,
     },
     Join(Vec<Spanned<Expr>>),
+    /// First completed child result, published after all losing children drain.
+    Race(Vec<Spanned<Expr>>),
     Timeout {
         expr: Box<Spanned<Expr>>,
         duration: Box<Spanned<Expr>>,

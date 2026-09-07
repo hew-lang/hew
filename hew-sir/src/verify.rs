@@ -3539,6 +3539,10 @@ fn checked_raise_origin(
     found
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "recursive fault-cleanup proof covers each permitted terminator"
+)]
 fn failure_cfg_matches_exit(
     edge: &crate::Edge,
     expected: Option<crate::TrapKind>,
@@ -3574,7 +3578,12 @@ fn failure_cfg_matches_exit(
         let valid = match &block.terminator {
             SemTerminator::Suspend {
                 kind:
-                    crate::SuspendKind::Join { cancel: true, .. }
+                    crate::SuspendKind::Join {
+                        mode:
+                            crate::TaskScopeJoinMode::PropagateFault
+                            | crate::TaskScopeJoinMode::CancelLosersAfterFault,
+                        ..
+                    }
                     | crate::SuspendKind::ValueClose { .. },
                 resumes,
                 cancel,
@@ -4212,7 +4221,7 @@ fn verify_terminator_shape(
                         && resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
                 }
-                crate::SuspendKind::Select { has_timeout } => {
+                crate::SuspendKind::Select { has_timeout, .. } => {
                     let tasks = if *has_timeout {
                         inputs.split_last().and_then(|(duration, tasks)| {
                             (duration.decision == crate::BoundaryDecision::Copy

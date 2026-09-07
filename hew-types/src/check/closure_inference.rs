@@ -388,9 +388,9 @@ fn esc_visit_expr(
                 esc_visit_expr(&t.body.0, name, in_fork, acc, false);
             }
         }
-        Expr::Join(items) => {
+        Expr::Join(items) | Expr::Race(items) => {
             for (e, _) in items {
-                esc_visit_arg(e, name, in_fork, acc);
+                esc_visit_arg(e, name, in_fork || matches!(expr, Expr::Race(_)), acc);
             }
         }
         Expr::Timeout { expr, duration } => {

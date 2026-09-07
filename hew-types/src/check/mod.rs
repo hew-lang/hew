@@ -39,6 +39,7 @@ mod expressions;
 mod generics;
 mod items;
 mod lints;
+mod race;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;
 mod machine_normalize;
@@ -3233,9 +3234,14 @@ impl Checker {
                     );
                 }
             }
-            Expr::Join(items) => {
+            Expr::Join(items) | Expr::Race(items) => {
                 for (e, s) in items {
-                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                    self.classify_escapes_in_expr(
+                        e,
+                        s,
+                        in_fork || matches!(expr, Expr::Race(_)),
+                        AnonContext::PassedToHigherOrder,
+                    );
                 }
             }
             Expr::Timeout { expr, duration } => {
@@ -3653,7 +3659,7 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&t.body.0, &t.body.1, out);
             }
         }
-        Expr::Join(items) => {
+        Expr::Join(items) | Expr::Race(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
             }

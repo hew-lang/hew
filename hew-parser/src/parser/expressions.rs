@@ -1516,8 +1516,17 @@ impl Parser<'_> {
                 Expr::Select { arms, timeout }
             }
             Token::Race => {
-                self.error("'race' blocks have been removed; use 'select' instead".to_string());
-                return None;
+                self.advance();
+                self.expect(&Token::LeftBrace)?;
+                let mut branches = Vec::new();
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    branches.push(self.parse_expr()?);
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RightBrace)?;
+                Expr::Race(branches)
             }
             Token::Join => {
                 self.advance();

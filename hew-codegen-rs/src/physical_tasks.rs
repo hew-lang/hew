@@ -297,7 +297,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_task_scope_join(
         &self,
         scope: TaskScopeId,
-        cancel: bool,
+        mode: hew_mir::physical::TaskScopeJoinMode,
         normal: &PhysicalEdge,
         unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
@@ -307,7 +307,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let wait =
             self.task_pointer_call("hew_checked_scope_wait_new", &[handle.into(), waker.into()])?;
-        if cancel {
+        if mode.cancels_losers() {
+            self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
+        } else if mode.preserves_fault() {
             self.free_handle("hew_checked_scope_cancel", handle)?;
         }
         let poll = self.ctx.append_basic_block(self.value, "scope.poll");
@@ -413,7 +415,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("store combined scope status")?;
-        if cancel {
+        if mode.preserves_fault() {
             return self.emit_edge(normal);
         }
         let check_cancel = self

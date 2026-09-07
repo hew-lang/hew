@@ -75,16 +75,43 @@ pub unsafe extern "C" fn hew_checked_task_select_poll(
     selection: *const HewCheckedTaskSelect,
 ) -> i64 {
     // SAFETY: caller retains the observation throughout this poll.
+    unsafe { poll(selection, false) }
+}
+
+/// Select the earliest completion, even when several children are already ready.
+/// Source order breaks an equal completion-order tie.
+///
+/// # Safety
+/// The same retained observation contract as `hew_checked_task_select_poll`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_select_poll_first(
+    selection: *const HewCheckedTaskSelect,
+) -> i64 {
+    // SAFETY: caller retains the observation throughout this poll.
+    unsafe { poll(selection, true) }
+}
+
+unsafe fn poll(selection: *const HewCheckedTaskSelect, first_completion: bool) -> i64 {
+    // SAFETY: caller retains the observation throughout this poll.
     let selection = unsafe { &*selection };
+    let mut first = None;
     for (index, wait) in selection.tasks.iter().enumerate() {
         // SAFETY: each wait independently retains the checked task storage.
-        let status = unsafe { checked(wait.task) }.lock_or_recover().outcome();
+        let state = unsafe { checked(wait.task) }.lock_or_recover();
+        let status = state.outcome();
         if status == TAKEN {
             return -2;
         }
         if status != PENDING {
-            return i64::try_from(index).unwrap_or(-2);
+            if !first_completion {
+                return i64::try_from(index).unwrap_or(-2);
+            }
+            let candidate = (state.order, index);
+            first = Some(first.map_or(candidate, |previous| std::cmp::min(previous, candidate)));
         }
+    }
+    if let Some((_, index)) = first {
+        return i64::try_from(index).unwrap_or(-2);
     }
     if !selection.timer.is_null() {
         // SAFETY: the selection owns its timer until detached.

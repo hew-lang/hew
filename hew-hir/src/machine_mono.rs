@@ -1750,7 +1750,9 @@ fn walk_expr(
             diagnostics,
             cap_diag_emitted,
         ),
-        HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => walk_block(
+        HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
+        | HirExprKind::ForkBlock { body, .. } => walk_block(
             body,
             subst,
             machine_decls,

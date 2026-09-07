@@ -227,10 +227,9 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
 pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
     // SAFETY: the live state's retained token owns its complete ancestry.
     let reason = unsafe { crate::task_scope::cancel_token_reason((*state).token) };
-    if reason == crate::fault::HEW_FAULT_DEADLINE {
-        crate::fault::HEW_FAULT_DEADLINE
-    } else {
-        crate::fault::HEW_FAULT_CANCELLED
+    match reason {
+        crate::fault::HEW_FAULT_DEADLINE | crate::fault::HEW_FAULT_RACE_LOST => reason,
+        _ => crate::fault::HEW_FAULT_CANCELLED,
     }
 }
 

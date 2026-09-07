@@ -87,7 +87,10 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
                 args: vec![],
                 ops: vec![],
                 terminator: SemTerminator::Suspend {
-                    kind: SuspendKind::Select { has_timeout },
+                    kind: SuspendKind::Select {
+                        has_timeout,
+                        order: hew_sir::TaskSelectionOrder::Source,
+                    },
                     inputs,
                     result: CallResult::Value(ValueDef {
                         id: raw,

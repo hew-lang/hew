@@ -15,6 +15,9 @@ use crate::internal::types::{ExitReason, HEW_TRAP_USER_PANIC};
 /// Private completion codes kept distinct from source panic and trap codes.
 pub const HEW_FAULT_CANCELLED: i32 = -1;
 pub const HEW_FAULT_DEADLINE: i32 = -2;
+/// Internal cancellation requested after another race child has completed.
+/// Only the owning race drain may suppress this completion diagnostic.
+pub(crate) const HEW_FAULT_RACE_LOST: i32 = -3;
 
 /// An opaque, uniquely owned logical fault. Never free with a foreign allocator.
 #[derive(Debug)]
@@ -125,18 +128,49 @@ pub unsafe extern "C" fn hew_fault_finish_cleanup(fault: *mut HewFault) -> *mut 
     }
     // SAFETY: the caller transfers the unique allocation.
     let mut fault = unsafe { Box::from_raw(fault) };
-    if !matches!(fault.code, HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE) {
+    if !matches!(
+        fault.code,
+        HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE | HEW_FAULT_RACE_LOST
+    ) {
         return Box::into_raw(fault);
     }
     let mut secondary = fault.secondary.into_iter();
-    let Some(first) = secondary
-        .find(|diagnostic| !matches!(diagnostic.code, HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE))
-    else {
+    let Some(first) = secondary.find(|diagnostic| {
+        !matches!(
+            diagnostic.code,
+            HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE | HEW_FAULT_RACE_LOST
+        )
+    }) else {
         return std::ptr::null_mut();
     };
     fault.code = first.code;
     fault.message = first.message;
     fault.secondary = secondary.collect();
+    Box::into_raw(fault)
+}
+
+/// Remove only the race's own cancellation marker. Ordinary cancellation,
+/// deadlines and cleanup diagnostics retain their original order and ownership.
+///
+/// # Safety
+/// `fault` transfers one optional unique fault owner.
+pub(crate) unsafe fn finish_race_loser(fault: *mut HewFault) -> *mut HewFault {
+    if fault.is_null() {
+        return fault;
+    }
+    // SAFETY: the caller transfers the unique allocation.
+    let mut fault = unsafe { Box::from_raw(fault) };
+    fault
+        .secondary
+        .retain(|diagnostic| diagnostic.code != HEW_FAULT_RACE_LOST);
+    if fault.code == HEW_FAULT_RACE_LOST {
+        if fault.secondary.is_empty() {
+            return std::ptr::null_mut();
+        }
+        let first = fault.secondary.remove(0);
+        fault.code = first.code;
+        fault.message = first.message;
+    }
     Box::into_raw(fault)
 }
 
@@ -210,7 +244,7 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 }
 
 fn fault_reason(code: i32) -> &'static str {
-    if code == HEW_FAULT_CANCELLED {
+    if matches!(code, HEW_FAULT_CANCELLED | HEW_FAULT_RACE_LOST) {
         return "Cancelled";
     }
     if code == HEW_FAULT_DEADLINE {
@@ -334,6 +368,28 @@ mod tests {
                 write_report(&*failed, &mut report).unwrap();
                 assert_eq!(report, "hew: failure: UserPanic (212): cleanup\0雪\nhew: secondary failure: UserPanic (212): older cleanup\n".as_bytes());
                 hew_fault_drop(failed);
+            }
+        }
+    }
+
+    #[test]
+    fn race_loser_cleanup_preserves_real_faults_and_parent_cancellation() {
+        // SAFETY: each operation consumes distinct owned faults exactly once.
+        unsafe {
+            assert!(finish_race_loser(hew_fault_new(HEW_FAULT_RACE_LOST)).is_null());
+            for retained in [HEW_FAULT_CANCELLED, HEW_FAULT_DEADLINE, HEW_TRAP_USER_PANIC] {
+                let fault =
+                    hew_fault_combine(hew_fault_new(HEW_FAULT_RACE_LOST), hew_fault_new(retained));
+                let fault = hew_fault_combine(fault, panic_fault("cleanup 雪"));
+                let fault = hew_fault_combine(fault, hew_fault_new(HEW_FAULT_RACE_LOST));
+                let fault = finish_race_loser(fault);
+                assert_eq!((*fault).code, retained);
+                assert_eq!((*fault).secondary.len(), 1);
+                assert_eq!(
+                    (&(*fault).secondary)[0].message.as_deref(),
+                    Some("cleanup 雪")
+                );
+                hew_fault_drop(fault);
             }
         }
     }

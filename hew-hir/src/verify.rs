@@ -655,6 +655,7 @@ impl Verifier {
             | HirExprKind::Continue { .. }
             | HirExprKind::ActorSelf => {}
             HirExprKind::Scope { body }
+            | HirExprKind::Race { body }
             | HirExprKind::ForkBlock { body, .. }
             | HirExprKind::Loop { body, .. } => self.block(body),
             HirExprKind::ScopeRecovery {

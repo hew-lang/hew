@@ -680,6 +680,7 @@ fn walk_expr(
             walk_expr(object, subst, residual_domain, disc);
         }
         HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::Loop { body, .. } => {
             walk_block(body, subst, residual_domain, disc);

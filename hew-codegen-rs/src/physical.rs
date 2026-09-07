@@ -2558,13 +2558,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
             ),
             PhysicalTerminator::TaskSelect {
+                order,
                 tasks,
                 timeout,
                 result,
                 normal,
                 cancel,
                 unwind,
-            } => self.emit_task_select(tasks, *timeout, *result, normal, cancel, unwind),
+            } => self.emit_task_select(*order, tasks, *timeout, *result, normal, cancel, unwind),
             PhysicalTerminator::GeneratorYield {
                 value,
                 normal,
@@ -2594,10 +2595,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } => self.emit_task_await(task, *result, normal, cancel, unwind),
             PhysicalTerminator::TaskScopeJoin {
                 scope,
-                cancel,
+                mode,
                 normal,
                 unwind,
-            } => self.emit_task_scope_join(*scope, *cancel, normal, unwind),
+            } => self.emit_task_scope_join(*scope, *mode, normal, unwind),
             PhysicalTerminator::NativeIo {
                 operation,
                 args,

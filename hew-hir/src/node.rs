@@ -1618,6 +1618,10 @@ pub enum HirExprKind {
     Scope {
         body: HirBlock,
     },
+    /// Race owns its children and drains losers before publishing the result.
+    Race {
+        body: HirBlock,
+    },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.
     ForkBlock {
@@ -2798,7 +2802,15 @@ pub enum HirCaptureKind {
 /// sealed arm forms.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSelect {
+    pub order: HirSelectionOrder,
     pub arms: Vec<HirSelectArm>,
+}
+
+/// Ordering of already completed operations at a selection boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HirSelectionOrder {
+    Source,
+    Completion,
 }
 
 /// One arm of a sealed `select{}` expression. `binding_name` is `None`

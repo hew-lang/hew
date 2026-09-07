@@ -264,7 +264,7 @@ fn certified_fault_cleanup_drains_tasks_without_admitting_ordinary_continuation(
     };
     function.blocks[0].terminator = PhysicalTerminator::TaskScopeJoin {
         scope: TaskScopeId(0),
-        cancel: true,
+        mode: hew_sir::TaskScopeJoinMode::PropagateFault,
         normal: edge.clone(),
         unwind: edge,
     };
@@ -285,11 +285,11 @@ fn certified_fault_cleanup_drains_tasks_without_admitting_ordinary_continuation(
     for ordinary_join in [false, true] {
         let mut broken = function.clone();
         if ordinary_join {
-            let PhysicalTerminator::TaskScopeJoin { cancel, .. } = &mut broken.blocks[0].terminator
+            let PhysicalTerminator::TaskScopeJoin { mode, .. } = &mut broken.blocks[0].terminator
             else {
                 panic!("task drain")
             };
-            *cancel = false;
+            *mode = hew_sir::TaskScopeJoinMode::Wait;
         } else {
             broken.blocks[1].terminator = PhysicalTerminator::Return { value: None };
         }

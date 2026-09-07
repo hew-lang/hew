@@ -58,6 +58,7 @@ use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
 mod fork;
+mod race;
 
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
@@ -7225,6 +7226,7 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(object, out, trait_out);
         }
         HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::Loop { body, .. } => {
             collect_call_sites_in_block(body, out, trait_out);
@@ -10180,7 +10182,7 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_private_refs(&e.0, pf, out);
             }
@@ -10991,6 +10993,7 @@ impl LowerCtx {
             }
             HirExprKind::Block(block)
             | HirExprKind::Scope { body: block }
+            | HirExprKind::Race { body: block }
             | HirExprKind::ForkBlock { body: block, .. } => {
                 self.wrap_var_self_explicit_returns_in_block(block, receiver, abi_return_ty);
             }
@@ -19115,6 +19118,7 @@ impl LowerCtx {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
             Expr::Join(branches) => self.lower_join(branches, span.clone()),
+            Expr::Race(branches) => self.lower_race(branches, span.clone()),
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
                 params,
@@ -20373,7 +20377,13 @@ impl LowerCtx {
         }
 
         let result_ty = expected_ty.unwrap_or(ResolvedTy::Unit);
-        (HirExprKind::Select(HirSelect { arms: hir_arms }), result_ty)
+        (
+            HirExprKind::Select(HirSelect {
+                order: crate::HirSelectionOrder::Source,
+                arms: hir_arms,
+            }),
+            result_ty,
+        )
     }
 
     /// Build the `LambdaPid<Msg, Reply>` `ResolvedTy` for an actor-lambda
@@ -30490,6 +30500,7 @@ fn collect_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
+        | HirExprKind::Race { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
@@ -30803,6 +30814,7 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
+        | HirExprKind::Race { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
@@ -31625,7 +31637,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::FieldAccess { object, .. } => {
             collect_hir_emitted_events_walk(object, event_names, out);
         }
-        HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
+        HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
+        | HirExprKind::ForkBlock { body, .. } => {
             collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::ScopeRecovery { scope, handler, .. } => {
@@ -32124,7 +32138,7 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
             scan_expr_for_blocking_recv(&right.0, diagnostics);
         }
         Expr::Unary { operand, .. } => scan_expr_for_blocking_recv(&operand.0, diagnostics),
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_blocking_recv(&e.0, diagnostics);
             }
@@ -32736,7 +32750,7 @@ fn scan_expr_for_binop_gates(
                 scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
             }
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
             }
@@ -33542,6 +33556,7 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(object, callable, diagnostics);
         }
         HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::GenBlock { body, .. } => {
             scan_block_for_call_shape(body, callable, diagnostics);
@@ -33974,7 +33989,7 @@ fn scan_expr_for_supervisor_spawn(
         Expr::Unary { operand, .. } => {
             scan_expr_for_supervisor_spawn(&operand.0, current_module, registry, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
             }
@@ -34352,7 +34367,7 @@ fn scan_expr_for_vec_index_gate(
         Expr::Unary { operand, .. } => {
             scan_expr_for_vec_index_gate(operand, expr_types, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
             }

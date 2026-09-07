@@ -91,7 +91,7 @@ impl LowerCtx {
         Some(self.fork_binding_ref(&binding, IntentKind::Read))
     }
 
-    fn fork_binding_ref(&mut self, binding: &HirBinding, intent: IntentKind) -> HirExpr {
+    pub(super) fn fork_binding_ref(&mut self, binding: &HirBinding, intent: IntentKind) -> HirExpr {
         self.make_binding_ref(
             binding.name.clone(),
             binding.id,
@@ -101,7 +101,7 @@ impl LowerCtx {
         )
     }
 
-    fn fork_temporary(
+    pub(super) fn fork_temporary(
         &mut self,
         value: HirExpr,
         consume: bool,
@@ -163,7 +163,7 @@ impl LowerCtx {
         inputs.values.insert(key, binding);
     }
 
-    fn prepare_fork_call(
+    pub(super) fn prepare_fork_call(
         &mut self,
         source: &Spanned<Expr>,
         statements: &mut Vec<HirStmt>,
@@ -255,7 +255,11 @@ impl LowerCtx {
         (call, captures)
     }
 
-    fn fork_body(&mut self, body: HirBlock, captures: Vec<HirClosureCapture>) -> HirExpr {
+    pub(super) fn fork_body(
+        &mut self,
+        body: HirBlock,
+        captures: Vec<HirClosureCapture>,
+    ) -> HirExpr {
         let task_ty = ResolvedTy::Task(Box::new(body.ty.clone()));
         let span = body.span.clone();
         self.make_expr(
@@ -270,7 +274,7 @@ impl LowerCtx {
         )
     }
 
-    fn fork_result_block(
+    pub(super) fn fork_result_block(
         &mut self,
         statements: Vec<HirStmt>,
         tail: HirExpr,

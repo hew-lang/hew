@@ -46,8 +46,9 @@ unsafe extern "C" fn invoke(
             .unwrap();
         drop(guard);
         let status = if hew_coro_state_is_cancelled(state.cast()) != 0 {
-            fault.write(crate::fault::hew_fault_new(HEW_FAULT_CANCELLED).cast());
-            HEW_FAULT_CANCELLED
+            let code = crate::coro_state::hew_coro_state_cancel_code(state.cast());
+            fault.write(crate::fault::hew_fault_new(code).cast());
+            code
         } else if let ResultValue::Failure(code) = env.value {
             fault.write(crate::fault::hew_fault_new(code).cast());
             code
@@ -631,6 +632,93 @@ fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
             hew_checked_scope_wait_free(drain);
             hew_checked_scope_close(scope);
             assert_eq!(drops.load(Ordering::SeqCst), 2);
+        }
+    }
+}
+
+#[test]
+fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellation() {
+    for parent_code in [0, crate::fault::HEW_FAULT_DEADLINE] {
+        let (readiness, waker) = Readiness::new();
+        let (started, receive) = mpsc::channel();
+        let first_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let second_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let pending_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // SAFETY: observations and drain retain all child storage until stopped.
+        unsafe {
+            let parent = hew_cancel_token_new_child(ptr::null_mut());
+            let scope = hew_checked_scope_new(parent);
+            let first = spawn(
+                scope,
+                started.clone(),
+                Arc::clone(&first_gate),
+                Arc::clone(&drops),
+                ResultValue::Scalar(1),
+            );
+            let second = spawn(
+                scope,
+                started.clone(),
+                Arc::clone(&second_gate),
+                Arc::clone(&drops),
+                ResultValue::Scalar(2),
+            );
+            let pending = spawn(
+                scope,
+                started,
+                Arc::clone(&pending_gate),
+                Arc::clone(&drops),
+                ResultValue::Scalar(3),
+            );
+            for _ in 0..3 {
+                receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+            let first_wait = hew_checked_task_wait_new(first, waker.descriptor());
+            let second_wait = hew_checked_task_wait_new(second, waker.descriptor());
+            release(&second_gate);
+            while hew_checked_task_wait_status(second_wait) == PENDING {
+                readiness.wait();
+            }
+            release(&first_gate);
+            while hew_checked_task_wait_status(first_wait) == PENDING {
+                readiness.wait();
+            }
+            let handles = [first, second, pending];
+            let select = hew_checked_task_select_new(
+                handles.as_ptr(),
+                handles.len(),
+                0,
+                0,
+                waker.descriptor(),
+            );
+            assert_eq!(hew_checked_task_select_poll(select), 0);
+            assert_eq!(hew_checked_task_select_poll_first(select), 1);
+            hew_checked_task_select_free(select);
+            let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+            hew_checked_scope_wait_cancel_losers(drain);
+            assert_eq!(super::super::cancel_token_reason((*scope).cancel_token), 0);
+            assert_eq!(super::super::cancel_token_reason((*second).cancel_token), 0);
+            if parent_code != 0 {
+                hew_cancel_token_cancel(parent, parent_code);
+            }
+            release(&pending_gate);
+            while hew_checked_scope_wait_status(drain) == PENDING {
+                readiness.wait();
+            }
+            let mut fault = ptr::null_mut();
+            assert_eq!(
+                hew_checked_scope_wait_take_fault(drain, &raw mut fault),
+                parent_code
+            );
+            assert_eq!(fault.is_null(), parent_code == 0);
+            hew_fault_drop(fault);
+            hew_checked_scope_wait_free(drain);
+            hew_checked_task_wait_free(first_wait);
+            hew_checked_task_wait_free(second_wait);
+            hew_task_free(pending);
+            hew_checked_scope_close(scope);
+            super::super::hew_cancel_token_release(parent);
+            assert_eq!(drops.load(Ordering::SeqCst), 3);
         }
     }
 }

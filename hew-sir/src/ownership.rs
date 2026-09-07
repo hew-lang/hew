@@ -474,11 +474,12 @@ pub enum SuspendKind {
     /// Borrowed task observations, followed by an optional copied duration.
     Select {
         has_timeout: bool,
+        order: crate::TaskSelectionOrder,
     },
     Timeout,
     Join {
         scope: TaskScopeId,
-        cancel: bool,
+        mode: TaskScopeJoinMode,
     },
     ScopeDeadline,
     Yield,
@@ -491,6 +492,27 @@ pub enum SuspendKind {
     },
     Sleep,
     SleepUntil,
+}
+
+/// The scope drain carries both cancellation intent and fault preservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TaskScopeJoinMode {
+    Wait,
+    PropagateFault,
+    CancelLosers,
+    CancelLosersAfterFault,
+}
+
+impl TaskScopeJoinMode {
+    #[must_use]
+    pub const fn preserves_fault(self) -> bool {
+        matches!(self, Self::PropagateFault | Self::CancelLosersAfterFault)
+    }
+
+    #[must_use]
+    pub const fn cancels_losers(self) -> bool {
+        matches!(self, Self::CancelLosers | Self::CancelLosersAfterFault)
+    }
 }
 
 /// Which children of an owner must finish cleanup before execution continues.

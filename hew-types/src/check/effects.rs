@@ -599,6 +599,7 @@ impl Checker {
             ),
             Expr::AwaitRestart(_)
             | Expr::Join(_)
+            | Expr::Race(_)
             | Expr::Select { .. }
             | Expr::ForkChild { .. }
             | Expr::ForkBlock { .. }

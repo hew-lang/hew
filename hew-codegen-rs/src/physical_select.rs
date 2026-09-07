@@ -5,10 +5,12 @@ use super::*;
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     #[allow(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         reason = "one selection owns observation registration, polling and every detach edge"
     )]
     pub(super) fn emit_task_select(
         &self,
+        order: hew_mir::physical::TaskSelectionOrder,
         tasks: &[ArgumentTransfer],
         timeout: Option<StorageId>,
         result: StorageId,
@@ -142,7 +144,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(inspect);
         let poll_fn = coro::external(
             self.llvm,
-            "hew_checked_task_select_poll",
+            match order {
+                hew_mir::physical::TaskSelectionOrder::Source => "hew_checked_task_select_poll",
+                hew_mir::physical::TaskSelectionOrder::Completion => {
+                    "hew_checked_task_select_poll_first"
+                }
+            },
             self.ctx.i64_type().fn_type(&[pointer.into()], false),
         )?;
         let index =

@@ -47,6 +47,7 @@
       "move",
       "select",
       "join",
+      "race",
       "after",
       "from",
       "await",
@@ -95,7 +96,6 @@
     "reserved_unused": [
       "try",
       "catch",
-      "race",
       "foreign",
       "cooperate",
       "super",

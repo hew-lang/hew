@@ -518,7 +518,7 @@ pub(super) fn verify_trap_cleanup_refinement(
                 // scope verifier proves the matching drain/close lifetime,
                 // and flow verification requires the primary fault to survive.
                 PhysicalTerminator::TaskScopeJoin {
-                    cancel: true,
+                    mode: hew_sir::TaskScopeJoinMode::PropagateFault | hew_sir::TaskScopeJoinMode::CancelLosersAfterFault,
                     normal,
                     unwind,
                     ..

@@ -4840,7 +4840,7 @@ impl Checker {
             | Expr::Return(Some(operand)) => {
                 Self::collect_machine_transition_forbidden_exprs(&operand.0, &operand.1, hits);
             }
-            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
                 for (expr, expr_span) in exprs {
                     Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
                 }

@@ -59,7 +59,8 @@ pub use ownership::{
     checked_binary_types_match, runtime_failure_trap_kind, variant_field_recipes,
     variant_field_types, AggregateFieldRecipe, Binding, BindingId, BindingTarget, BoundaryDecision,
     BytesLiteralId, OwnKind, OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin,
-    SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TrapKind, ValueCloseSelection,
+    SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TaskScopeJoinMode, TrapKind,
+    ValueCloseSelection,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use resource::{verify_resource_release, ResourceCarrier, ResourceExtern, ResourceRelease};
@@ -67,3 +68,5 @@ pub use verify::{
     check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,
     CfgDiscardSafetyReason, CheckedFunction, CheckedModule, SirDiagnostic, SirDiagnosticKind,
 };
+
+pub use hew_hir::HirSelectionOrder as TaskSelectionOrder;

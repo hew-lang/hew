@@ -2253,7 +2253,7 @@ struct ControlState {
     owned_live: BTreeMap<ValueId, ResolvedTy>,
     scopes: Vec<Vec<BindingId>>,
     defers: Vec<deferred::PendingDefer>,
-    task_scopes: Vec<(crate::TaskScopeId, usize)>,
+    task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,
 }
@@ -2408,7 +2408,7 @@ struct Builder<'hir, 'service> {
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
     recovery_bodies: Vec<deferred::BodyBoundary>,
-    task_scopes: Vec<(crate::TaskScopeId, usize)>,
+    task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,
 }
@@ -3665,6 +3665,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
             }
+            HirExprKind::Race { body }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
+                self.lower_race(body)?;
+                return Ok(());
+            }
             HirExprKind::Scope { body }
                 if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
             {
@@ -3883,6 +3889,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::AwaitTask { operand, .. } => match self.lower_task_await(expr, operand)? {
                 Some(value) => Ok(value),
                 None => self.emit(expr, SemOpKind::ConstUnit),
+            },
+            HirExprKind::Race { body } => match self.lower_race(body)? {
+                Some(value) => Ok(value),
+                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                None => Err("divergent race cannot produce a SIR value".into()),
             },
             HirExprKind::Scope { body } => match self.lower_task_scope(body)? {
                 Some(value) => Ok(value),

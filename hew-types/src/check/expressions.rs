@@ -148,6 +148,7 @@ impl Checker {
                     | Expr::ForkBlock { .. }
                     | Expr::Select { .. }
                     | Expr::Join(_)
+                    | Expr::Race(_)
             )
         {
             self.report_error(
@@ -182,7 +183,7 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Join(_) => {
+            Expr::Scope { .. } | Expr::Join(_) | Expr::Race(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
             Expr::ForkChild { .. } => {
@@ -3174,6 +3175,7 @@ impl Checker {
                 self.join_branch_ownership(&entry, &arm_exits);
                 result_ty.unwrap_or(Ty::Unit)
             }
+            Expr::Race(branches) => self.synthesize_race(branches, span),
             Expr::Join(exprs) => {
                 let mut types = Vec::with_capacity(exprs.len());
                 for branch in exprs {
@@ -6836,6 +6838,7 @@ impl Checker {
             | Expr::StructInit { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
+            | Expr::Race(_)
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)

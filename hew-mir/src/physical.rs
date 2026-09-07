@@ -5,7 +5,10 @@
 //! been decided by SIR: this lowering resolves each explicit copy or destroy
 //! exactly once to a physical action and never infers another lifetime.
 
-pub use hew_sir::{ActorId, ActorOperation, SemActor, SemActorHandler, SemActorOverflow};
+pub use hew_sir::{
+    ActorId, ActorOperation, SemActor, SemActorHandler, SemActorOverflow, TaskScopeJoinMode,
+    TaskSelectionOrder,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -857,6 +860,7 @@ pub enum PhysicalTerminator {
         unwind: PhysicalEdge,
     },
     TaskSelect {
+        order: hew_sir::TaskSelectionOrder,
         tasks: Vec<ArgumentTransfer>,
         timeout: Option<StorageId>,
         result: StorageId,
@@ -893,7 +897,7 @@ pub enum PhysicalTerminator {
     },
     TaskScopeJoin {
         scope: hew_sir::TaskScopeId,
-        cancel: bool,
+        mode: hew_sir::TaskScopeJoinMode,
         normal: PhysicalEdge,
         unwind: PhysicalEdge,
     },
@@ -2629,7 +2633,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => self.lower_generator_suspend(term),
             SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::Select { has_timeout },
+                kind: hew_sir::SuspendKind::Select { has_timeout, order },
                 inputs,
                 result,
                 resumes,
@@ -2650,6 +2654,7 @@ impl FunctionLowerer<'_> {
                     ));
                 };
                 Ok(PhysicalTerminator::TaskSelect {
+                    order: *order,
                     tasks: self.argument_transfers(tasks)?,
                     timeout,
                     result: self.value(result.id)?,
@@ -2707,13 +2712,13 @@ impl FunctionLowerer<'_> {
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::Join { scope, cancel },
+                kind: hew_sir::SuspendKind::Join { scope, mode },
                 resumes,
                 unwind,
                 ..
             } => Ok(PhysicalTerminator::TaskScopeJoin {
                 scope: *scope,
-                cancel: *cancel,
+                mode: *mode,
                 normal: self.lower_edge(&resumes[0])?,
                 unwind: self.lower_edge(unwind)?,
             }),
@@ -5081,6 +5086,7 @@ fn terminator_successors(
             normal,
             cancel,
             unwind,
+            ..
         } => {
             for task in tasks {
                 let ArgumentTransfer::Borrow(task) = task else {
@@ -5152,12 +5158,12 @@ fn terminator_successors(
             Ok(successors)
         }
         PhysicalTerminator::TaskScopeJoin {
-            cancel,
+            mode,
             normal,
             unwind,
             ..
         } => {
-            if *cancel {
+            if mode.preserves_fault() {
                 if state.fault != FaultState::Active {
                     return Err(PhysicalError::new(
                         "fault drain requires an active primary fault",
@@ -5647,6 +5653,7 @@ fn verify_terminator(
             normal,
             cancel,
             unwind,
+            ..
         } => {
             if tasks.is_empty() && timeout.is_none() {
                 return Err(PhysicalError::new("selection requires a task or timeout"));

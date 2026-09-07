@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 mod select;
 pub use select::{
     hew_checked_task_select_free, hew_checked_task_select_new, hew_checked_task_select_poll,
-    HewCheckedTaskSelect,
+    hew_checked_task_select_poll_first, HewCheckedTaskSelect,
 };
 
 const PENDING: i32 = 0;
@@ -122,7 +122,14 @@ impl Drop for HewCheckedTaskWait {
 pub struct HewCheckedScopeWait {
     scope: *mut HewTaskScope,
     tasks: Vec<HewCheckedTaskWait>,
+    cancellation: ScopeCancellation,
     close: Mutex<ScopeResultClose>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeCancellation {
+    Ordinary,
+    RaceLosers,
 }
 
 #[derive(Debug)]
@@ -460,6 +467,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_new(
     Box::into_raw(Box::new(HewCheckedScopeWait {
         scope,
         tasks,
+        cancellation: ScopeCancellation::Ordinary,
         close: Mutex::new(ScopeResultClose {
             state,
             collector: ptr::null_mut(),
@@ -478,7 +486,40 @@ pub unsafe extern "C" fn hew_checked_scope_wait_new(
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_scope_cancel(scope: *mut HewTaskScope) {
     // SAFETY: scope owns the cancellation token and tasks retain its ancestry.
-    unsafe { hew_cancel_token_cancel((*scope).cancel_token, 1) };
+    unsafe {
+        let token = (*scope).cancel_token;
+        let reason = super::cancel_token_reason(token);
+        hew_cancel_token_cancel(token, if reason == 0 { 1 } else { reason });
+    }
+}
+
+/// Request cancellation after the selected race child has completed. The drain
+/// removes only its own cancellation marker, preserving every actual failure.
+///
+/// # Safety
+/// The caller exclusively owns this live drain; all children belong to the race.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_scope_wait_cancel_losers(wait: *mut HewCheckedScopeWait) {
+    // SAFETY: exclusive access precedes polling and the drain retains its scope.
+    unsafe {
+        let wait = &mut *wait;
+        wait.cancellation = ScopeCancellation::RaceLosers;
+        let token = (*wait.scope).cancel_token;
+        let reason = super::cancel_token_reason(token);
+        let reason = if reason == 0 {
+            crate::fault::HEW_FAULT_RACE_LOST
+        } else {
+            reason
+        };
+        for task in &wait.tasks {
+            // Completed winners can own values that survive this scope. Their
+            // cancellation ancestry must not be changed by losing siblings.
+            let pending = !checked(task.task).lock_or_recover().completed;
+            if pending {
+                hew_cancel_token_cancel((*task.task).cancel_token, reason);
+            }
+        }
+    }
 }
 
 /// # Safety
@@ -497,7 +538,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_status(wait: *const HewCheckedSc
         pending |= !state.completed;
         failed |= state.completed && !state.taken && state.status != 0;
     }
-    if failed {
+    if failed && wait.cancellation == ScopeCancellation::Ordinary {
         // SAFETY: wait borrows its still-live scope until released.
         unsafe { hew_checked_scope_cancel(wait.scope) };
     }
@@ -575,8 +616,17 @@ pub unsafe extern "C" fn hew_checked_scope_wait_take_fault(
         let mut state = unsafe { checked(task.task) }.lock_or_recover();
         if !state.taken && state.status != 0 {
             state.taken = true;
-            let owner = std::mem::replace(&mut state.fault, ptr::null_mut());
-            failures.push((state.order, state.status, owner));
+            let mut owner = std::mem::replace(&mut state.fault, ptr::null_mut());
+            if wait.cancellation == ScopeCancellation::RaceLosers {
+                // SAFETY: this completed child transfers its optional fault owner.
+                owner = unsafe { crate::fault::finish_race_loser(owner) };
+            }
+            // The cancellation marker may have been removed or a secondary
+            // cleanup fault promoted; the remaining fault owns its status.
+            // SAFETY: owner is null or the uniquely transferred live fault.
+            if let Some(fault) = unsafe { owner.as_ref() } {
+                failures.push((state.order, fault.code(), owner));
+            }
         }
     }
     failures.sort_by_key(|failure| failure.0);

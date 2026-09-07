@@ -828,7 +828,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         Expr::Unary { operand, .. } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_locals_from_spanned_expr(expr, offset, locals);
             }

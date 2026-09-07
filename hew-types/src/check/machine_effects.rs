@@ -344,6 +344,7 @@ impl NodeVisitor for EffectVisitor<'_> {
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
+            | Expr::Race(_)
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)

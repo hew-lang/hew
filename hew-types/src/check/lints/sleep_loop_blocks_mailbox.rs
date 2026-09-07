@@ -276,7 +276,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 }
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
             for item in items {
                 find_in_expr(ctx, levels, &item.0, out);
             }
@@ -404,6 +404,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::StructInit { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
+            | Expr::Race(_)
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
@@ -456,6 +457,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::StructInit { .. }
         | Expr::Select { .. }
         | Expr::Join(_)
+        | Expr::Race(_)
         | Expr::Timeout { .. }
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
@@ -700,7 +702,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                 bounded_expr_has_sleep(&expr.0)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
             items.iter().any(|item| bounded_expr_has_sleep(&item.0))
         }
         Expr::ArrayRepeat { value, count } => {
@@ -959,7 +961,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                 expr_assigns_identifier(&expr.0, name)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => items
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => items
             .iter()
             .any(|item| expr_assigns_identifier(&item.0, name)),
         Expr::ArrayRepeat { value, count } => {

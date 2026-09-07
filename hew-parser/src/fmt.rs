@@ -2407,6 +2407,7 @@ impl<'a> Formatter<'a> {
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
+            | Expr::Race(_)
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::MachineEmit { .. }
@@ -3377,8 +3378,12 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write("}");
             }
-            Expr::Join(exprs) => {
-                self.write("join {\n");
+            Expr::Join(exprs) | Expr::Race(exprs) => {
+                self.write(if matches!(expr, Expr::Race(_)) {
+                    "race {\n"
+                } else {
+                    "join {\n"
+                });
                 self.indent += 1;
                 for e in exprs {
                     self.write_indent();

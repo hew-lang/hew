@@ -664,6 +664,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  field-access .{field}").expect("write to string");
             dump_expr(out, object, indent + 4);
         }
+        HirExprKind::Race { body } => {
+            writeln!(out, "{pad}  race scope={}", body.scope).expect("write to string");
+            dump_block(out, body, indent + 4);
+        }
         HirExprKind::Scope { body } => {
             writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");
             for stmt in &body.statements {

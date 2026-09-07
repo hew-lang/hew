@@ -267,7 +267,13 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 | SemTerminator::ResumeUnwind
                 | SemTerminator::RecoverFault { .. } => true,
                 SemTerminator::Suspend {
-                    kind: crate::SuspendKind::Join { cancel: true, .. },
+                    kind:
+                        crate::SuspendKind::Join {
+                            mode:
+                                crate::TaskScopeJoinMode::PropagateFault
+                                | crate::TaskScopeJoinMode::CancelLosersAfterFault,
+                            ..
+                        },
                     resumes,
                     cancel,
                     unwind,
@@ -909,7 +915,13 @@ impl<'a> Flow<'a> {
                 }
             }
             SemTerminator::Suspend {
-                kind: crate::SuspendKind::Join { cancel: true, .. },
+                kind:
+                    crate::SuspendKind::Join {
+                        mode:
+                            crate::TaskScopeJoinMode::PropagateFault
+                            | crate::TaskScopeJoinMode::CancelLosersAfterFault,
+                        ..
+                    },
                 resumes,
                 cancel,
                 unwind,

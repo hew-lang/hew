@@ -1925,7 +1925,7 @@ Semantics:
    intentional — there is nowhere for the error to propagate at drop time.
 3. **Early close is a normal method call.** `f.close()?` consumes `f` and
    surfaces the error via `?` like any other method. Any subsequent use
-   of `f` is a use-after-consume diagnostic from Checked MIR.
+   of `f` is a use-after-consume diagnostic from ownership SIR.
 4. **Affine in the move-checker.** Sends, moves, and method calls declared
    `consume self` all consume the value; the move-checker tracks the single
    live binding.
@@ -5366,20 +5366,14 @@ Source (.hew)
 AST                       — concrete syntax, no name resolution
     │  resolve
     ▼
-Resolved HIR              — names, scopes, capabilities resolved;
+Typed HIR                 — names, scopes, capabilities resolved;
     │  type check          stable BindingId / SiteId carriage;
     ▼                       every expression carries its concrete type
-SIR                       — semantic SSA: typed values, effects, CFG;
-    │  lower               monomorphisation and trait-dispatch done
-    ▼
-Raw MIR                   — real CFG, real Places, real terminators
-    │  check
-    ▼
-Checked MIR               — fail-closed boundary: use-after-consume,
-    │  elaborate           aliasing, init/use-after-move,
-    ▼                       generator-borrow-across-yield,
-Elaborated MIR              actor-send escape analysis
-    │  emit                 (drops elaborated into the CFG)
+Ownership SIR             — semantic SSA: typed values, effects, CFG;
+    │  lower               the fail-closed ownership authority;
+    ▼                       monomorphisation and trait-dispatch done
+Checked physical MIR      — real CFG, real Places, real terminators;
+    │  emit                 drops and cleanup edges are first-class
     ▼
 LLVM IR                   — emitted via inkwell; LLVM's own passes,
     │  llvm                 coroutine intrinsics, and target machine
@@ -5391,23 +5385,19 @@ Native object / WASM
 
 - **AST.** Concrete syntactic structure. No name resolution; no type
   information. Comments and whitespace stripped.
-- **Resolved HIR.** Every name binding has a stable identifier; every
+- **Typed HIR.** Every name binding has a stable identifier; every
   use site resolves to a binding or to a `NameNotFound` diagnostic.
   Capabilities (Send, Frozen, Copy) attach here. Module structure is
   fully resolved.
-- **SIR.** Semantic SSA: typed values, effects, and the CFG. No `Ty::Var`
-  survives Resolved HIR — the boundary is fail-closed before SIR is built.
-  Generic functions are monomorphised at use sites; trait dispatch resolves
-  to concrete implementations; closure signatures are explicit; aggregate
-  initialiser type arguments are carried.
-- **Raw MIR.** The function body is a control-flow graph of basic
-  blocks with real terminators (`Goto`, `Branch`, `Return`, `Drop`,
-  `Call`, `Unreachable`). Local variables are `Place`s. The
-  `return;`-inside-an-`if` case has a CFG terminator, not a soft
-  flag. Generator handles are typed `Place`s, not name-registry
-  entries.
-- **Checked MIR.** The semantic fail-closed boundary. Every program
-  that survives this stage is guaranteed to be free of:
+- **Ownership SIR.** Semantic SSA: typed values, effects, and the CFG.
+  No `Ty::Var` survives typed HIR — the boundary is fail-closed before
+  SIR is built. Generic functions are monomorphised at use sites; trait
+  dispatch resolves to concrete implementations; closure signatures are
+  explicit; aggregate initialiser type arguments are carried.
+
+  SIR is the ownership authority, and it is where the semantic
+  fail-closed boundary sits. Every program that survives it is
+  guaranteed to be free of:
   - Use after consume (affine value moved and then used).
   - Aliasing violations (read-shared XOR mutate-unique).
   - Use after move.
@@ -5415,11 +5405,16 @@ Native object / WASM
   - Actor-send escape (a value captured into an outgoing message that
     aliases live state in the sending actor).
   `@linear` must-consume obligations are discharged here; unconsumed
-  `@linear` values surface as `MustConsumeAtScopeExit`.
-- **Elaborated MIR.** Drops are first-class basic blocks in the CFG.
-  Cleanup edges (panic, cancellation) are real edges. Every CFG exit
-  runs the right destructor sequence in the right order. `@resource`
-  types' implicit `close()` calls are emitted here.
+  `@linear` values surface as `MustConsumeAtScopeExit`. No later stage
+  re-derives an ownership decision; each one consumes SIR's facts.
+- **Checked physical MIR.** The function body is a control-flow graph of
+  basic blocks with real terminators (`Goto`, `Branch`, `Return`,
+  `Drop`, `Call`, `Unreachable`), and local variables are `Place`s.
+  Drops are first-class basic blocks; cleanup edges (panic,
+  cancellation) are real edges; every CFG exit runs the right destructor
+  sequence in the right order, and `@resource` types' implicit `close()`
+  calls are emitted here. MIR verifies its own contract against the
+  ownership facts it is given rather than deciding ownership itself.
 - **LLVM IR.** Produced via the `inkwell` Rust binding to LLVM. LLVM's
   coroutine intrinsics handle generator state machines; LLVM's target
   machine handles native and WASM emission; LLVM's pass manager
@@ -5427,8 +5422,10 @@ Native object / WASM
 
 The compiler may collapse adjacent stages into a single in-memory
 representation as an implementation detail, but the **responsibilities**
-above are structural: a Hew compiler that skips a checked-MIR pass is
-not a conforming compiler.
+above are structural: a Hew compiler that skips the ownership check is
+not a conforming compiler. `hew tool compile --dump-sir` and
+`--dump-mir physical` are the inspection points for the two middle
+stages.
 
 ### 8.2 WASM target capabilities
 
@@ -6405,18 +6402,17 @@ If you want this to be directly executable as an engineering project, the next m
   (see HEW-FUTURE). Not user-extensible in this edition.
 - **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
   surface is removed entirely. `scope { }` is the structured-concurrency
-  block (the scope boundary). `fork name = expr;` / `fork expr;`
-  are the only child-start forms, and they are only legal inside a
-  `scope { }` body. `scope` and `fork` are not synonyms.
-  Historical note retained at §4.9.
+  block (the scope boundary). `fork expr` is the only child-start form,
+  and it is only legal inside a `scope { }` body. `scope` and `fork` are
+  not synonyms. Historical note retained at §4.9.
 - **Stdlib narrowing.** The edition 2026 normative stdlib is deliberately
   narrow (§3.10.1). Surfaces that exist in `std/` today but are not
   normative — `dns`, `tls`, `quic`, `websocket`, `xml`/`yaml`/`toml`/`csv`,
   `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
-- **MIR ladder.** §8 (compilation model) is rewritten around the new IR
-  ladder: AST → Resolved HIR → SIR → Raw MIR → Checked MIR → Elaborated
-  MIR → LLVM IR via inkwell. The v0.4 Rust-frontend / C++ backend /
-  MessagePack-AST pipeline is no longer the design.
+- **IR ladder.** §8 (compilation model) is rewritten around the new IR
+  ladder: AST → typed HIR → ownership SIR → checked physical MIR → LLVM
+  IR via inkwell. The v0.4 Rust-frontend / C++ backend / MessagePack-AST
+  pipeline is no longer the design.
 - **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
   closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,

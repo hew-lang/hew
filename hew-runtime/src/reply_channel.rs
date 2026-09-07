@@ -22,6 +22,10 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "reply_channel_native.rs"]
+pub mod native;
+
 // ── Reply channel ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -129,6 +133,9 @@ pub struct HewReplyChannel {
     cond: Condvar,
     /// Optional common cancellation/deadline record attached to a suspended ask.
     await_cancel: AtomicPtr<HewAwaitCancel>,
+    /// Retained readiness target for a checked native invocation. Registration
+    /// precedes admission; abandonment detaches it without touching the sender.
+    native_waker: Mutex<Option<crate::wake::OwnedWaker>>,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -173,6 +180,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         lock: Mutex::new(()),
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
+        native_waker: Mutex::new(None),
     }))
 }
 
@@ -417,7 +425,12 @@ unsafe fn publish_reply_from_sender_ref(
             (*ch).caller_actor_id.load(Ordering::Acquire),
             (*ch).caller_actor_serial.load(Ordering::Relaxed),
         );
-        if caller_actor.is_none() {
+        let native_waker = (*ch).native_waker.lock_or_recover().take();
+        if let Some(waker) = native_waker {
+            if reply_won {
+                waker.wake();
+            }
+        } else if caller_actor.is_none() {
             // Foreign/main-thread condvar waiter (E6 — unchanged). A condvar
             // waiter re-checks its `ready`/`cancelled` predicate under the lock,
             // so a notify on the losing edge is harmless; it is left ungated.
@@ -952,6 +965,8 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
     // SAFETY: Caller guarantees `ch` is valid while cancellation is recorded.
     unsafe {
         (*ch).cancelled.store(true, Ordering::Release);
+        let waker = (*ch).native_waker.lock_or_recover().take();
+        drop(waker);
     }
 }
 

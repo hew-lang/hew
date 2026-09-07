@@ -124,6 +124,12 @@ Named actor `receive fn` methods are called directly — there is no `.send()` o
 
 The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has the policy-derived type above. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
+If the receiving handler faults before replying, the ask resolves to
+`.Err(AskError.HandlerTrapped)`. The receiving actor retains ownership of the
+fault and its supervision policy; the caller may handle the error and continue.
+Awaiting an actor does not join its lifetime to the caller's task scope. Caller
+cancellation still follows the caller's own cancellation and cleanup edges.
+
 ```hew
 actor Counter {
     var count: i64 = 0,

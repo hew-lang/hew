@@ -459,7 +459,11 @@ pub enum SuspendKind {
     Await,
     RestartWait,
     ActorSend,
-    Ask,
+    Ask {
+        actor: crate::ActorId,
+        message: u32,
+        deadline_ns: Option<i64>,
+    },
     RemoteAsk,
     Read,
     Accept,
@@ -479,7 +483,8 @@ pub enum SuspendKind {
     ScopeDeadline,
     Yield,
     GeneratorNext,
-    /// Drain an initialized generator local; preserve and combine cleanup faults.
+    /// Drain owned children through the existing place leaf mask or SSA owner.
+    /// Preserve initialization and combine cleanup faults before ordinary release.
     ValueClose {
         place: Option<crate::PlaceId>,
     },

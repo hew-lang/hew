@@ -9,6 +9,8 @@ use std::time::Duration;
 enum ResultValue {
     Scalar(i64),
     Owned,
+    Closing(bool),
+    Failure(i32),
 }
 
 struct Environment {
@@ -46,12 +48,25 @@ unsafe extern "C" fn invoke(
         let status = if hew_coro_state_is_cancelled(state.cast()) != 0 {
             fault.write(crate::fault::hew_fault_new(HEW_FAULT_CANCELLED).cast());
             HEW_FAULT_CANCELLED
+        } else if let ResultValue::Failure(code) = env.value {
+            fault.write(crate::fault::hew_fault_new(code).cast());
+            code
         } else {
             match env.value {
                 ResultValue::Scalar(value) => output.cast::<i64>().write(value),
                 ResultValue::Owned => output
                     .cast::<*mut c_void>()
                     .write(Box::into_raw(Box::new(Arc::clone(&env.drops))).cast()),
+                ResultValue::Closing(fail) => {
+                    output
+                        .cast::<*mut CloseResult>()
+                        .write(Box::into_raw(Box::new(CloseResult {
+                            drops: Arc::clone(&env.drops),
+                            polls: 0,
+                            fail,
+                        })));
+                }
+                ResultValue::Failure(_) => unreachable!(),
             }
             0
         };
@@ -103,6 +118,223 @@ const DESCRIPTOR: HewCallableDescriptor = HewCallableDescriptor {
     invoke_once: invoke,
 };
 
+struct CloseResult {
+    drops: Arc<std::sync::atomic::AtomicUsize>,
+    polls: usize,
+    fail: bool,
+}
+
+unsafe extern "C" fn visit_result(slot: *mut c_void, context: *mut c_void) {
+    // SAFETY: the layout selects a live Box<CloseResult> retained by the task.
+    unsafe { crate::value_close::hew_value_close_push(context, *slot.cast(), poll_result) };
+}
+
+unsafe extern "C" fn poll_result(
+    owner: *mut c_void,
+    parent: *mut c_void,
+    fault: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the collector borrows this owner and the scope retains its state.
+    unsafe {
+        let owner = &mut *owner.cast::<CloseResult>();
+        owner.polls += 1;
+        if owner.polls == 1 {
+            let waker = crate::coro_state::hew_coro_state_waker(parent.cast());
+            ((*waker).wake)((*waker).context);
+            return CoroStatus::Pending as i32;
+        }
+        assert_eq!(owner.polls, 2);
+        owner.drops.fetch_add(100, Ordering::SeqCst);
+        if owner.fail {
+            fault.write(crate::fault::hew_fault_new(213).cast());
+            CoroStatus::Fault as i32
+        } else {
+            CoroStatus::Complete as i32
+        }
+    }
+}
+
+unsafe extern "C" fn drop_closed_result(slot: *mut c_void) {
+    // SAFETY: the matching layout transfers one box only after close completes.
+    let owner = unsafe { Box::from_raw(*slot.cast::<*mut CloseResult>()) };
+    assert_eq!(owner.polls, 2, "result dropped before cooperative close");
+    owner.drops.fetch_add(1000, Ordering::SeqCst);
+}
+
+static CLOSE_RESULT: HewValueLayout = HewValueLayout {
+    size: size_of::<*mut c_void>(),
+    align: align_of::<*mut c_void>(),
+    ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+    clone_fn: None,
+    drop_fn: Some(drop_closed_result),
+    visit_close: Some(visit_result),
+};
+
+#[test]
+fn scope_retains_pending_result_cleanup_and_transfers_its_fault_once() {
+    let (readiness, waker) = Readiness::new();
+    let (started, receive) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // SAFETY: the test retains its observation through the completed drain.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        let task = spawn(
+            scope,
+            started,
+            Arc::clone(&gate),
+            Arc::clone(&drops),
+            ResultValue::Closing(true),
+        );
+        let observation = hew_checked_task_wait_new(task, waker.descriptor());
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        release(&gate);
+        while hew_checked_task_wait_status(observation) == PENDING {
+            readiness.wait();
+        }
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let mut fault = ptr::null_mut();
+        assert_eq!(
+            hew_checked_scope_wait_take_fault(drain, &raw mut fault),
+            PENDING
+        );
+        assert!(fault.is_null());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(hew_checked_task_wait_status(observation), TAKEN);
+        hew_checked_scope_cancel(scope);
+        assert_eq!(hew_checked_scope_wait_status(drain), READY);
+        assert_eq!(drops.load(Ordering::SeqCst), 1101);
+        assert_eq!(
+            hew_checked_scope_wait_take_fault(drain, &raw mut fault),
+            213
+        );
+        hew_fault_drop(fault);
+        fault = ptr::null_mut();
+        assert_eq!(hew_checked_scope_wait_take_fault(drain, &raw mut fault), 0);
+        assert!(fault.is_null());
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
+        hew_checked_task_wait_free(observation);
+        assert_eq!(drops.load(Ordering::SeqCst), 1101);
+    }
+}
+
+#[test]
+fn transferred_result_is_closed_only_by_its_new_owner() {
+    let (readiness, waker) = Readiness::new();
+    let (started, receive) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // SAFETY: the transferred owner remains live after its old task is released.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        let task = spawn(
+            scope,
+            started,
+            Arc::clone(&gate),
+            Arc::clone(&drops),
+            ResultValue::Closing(false),
+        );
+        let observation = hew_checked_task_wait_new(task, waker.descriptor());
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        release(&gate);
+        while hew_checked_task_wait_status(observation) == PENDING {
+            readiness.wait();
+        }
+        let mut result: *mut CloseResult = ptr::null_mut();
+        let mut fault = ptr::null_mut();
+        assert_eq!(
+            hew_checked_task_wait_take(observation, (&raw mut result).cast(), &raw mut fault),
+            READY
+        );
+        hew_checked_task_wait_free(observation);
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        assert_eq!(hew_checked_scope_wait_status(drain), READY);
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!((*result).polls, 0);
+        let state = hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+        let mut collector: *mut HewValueClose = ptr::null_mut();
+        hew_value_close_collect(
+            (&raw mut result).cast(),
+            &raw const CLOSE_RESULT,
+            (&raw mut collector).cast(),
+        );
+        assert_eq!(
+            hew_value_close_poll(collector, state.cast()),
+            CoroStatus::Pending as i32
+        );
+        assert_eq!(
+            hew_value_close_poll(collector, state.cast()),
+            CoroStatus::Complete as i32
+        );
+        assert_eq!(hew_value_close_finish(collector, &raw mut fault), 0);
+        drop_closed_result((&raw mut result).cast());
+        hew_coro_state_free(state);
+        assert_eq!(drops.load(Ordering::SeqCst), 1101);
+    }
+}
+
+#[test]
+fn child_fault_remains_primary_while_result_cleanup_is_pending() {
+    let (readiness, waker) = Readiness::new();
+    let (started, receive) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // SAFETY: both children complete before cancellation, preserving one value
+    // and one primary failure; the drain retains both through pending cleanup.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        let value = spawn(
+            scope,
+            started.clone(),
+            Arc::clone(&gate),
+            Arc::clone(&drops),
+            ResultValue::Closing(true),
+        );
+        let failed = spawn(
+            scope,
+            started,
+            Arc::clone(&gate),
+            Arc::clone(&drops),
+            ResultValue::Failure(212),
+        );
+        let value = hew_checked_task_wait_new(value, waker.descriptor());
+        let failed = hew_checked_task_wait_new(failed, waker.descriptor());
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        release(&gate);
+        for observation in [value, failed] {
+            while hew_checked_task_wait_status(observation) == PENDING {
+                readiness.wait();
+            }
+        }
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let mut fault = ptr::null_mut();
+        assert_eq!(
+            hew_checked_scope_wait_take_fault(drain, &raw mut fault),
+            PENDING
+        );
+        assert!(fault.is_null());
+        assert_eq!(hew_checked_task_wait_status(failed), FAULT);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            hew_checked_scope_wait_take_fault(drain, &raw mut fault),
+            212
+        );
+        assert_eq!((*fault).code(), 212);
+        assert_eq!(drops.load(Ordering::SeqCst), 1102);
+        let diagnostic = Box::from_raw(crate::fault::hew_fault_into_host_error(fault));
+        let report = diagnostic.message();
+        assert!(report.find("(212)").unwrap() < report.find("(213)").unwrap());
+        hew_checked_task_wait_free(value);
+        hew_checked_task_wait_free(failed);
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
+    }
+}
+
 fn release(gate: &Arc<(Mutex<bool>, Condvar)>) {
     *gate.0.lock_or_recover() = true;
     gate.1.notify_all();
@@ -118,8 +350,9 @@ unsafe fn spawn(
     // SAFETY: the descriptor's exact allocation receives one owned environment.
     unsafe {
         let layout = match value {
-            ResultValue::Scalar(_) => &RESULT,
+            ResultValue::Scalar(_) | ResultValue::Failure(_) => &RESULT,
             ResultValue::Owned => &OWNED_RESULT,
+            ResultValue::Closing(_) => &CLOSE_RESULT,
         };
         let raw = hew_callable_env_alloc(ptr::from_ref(&DESCRIPTOR));
         raw.cast::<Environment>().write(Environment {
@@ -316,7 +549,7 @@ fn closing_scope_releases_unobserved_result_before_remaining_handle() {
         while hew_checked_scope_wait_status(drain) == 0 {
             readiness.wait();
         }
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 11);
         hew_checked_scope_wait_free(drain);
         hew_checked_scope_close(scope);
         assert_eq!(drops.load(Ordering::SeqCst), 11);

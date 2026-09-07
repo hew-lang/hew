@@ -16,7 +16,7 @@
 //! import std.net;
 //!
 //! fn dial(addr: string) -> Result<net.Connection, net.NetError> {
-//!     net.connect(addr)
+//!     await net.connect(addr)
 //! }
 //!
 //! fn main() {
@@ -611,7 +611,7 @@ trait ConnectionMethods {
 /// }
 ///
 /// fn main() {
-///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+///     let conn = match await net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 ///     let handler: LocalPid<InboundLogger> = spawn InboundLogger;
 ///     match conn.attach(handler) {
 ///         .Ok(()) => {},
@@ -783,7 +783,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 /// import std.net;
 ///
 /// fn main() {
-///     match net.connect("localhost:9000") {
+///     match await net.connect("localhost:9000") {
 ///         .Ok(conn) => { /* use conn */ },
 ///         .Err(net.NetError.ConnectionRefused(_)) => println("nothing listening"),
 ///         .Err(e) => println("connect failed"),
@@ -792,7 +792,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 /// ```
 pub fn connect(addr: string) -> Result<Connection, NetError> {
     unsafe {
-        let conn = hew_tcp_connect(addr);
+        let conn = await hew_tcp_connect(addr);
         if hew_connection_is_valid(conn) {
             Ok(conn)
         } else {
@@ -815,7 +815,7 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Res
     let Endpoint { host, port } = parse_endpoint("net.connect_timeout", addr)?;
     let timeout_ms = try_connect_timeout_ms(timeout_sec, timeout_usec)?;
     unsafe {
-        let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
+        let conn = await hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
         if hew_connection_is_valid(conn) {
             Ok(conn)
         } else {

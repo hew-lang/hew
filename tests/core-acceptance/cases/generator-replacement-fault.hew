@@ -1,0 +1,22 @@
+type Holder { values: Generator<string, ()> }
+
+gen fn fails_on_close(label: string) -> string {
+    defer {
+        println(label + " cleaned");
+        panic(label);
+    }
+    yield label;
+    yield "later";
+}
+
+fn started(label: string) -> Generator<string, ()> {
+    let values = fails_on_close(label);
+    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    values
+}
+
+fn main() {
+    var _holder = Holder { values: await started("primary") };
+    _holder = Holder { values: await started("secondary") };
+    println("unreachable");
+}

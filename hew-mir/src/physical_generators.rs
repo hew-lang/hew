@@ -3,9 +3,9 @@
 use super::{
     apply_edge, call_successors, defer, initialized, physical_value_recipe,
     require_no_live_borrows, storage, verify_value_recipe, ArgumentTransfer, BlockId, BuiltinType,
-    CallResult, ClosureId, FaultState, FlowState, FunctionLowerer, InitState, OwnKind,
-    PhysicalError, PhysicalFunction, PhysicalModule, PhysicalOp, PhysicalTerminator, ResolvedTy,
-    SemOp, SemTerminator, StorageOrigin,
+    CallResult, ClosureId, FaultState, FlowState, FunctionLowerer, OwnKind, PhysicalError,
+    PhysicalFunction, PhysicalModule, PhysicalOp, PhysicalTerminator, ResolvedTy, SemOp,
+    SemTerminator, StorageOrigin,
 };
 
 impl FunctionLowerer<'_> {
@@ -170,7 +170,11 @@ pub(super) fn verify_suspend(
             })?;
             super::verify_destroy_action(module, &slot.ty, slot.own, action)?;
             if slot.own != OwnKind::Owned
-                || (*conditional && !matches!(slot.origin, StorageOrigin::Local(_)))
+                || (*conditional
+                    && !matches!(
+                        slot.origin,
+                        StorageOrigin::Local(_) | StorageOrigin::Aggregate(_)
+                    ))
             {
                 return Err(PhysicalError::new(
                     "value close lacks its initialized owner contract",
@@ -209,11 +213,7 @@ pub(super) fn successors(
             ..
         } => {
             if *conditional {
-                if state.active[generator.0 as usize] != InitState::Initialized {
-                    return Err(PhysicalError::new(
-                        "generator close requires active local storage",
-                    ));
-                }
+                super::partial::require_root(function, &state, *generator, block, "value close")?;
             } else {
                 initialized(function, &state, *generator, block, "generator close")?;
             }

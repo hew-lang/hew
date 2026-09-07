@@ -177,6 +177,153 @@ fn main() {
 }
 
 #[test]
+fn native_ask_aggregate_reply_preserves_fields_and_argument_order() {
+    run_actor(
+        r#"type Parcel { label: string, notes: Vec<string> }
+fn number() -> i64 { println("number"); 7 }
+fn text() -> string { println("text"); "label".to_upper() }
+actor Maker {
+    receive fn make(number: i64, label: string) -> Parcel {
+        await sleep(1ms);
+        println(number);
+        Parcel { label: label, notes: ["owned".to_upper()] }
+    }
+}
+fn main() {
+    let maker = spawn Maker();
+    match await maker.make(label: text(), number: number()) {
+        .Ok(parcel) => { println(parcel.label); println(parcel.notes[0]); }
+        .Err(_) => panic("unexpected ask failure"),
+    }
+    let error = AskError.HandlerTrapped;
+    println(f"{error}");
+}
+"#,
+        "text\nnumber\n7\nLABEL\nOWNED\nthe receiving handler failed before replying\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn native_ask_direct_and_fork_return_owned_replies() {
+    run_actor(
+        r#"actor Echo {
+    receive fn echo(message: string) -> string { message.to_upper() }
+}
+fn main() {
+    let echo = spawn Echo();
+    match await echo.echo("direct".to_upper()) {
+        .Ok(value) => println(value),
+        .Err(_) => println("unexpected-error"),
+    }
+    let child = fork echo.echo("forked".to_upper());
+    match await child {
+        .Ok(value) => println(value),
+        .Err(_) => println("unexpected-error"),
+    }
+    println("caller-continues");
+}
+"#,
+        "DIRECT\nFORKED\ncaller-continues\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn native_ask_preserves_strict_turn_while_another_actor_replies() {
+    run_actor(
+        r#"actor Echo {
+    receive fn echo(message: string) -> string {
+        await sleep(1ms);
+        message.to_upper()
+    }
+}
+actor Relay {
+    var phase: string,
+    receive fn run(echo: LocalPid<Echo>, message: string) {
+        phase = "waiting";
+        match await echo.echo(message) {
+            .Ok(value) => { phase = value; }
+            .Err(_) => { phase = "unexpected-error"; }
+        }
+        println("reply-complete");
+    }
+    receive fn observe() { println(phase); }
+}
+fn main() {
+    let echo = spawn Echo();
+    let relay = spawn Relay(phase: "initial");
+    let _ = send relay.run(echo, "finished".to_upper());
+    let _ = send relay.observe();
+}
+"#,
+        "reply-complete\nFINISHED\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn native_ask_receiver_fault_returns_error_without_cancelling_caller() {
+    run_actor(
+        r#"actor Broken {
+    receive fn fail(message: string) -> string {
+        defer { println(message); }
+        await sleep(1ms);
+        panic("receiver-fault");
+    }
+}
+fn report(result: Result<string, AskError>) {
+    match result {
+        .Ok(value) => println(value),
+        .Err(AskError.HandlerTrapped) => println("handler-trapped"),
+        .Err(_) => println("unexpected-error"),
+    }
+}
+fn main() {
+    let first = spawn Broken();
+    report(await first.fail("direct-cleanup".to_upper()));
+    let second = spawn Broken();
+    let child = fork second.fail("fork-cleanup".to_upper());
+    report(await child);
+    println("caller-continues");
+}
+"#,
+        "DIRECT-CLEANUP\nhandler-trapped\nFORK-CLEANUP\nhandler-trapped\ncaller-continues\n",
+        1,
+        "actor crash",
+    );
+}
+
+#[test]
+fn native_ask_deadline_abandons_reply_and_actor_finishes_owned_cleanup() {
+    run_actor(
+        r#"actor Slow {
+    receive fn echo(message: string) -> string {
+        defer { println("receiver-finished"); }
+        await sleep(30ms);
+        message.to_upper()
+    }
+}
+fn main() {
+    let slow = spawn Slow();
+    match await slow.echo("late".to_upper()) | after 1ms {
+        .Ok(value) => println(value),
+        .Err(AskError.Timeout) => println("timed-out"),
+        .Err(_) => println("unexpected-error"),
+    }
+    println("caller-continues");
+}
+"#,
+        "timed-out\ncaller-continues\nreceiver-finished\n",
+        0,
+        "",
+    );
+}
+
+#[test]
 fn suspended_turn_preserves_state_and_releases_the_only_worker() {
     run_actor(
         r#"actor Probe {

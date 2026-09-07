@@ -49,6 +49,8 @@
 
 mod async_io;
 pub use async_io::{AsyncIoLoan, AsyncIoOp, AsyncIoResume, IoHandleKind};
+mod tcp;
+pub use tcp::TcpOp;
 mod file_resources;
 pub use file_resources::{FileReadHandleKind, FileReadOp};
 
@@ -1111,6 +1113,7 @@ pub enum MathIntrinsic {
 pub enum RuntimeCallFamily {
     AsyncIo(AsyncIoOp),
     FileRead(FileReadOp),
+    Tcp(TcpOp),
     /// Semantic operations over a distinct, owning encoding value.
     Encoding {
         format: EncodingFormat,
@@ -2054,6 +2057,7 @@ impl RuntimeCallFamily {
         match self {
             Self::AsyncIo(op) => op.c_symbol(),
             Self::FileRead(op) => op.c_symbol(),
+            Self::Tcp(op) => op.c_symbol(),
             Self::Encoding { format, op } => op.c_symbol(format),
             Self::JsonObjectKeys => "hew_json_object_keys",
             // Actor
@@ -2431,6 +2435,9 @@ impl RuntimeCallFamily {
     pub fn from_c_symbol(sym: &str) -> Option<Self> {
         if let Some(op) = AsyncIoOp::from_c_symbol(sym) {
             return Some(Self::AsyncIo(op));
+        }
+        if let Some(op) = TcpOp::from_c_symbol(sym) {
+            return Some(Self::Tcp(op));
         }
         if let Some(op) = FileReadOp::from_c_symbol(sym) {
             return Some(Self::FileRead(op));
@@ -3306,6 +3313,7 @@ impl RuntimeCallFamily {
         Some(match self {
             Self::AsyncIo(op) => op.contract(),
             Self::FileRead(op) => op.contract(),
+            Self::Tcp(op) => op.contract(),
             Self::StreamClose => file_resources::stream_close_contract(),
             Self::Encoding { format, op } => op.contract(format),
             Self::JsonObjectKeys => runtime_semantic_contract(
@@ -3538,6 +3546,7 @@ impl RuntimeCallFamily {
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
             F::FileRead(_)
+            | F::Tcp(_)
             | F::Vector(_)
             | F::Map(_)
             | F::Set(_)
@@ -4322,6 +4331,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
                 }
             }
             F::FileRead(_) => out.extend(FileReadOp::iter().map(F::FileRead)),
+            F::Tcp(_) => out.extend(TcpOp::iter().map(F::Tcp)),
             F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
             F::Map(_) => out.extend(MapValueOp::iter().map(F::Map)),
             F::Set(_) => out.extend(SetValueOp::iter().map(F::Set)),

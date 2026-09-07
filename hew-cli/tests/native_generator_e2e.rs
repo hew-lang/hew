@@ -57,3 +57,32 @@ fn yielded_and_unobserved_returned_owners_close_recursively() {
         "",
     );
 }
+
+#[test]
+fn replacement_drains_old_contents_and_preserves_moved_fields() {
+    run_generator(
+        include_str!("../../tests/core-acceptance/cases/generator-replacement.hew"),
+        concat!(
+            "record old\nrecord new\nrecord old cleaned\nrecord replaced\nrecord new cleaned\n",
+            "enum old\nenum old cleaned\nenum empty\nenum new\nenum new cleaned\n",
+            "field old\nsibling\nfield new\nfield old cleaned\nfield replaced\nlater\n",
+            "sibling cleaned\nfield new cleaned\n",
+            "moved\nremaining\nrefilled first\nrefilled second\nremaining cleaned\n",
+            "partial replaced\nlater\nmoved cleaned\nrefilled second cleaned\nrefilled first cleaned\n",
+            "field moved\nfield refilled\nfield refilled safely\nlater\n",
+            "field moved cleaned\nfield refilled cleaned\ndone\n",
+        ),
+        0,
+        "",
+    );
+}
+
+#[test]
+fn replacement_failure_drains_incoming_owner_and_preserves_first_fault() {
+    run_generator(
+        include_str!("../../tests/core-acceptance/cases/generator-replacement-fault.hew"),
+        "primary\nsecondary\nprimary cleaned\nsecondary cleaned\n",
+        212,
+        "hew: failure: UserPanic (212): primary\nhew: secondary failure: UserPanic (212): secondary\n",
+    );
+}

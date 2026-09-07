@@ -16,6 +16,8 @@ mod encoding;
 mod key;
 #[path = "physical_partial.rs"]
 mod partial;
+#[path = "physical_tcp.rs"]
+mod tcp;
 
 #[path = "physical_coro.rs"]
 mod coro;
@@ -169,15 +171,16 @@ fn physical_target_for_parts<'a>(
         .map(|variant| (variant.ty.clone(), variant.clone()))
         .collect::<BTreeMap<_, _>>();
     for resource in resources {
-        let (size, align) = measure_layout(&data, ctx.ptr_type(AddressSpace::default()).into());
-        target.insert_layout(
-            resource.ty.clone(),
-            PhysicalLayout {
-                size,
-                align,
-                repr: PhysicalRepr::Pointer,
-            },
-        );
+        let repr = match resource
+            .release
+            .carrier()
+            .map_err(CodegenError::FailClosed)?
+        {
+            hew_mir::physical::ResourceCarrier::Pointer => PhysicalRepr::Pointer,
+            hew_mir::physical::ResourceCarrier::I32 => PhysicalRepr::Integer { bits: 32 },
+        };
+        let (size, align) = measure_layout(&data, llvm_type(&ctx, &repr)?);
+        target.insert_layout(resource.ty.clone(), PhysicalLayout { size, align, repr });
     }
     let mut visiting = BTreeSet::new();
     for ty in primitive_types() {
@@ -919,7 +922,20 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     .release
                     .runtime_family()
                     .map_err(CodegenError::FailClosed)?;
-                let function = external_drop(self.ctx, self.llvm, family.c_symbol())?;
+                let result = resource
+                    .release
+                    .release_result()
+                    .map_err(CodegenError::FailClosed)?;
+                let signature = if result == ResolvedTy::I32 {
+                    self.ctx
+                        .i32_type()
+                        .fn_type(&[value.get_type().into()], false)
+                } else {
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[value.get_type().into()], false)
+                };
+                let function = get_or_declare_external(self.llvm, family.c_symbol(), signature)?;
                 self.builder
                     .build_call(function, &[value.into()], "")
                     .llvm_ctx("release resource owner")?;
@@ -2522,6 +2538,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::ActorAsk {
+                actor,
+                message,
+                deadline_ns,
+                args,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_actor_ask(
+                *actor,
+                *message,
+                *deadline_ns,
+                args,
+                *result,
+                normal,
+                cancel,
+                unwind,
+            ),
             PhysicalTerminator::TaskSelect {
                 tasks,
                 timeout,
@@ -3220,6 +3255,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::Tcp(op) => {
+                self.emit_tcp_operation(op, transfers, result)?;
+            }
             PhysicalRuntimeAction::FileRead(op) => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::FileRead(op),

@@ -181,7 +181,7 @@ impl RuntimeCallFamily {
                 | FileReadOp::LastErrorKind
                 | FileReadOp::LastErrno
                 | FileReadOp::LastError,
-            ) => matches!(module, "std.fs" | "std.stream"),
+            ) => matches!(module, "std.fs" | "std.stream" | "std.net"),
             _ => false,
         };
         owner_matches

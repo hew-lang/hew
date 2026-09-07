@@ -56,6 +56,7 @@ fn ask_error_id(err: AskError) -> i64 {
         AskError.Unauthorized => 20,
         AskError.Backpressure => 21,
         AskError.MonitorLost => 22,
+        AskError.HandlerTrapped => 23,
     }
 }
 
@@ -135,6 +136,7 @@ fn test_ask_error_taxonomy_variants() {
     testing.assert_eq(ask_error_id(AskError.Unauthorized), 20);
     testing.assert_eq(ask_error_id(AskError.Backpressure), 21);
     testing.assert_eq(ask_error_id(AskError.MonitorLost), 22);
+    testing.assert_eq(ask_error_id(AskError.HandlerTrapped), 23);
 }
 
 #[test]

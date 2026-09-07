@@ -447,7 +447,8 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for key in module.type_facts.keys().filter(|key| {
         matches!(key.0, ResolvedTy::Task(_))
             || crate::generator_parts(&key.0).is_some()
-            || hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
+            || (hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
+                || hew_types::runtime_call::IoHandleKind::of_ty(&key.0).is_some())
     }) {
         if !module.resources.contains_key(&key.0) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
@@ -2174,7 +2175,9 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
-    if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some() {
+    if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
+        || hew_types::runtime_call::IoHandleKind::of_ty(ty).is_some()
+    {
         return true;
     }
     crate::generator_parts(ty).is_some()
@@ -4083,6 +4086,20 @@ fn verify_terminator_shape(
                             if argument_types.is_some_and(|arguments| operation.contract().matches_signature(&arguments, &value.ty))
                                 && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                 }
+                crate::SuspendKind::Ask { actor, message, .. } => {
+                    callable_context.and_then(|context| context.actors.get(actor.0 as usize))
+                        .filter(|descriptor| descriptor.id == *actor)
+                        .and_then(|descriptor| descriptor.ask_signature(*message).ok())
+                        .is_some_and(|signature| {
+                            resumes.len() == 1
+                                && inputs.len() == signature.params.len()
+                                && inputs.iter().zip(&signature.params).all(|(input, parameter)| {
+                                    input.decision == crate::BoundaryDecision::Move
+                                        && types.get(&input.operand.value) == Some(&parameter.ty)
+                                })
+                                && matches!(result, crate::CallResult::Value(value) if value.ty == signature.return_ty)
+                        })
+                }
                 crate::SuspendKind::Sleep => {
                     resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
@@ -4136,7 +4153,11 @@ fn verify_terminator_shape(
                                 inputs.is_empty()
                                     && function.places.iter().any(|declaration| {
                                         declaration.id == *place
-                                            && declaration.origin == crate::PlaceOrigin::Local
+                                            && matches!(
+                                                declaration.origin,
+                                                crate::PlaceOrigin::Local
+                                                    | crate::PlaceOrigin::Aggregate { .. }
+                                            )
                                             && crate::OwnKind::of_ty(
                                                 &declaration.ty,
                                                 variants.facts,

@@ -1536,6 +1536,8 @@ pub enum HirExprKind {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
+        /// Source arguments stay ordered; this maps protocol slots to sources.
+        argument_order: Vec<usize>,
         reply_ty: ResolvedTy,
         /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
         /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the

@@ -5,12 +5,89 @@ use super::*;
 use hew_mir::physical::{ActorId, ActorOperation, SemActor, SemActorHandler};
 use inkwell::types::StructType;
 
+#[path = "physical_actor_ask.rs"]
+mod ask;
+
 fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
 }
 
 fn message_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("message_{message}_drop"))
+}
+
+fn reply_symbol(actor: ActorId, message: u32) -> String {
+    symbol(actor, &format!("reply_{message}_drop"))
+}
+
+impl<'ctx> ModuleEmitter<'ctx, '_> {
+    fn emit_actor_reply(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        actor: &SemActor,
+        handler: &SemActorHandler,
+        output: Option<PointerValue<'ctx>>,
+        fault: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        if handler.return_ty == ResolvedTy::Unit {
+            return Ok(());
+        }
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let complete = self.ctx.append_basic_block(function, "reply.complete");
+        let publish = self.ctx.append_basic_block(function, "reply.publish");
+        let fault = builder
+            .build_load(ptr, fault, "reply.fault")
+            .llvm_ctx("inspect handler completion")?
+            .into_pointer_value();
+        let success = builder
+            .build_is_null(fault, "reply.success")
+            .llvm_ctx("check successful reply")?;
+        builder
+            .build_conditional_branch(success, publish, complete)
+            .llvm_ctx("publish only an initialized reply")?;
+        builder.position_at_end(publish);
+        let size = if output.is_some() {
+            self.module
+                .target
+                .layout(&handler.return_ty)
+                .ok_or_else(|| CodegenError::FailClosed("reply has no target layout".into()))?
+                .size
+        } else {
+            0
+        };
+        let drop_reply = self
+            .llvm
+            .get_function(&reply_symbol(actor.id, handler.message_id))
+            .map_or(ptr.const_null(), |function| {
+                function.as_global_value().as_pointer_value()
+            });
+        let reply = coro::external(
+            &self.llvm,
+            "hew_actor_reply_native",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), size_ty.into(), ptr.into()], false),
+        )?;
+        builder
+            .build_call(
+                reply,
+                &[
+                    output.unwrap_or(ptr.const_null()).into(),
+                    size_ty.const_int(size, false).into(),
+                    drop_reply.into(),
+                ],
+                "",
+            )
+            .llvm_ctx("transfer typed reply under current activation")?;
+        builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("complete typed reply")?;
+        builder.position_at_end(complete);
+        Ok(())
+    }
 }
 
 fn message_type<'ctx>(
@@ -143,6 +220,22 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.emit_actor_state_callbacks(actor)?;
             for handler in &actor.handlers {
                 self.emit_actor_message_drop(actor, handler)?;
+                if let Some(recipe) = self.module.actor_recipes.get(&handler.return_ty) {
+                    if let Some(action) = recipe.destroy {
+                        let layout =
+                            self.module
+                                .target
+                                .layout(&handler.return_ty)
+                                .ok_or_else(|| {
+                                    CodegenError::FailClosed("reply lacks its exact layout".into())
+                                })?;
+                        self.emit_value_drop_callback(
+                            &reply_symbol(actor.id, handler.message_id),
+                            layout,
+                            action,
+                        )?;
+                    }
+                }
             }
             self.emit_actor_dispatch(actor)?;
         }
@@ -450,15 +543,23 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             builder
                 .build_store(payload, self.ctx.i8_type().const_zero())
                 .llvm_ctx("transfer message fields to handler")?;
-            if callable.return_layout.is_some() {
-                return Err(CodegenError::FailClosed(
-                    "actor replies require the suspending reply adapter".into(),
-                ));
+            let output = callable
+                .return_layout
+                .as_ref()
+                .map(|layout| {
+                    builder
+                        .build_alloca(llvm_type(self.ctx, &layout.repr)?, "handler.reply")
+                        .llvm_ctx("allocate handler reply")
+                })
+                .transpose()?;
+            if let Some(output) = output {
+                args.push(output.into());
             }
             args.push(fault.into());
             builder
                 .build_call(self.functions[&handler.callable], &args, "handler.status")
                 .llvm_ctx("call checked actor body")?;
+            self.emit_actor_reply(&builder, dispatch, actor, handler, output, fault)?;
             builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("complete actor handler")?;
@@ -511,11 +612,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_store(fault, ptr.const_null())
             .llvm_ctx("initialize handler fault")?;
         let callable = callable(self.module, handler.callable)?;
-        if callable.return_layout.is_some() {
-            return Err(CodegenError::FailClosed(
-                "actor replies require the suspending reply adapter".into(),
-            ));
-        }
+        let output = callable
+            .return_layout
+            .as_ref()
+            .map(|layout| {
+                builder
+                    .build_alloca(llvm_type(self.ctx, &layout.repr)?, "handler.reply")
+                    .llvm_ctx("allocate persistent handler reply")
+            })
+            .transpose()?;
         let state = ramp.get_nth_param(0).unwrap().into_pointer_value();
         let payload = ramp.get_nth_param(1).unwrap().into_pointer_value();
         let message_ty = message_type(self.module, self.ctx, handler)?;
@@ -539,6 +644,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_store(payload, self.ctx.i8_type().const_zero())
             .llvm_ctx("transfer message fields to handler frame")?;
+        if let Some(output) = output {
+            args.push(output.into());
+        }
         args.push(fault.into());
         args.push(child.into());
         let child_frame = call_value(
@@ -557,6 +665,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             child,
             child_frame,
         )?;
+        self.emit_actor_reply(&builder, ramp, actor, handler, output, fault)?;
         let returned_fault = builder
             .build_load(ptr, fault, "handler.returned.fault")
             .llvm_ctx("read completed handler fault")?;
@@ -1128,7 +1237,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    fn actor_unit_variant(
+    pub(super) fn actor_unit_variant(
         &self,
         ty: &ResolvedTy,
         tag: IntValue<'ctx>,
@@ -1150,6 +1259,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let object = llvm_type(self.ctx, &layout.object.repr)?
             .into_struct_type()
             .const_zero();
+        let tag = self
+            .builder
+            .build_int_cast(
+                tag,
+                object
+                    .get_type()
+                    .get_field_type_at_index(0)
+                    .unwrap()
+                    .into_int_type(),
+                "actor.error.tag",
+            )
+            .llvm_ctx("materialize the enum's physical discriminator")?;
         Ok(self
             .builder
             .build_insert_value(object, tag, 0, "submission.unit_variant")

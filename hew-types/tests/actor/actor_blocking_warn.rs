@@ -227,47 +227,27 @@ fn warn_http_server_accept_inside_receive_fn() {
 }
 
 // ---------------------------------------------------------------------------
-// Suggestion text: accept/read point at `await`, other blocking ops don't
+// Suggestion text: no blocking op has a drop-in suspending spelling
 // ---------------------------------------------------------------------------
 
-/// `net.Listener.accept`'s suggestion names the `await` form — it has a
-/// direct, drop-in suspending replacement, unlike a generic blocking call.
+/// `await` is reserved for tasks, asks and actor handles, so no blocking-call
+/// suggestion may point the programmer at an `await` form.  The remedy is to
+/// move the wait off the receive function.
 #[test]
-fn accept_suggestion_names_await() {
+fn no_blocking_suggestion_names_await() {
     let output = typecheck(
         r"
+        import std.channel;
         import std.net;
 
-        actor Server {
-            receive fn serve(listener: net.Listener) {
-                let conn = listener.accept();
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .expect("expected a BlockingCallInReceiveFn warning");
-    assert!(
-        w.suggestions.iter().any(|s| s.contains("await")),
-        "accept's suggestion should point at the await form, got: {:?}",
-        w.suggestions
-    );
-}
-
-/// `net.Connection.read`'s suggestion names the `await` form.
-#[test]
-fn read_suggestion_names_await() {
-    let output = typecheck(
-        r"
-        import std.net;
-
-        actor Networker {
-            receive fn handle(conn: net.Connection) {
+        actor Mixed {
+            receive fn serve(
+                rx: channel.Receiver<string>,
+                listener: net.Listener,
+                conn: net.Connection,
+            ) {
+                let msg = rx.recv();
+                let accepted = listener.accept();
                 let data = conn.read();
             }
         }
@@ -275,43 +255,22 @@ fn read_suggestion_names_await() {
         fn main() {}
         ",
     );
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .expect("expected a BlockingCallInReceiveFn warning");
-    assert!(
-        w.suggestions.iter().any(|s| s.contains("await")),
-        "read's suggestion should point at the await form, got: {:?}",
-        w.suggestions
+    let blocking_warnings = warnings_of_kind(&output, &TypeErrorKind::BlockingCallInReceiveFn);
+    assert_eq!(
+        blocking_warnings.len(),
+        3,
+        "expected one warning per blocking call, got: {:#?}",
+        output.warnings
     );
-}
-
-/// `Receiver.recv` has no direct suspending replacement in a receive fn, so
-/// its suggestion stays the generic "send it as a message" text, not `await`.
-#[test]
-fn recv_suggestion_stays_generic() {
-    let output = typecheck(
-        r"
-        import std.channel;
-
-        actor Worker {
-            receive fn process(rx: channel.Receiver<string>) {
-                let msg = rx.recv();
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .expect("expected a BlockingCallInReceiveFn warning");
-    assert!(
-        !w.suggestions.iter().any(|s| s.contains("await")),
-        "recv has no suspending replacement; suggestion should not mention await, got: {:?}",
-        w.suggestions
-    );
+    for w in blocking_warnings {
+        assert!(
+            !w.suggestions.iter().any(|s| s.contains("await")),
+            "no blocking suggestion may name an await form, got: {:?}",
+            w.suggestions
+        );
+        assert!(
+            !w.suggestions.is_empty(),
+            "warning should carry at least one suggestion"
+        );
+    }
 }

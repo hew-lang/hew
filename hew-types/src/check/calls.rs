@@ -965,25 +965,18 @@ impl Checker {
 
     /// Emit a `BlockingCallInReceiveFn` warning when a known blocking operation
     /// is called from inside an actor receive function.
-    /// Await-suspending forms must be filtered before calling this helper.
     ///
     /// Actor receive functions run synchronously on scheduler worker threads.
-    /// A blocking call (e.g. `read`, `accept`) will stall that thread for the
-    /// duration of the wait, preventing other actors from being scheduled and
-    /// potentially causing deadlocks when all worker threads are occupied by
-    /// blocked receive handlers.
+    /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread
+    /// for the duration of the wait, preventing other actors from being
+    /// scheduled and potentially causing deadlocks when all worker threads
+    /// are occupied by blocked receive handlers.
     ///
     /// `op_desc` should be a short human-readable label such as
-    /// `"net.Connection::read"`. Warn naming the remedy the caller supplies. `warn_if_blocking_handle_method` points `accept`/`read`
-    /// at their suspending forms; those two ops have a direct, drop-in
-    /// replacement.
-    fn warn_if_blocking_in_receive_fn_with_fix(
-        &mut self,
-        op_desc: &str,
-        span: &Span,
-        remedy_clause: &str,
-        suggestion: String,
-    ) {
+    /// `"Receiver.recv"` or `"std.net.Connection.read"`. None of these ops has
+    /// a drop-in suspending spelling, so the remedy is to move the wait off
+    /// the receive function.
+    pub(super) fn warn_if_blocking_in_receive_fn(&mut self, op_desc: &str, span: &Span) {
         if !self.in_receive_fn {
             return;
         }
@@ -993,14 +986,19 @@ impl Checker {
             span: span.clone(),
             message: format!(
                 "blocking call `{op_desc}` inside an actor receive function \
-                 can stall the scheduler thread and cause deadlocks; {remedy_clause}"
+                 can stall the scheduler thread and cause deadlocks; consider \
+                 passing the value in via a message instead"
             ),
             notes: vec![(
                 span.clone(),
                 "actor receive functions run synchronously on scheduler worker threads".to_string(),
                 self.current_module.clone(),
             )],
-            suggestions: vec![suggestion],
+            suggestions: vec![
+                "send the blocking work to a dedicated actor or async task and \
+                 deliver the result as a message"
+                    .to_string(),
+            ],
             source_module: self.current_module.clone(),
         });
     }
@@ -1016,17 +1014,7 @@ impl Checker {
             ("http.Server" | crate::stdlib::STD_NET_LISTENER, "accept")
                 | (crate::stdlib::STD_NET_CONNECTION, "read")
         ) {
-            let suggestion = "call the suspending form on a connection opened inside the \
-                 handler — it parks the actor on the reactor instead of blocking the \
-                 worker thread, so the scheduler worker stays free and the process can \
-                 shut down promptly; see examples/net/http_await_service.hew"
-                .to_string();
-            self.warn_if_blocking_in_receive_fn_with_fix(
-                &format!("{type_name}.{method}"),
-                span,
-                "use the suspending form instead of the blocking call",
-                suggestion,
-            );
+            self.warn_if_blocking_in_receive_fn(&format!("{type_name}.{method}"), span);
         }
     }
 

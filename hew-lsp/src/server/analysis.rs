@@ -1991,7 +1991,7 @@ mod tests {
 
     #[test]
     fn coverage_http_accept_surface() {
-        // The HTTP async server's `await listener.accept()` carrier surface
+        // The HTTP async server's `listener.accept()` carrier surface
         // (NEW-2): receiver type is the imported `net.Listener`.
         let source = "import std.net;\n\
                       fn probe(addr: string) {\n\
@@ -2102,20 +2102,20 @@ mod tests {
     }
 
     #[test]
-    fn coverage_typed_stream_await_recv_surface() {
-        // NEW-7 typed streams: `await stream.recv()` over Stream<bytes>. The
+    fn coverage_typed_stream_recv_surface() {
+        // NEW-7 typed streams: `stream.recv()` over Stream<bytes>. The
         // Stream/Sink surface is builtin, so it needs no std inlining — this
-        // test pins the await-suspending primitive coverage alongside the
+        // test pins the suspending primitive coverage alongside the
         // imported surfaces.
         let source = "fn probe(s: Stream<bytes>) {\n\
-                      \x20   let item = await s.recv();\n\
+                      \x20   let item = s.recv();\n\
                       }\n";
         let doc = analyze_repo_rooted("lsp_cov_stream", source);
 
         assert_eq!(hard_type_diagnostic(&doc), None);
         assert!(
             surface_hover(&doc, source, "s.recv").contains("Option<bytes>"),
-            "hover over await s.recv() should report Option<bytes>",
+            "hover over s.recv() should report Option<bytes>",
         );
         let sig = surface_sighelp(&doc, source, "s.recv");
         assert!(
@@ -2139,14 +2139,14 @@ mod tests {
     }
 
     #[test]
-    fn coverage_channel_recv_await_surface() {
+    fn coverage_channel_recv_surface() {
         let source = "import std.channel.channel;\n\
                       actor Worker {\n\
                       \x20   receive fn run(unused: i64) {\n\
                       \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
                       \x20       tx.send(\"ping\");\n\
                       \x20       tx.close();\n\
-                      \x20       let item = await rx.recv();\n\
+                      \x20       let item = rx.recv();\n\
                       \x20   }\n\
                       }\n";
         let doc = analyze_repo_rooted("lsp_cov_channel_recv", source);
@@ -2154,7 +2154,7 @@ mod tests {
         assert_eq!(hard_type_diagnostic(&doc), None);
         assert!(
             surface_hover(&doc, source, "rx.recv").contains("Option<string>"),
-            "hover over await rx.recv() should report Option<string>",
+            "hover over rx.recv() should report Option<string>",
         );
         let sig = surface_sighelp(&doc, source, "rx.recv");
         assert!(

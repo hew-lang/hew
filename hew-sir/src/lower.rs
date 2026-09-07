@@ -4840,7 +4840,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         source_arms: &[HirMatchArm],
     ) -> Result<Option<ValueId>, String> {
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
-        if scrutinee_ty.is_integer() || matches!(scrutinee_ty, ResolvedTy::Bool | ResolvedTy::Char)
+        if scrutinee_ty.is_integer()
+            || matches!(
+                scrutinee_ty,
+                ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String
+            )
         {
             return self.lower_scalar_match(whole, scrutinee_expr, source_arms);
         }

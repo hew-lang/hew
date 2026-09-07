@@ -89,7 +89,30 @@ fn nested_result_case(value: Result<Result<bool, string>, string>) -> string {
     }
 }
 
+fn direct_string_case(value: string, guarded: bool) -> string {
+    match value {
+        candidate if candidate.len() == 1000 => candidate,
+        "HIT" if guarded => "guarded hit",
+        "HIT" => "hit",
+        "É" => "unicode",
+        "" => "empty",
+        fallback => fallback + " fallback",
+    }
+}
+
+fn string_wildcard(value: string) -> string {
+    match value { "yes" => "yes", _ => "wildcard" }
+}
+
 fn main() {
+    let original = "hit".to_upper();
+    println(direct_string_case(original, false));
+    println(original);
+    println(direct_string_case("hit".to_upper(), true));
+    println(direct_string_case("É", false));
+    println(direct_string_case("", false));
+    println(direct_string_case("miss".to_upper(), false));
+    println(string_wildcard("no".to_upper()));
     println(result_case(Result.Ok(true)));
     println(result_case(Result.Ok(false)));
     println(result_case(Result.Err("error".to_upper())));

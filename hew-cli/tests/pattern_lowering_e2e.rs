@@ -158,6 +158,7 @@ fn generic_and_nested_literals_preserve_owned_guard_fallthrough() {
     let dir = tempdir();
     let source = repo_root().join("tests/core-acceptance/cases/generic-payload-literals.hew");
     let expected = concat!(
+        "hit\nHIT\nguarded hit\nunicode\nempty\nMISS fallback\nwildcard\n",
         "true\nfalse\nERROR\nask true\nask false\n",
         "SHORT guarded\nTINY true\nFALSE false\npayload empty\nenvelope empty\n",
         "FIRST seven\nSECOND other\nZERO zero\nMAXIMUM maximum\nmatched\nFALLBACK\n",

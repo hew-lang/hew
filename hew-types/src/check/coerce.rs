@@ -442,6 +442,46 @@ impl Checker {
         unify(&mut self.subst, &expected_resolved, actual).is_ok()
     }
 
+    /// Coerce `actual` into `expected`; a closure or named function entering a
+    /// written callable type owes that type its suspension contract.
+    fn coerce_with_obligations(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
+        let coerced = crate::unify::coerce(&mut self.subst, expected, actual).is_ok();
+        if coerced {
+            self.record_suspension_obligations(expected, actual, span);
+        }
+        coerced
+    }
+
+    /// Two closure literals never share a type; a binding that holds either
+    /// needs the written callable type.
+    fn report_type_mismatch(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        let kind = TypeErrorKind::Mismatch {
+            expected: expected.user_facing().to_string(),
+            actual: actual.user_facing().to_string(),
+        };
+        if matches!((expected, actual), (Ty::Closure { .. }, Ty::Closure { .. })) {
+            self.report_error_with_suggestions(
+                kind,
+                span,
+                "type mismatch: each closure literal has its own type".to_string(),
+                vec![format!(
+                    "write the binding type as `{}` to hold either closure",
+                    expected.user_facing()
+                )],
+            );
+        } else if *expected != Ty::Error && *actual != Ty::Error {
+            self.report_error(
+                kind,
+                span,
+                format!(
+                    "type mismatch: expected `{}`, found `{}`",
+                    expected.user_facing(),
+                    actual.user_facing()
+                ),
+            );
+        }
+    }
+
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
         // Re-project any `Ty::AssocType` carriers whose `base` has become
         // concrete via prior substitution. Carriers with still-abstract
@@ -459,7 +499,7 @@ impl Checker {
         }
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
-        if let Err(_e) = crate::unify::coerce(&mut self.subst, expected, actual) {
+        if !self.coerce_with_obligations(expected, actual, span) {
             // Restore substitution to avoid partial corruption
             self.subst.restore(snapshot);
             let expected_resolved = self.subst.resolve(expected);
@@ -589,20 +629,7 @@ impl Checker {
                 );
                 return;
             }
-            if expected_resolved != Ty::Error && actual_resolved != Ty::Error {
-                self.report_error(
-                    TypeErrorKind::Mismatch {
-                        expected: expected_resolved.user_facing().to_string(),
-                        actual: actual_resolved.user_facing().to_string(),
-                    },
-                    span,
-                    format!(
-                        "type mismatch: expected `{}`, found `{}`",
-                        expected_resolved.user_facing(),
-                        actual_resolved.user_facing()
-                    ),
-                );
-            }
+            self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
         }
     }
 

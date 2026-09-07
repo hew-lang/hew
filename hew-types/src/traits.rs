@@ -1590,6 +1590,11 @@ mod tests {
     fn test_closure_with_send_captures_is_send() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
@@ -1607,6 +1612,11 @@ mod tests {
             is_mutable: false,
         };
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
@@ -1619,6 +1629,11 @@ mod tests {
     fn test_closure_not_copy() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
             params: vec![],
             ret: Box::new(Ty::Unit),

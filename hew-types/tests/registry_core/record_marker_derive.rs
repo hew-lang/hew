@@ -276,6 +276,11 @@ fn tuple_record_duplex_field_not_copy_not_resource() {
 fn record_closure_field_not_eq_not_hash_not_copy() {
     let mut reg = TraitRegistry::new();
     let closure = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::FUNCTION_ITEM,
         params: vec![],
         ret: Box::new(Ty::Unit),

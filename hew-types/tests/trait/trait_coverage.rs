@@ -408,6 +408,11 @@ fn function_type_traits() {
 fn closure_is_clone_but_not_copy() {
     let reg = TraitRegistry::new();
     let closure = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::FUNCTION_ITEM,
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),

@@ -132,6 +132,18 @@ pub(crate) enum HashSetLoweringTypeKey {
     String,
 }
 
+/// A callable body, independent of its linker spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EffectBody {
+    Declaration(crate::DefId),
+    /// Deferred execution of a named generator, separate from its creator.
+    Generator(crate::DefId),
+    /// Deferred execution of a generator block.
+    GeneratorBlock(crate::check::SpanKey),
+    /// Also identifies the lifted body of a fork block.
+    Closure(crate::check::SpanKey),
+}
+
 /// The internal representation of a type in Hew.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
@@ -216,7 +228,10 @@ pub enum Ty {
         ret: Box<Ty>,
     },
 
-    /// Closure type: like Function but with captured variable types for Send checking
+    /// The concrete type of one closure literal or of a named function used
+    /// as a value. Its body decides whether a call suspends and its captures
+    /// decide whether the value crosses a task boundary; a written `fn` type
+    /// erases both.
     Closure {
         /// Invocation and duplication guarantees of this concrete closure.
         capabilities: crate::CallableCapabilities,
@@ -226,6 +241,8 @@ pub enum Ty {
         ret: Box<Ty>,
         /// Types of captured variables from the enclosing scope
         captures: Vec<Ty>,
+        /// The body whose checked effect every call through this type inherits.
+        identity: EffectBody,
     },
 
     /// Pointer types (FFI)
@@ -1554,11 +1571,13 @@ impl Ty {
                 params,
                 ret,
                 captures,
+                identity,
             } => Ty::Closure {
                 capabilities: *capabilities,
                 params: params.iter().map(&mut *f).collect(),
                 ret: Box::new(f(ret)),
                 captures: captures.iter().map(&mut *f).collect(),
+                identity: identity.clone(),
             },
             Ty::Pointer {
                 is_mutable,

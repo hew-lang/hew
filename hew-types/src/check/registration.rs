@@ -9228,11 +9228,13 @@ impl Checker {
                     params,
                     ret,
                     captures,
+                    identity,
                 } => Ty::Closure {
                     capabilities: *capabilities,
                     params: params.iter().map(rec).collect(),
                     ret: Box::new(rec(ret)),
                     captures: captures.iter().map(rec).collect(),
+                    identity: identity.clone(),
                 },
                 Ty::Pointer {
                     is_mutable,

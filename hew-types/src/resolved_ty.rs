@@ -700,10 +700,19 @@ impl ResolvedTy {
                 // `false` here is correct and behaviour-preserving.
                 is_opaque: false,
             }),
+            // A named function used as a value has no environment: lowering
+            // sees the function item it always saw.
             Ty::Function {
                 capabilities,
                 params,
                 ret,
+            }
+            | Ty::Closure {
+                capabilities,
+                params,
+                ret,
+                identity: crate::ty::EffectBody::Declaration(_),
+                ..
             } => Ok(ResolvedTy::Function {
                 capabilities: *capabilities,
                 params: Self::convert_vec(params, type_params)?,
@@ -714,6 +723,7 @@ impl ResolvedTy {
                 params,
                 ret,
                 captures,
+                ..
             } => Ok(ResolvedTy::Closure {
                 capabilities: *capabilities,
                 params: Self::convert_vec(params, type_params)?,
@@ -818,25 +828,22 @@ impl ResolvedTy {
                 builtin: *builtin,
                 args: args.iter().map(Self::to_ty).collect(),
             },
+            // A resolved closure no longer names the literal it came from, so
+            // its checker-facing type is the erased function type.
             ResolvedTy::Function {
                 capabilities,
                 params,
                 ret,
+            }
+            | ResolvedTy::Closure {
+                capabilities,
+                params,
+                ret,
+                ..
             } => Ty::Function {
                 capabilities: *capabilities,
                 params: params.iter().map(Self::to_ty).collect(),
                 ret: Box::new(ret.to_ty()),
-            },
-            ResolvedTy::Closure {
-                capabilities,
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                capabilities: *capabilities,
-                params: params.iter().map(Self::to_ty).collect(),
-                ret: Box::new(ret.to_ty()),
-                captures: captures.iter().map(Self::to_ty).collect(),
             },
             ResolvedTy::Pointer {
                 is_mutable,
@@ -1507,6 +1514,11 @@ mod tests {
     #[test]
     fn from_ty_accepts_pointer_and_closure() {
         let ty = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Pointer {
                 is_mutable: true,

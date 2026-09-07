@@ -1742,9 +1742,7 @@ impl Checker {
                 if resolved_iter_ty.as_generator().is_some()
                     || resolved_iter_ty.as_async_generator().is_some()
                 {
-                    if let Some(owner) = &self.effect_graph.current_body {
-                        self.effect_graph.bodies.insert(owner.clone(), true);
-                    }
+                    self.mark_body_suspends("generator iteration");
                     if self.deferred_body.is_some() {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,

@@ -611,6 +611,11 @@ mod tests {
             ret: Box::new(Ty::I64),
         };
         let closure_ty = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(Ty::Unit),

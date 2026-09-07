@@ -18,10 +18,10 @@ fn canonical_io_declarations_publish_suspension_without_symbol_alias_authority()
             && *effect == SuspensionEffect::MaySuspend));
     let output =
         super::check_source_in_canonical_std_module(&source.replace("await ", ""), &module);
-    assert!(output
-        .errors
-        .iter()
-        .any(|error| error.message.contains("this call may suspend")));
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output.suspension_effects.bodies.iter().any(|(body, effect)|
+        matches!(body, crate::check::effects::EffectBody::Declaration(id) if id.full_path() == "std.fs.read")
+            && *effect == SuspensionEffect::MaySuspend));
     let user = check_source(&source.replace("await ", ""));
     assert!(user.errors.is_empty(), "{:?}", user.errors);
     assert!(user.direct_call_targets.values().all(|target| !matches!(

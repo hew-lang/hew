@@ -39,11 +39,29 @@ impl Checker {
             .unwrap_or_default();
         self.enforce_type_param_bounds_with_assoc(&sig, &assoc_bindings, &arguments, span);
         self.record_concrete_call_type_args(span, &arguments);
-        self.record_direct_call_target(span, self.call_target_for_signature(signature_key));
-        Ty::Function {
-            capabilities: CallableCapabilities::FUNCTION_ITEM,
-            params,
-            ret: Box::new(ret),
+        let target = self.call_target_for_signature(signature_key);
+        self.record_direct_call_target(span, target.clone());
+        // A declaration with a checked body keeps its identity so calls through
+        // the value inherit the body's effect; every other target has a static
+        // contract and is already a plain function type.
+        match target {
+            super::CallTarget::User(id) | super::CallTarget::ImplMethod(id) => Ty::Closure {
+                capabilities: CallableCapabilities::FUNCTION_ITEM,
+                params,
+                ret: Box::new(ret),
+                captures: Vec::new(),
+                identity: super::effects::EffectBody::Declaration(id),
+            },
+            target => Ty::Function {
+                capabilities: CallableCapabilities {
+                    suspends: self.effect_graph.builtin_suspensions.contains(&target)
+                        || matches!(&target, super::CallTarget::Runtime(family)
+                            if family.is_async_suspending().is_some()),
+                    ..CallableCapabilities::FUNCTION_ITEM
+                },
+                params,
+                ret: Box::new(ret),
+            },
         }
     }
 
@@ -567,16 +585,12 @@ impl Checker {
                 let ret = Box::new(trial.resolve(lr));
                 let joined = match (left, right) {
                     (
-                        Ty::Closure { captures: left, .. },
+                        Ty::Closure { identity, .. },
                         Ty::Closure {
-                            captures: right, ..
+                            identity: right_identity,
+                            ..
                         },
-                    ) if left == right => Ty::Closure {
-                        capabilities,
-                        params,
-                        ret,
-                        captures: left.clone(),
-                    },
+                    ) if identity == right_identity => trial.resolve(left),
                     _ => Ty::Function {
                         capabilities,
                         params,

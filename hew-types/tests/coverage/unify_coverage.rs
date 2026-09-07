@@ -463,6 +463,11 @@ fn closure_erasure_coercion_resolves_signature_variable() {
         ret: Box::new(Ty::Bool),
     };
     let closure = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::F32],
         ret: Box::new(Ty::Bool),

@@ -306,9 +306,18 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
                 ac == bc
             };
             let captures_match = match (&a_resolved, &b_resolved) {
-                (Ty::Closure { captures: a, .. }, Ty::Closure { captures: b, .. }) => {
-                    a.len() == b.len()
-                }
+                (
+                    Ty::Closure {
+                        captures: a,
+                        identity: ai,
+                        ..
+                    },
+                    Ty::Closure {
+                        captures: b,
+                        identity: bi,
+                        ..
+                    },
+                ) => ai == bi && a.len() == b.len(),
                 (Ty::Function { .. }, Ty::Closure { .. }) => weaken,
                 (Ty::Closure { .. }, Ty::Function { .. }) => false,
                 _ => true,
@@ -713,6 +722,11 @@ mod tests {
     fn closure_erasure_is_directional_coercion_not_unification() {
         let mut subst = Substitution::new();
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
@@ -734,12 +748,22 @@ mod tests {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Var(v)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32],
         };
         let b = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::String],
             ret: Box::new(Ty::Bool),
@@ -753,6 +777,11 @@ mod tests {
     fn test_unify_closure_arity_mismatch() {
         let mut subst = Substitution::new();
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32, Ty::Bool],
             ret: Box::new(Ty::Unit),

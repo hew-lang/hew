@@ -100,6 +100,11 @@ fn display_function_multiple_params() {
 fn display_closure() {
     // Closure display is identical to Function display (captures are hidden)
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
@@ -571,6 +576,11 @@ fn contains_var_in_closure() {
 
     // In params
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::I32),
@@ -580,6 +590,11 @@ fn contains_var_in_closure() {
 
     // In ret
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Var(v)),
@@ -589,6 +604,11 @@ fn contains_var_in_closure() {
 
     // In captures
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I32),
@@ -598,6 +618,11 @@ fn contains_var_in_closure() {
 
     // Not present
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
@@ -679,6 +704,11 @@ fn substitute_in_array() {
 fn substitute_in_closure() {
     let v = TypeVar(6020);
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Var(v)),
@@ -688,6 +718,11 @@ fn substitute_in_closure() {
     assert_eq!(
         result,
         Ty::Closure {
+            identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0
+            }),
             capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::Bool],
             ret: Box::new(Ty::Bool),
@@ -972,6 +1007,11 @@ fn apply_subst_through_closure() {
     subst.insert(v, &Ty::F32).unwrap();
 
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Var(v)),
@@ -980,6 +1020,11 @@ fn apply_subst_through_closure() {
     assert_eq!(
         ty.apply_subst(&subst),
         Ty::Closure {
+            identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0
+            }),
             capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::F32],
             ret: Box::new(Ty::F32),

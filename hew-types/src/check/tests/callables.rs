@@ -146,11 +146,16 @@ fn zero_argument_function_item_remains_a_callable_value() {
     let output =
         check_source("fn value() -> i64 { 7 } fn main() { let f = value; let n: i64 = f(); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    assert!(output
-        .expr_types
-        .values()
-        .any(|ty| matches!(ty, Ty::Function { capabilities, params, ret }
-        if capabilities.clone && params.is_empty() && **ret == Ty::I64)));
+    assert!(output.expr_types.values().any(|ty| matches!(
+        ty,
+        Ty::Closure {
+            capabilities,
+            params,
+            ret,
+            identity: crate::ty::EffectBody::Declaration(id),
+            ..
+        } if capabilities.clone && params.is_empty() && **ret == Ty::I64 && id.full_path() == "value"
+    )));
 }
 
 #[test]

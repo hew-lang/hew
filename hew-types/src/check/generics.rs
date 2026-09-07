@@ -118,6 +118,7 @@ impl Checker {
                 params,
                 ret,
                 captures,
+                identity,
             } => Ty::Closure {
                 capabilities: *capabilities,
                 params: params
@@ -129,6 +130,7 @@ impl Checker {
                     .iter()
                     .map(|c| self.freshen_inner(c, mapping))
                     .collect(),
+                identity: identity.clone(),
             },
             _ => ty.clone(),
         }

@@ -94,6 +94,7 @@ impl Checker {
                 params,
                 ret,
                 captures,
+                identity,
             } => Ty::Closure {
                 capabilities: *capabilities,
                 params: params
@@ -105,6 +106,7 @@ impl Checker {
                     .iter()
                     .map(|capture| Self::lambda_generic_schema_ty(capture, generic_param_names))
                     .collect(),
+                identity: identity.clone(),
             },
             Ty::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
@@ -618,7 +620,10 @@ impl Checker {
                         self.record_submission_suspension(span, true);
                         Ty::Unit
                     }
-                    _ => inner_ty,
+                    _ => {
+                        self.check_await_operand(effective_expr, effective_span, &inner_ty);
+                        inner_ty
+                    }
                 }
             }
 
@@ -2817,6 +2822,58 @@ impl Checker {
                 trait_name: trait_name.to_string(),
             },
         );
+    }
+
+    /// `await` waits on something with its own life: a task, an actor reply
+    /// or an actor's close. A plain call suspends the caller on its own, so
+    /// `await` adds nothing there; anything else is not awaitable.
+    fn check_await_operand(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        if matches!(ty, Ty::Error) {
+            return;
+        }
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let replies = matches!(
+            self.actor_method_dispatch.get(&key),
+            Some(ActorMethodKind::Ask { .. })
+        ) || matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RemoteActorAsk)
+        ) || self.submission_suspends(span)
+            || matches!(expr, Expr::Call { function, .. }
+            if matches!(
+                self.expr_types
+                    .get(&SpanKey::in_module(&function.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty)),
+                Some(Ty::Named { builtin: Some(crate::BuiltinType::LambdaPid), .. })
+            ));
+        if replies {
+            return;
+        }
+        if matches!(
+            expr,
+            Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
+        ) {
+            self.warnings.push(TypeError {
+                severity: crate::error::Severity::Warning,
+                kind: TypeErrorKind::InvalidOperation,
+                span: span.clone(),
+                message: "`await` on a plain call adds nothing: the call suspends on its own"
+                    .to_string(),
+                notes: vec![],
+                suggestions: vec!["call it directly, or fork it to run concurrently".to_string()],
+                source_module: self.current_module.clone(),
+            });
+        } else {
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`await` waits on a task, an actor reply or an actor's close; `{}` is none of these",
+                    ty.user_facing()
+                ),
+                vec!["remove `await`, or fork a call to get a task".to_string()],
+            );
+        }
     }
 
     #[expect(
@@ -7681,10 +7738,6 @@ impl Checker {
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let owner = super::effects::EffectBody::Closure(key.clone());
-        self.effect_graph.parameter_names.insert(
-            owner.clone(),
-            params.iter().map(|param| param.name.clone()).collect(),
-        );
         self.effect_graph.bodies.entry(owner.clone()).or_default();
         let previous = self.effect_graph.current_body.replace(owner);
         let result = self.check_lambda_body(
@@ -7819,7 +7872,6 @@ impl Checker {
             self.check_shadowing(&p.name, &p.name_span);
             self.env
                 .define_param_with_span(p.name.clone(), ty.clone(), false, p.name_span.clone());
-            self.record_callable_parameter(&p.name, i);
             param_tys.push(ty);
         }
 
@@ -7951,6 +8003,10 @@ impl Checker {
             params: param_tys,
             ret: Box::new(ret_ty),
             captures,
+            identity: super::effects::EffectBody::Closure(SpanKey::in_module(
+                span,
+                self.current_module_idx,
+            )),
         }
     }
 

@@ -1005,7 +1005,6 @@ impl Checker {
                 self.env
                     .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
             }
-            self.record_callable_parameter(&p.name, i);
             self.env
                 .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
             if private_copy {
@@ -1036,10 +1035,6 @@ impl Checker {
             });
         let previous = std::mem::replace(&mut self.effect_graph.current_body, body.clone());
         if let Some(body) = body {
-            self.effect_graph.parameter_names.insert(
-                body.clone(),
-                fd.params.iter().map(|param| param.name.clone()).collect(),
-            );
             self.effect_graph.bodies.entry(body).or_default();
         }
         self.check_function_body_as(fd, fn_name);
@@ -2285,10 +2280,6 @@ impl Checker {
         let previous_effect_body =
             std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());
         if let Some(body) = effect_body {
-            self.effect_graph.parameter_names.insert(
-                body.clone(),
-                rf.params.iter().map(|param| param.name.clone()).collect(),
-            );
             self.effect_graph.bodies.entry(body).or_default();
         }
 
@@ -2316,13 +2307,12 @@ impl Checker {
         // detect collisions with actor field names in the outer scope.
         self.env.push_scope();
 
-        for (index, p) in rf.params.iter().enumerate() {
+        for p in &rf.params {
             self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
                 .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
-            self.record_callable_parameter(&p.name, index);
         }
 
         let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {

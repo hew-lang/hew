@@ -6743,7 +6743,10 @@ impl Checker {
                 self.check_arity(args, 1, "`Vec.map`", span);
                 let ret_ty = Ty::Var(TypeVar::fresh());
                 let expected_fn = Ty::Function {
-                    capabilities: crate::CallableCapabilities::default(),
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![elem_ty.clone()],
                     ret: Box::new(ret_ty.clone()),
                 };
@@ -6766,7 +6769,10 @@ impl Checker {
             "filter" => {
                 self.check_arity(args, 1, "`Vec.filter`", span);
                 let expected_fn = Ty::Function {
-                    capabilities: crate::CallableCapabilities::default(),
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![elem_ty.clone()],
                     ret: Box::new(Ty::Bool),
                 };
@@ -6800,7 +6806,10 @@ impl Checker {
                     Ty::Var(TypeVar::fresh())
                 };
                 let expected_fn = Ty::Function {
-                    capabilities: crate::CallableCapabilities::default(),
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![acc_ty.clone(), elem_ty.clone()],
                     ret: Box::new(acc_ty.clone()),
                 };
@@ -6829,7 +6838,10 @@ impl Checker {
                     Ty::Var(TypeVar::fresh())
                 };
                 let expected_fn = Ty::Function {
-                    capabilities: crate::CallableCapabilities::default(),
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![acc_ty.clone(), elem_ty.clone()],
                     ret: Box::new(acc_ty.clone()),
                 };

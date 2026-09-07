@@ -346,6 +346,7 @@ fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
             params,
             ret,
             captures,
+            identity,
         } => Ty::Closure {
             capabilities: *capabilities,
             params: params
@@ -357,6 +358,7 @@ fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
                 .iter()
                 .map(normalize_synthetic_channel_handle_type)
                 .collect(),
+            identity: identity.clone(),
         },
         Ty::Pointer {
             is_mutable,
@@ -2121,6 +2123,11 @@ mod tests {
     #[test]
     fn ty_contains_error_recurses_through_named_and_closure_types() {
         let ty = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::normalize_named(
                 "Result".to_string(),

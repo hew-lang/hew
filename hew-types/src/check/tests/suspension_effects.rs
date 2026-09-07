@@ -1,6 +1,33 @@
 use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
+/// Effects recorded for every call whose source text is `expression`.
+fn call_effects(
+    output: &crate::check::TypeCheckOutput,
+    source: &str,
+    expression: &str,
+) -> Vec<SuspensionEffect> {
+    let effects: Vec<_> = output
+        .suspension_effects
+        .calls
+        .iter()
+        .filter(|(key, _)| source[key.start..key.end].trim_end() == expression)
+        .map(|(_, effect)| *effect)
+        .collect();
+    assert!(!effects.is_empty(), "missing call: {expression}");
+    effects
+}
+
+fn assert_call_effect(source: &str, expression: &str, expected: SuspensionEffect) {
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+    let effects = call_effects(&output, source, expression);
+    assert!(
+        effects.iter().all(|effect| *effect == expected),
+        "{expression}: {effects:?}"
+    );
+}
+
 #[test]
 fn deferred_pure_scopes_inherit_contents_without_admitting_suspension() {
     let source = "fn pure() -> i64 { 42 } fn cleanup() { defer { let value = scope { scope { pure() } }; println(value); } } fn main() { cleanup(); }";
@@ -67,7 +94,7 @@ fn main() {
             .suspension_effects
             .calls
             .iter()
-            .filter(|(key, _)| &source[key.start..key.end] == expression)
+            .filter(|(key, _)| source[key.start..key.end].trim_end() == expression)
             .map(|(_, effect)| *effect)
             .collect();
         assert!(!effects.is_empty(), "missing call: {expression}");
@@ -87,18 +114,13 @@ fn main() {
             body,
             crate::check::effects::EffectBody::GeneratorBlock(_)
         ) && *effect == SuspensionEffect::MaySuspend));
-    for call in ["values.next()", "consume()", "sleep(1ms)"] {
-        let source = source.replace(&format!("await {call}"), call);
-        let output = check_source(&source);
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| error.message.contains("this call may suspend")
-                    && &source[error.span.clone()] == call),
-            "{call}: {:?}",
-            output.errors
-        );
+    let plain = source.replace("await ", "");
+    let output = check_source(&plain);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for call in ["values.next()", "consume()"] {
+        assert!(call_effects(&output, &plain, call)
+            .iter()
+            .all(|effect| *effect == SuspensionEffect::MaySuspend));
     }
 }
 
@@ -494,22 +516,27 @@ fn fork_accepts_owning_arguments_and_send_callable_values() {
 }
 
 #[test]
-fn suspending_calls_require_exact_operand_permission() {
-    let source = "fn work() -> i64 { let task = fork { 7 }; await task }\nfn identity(x: i64) -> i64 { x }\nfn main() { let x = await identity(work()); }";
+fn plain_calls_inherit_suspension_transparently() {
+    let source = "fn work() -> i64 { let task = fork { 7 }; await task }\nfn identity(x: i64) -> i64 { x }\nfn main() { let _x = identity(work()); }";
     let output = check_source(source);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("this call may suspend")
-                && &source[error.span.clone()] == "work()"),
-        "{:?}",
-        output.errors
-    );
-    let output = check_source(&source.replace("identity(work())", "identity(await work())"));
     assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output.warnings.is_empty(), "{:?}", output.warnings);
+    assert_eq!(
+        call_effects(&output, source, "work()"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+    assert_eq!(
+        call_effects(&output, source, "identity(work())"),
+        vec![SuspensionEffect::Never]
+    );
+    assert!(output
+        .suspension_effects
+        .bodies
+        .iter()
+        .any(|(body, effect)| matches!(body,
+        crate::check::effects::EffectBody::Declaration(id) if id.full_path() == "main")
+            && *effect == SuspensionEffect::MaySuspend));
 }
-
 #[test]
 fn recursive_effects_follow_checked_calls() {
     let output = check_source("fn a(n: i64) -> i64 { if n == 0 { let t = fork { 1 }; return await t; } await b(n - 1) } fn b(n: i64) -> i64 { await a(n) } fn main() { let x = await b(2); }");
@@ -575,39 +602,46 @@ fn scope_recovery_preserves_an_ordinary_result_value() {
 }
 
 #[test]
-fn callback_effects_specialize_at_each_call() {
-    let source = "fn invoke(f: fn(i64) -> i64, x: i64) -> i64 { await f(x) } fn pure(x: i64) -> i64 { x } fn work(x: i64) -> i64 { let t = fork { 1 }; x + await t } fn main() { let a = invoke(pure, 1); let b = await invoke(work, 2); }";
+fn higher_order_effects_follow_the_written_parameter_type() {
+    let source = "fn invoke(f: fn[suspends](i64) -> i64, x: i64) -> i64 { f(x) } fn pure(x: i64) -> i64 { x } fn work(x: i64) -> i64 { let t = fork { 1 }; x + await t } fn main() { let a = invoke(pure, 1); let b = invoke(work, 2); }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let rejected = source.replace("await invoke(work", "invoke(work");
-    let output = check_source(&rejected);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("this call may suspend")
-                && rejected[error.span.start..].starts_with("invoke")),
-        "{:?}",
-        output.errors
+    for call in ["f(x)", "invoke(pure, 1)", "invoke(work, 2)"] {
+        assert_eq!(
+            call_effects(&output, source, call),
+            vec![SuspensionEffect::MaySuspend],
+            "{call}"
+        );
+    }
+    let plain = source.replace("fn[suspends](i64)", "fn(i64)");
+    let output = check_source(&plain);
+    let start = plain.rfind("work, 2").unwrap();
+    assert_eq!(
+        output.errors.iter().map(|error| (error.span.clone(), error.message.as_str())).collect::<Vec<_>>(),
+        vec![(start..start + "work".len(), "function `work` suspends via `fork`; `fn(i64) -> i64` never suspends, write `fn[suspends]`")]
+    );
+    assert_eq!(
+        call_effects(&output, &plain, "f(x)"),
+        vec![SuspensionEffect::Never]
+    );
+    assert_eq!(
+        call_effects(&output, &plain, "invoke(pure, 1)"),
+        vec![SuspensionEffect::Never]
     );
 }
-
 #[test]
 fn builtin_sleep_effect_does_not_apply_to_a_source_shadow() {
-    let output = check_source("fn work() { await sleep(1ms); } fn main() { work(); }");
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("this call may suspend")),
-        "{:?}",
-        output.errors
+    assert_call_effect(
+        "fn work() { sleep(1ms); } fn main() { work(); }",
+        "work()",
+        SuspensionEffect::MaySuspend,
     );
-    let output =
-        check_source("fn sleep(value: i64) -> i64 { value } fn main() { let x = sleep(1); }");
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_call_effect(
+        "fn sleep(value: i64) -> i64 { value } fn main() { let x = sleep(1); }",
+        "sleep(1)",
+        SuspensionEffect::Never,
+    );
 }
-
 #[test]
 fn scope_deadline_requires_duration_and_preserves_value() {
     let output = check_source("fn main() { let value: i64 = scope within 2s { 42 }; }");
@@ -624,23 +658,22 @@ fn scope_deadline_requires_duration_and_preserves_value() {
 }
 
 #[test]
-fn distinct_callback_fields_keep_distinct_effects() {
-    let source = "type Job { run: fn() -> i64, describe: fn() -> i64 } fn invoke(job: Job) -> i64 { await job.describe() } fn work() -> i64 { let task = fork { 1 }; await task } fn main() { let job = Job { run: work, describe: || 2 }; let value = invoke(job); }";
-    let output = check_source(source);
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let rejected = source.replace("await job.describe()", "await job.run()");
-    let output = check_source(&rejected);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("this call may suspend")
-                && &rejected[error.span.clone()] == "invoke(job)"),
-        "{:?}",
-        output.errors
+fn callable_fields_carry_their_written_effect() {
+    let source = "type Job { run: fn[suspends]() -> i64, describe: fn() -> i64 } fn invoke(job: Job) -> i64 { job.describe() } fn work() -> i64 { let task = fork { 1 }; await task } fn main() { let job = Job { run: work, describe: || 2 }; let value = invoke(job); }";
+    assert_call_effect(source, "invoke(job)", SuspensionEffect::Never);
+    assert_call_effect(
+        &source.replace("job.describe()", "job.run()"),
+        "invoke(job)",
+        SuspensionEffect::MaySuspend,
+    );
+    let plain = source.replace("run: fn[suspends]()", "run: fn()");
+    let output = check_source(&plain);
+    let start = plain.rfind("run: work").unwrap() + "run: ".len();
+    assert_eq!(
+        output.errors.iter().map(|error| (error.span.clone(), error.message.as_str())).collect::<Vec<_>>(),
+        vec![(start..start + "work".len(), "function `work` suspends via `fork`; `fn() -> i64` never suspends, write `fn[suspends]`")]
     );
 }
-
 #[test]
 fn pure_callable_record_and_tuple_projections_are_synchronous() {
     let output = check_source("type Job { run: fn() -> i64 } fn main() { let job = Job { run: || 2 }; let a = job.run(); let pair = (|| 3, || 4); let b = (pair.0)(); }");
@@ -649,20 +682,18 @@ fn pure_callable_record_and_tuple_projections_are_synchronous() {
 
 #[test]
 fn collection_callbacks_use_their_own_effect() {
-    let source = "fn work(x: i64) -> i64 { let task = fork { 1 }; x + await task } fn main() { let values = [1, 2]; let mapped = await values.map(work); }";
+    let source = "fn work(x: i64) -> i64 { let task = fork { 1 }; x + await task } fn pure(x: i64) -> i64 { x } fn main() { let values = [1, 2]; let slow = values.map(work); let fast = values.map(pure); }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output = check_source(&source.replace("await values.map", "values.map"));
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("this call may suspend")),
-        "{:?}",
-        output.errors
+    assert_eq!(
+        call_effects(&output, source, "values.map(work)"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+    assert_eq!(
+        call_effects(&output, source, "values.map(pure)"),
+        vec![SuspensionEffect::Never]
     );
 }
-
 #[test]
 fn named_callback_arguments_follow_parameter_identity() {
     let output = check_source("fn invoke(f: fn(i64) -> i64, x: i64) -> i64 { await f(x) } fn pure(x: i64) -> i64 { x } fn main() { let value = invoke(x: 1, f: pure); }");
@@ -684,37 +715,156 @@ fn named_actor_handlers_publish_body_effects() {
 }
 
 #[test]
-fn method_callback_parameters_account_for_the_receiver() {
-    let output = check_source("type Runner {} impl Runner { fn invoke(self, f: fn() -> i64) -> i64 { await f() } } fn main() { let runner = Runner {}; let value = runner.invoke(|| 3); }");
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
-}
-
-#[test]
-fn replacing_a_callable_field_invalidates_its_old_effect() {
-    let source = "type Job { run: fn() -> i64 } fn work() -> i64 { let task = fork { 1 }; await task } fn main() { var job = Job { run: || 2 }; job.run = work; let value = job.run(); }";
-    let output = check_source(source);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("this call may suspend")
-                && &source[error.span.clone()] == "job.run()"),
-        "{:?}",
-        output.errors
+fn method_callback_parameters_take_the_written_effect() {
+    let source = "type Runner {} impl Runner { fn invoke(self, f: fn[suspends]() -> i64) -> i64 { f() } } fn main() { let runner = Runner {}; let value = runner.invoke(|| 3); }";
+    assert_call_effect(source, "runner.invoke(|| 3)", SuspensionEffect::MaySuspend);
+    assert_call_effect(
+        &source.replace("fn[suspends]()", "fn()"),
+        "runner.invoke(|| 3)",
+        SuspensionEffect::Never,
     );
 }
-
+#[test]
+fn assigning_a_suspending_function_to_a_plain_callable_field_is_rejected() {
+    let source = "type Job { run: fn() -> i64 } fn work() -> i64 { let task = fork { 1 }; await task } fn main() { var job = Job { run: || 2 }; job.run = work; let value = job.run(); }";
+    let output = check_source(source);
+    let start = source.rfind("= work").unwrap() + 2;
+    assert_eq!(
+        output.errors.iter().map(|error| (error.span.clone(), error.message.as_str())).collect::<Vec<_>>(),
+        vec![(start..start + "work".len(), "function `work` suspends via `fork`; `fn() -> i64` never suspends, write `fn[suspends]`")]
+    );
+    assert_call_effect(
+        &source.replace("run: fn()", "run: fn[suspends]()"),
+        "job.run()",
+        SuspensionEffect::MaySuspend,
+    );
+}
 #[test]
 fn a_later_loop_assignment_cannot_hide_suspension() {
     let source = "fn work() -> i64 { let task = fork { 1 }; await task } fn main() { var callback: fn() -> i64 = || 2; for i in 0..2 { let value = callback(); callback = work; } }";
     let output = check_source(source);
+    let start = source.rfind("= work").unwrap() + 2;
+    assert_eq!(
+        output.errors.iter().map(|error| (error.span.clone(), error.message.as_str())).collect::<Vec<_>>(),
+        vec![(start..start + "work".len(), "function `work` suspends via `fork`; `fn() -> i64` never suspends, write `fn[suspends]`")]
+    );
+    assert_call_effect(
+        &source.replace("callback: fn()", "callback: fn[suspends]()"),
+        "callback()",
+        SuspensionEffect::MaySuspend,
+    );
+}
+
+#[test]
+fn closure_effects_follow_the_literal_through_bindings_and_joins() {
+    let source = "fn main() -> i64 { let call = || 5; let picked = if true { call } else { call }; println(picked()); 0 }";
+    assert_call_effect(source, "picked()", SuspensionEffect::Never);
+    let slow = "fn main() { let call = || { sleep(1ms); 5 }; let picked = if true { call } else { call }; let value = picked(); }";
+    assert_call_effect(slow, "picked()", SuspensionEffect::MaySuspend);
+}
+
+#[test]
+fn distinct_closures_join_into_a_written_type_with_obligations() {
+    let source = "fn main() { let flag = true; let picked = if flag { || 1 } else { || 2 }; let value = picked(); }";
+    assert_call_effect(source, "picked()", SuspensionEffect::Never);
+    let slow = source.replace("|| 1", "|| { sleep(1ms); 1 }");
+    let output = check_source(&slow);
+    assert_eq!(
+        output.errors.iter().map(|error| error.message.as_str()).collect::<Vec<_>>(),
+        vec!["closure suspends via `sleep(...)`; `fn[clone]() -> i64` never suspends, write `fn[suspends]`"]
+    );
+    let annotated = slow.replace("let picked =", "let picked: fn[suspends]() -> i64 =");
+    assert_call_effect(&annotated, "picked()", SuspensionEffect::MaySuspend);
+}
+
+#[test]
+fn each_closure_literal_has_its_own_type() {
+    let output = check_source("fn main() { var f = || 1; f = || 2; }");
+    let error = output
+        .errors
+        .first()
+        .expect("a second closure literal needs a written type");
+    assert_eq!(
+        error.message,
+        "type mismatch: each closure literal has its own type"
+    );
+    assert_eq!(
+        error.suggestions,
+        vec!["write the binding type as `fn[clone]() -> i64` to hold either closure".to_string()]
+    );
+    let output =
+        check_source("fn main() { var f: fn() -> i64 = || 1; f = || 2; let value = f(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn generic_instantiation_keeps_closure_effects() {
+    let source = "type Holder<T> { value: T } fn main() { let holder = Holder { value: || { sleep(1ms); 1 } }; let value = holder.value(); }";
+    assert_call_effect(source, "holder.value()", SuspensionEffect::MaySuspend);
+    assert_call_effect(
+        &source.replace("|| { sleep(1ms); 1 }", "|| 1"),
+        "holder.value()",
+        SuspensionEffect::Never,
+    );
+}
+
+#[test]
+fn suspending_callable_types_do_not_coerce_into_plain_ones() {
+    let output = check_source("fn accept(f: fn() -> i64) -> i64 { f() } fn forward(f: fn[suspends]() -> i64) -> i64 { accept(f) } fn main() {}");
     assert!(
         output
             .errors
             .iter()
-            .any(|error| error.message.contains("this call may suspend")
-                && &source[error.span.clone()] == "callback()"),
+            .any(|error| matches!(error.kind, crate::error::TypeErrorKind::Mismatch { .. })),
         "{:?}",
         output.errors
     );
+    let source = "fn accept(f: fn[suspends]() -> i64) -> i64 { f() } fn forward(f: fn() -> i64) -> i64 { accept(f) } fn main() {}";
+    assert_call_effect(source, "accept(f)", SuspensionEffect::MaySuspend);
+}
+
+#[test]
+fn deferred_bodies_name_the_suspending_call() {
+    let output = check_source("fn work() { sleep(1ms); } fn main() { defer { work(); } }");
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a deferred body cannot suspend: `work(...)` may suspend"]
+    );
+}
+
+#[test]
+fn await_on_a_plain_call_warns_and_await_on_a_value_is_rejected() {
+    let source = "fn work() -> i64 { sleep(1ms); 1 } fn main() { let x = await work(); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let warning = output.warnings.first().expect("redundant await warns");
+    assert_eq!(&source[warning.span.clone()], "work()");
+    assert_eq!(
+        warning.message,
+        "`await` on a plain call adds nothing: the call suspends on its own"
+    );
+    assert_eq!(
+        warning.suggestions,
+        vec!["call it directly, or fork it to run concurrently".to_string()]
+    );
+    assert_eq!(
+        call_effects(&output, source, "work()"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+    let output = check_source("fn main() { let n: i64 = 1; let x = await n; }");
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["`await` waits on a task, an actor reply or an actor's close; `i64` is none of these"]
+    );
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = await worker.value(); let task = fork { 1 }; let _joined = await task; await close(worker); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output.warnings.is_empty(), "{:?}", output.warnings);
 }

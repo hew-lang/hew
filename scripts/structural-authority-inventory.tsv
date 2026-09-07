@@ -27,7 +27,7 @@ call-target-authority	call-target-consumer	hew-types/src/check/methods.rs	3	stag
 call-target-authority	call-target-use	hew-hir/src/lower.rs	36	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/calls.rs	30	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	1	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/effects.rs	14	stage-4	effect inference follows selected executable identities through direct and indirect calls
+call-target-authority	call-target-use	hew-types/src/check/effects.rs	11	stage-4	effect inference follows selected executable identities through direct and indirect calls
 call-target-authority	call-target-use	hew-types/src/check/machine_effects.rs	5	stage-4	machine purity classifies selected user calls and supported runtime operations
 call-target-authority	call-target-use	hew-types/src/check/methods.rs	25	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/registration.rs	3	stage-4	builtin registration publishes typed runtime targets at the signature authority
@@ -44,13 +44,13 @@ checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	1	stage
 lifecycle-identity-authority	lifecycle-candidate-field	hew-types/src/check/types.rs	13	stage-2	canonical checker lifecycle identity carrier
 lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registration.rs	10	stage-2	canonical checker lifecycle identity carrier
 lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	5	stage-2	canonical checker lifecycle identity carrier
-runtime-call-authority	runtime-call-family-consumer	hew-mir/src/physical.rs	26	stage-4	physical runtime actions use the shared family contract for argument modes and result effects
+runtime-call-authority	runtime-call-family-consumer	hew-mir/src/physical.rs	30	stage-4	physical runtime actions use the shared family contract for argument modes and result effects
 runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical_encoding.rs	1	stage-4	encoding and file adapters consume the selected runtime family and its result effect
 runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical_encoding_runtime_cases.rs	1	stage-4	runtime execution fixtures construct typed encoding operations to verify generated adapters
 runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	10	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-mir/src/physical.rs	58	stage-4	physical runtime realization maps typed actions to their shared semantic families
+runtime-call-authority	runtime-call-family-use	hew-mir/src/physical.rs	66	stage-4	physical runtime realization maps typed actions to their shared semantic families
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	26	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	256	stage-4	typed runtime-family dispatch carrier including structural formatting
+runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	259	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
 signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	3	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
 signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	1	stage-1	actor field default initialisers checked against declared field types

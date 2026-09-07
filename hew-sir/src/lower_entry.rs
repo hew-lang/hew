@@ -42,9 +42,14 @@ impl Builder<'_, '_> {
             .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
             .cloned()
             .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
-        if descriptor.variants.len() != 2 {
+        let names: Vec<&str> = descriptor
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect();
+        if names != ["Ok", "Err"] {
             return Err(format!(
-                "entry result `{}` is not the two-variant Result shape",
+                "entry result `{}` is not the `Ok`/`Err` Result shape",
                 result_ty.user_facing()
             ));
         }

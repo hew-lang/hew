@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1634u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1608u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1634] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1608] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -632,106 +632,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1634] = {
     {"hew_assert",
      "{\"native\": \"fn hew_assert( u8)\", \"wasm32-wasip1\": \"fn hew_assert( "
      "u8)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_bool",
-     "{\"native\": \"fn hew_assert_eq_bool( u8, u8)\", \"wasm32-wasip1\": \"fn "
-     "hew_assert_eq_bool( u8, u8)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_f64",
-     "{\"native\": \"fn hew_assert_eq_f64( f64, f64)\", \"wasm32-wasip1\": "
-     "\"fn hew_assert_eq_f64( f64, f64)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_i16", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_i32", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_i64",
-     "{\"native\": \"fn hew_assert_eq_i64( i64, i64)\", \"wasm32-wasip1\": "
-     "\"fn hew_assert_eq_i64( i64, i64)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_i8", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_isize", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_str",
-     "{\"native\": \"fn hew_assert_eq_str( *const c_char, *const c_char)\", "
-     "\"wasm32-wasip1\": \"fn hew_assert_eq_str( *const c_char, *const "
-     "c_char)\"}",
-     "native,wasm32-wasip1", "stable", "nul-terminated",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_u16", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_u32", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_u64", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_u8",
-     "{\"native\": \"fn hew_assert_eq_u8( u8, u8)\", \"wasm32-wasip1\": \"fn "
-     "hew_assert_eq_u8( u8, u8)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_eq_usize", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_bool",
-     "{\"native\": \"fn hew_assert_ne_bool( u8, u8)\", \"wasm32-wasip1\": \"fn "
-     "hew_assert_ne_bool( u8, u8)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_f64",
-     "{\"native\": \"fn hew_assert_ne_f64( f64, f64)\", \"wasm32-wasip1\": "
-     "\"fn hew_assert_ne_f64( f64, f64)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_i16", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_i32", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_i64",
-     "{\"native\": \"fn hew_assert_ne_i64( i64, i64)\", \"wasm32-wasip1\": "
-     "\"fn hew_assert_ne_i64( i64, i64)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_i8", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_isize", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_str",
-     "{\"native\": \"fn hew_assert_ne_str( *const c_char, *const c_char)\", "
-     "\"wasm32-wasip1\": \"fn hew_assert_ne_str( *const c_char, *const "
-     "c_char)\"}",
-     "native,wasm32-wasip1", "stable", "nul-terminated",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_u16", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_u32", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_u64", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_u8",
-     "{\"native\": \"fn hew_assert_ne_u8( u8, u8)\", \"wasm32-wasip1\": \"fn "
-     "hew_assert_ne_u8( u8, u8)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_assert_ne_usize", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_file_read",

@@ -1,0 +1,11 @@
+[[case]]
+id = "dyn-supertrait-display"
+intent = "`Display::fmt` on a `dyn Error` value resolves through the supertrait slot, in a `handle` body and on the process exit path."
+source = "cases/dyn-supertrait-display.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "handled: parse failed: empty input\nrecovered=0\nwidth=5\n"
+stderr = "error: parse failed: empty input\n"
+exit = 1

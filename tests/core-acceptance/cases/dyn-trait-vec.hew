@@ -1,0 +1,39 @@
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+type Person {
+    label: string,
+}
+
+impl Named for Person {
+    fn name(val: Person) -> string {
+        f"person {val.label}"
+    }
+}
+
+type Machine {
+    id: i64,
+}
+
+impl Named for Machine {
+    fn name(val: Machine) -> string {
+        f"machine {val.id}"
+    }
+}
+
+fn main() {
+    var crowd: Vec<dyn Named> = Vec.new();
+    crowd.push(Person { label: "ada" });
+    crowd.push(Machine { id: 7 });
+    crowd.push(Person { label: "lin" });
+    println(f"count={crowd.len()}");
+    var seen = 0;
+    while crowd.len() > 1 {
+        let member = crowd.pop();
+        seen = seen + 1;
+        println(member.name());
+    }
+    println(f"seen={seen}");
+    println(f"left={crowd.len()}");
+}

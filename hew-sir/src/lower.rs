@@ -1420,21 +1420,41 @@ impl<'a> InstanceService<'a> {
                     target.symbol
                 ));
             };
-            if receiver.ty != *concrete_ty {
+            let receiver_passing = dyn_receiver_passing(&entry.signature);
+            if receiver.ty != *concrete_ty
+                || !dyn_passing_admits(receiver_passing, receiver.passing)
+            {
                 return Err(format!(
-                    "slot {slot} implementation `{}` does not receive `{}`",
+                    "slot {slot} implementation `{}` does not receive `{}` on the erased boundary",
                     target.symbol,
                     concrete_ty.user_facing()
                 ));
+            }
+            let mut params = Vec::with_capacity(arguments.len());
+            for argument in arguments {
+                let passing =
+                    dyn_boundary_passing(OwnKind::of_ty(&argument.ty, self.checked_facts.rows())?);
+                if !dyn_passing_admits(passing, argument.passing) {
+                    return Err(format!(
+                        "slot {slot} implementation `{}` changes the erased transfer of `{}`",
+                        target.symbol,
+                        argument.ty.user_facing()
+                    ));
+                }
+                params.push(SemAbiParam {
+                    ty: argument.ty.clone(),
+                    passing,
+                    caller_visible_projection: false,
+                });
             }
             slots.push(crate::SemVtableSlot {
                 slot,
                 trait_name: entry.trait_name.clone(),
                 method_name: entry.method_name.clone(),
                 callee,
-                receiver: receiver.passing,
+                receiver: receiver_passing,
                 signature: SemSignature {
-                    params: arguments.to_vec(),
+                    params,
                     return_ty: target.signature.return_ty.clone(),
                 },
             });
@@ -2367,6 +2387,46 @@ fn callable_signature_with_substitution(
         ));
     }
     Ok(SemSignature { params, return_ty })
+}
+
+/// How one argument crosses an erased dispatch boundary.
+///
+/// The boundary is uniform across every implementation of a trait object, so
+/// it is decided by the value class alone; an implementation that declares a
+/// consuming parameter is refused when its table is built rather than
+/// silently changing the ABI of one erasure.
+fn dyn_boundary_passing(own: OwnKind) -> SemParamPassing {
+    if own == OwnKind::Owned {
+        SemParamPassing::Borrow
+    } else {
+        SemParamPassing::ReadOnly
+    }
+}
+
+/// How the erased receiver crosses the boundary, from the trait's own
+/// declaration rather than any one implementer's value class.
+fn dyn_receiver_passing(signature: &hew_types::FnSig) -> SemParamPassing {
+    if signature.consumes_receiver {
+        SemParamPassing::Consume
+    } else if signature.requires_mutable_receiver {
+        SemParamPassing::BorrowMut
+    } else {
+        SemParamPassing::Borrow
+    }
+}
+
+/// Whether an implementation's declared transfer realizes the boundary's.
+fn dyn_passing_admits(boundary: SemParamPassing, implementation: SemParamPassing) -> bool {
+    match boundary {
+        SemParamPassing::Consume => implementation == SemParamPassing::Consume,
+        SemParamPassing::BorrowMut => implementation == SemParamPassing::BorrowMut,
+        // A borrowed boundary hands the callee a live value it does not own;
+        // a bit-copy receiver reads it and an owned one borrows it.
+        SemParamPassing::Borrow | SemParamPassing::ReadOnly => matches!(
+            implementation,
+            SemParamPassing::Borrow | SemParamPassing::ReadOnly
+        ),
+    }
 }
 
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
@@ -6885,7 +6945,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let vtable = self
             .service
             .request_vtable(&dyn_ty, &concrete_ty, entries)?;
-        let source = self.lower_consuming_value(value)?;
         if self.ty(&value.ty) != concrete_ty {
             return Err(format!(
                 "erasure input `{}` differs from the checker's concrete type `{}`",
@@ -6893,7 +6952,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 concrete_ty.user_facing()
             ));
         }
-        self.owned_live.remove(&source);
+        // A bit-copy concrete value carries no obligation to transfer; the
+        // box holds its bits and the table's drop slot has nothing to run.
+        let source =
+            if OwnKind::of_ty(&concrete_ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                let source = self.lower_consuming_value(value)?;
+                self.owned_live.remove(&source);
+                source
+            } else {
+                self.lower_expr(value)?
+            };
         self.emit(
             expr,
             SemOpKind::DynMake {
@@ -6919,11 +6987,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.service.require_type_facts(&ty)?;
             let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
             params.push(SemAbiParam {
-                passing: if own == OwnKind::Owned {
-                    SemParamPassing::Borrow
-                } else {
-                    SemParamPassing::ReadOnly
-                },
+                passing: dyn_boundary_passing(own),
                 ty,
                 caller_visible_projection: false,
             });
@@ -6949,12 +7013,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut loans = Vec::new();
         let return_ty = self.ty(&expr.ty);
         let dispatch = self.dyn_dispatch_signature(args, &return_ty)?;
-        let decision = if signature.consumes_receiver {
-            crate::BoundaryDecision::Move
-        } else if signature.requires_mutable_receiver {
-            crate::BoundaryDecision::BorrowMut
-        } else {
-            crate::BoundaryDecision::Borrow
+        let decision = match dyn_receiver_passing(signature) {
+            SemParamPassing::Consume => crate::BoundaryDecision::Move,
+            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            SemParamPassing::Borrow | SemParamPassing::ReadOnly => crate::BoundaryDecision::Borrow,
         };
         let value = if decision == crate::BoundaryDecision::Move {
             self.lower_consuming_value(receiver)?

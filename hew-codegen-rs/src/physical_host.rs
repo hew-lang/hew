@@ -176,6 +176,9 @@ fn host_runtime(action: PhysicalRuntimeAction) -> bool {
             | PhysicalRuntimeAction::StringStartsWith
             | PhysicalRuntimeAction::StringIsEmpty
             | PhysicalRuntimeAction::StringSlice
+            | PhysicalRuntimeAction::StringIndex
+            | PhysicalRuntimeAction::StringSliceCodepoints
+            | PhysicalRuntimeAction::StringSliceCodepointsFrom
             | PhysicalRuntimeAction::StringToLowercase
             | PhysicalRuntimeAction::StringToUppercase
             | PhysicalRuntimeAction::StringTrim

@@ -1,0 +1,10 @@
+[[case]]
+id = "string-codepoint-sequence"
+intent = "String len, index, slice and rest-slice all operate on Unicode codepoints, including an embedded NUL as an ordinary codepoint."
+source = "cases/string-codepoint-sequence.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "5\nh\no\nell\nllo\n4\nA\né\n中\n🙂\né中\n中🙂\n3\n0\ntrue\n148889\n"
+exit = 0

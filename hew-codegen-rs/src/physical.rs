@@ -3673,6 +3673,46 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
+            PhysicalRuntimeAction::StringIndex => {
+                return self.emit_string_index(
+                    source(0)?,
+                    source(1)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical string index lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
+            PhysicalRuntimeAction::StringSliceCodepoints => {
+                return self.emit_string_slice_codepoints(
+                    source(0)?,
+                    source(1)?,
+                    source(2)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical string slice lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
+            PhysicalRuntimeAction::StringSliceCodepointsFrom => {
+                return self.emit_string_slice_codepoints_from(
+                    source(0)?,
+                    source(1)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical string slice lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
             PhysicalRuntimeAction::StringToUppercase
             | PhysicalRuntimeAction::StringToLowercase
             | PhysicalRuntimeAction::StringTrim => {
@@ -4903,6 +4943,251 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_load(self.ctx.i8_type(), read_at, "bytes.index.load")
             .llvm_ctx("load indexed byte")?;
         self.store(result, indexed)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// Call `hew_string_length` on `text` and return its `i64` result.
+    fn string_length(
+        &self,
+        text: StorageId,
+        name: &str,
+    ) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_string_length",
+            self.ctx
+                .i64_type()
+                .fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
+        )?;
+        let value = self.runtime_call_value(function, &[self.load(text, name)?.into()], name)?;
+        Ok(value.into_int_value())
+    }
+
+    /// `s[i]` — codepoint index on `string`. MIR proves the bounds check
+    /// here (mirrors [`Self::emit_bytes_index`]) so a violation reports
+    /// through the canonical `Trap { IndexOutOfBounds }` edge rather than
+    /// the runtime's own internal abort path. `hew_string_index` still
+    /// carries its own defense-in-depth check, but the codegen guard below
+    /// means it can never observe an out-of-range offset in practice.
+    fn emit_string_index(
+        &self,
+        text: StorageId,
+        index: StorageId,
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let len = self.string_length(text, "string.index.length")?;
+        let index_value = self.load(index, "string.index.index")?.into_int_value();
+        let negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                index_value,
+                self.ctx.i64_type().const_zero(),
+                "string.index.negative",
+            )
+            .llvm_ctx("guard negative string index")?;
+        let past_end = self
+            .builder
+            .build_int_compare(IntPredicate::SGE, index_value, len, "string.index.past.end")
+            .llvm_ctx("guard string index upper bound")?;
+        let out_of_bounds = self
+            .builder
+            .build_or(negative, past_end, "string.index.bounds")
+            .llvm_ctx("combine string index guards")?;
+        let safe = self.ctx.append_basic_block(self.value, "string.index.safe");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "string.index.failure");
+        self.builder
+            .build_conditional_branch(out_of_bounds, failed, safe)
+            .llvm_ctx("branch around fallible string index call")?;
+
+        self.builder.position_at_end(failed);
+        self.emit_edge(failure)?;
+
+        self.builder.position_at_end(safe);
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_string_index",
+            self.ctx.i32_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.i64_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        let value = self.runtime_call_value(
+            function,
+            &[
+                self.load(text, "string.index.text")?.into(),
+                index_value.into(),
+            ],
+            "string.index",
+        )?;
+        self.store(result, value)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// `s[a..b]` — codepoint range-slice on `string` (`0 <= start <= end <=
+    /// len`, matching [`Self::emit_string_index`]'s MIR-level bounds proof).
+    fn emit_string_slice_codepoints(
+        &self,
+        text: StorageId,
+        start: StorageId,
+        end: StorageId,
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let len = self.string_length(text, "string.slice.length")?;
+        let start_value = self.load(start, "string.slice.start")?.into_int_value();
+        let end_value = self.load(end, "string.slice.end")?.into_int_value();
+        let start_negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                start_value,
+                self.ctx.i64_type().const_zero(),
+                "string.slice.start.negative",
+            )
+            .llvm_ctx("guard negative string slice start")?;
+        let end_negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                end_value,
+                self.ctx.i64_type().const_zero(),
+                "string.slice.end.negative",
+            )
+            .llvm_ctx("guard negative string slice end")?;
+        let inverted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                start_value,
+                end_value,
+                "string.slice.inverted",
+            )
+            .llvm_ctx("guard inverted string slice range")?;
+        let past_end = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, end_value, len, "string.slice.past.end")
+            .llvm_ctx("guard string slice upper bound")?;
+        let out_of_bounds = self
+            .builder
+            .build_or(start_negative, end_negative, "string.slice.bounds.a")
+            .and_then(|a| self.builder.build_or(a, inverted, "string.slice.bounds.b"))
+            .and_then(|b| {
+                self.builder
+                    .build_or(b, past_end, "string.slice.bounds.condition")
+            })
+            .llvm_ctx("combine string slice guards")?;
+        let safe = self.ctx.append_basic_block(self.value, "string.slice.safe");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "string.slice.failure");
+        self.builder
+            .build_conditional_branch(out_of_bounds, failed, safe)
+            .llvm_ctx("branch around fallible string slice call")?;
+
+        self.builder.position_at_end(failed);
+        self.emit_edge(failure)?;
+
+        self.builder.position_at_end(safe);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_string_slice_codepoints",
+            ptr.fn_type(
+                &[
+                    ptr.into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        let value = self.runtime_call_value(
+            function,
+            &[
+                self.load(text, "string.slice.text")?.into(),
+                start_value.into(),
+                end_value.into(),
+            ],
+            "string.slice.codepoints",
+        )?;
+        self.store(result, value)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// `s[a..]` — open-ended codepoint range-slice on `string` (`0 <= start
+    /// <= len`, matching [`Self::emit_string_slice_codepoints`]).
+    fn emit_string_slice_codepoints_from(
+        &self,
+        text: StorageId,
+        start: StorageId,
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let len = self.string_length(text, "string.slice.from.length")?;
+        let start_value = self
+            .load(start, "string.slice.from.start")?
+            .into_int_value();
+        let negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                start_value,
+                self.ctx.i64_type().const_zero(),
+                "string.slice.from.negative",
+            )
+            .llvm_ctx("guard negative string slice-from start")?;
+        let past_end = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                start_value,
+                len,
+                "string.slice.from.past.end",
+            )
+            .llvm_ctx("guard string slice-from upper bound")?;
+        let out_of_bounds = self
+            .builder
+            .build_or(negative, past_end, "string.slice.from.bounds")
+            .llvm_ctx("combine string slice-from guards")?;
+        let safe = self
+            .ctx
+            .append_basic_block(self.value, "string.slice.from.safe");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "string.slice.from.failure");
+        self.builder
+            .build_conditional_branch(out_of_bounds, failed, safe)
+            .llvm_ctx("branch around fallible string slice-from call")?;
+
+        self.builder.position_at_end(failed);
+        self.emit_edge(failure)?;
+
+        self.builder.position_at_end(safe);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_string_slice_codepoints_from",
+            ptr.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+        )?;
+        let value = self.runtime_call_value(
+            function,
+            &[
+                self.load(text, "string.slice.from.text")?.into(),
+                start_value.into(),
+            ],
+            "string.slice.codepoints.from",
+        )?;
+        self.store(result, value)?;
         self.emit_result_edge(Some(result), normal)
     }
 

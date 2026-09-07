@@ -458,7 +458,7 @@ impl RuntimeSemanticContract {
                 result_hint.clone()
             }
             RuntimeResultEffect::FreshOwnedVariant(_) => {
-                return Err("exact runtime variant result does not admit this type".to_string())
+                return Err("exact runtime variant result does not admit this type".to_string());
             }
         };
         Ok(RuntimeInstantiatedContract {
@@ -1601,6 +1601,7 @@ pub enum RuntimeCallFamily {
     StringIndex,
     StringLen,
     StringSliceCodepoints,
+    StringSliceCodepointsFrom,
     StringSlice,
     StringToLowercase,
     StringToBytes,
@@ -2112,6 +2113,11 @@ impl RuntimeCallFamily {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat per-family contract table reads more clearly as one match \
+                  than split across helper functions"
+    )]
     const fn text_variant_semantic_contract(self) -> Option<RuntimeSemanticContract> {
         use RuntimeArgumentEffect::{Borrow, Copy};
         use RuntimeResultEffect::{BitCopy, FreshOwned, FreshOwnedVariant};
@@ -2137,6 +2143,52 @@ impl RuntimeCallFamily {
                     &[I64],
                 )),
                 NO_FAILURES,
+            ),
+            Self::StringIndex => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: String,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                BitCopy(RuntimeValueKind::Char),
+                SIR_INDEX_FAILURES,
+            ),
+            Self::StringSliceCodepoints => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: String,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                FreshOwned(String),
+                SIR_INDEX_FAILURES,
+            ),
+            Self::StringSliceCodepointsFrom => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: String,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                FreshOwned(String),
+                SIR_INDEX_FAILURES,
             ),
             Self::StringSlice => runtime_semantic_contract(
                 &[
@@ -2549,6 +2601,7 @@ impl RuntimeCallFamily {
             Self::StringIndex => "hew_string_index",
             Self::StringLen => "hew_string_length",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
+            Self::StringSliceCodepointsFrom => "hew_string_slice_codepoints_from",
             Self::StringSlice => "hew_string_slice",
             Self::StringToLowercase => "hew_string_to_lowercase",
             Self::StringToBytes => "hew_string_to_bytes",
@@ -2950,6 +3003,7 @@ impl RuntimeCallFamily {
             "hew_string_index" => Self::StringIndex,
             "hew_string_length" => Self::StringLen,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
+            "hew_string_slice_codepoints_from" => Self::StringSliceCodepointsFrom,
             "hew_string_slice" => Self::StringSlice,
             "hew_string_to_lowercase" => Self::StringToLowercase,
             "hew_string_to_bytes" => Self::StringToBytes,
@@ -4043,6 +4097,7 @@ impl RuntimeCallFamily {
             | F::StringSlice
             | F::StringToLowercase
             | F::StringSliceCodepoints
+            | F::StringSliceCodepointsFrom
             | F::StringToBytes
             | F::StringToUppercase
             | F::StringTrim

@@ -137,9 +137,9 @@ class CompiledHewShardTests(unittest.TestCase):
         return result
 
     def finalize(
-        self, prerequisites_succeeded: bool
+        self, prerequisites_succeeded: bool, output: Path | None = None
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
-        output = self.root / "published"
+        output = output if output is not None else self.root / "published"
         result = subprocess.run(
             [
                 sys.executable,
@@ -212,6 +212,37 @@ class CompiledHewShardTests(unittest.TestCase):
         finalization = ET.parse(published / "compiled-hew-finalization.xml").getroot()
         self.assertEqual(finalization.get("failures"), "1")
         self.assertIsNotNone(finalization.find(".//failure"))
+
+    def test_finalization_rejects_raw_directory_as_output(self) -> None:
+        before = {path.name: path.read_bytes() for path in self.reports.iterdir()}
+        result, _ = self.finalize(True, self.reports)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("output must be separate", result.stderr)
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in self.reports.iterdir()}, before
+        )
+
+    def test_successful_retry_replaces_only_owned_reports(self) -> None:
+        failed, published = self.finalize(False)
+        self.assertNotEqual(failed.returncode, 0)
+        stale = published / "hew-o0-shard-99.xml"
+        write_junit(
+            stale,
+            ["tests/hew/old_test.hew::old"],
+            failed={"tests/hew/old_test.hew::old"},
+        )
+        unrelated = published / "another-suite.xml"
+        unrelated.write_text("preserve unrelated output\n")
+
+        result, published = self.finalize(True)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((published / "compiled-hew-finalization.xml").exists())
+        self.assertFalse(stale.exists())
+        self.assertEqual(unrelated.read_text(), "preserve unrelated output\n")
+        for raw in self.reports.glob("hew-*-shard-*.xml"):
+            self.assertIsNone(ET.parse(published / raw.name).find(".//failure"))
+            self.assertTrue(raw.is_file())
 
     def test_finalization_refuses_mismatched_expected_failure_kind(self) -> None:
         values = self.full[0::SHARDS]

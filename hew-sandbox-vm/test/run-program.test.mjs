@@ -88,6 +88,51 @@ fn main() {
   assert.deepEqual(result.diagnostics, []);
 });
 
+test("runProgram hands a read_line loop successive stdin lines and then empty at end of input", () => {
+  const result = runProgram(
+    `
+import std.io;
+
+fn main() {
+    for i in 0..5 {
+        let line = io.read_line();
+        if line == "" { return; }
+        println(line);
+    }
+}
+`,
+    "one\ntwo\r\nthree\n"
+  );
+
+  assert.equal(result.stdout, "one\ntwo\nthree\n");
+  assert.equal(result.exit_code, 0);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test("runProgram records each consumed stdin line as a replay.input event without duplicating the record", () => {
+  const compiled = globalThis.__hewSandboxCompileToSandboxBytecode(
+    `
+import std.io;
+
+fn main() {
+    let a = io.read_line();
+    let b = io.read_line();
+    println(a);
+    println(b);
+}
+`,
+    "sandbox-vm-export"
+  );
+  const bytecode = typeof compiled === "string" ? JSON.parse(compiled).bytecode : compiled.bytecode;
+  const trace = runBytecode(bytecode, { replay: { inputs: [{ kind: "stdin", data: "x\ny\n" }] } });
+  assert.deepEqual(trace.replay.inputs, [{ kind: "stdin", data: "x\ny\n" }]);
+  assert.deepEqual(
+    trace.events.filter((event) => event.type === "replay.input").map((event) => event.replay_input),
+    [{ kind: "stdin", data: "x" }, { kind: "stdin", data: "y" }]
+  );
+  assert.deepEqual(trace.final_state.stdout, ["x\n", "y\n"]);
+});
+
 test("runProgram parse errors return diagnostics and do not execute cached bytecode", () => {
   const result = runProgram("fn main( {\n    println(\"nope\");\n}\n", "");
 

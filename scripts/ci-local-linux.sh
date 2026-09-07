@@ -10,7 +10,7 @@
 #
 # Usage:
 #   make ci-local-linux CI_LINUX_HOST=<user@host>             # full Linux job
-#   make ci-local-linux CI_LINUX_HOST=<host> STEP=vertical-slice
+#   make ci-local-linux CI_LINUX_HOST=<host> STEP=test-vertical-slice
 #   CI_LINUX_HOST=<host> scripts/ci-local-linux.sh [step]
 #
 # Config (env):
@@ -22,9 +22,9 @@
 #                       for byte-faithful parity (a host's system lld/LLVM can
 #                       diverge from CI on fixture linking).
 #   HEW_CI_REMOTE_WORKTREE_REL
-#                       Home-relative scratch worktree path (default:
-#                       .cache/hew-ci/<branch>). Keeping build output on the
-#                       user's filesystem avoids small or quota-limited /tmp.
+#                       Home-relative parent for unique retained worktrees (default:
+#                       .cache/hew-ci). Each run prints its worktree path; remove
+#                       it with git worktree remove after inspecting its results.
 set -euo pipefail
 
 STEP="${1:-${STEP:-preflight}}"
@@ -37,29 +37,52 @@ if [[ -z "${HOST}" ]]; then
     exit 2
 fi
 
+case "$STEP" in
+all) TARGET=preflight ;;
+preflight | lint | ci-shard-1 | ci-shard-2 | ci-shard-3 | test-vertical-slice | test-pkg-import | test-hew-ratchet | test-stdlib-ratchet | sandbox-parity)
+    TARGET="$STEP"
+    ;;
+*)
+    echo "unknown STEP=$STEP (use preflight, lint, ci-shard-1/2/3 or a listed Make target)" >&2
+    exit 2
+    ;;
+esac
+
+WT_REL="${HEW_CI_REMOTE_WORKTREE_REL:-.cache/hew-ci}"
+for relative in "$REMOTE_REL" "$WT_REL"; do
+    case "/$relative/" in
+    //* | */../* | */./*)
+        echo "error: remote paths must be home-relative without . or .. components" >&2
+        exit 2
+        ;;
+    esac
+done
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)"
-SHA="$(git -C "${ROOT}" rev-parse --short HEAD)"
-SLUG="ci-local-$(printf '%s' "${BRANCH}" | tr '/:' '--')" # slash-safe ref/worktree name
-REF="refs/hew-ci/${SLUG}"
-WT_REL="${HEW_CI_REMOTE_WORKTREE_REL:-.cache/hew-ci/${SLUG}}"
+SHA="$(git -C "${ROOT}" rev-parse HEAD)"
+REF="refs/hew-ci/${SHA}"
 
-echo "==> Syncing ${BRANCH} (${SHA}) → ${HOST}:${REMOTE_REL} as ${SLUG}"
-# This private non-branch ref is scratch space owned by the harness. Keeping it
-# outside refs/heads means a prior detached validation worktree can never make
-# an ordinary rerun fail because the receive side considers the ref checked
-# out. No project branch is addressed by this operation.
-git -C "${ROOT}" push --force "${HOST}:${REMOTE_REL}" "HEAD:${REF}" 2>&1 | tail -2
+echo "==> Syncing ${BRANCH} (${SHA}) → ${HOST}:${REMOTE_REL}"
+# Content-addressed refs need no force update and cannot race with another
+# commit's run. Use the captured SHA even if HEAD changes during the push.
+git -C "${ROOT}" push "${HOST}:${REMOTE_REL}" "${SHA}:${REF}"
 
-echo "==> Running 'Build & test (Linux)' step '${STEP}' on ${HOST} (LLVM_SYS_221_PREFIX=${LLVM_PREFIX})"
-# Quoted heredoc: the body runs verbatim server-side; locals are passed as args.
-ssh "${HOST}" bash -s -- "${STEP}" "${SLUG}" "${REF}" "${WT_REL}" "${REMOTE_REL}" "${LLVM_PREFIX}" <<'REMOTE'
+echo "==> Running '${TARGET}' on ${HOST} (LLVM_SYS_221_PREFIX=${LLVM_PREFIX})"
+# SSH joins command arguments through the remote shell: preserve spaces and
+# metacharacters before passing the quoted heredoc's arguments to Bash.
+printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q %q' \
+    "$TARGET" "$SHA" "$WT_REL" "$REMOTE_REL" "$LLVM_PREFIX"
+# Arguments were shell-escaped above; this expansion is the SSH command.
+# shellcheck disable=SC2029
+ssh "${HOST}" "$REMOTE_COMMAND" <<'REMOTE'
 set -euo pipefail
-STEP="$1"; SLUG="$2"; REF="$3"; WT="$HOME/$4"; REMOTE_REL="$5"; LLVM_PREFIX="$6"
+TARGET="$1"; SHA="$2"; WT_PARENT="$HOME/$3"; REMOTE_REL="$4"; LLVM_PREFIX="$5"
 cd "$HOME/$REMOTE_REL"
-git fetch . "$REF" >/dev/null
-rm -rf "$WT"; git worktree prune
-git worktree add --detach "$WT" FETCH_HEAD >/dev/null
+mkdir -p "$WT_PARENT"
+WT="$(mktemp -d "$WT_PARENT/run.XXXXXXXX")"
+echo "==> Retained CI worktree: $WT (commit $SHA)"
+git worktree add --detach "$WT" "$SHA" >/dev/null
 cd "$WT"
 export LLVM_SYS_221_PREFIX="$LLVM_PREFIX"
 export CARGO_TERM_COLOR=always
@@ -72,12 +95,6 @@ if [[ -x "$HOME/.wasmtime/bin/wasmtime" ]]; then
 fi
 export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run"
 
-case "$STEP" in
-  all) TARGET=preflight ;;
-  preflight|lint|ci-shard-1|ci-shard-2|ci-shard-3|test-vertical-slice|test-pkg-import|test-hew-ratchet|test-stdlib-ratchet|sandbox-parity)
-    TARGET="$STEP" ;;
-  *) echo "unknown STEP=$STEP (preflight|lint|ci-shard-1|ci-shard-2|ci-shard-3 or a focused listed gate)" >&2; exit 2 ;;
-esac
 make "$TARGET"
-echo "CI_LOCAL_LINUX_OK host=$(hostname) step=$STEP"
+echo "CI_LOCAL_LINUX_OK host=$(hostname) target=$TARGET"
 REMOTE

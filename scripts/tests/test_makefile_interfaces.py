@@ -27,21 +27,22 @@ def test_shell_lint_discovers_tracked_nested_scripts_only() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-        (root / "scripts" / "lib").mkdir(parents=True)
-        (root / "scripts" / "top.sh").write_text("#!/usr/bin/env bash\ntrue\n")
-        (root / "scripts" / "lib" / "nested.sh").write_text(
-            "#!/usr/bin/env bash\ntrue\n"
-        )
-        (root / "scripts" / "untracked.sh").write_text("if broken\n")
-        subprocess.run(
-            ["git", "add", "scripts/top.sh", "scripts/lib/nested.sh"],
-            cwd=root,
-            check=True,
-        )
-        assert shell_lint.tracked_shell_scripts(root) == (
+        tracked = (
+            ".github/scripts/download.sh",
+            "examples/demo/run.sh",
+            "installers/install.sh",
             "scripts/lib/nested.sh",
             "scripts/top.sh",
+            "tests/package-install/run.sh",
         )
+        for name in tracked:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\ntrue\n")
+        (root / "scripts" / "untracked.sh").write_text("if broken\n")
+        subprocess.run(["git", "add", *tracked], cwd=root, check=True)
+        assert shell_lint.tracked_shell_scripts(root) == tracked
+        assert shell_lint.check(root) == 0
 
 
 def test_tracked_nested_syntax_error_fails_shell_lint() -> None:
@@ -49,9 +50,23 @@ def test_tracked_nested_syntax_error_fails_shell_lint() -> None:
         root = Path(tmp)
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         (root / "scripts" / "lib").mkdir(parents=True)
-        (root / "scripts" / "lib" / "broken.sh").write_text("if broken\n")
+        (root / "scripts" / "lib" / "broken.sh").write_text("#!/bin/sh\nif broken\n")
         subprocess.run(["git", "add", "scripts/lib/broken.sh"], cwd=root, check=True)
         assert shell_lint.check(root) != 0
+
+
+def test_posix_installer_rejects_bash_syntax() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        installer = root / "install.sh"
+        installer.write_text("#!/bin/sh\nvalues=(one two)\n")
+        subprocess.run(["git", "add", "install.sh"], cwd=root, check=True)
+        assert shell_lint.check(root) != 0
+        installer.write_text(
+            "#!/usr/bin/env bash\nvalues=(one two)\nprintf '%s\\n' \"${values[@]}\"\n"
+        )
+        assert shell_lint.check(root) == 0
 
 
 def tests() -> list:

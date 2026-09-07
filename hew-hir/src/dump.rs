@@ -903,17 +903,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     .expect("write to string");
             }
         }
-        HirExprKind::Join(join) => {
-            writeln!(out, "{pad}  join branches={}", join.branches.len()).expect("write to string");
-            for branch in &join.branches {
-                writeln!(out, "{pad}    branch actor-ask method={}", branch.method)
-                    .expect("write to string");
-                dump_expr(out, &branch.actor, indent + 2);
-                for arg in &branch.args {
-                    dump_expr(out, arg, indent + 2);
-                }
-            }
-        }
         HirExprKind::SpawnLambdaActor {
             params,
             reply_ty,

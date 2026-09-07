@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# `errexit` is deliberately NOT set: the fixture list below runs hundreds of
+# independent checks, and every one that can fail routes through
+# `record_failure` (or a guarded `if`) so the run keeps going and reports
+# every fixture's disposition instead of stopping at the first failure.
+# Setup below (binary/library presence) still fails closed via explicit
+# `exit` on its own `if` guards, not implicit `errexit`.
+set -uo pipefail
 
 resolve_timeout() {
     if command -v timeout >/dev/null 2>&1; then
@@ -46,20 +52,59 @@ node_lookup_identity="/tmp/hew-cap13-node-lookup-send.key"
 identity_aggregates_identity="/tmp/hew-cap13-identity-aggregates.key"
 trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}" "${node_lookup_identity}" "${node_lookup_identity}.hew-state" "${identity_aggregates_identity}" "${identity_aggregates_identity}.hew-state"' EXIT
 
+# Every fixture that passes (or is a known, ratcheted failure) reports
+# through one of these, so the closing summary can count them without every
+# one of the ~470 fixture rows routing its result through a shared counter.
+pass_count=0
+known_count=0
+mark_pass() {
+    pass_count=$((pass_count + 1))
+    echo "PASS $*"
+}
+mark_known() {
+    known_count=$((known_count + 1))
+    echo "KNOWN $*"
+}
+
+# Failure accumulator: a helper records an unexpected outcome here instead of
+# exiting the whole run, so one bad fixture doesn't hide the disposition of
+# every fixture after it. `${fail_names[@]}`/`${fail_reasons[@]}` are parallel
+# arrays; the summary at the end of the script reports them and sets the
+# process exit status.
+fail_count=0
+fail_names=()
+fail_reasons=()
+
+record_failure() {
+    local name="$1"
+    local reason="$2"
+    fail_count=$((fail_count + 1))
+    fail_names+=("${name}")
+    fail_reasons+=("${reason}")
+    echo "FAIL ${name} (${reason})" >&2
+}
+
 compile_accept() {
     local fixture="$1"
-    # Keep failure propagation explicit: Bash disables `errexit` inside a
-    # function when an outer caller evaluates that function as a condition.
-    # `exit` here makes a failed fixture fatal even through such a caller.
-    "${ROOT}/tests/vertical-slice/compile-accept.sh" \
-        "${HEW}" "${ROOT}" "${fixture}" "${accept_output}" || exit 1
+    # Record and return rather than exit: a caller that treats this as a
+    # condition (`compile_accept "x" || return 0`) decides how to unwind its
+    # own fixture; the whole run keeps going either way.
+    if ! "${ROOT}/tests/vertical-slice/compile-accept.sh" \
+        "${HEW}" "${ROOT}" "${fixture}" "${accept_output}"; then
+        record_failure "${fixture}" "compile-accept.sh failed, see ${accept_output}"
+        return 1
+    fi
 }
 
 run_fixture_path_expect_status() {
     local fixture_path="$1"
     local label="$2"
     local expected_status="$3"
-    "${HEW}" compile "${fixture_path}" >"${accept_output}" 2>&1
+    if ! "${HEW}" compile "${fixture_path}" >"${accept_output}" 2>&1; then
+        cat "${accept_output}" >&2
+        record_failure "${label}" "compile failed, see ${accept_output}"
+        return 0
+    fi
     local bin
     bin="${ROOT}/.tmp/compile-out/$(basename "${fixture_path}" .hew)"
     local status=0
@@ -73,7 +118,8 @@ run_fixture_path_expect_status() {
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${label}" "expected exit ${expected_status}, got ${status}"
+        return 0
     fi
 }
 
@@ -113,7 +159,7 @@ run_accept_capture_status() {
     local fixture="$1"
     shift
     echo "RUN ${fixture}"
-    compile_accept "${fixture}"
+    compile_accept "${fixture}" || return 0
     local bin="${ROOT}/.tmp/compile-out/${fixture}"
     last_accept_status=0
     # Time-bound the fixture binary: a non-terminating fixture (e.g. an actor
@@ -130,15 +176,21 @@ run_accept_expect_status() {
     local fixture="$1"
     local expected_status="$2"
     shift 2
+    local fail_count_before="${fail_count}"
     run_accept_capture_status "${fixture}" "$@"
+    # compile_accept already recorded the failure and left last_accept_status
+    # stale (from whatever fixture ran before this one) — don't re-derive a
+    # pass/fail verdict from it.
+    [[ "${fail_count}" -ne "${fail_count_before}" ]] && return 0
     if [[ "${last_accept_status}" -ne "${expected_status}" ]]; then
         echo "expected ${fixture} to exit ${expected_status}, got ${last_accept_status}" >&2
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected exit ${expected_status}, got ${last_accept_status}"
+        return 0
     fi
-    echo "PASS ${fixture}"
+    mark_pass "${fixture}"
 }
 
 run_actor_bounds_trap_fixture() {
@@ -146,40 +198,53 @@ run_actor_bounds_trap_fixture() {
     local expected_diagnostic="$2"
     local expected_actor="${3:-}"
     local expected_status="${4:-1}"
+    local fail_count_before="${fail_count}"
     run_accept_expect_status "${fixture}" "${expected_status}"
+    [[ "${fail_count}" -ne "${fail_count_before}" ]] && return 0
     if ! grep -qF -- "${expected_diagnostic}" "${stderr_output}"; then
         echo "${fixture}: missing expected actor panic diagnostic: ${expected_diagnostic}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "missing expected actor panic diagnostic"
+        return 0
     fi
     if [[ -n "${expected_actor}" ]] &&
         ! grep -qF -- "${expected_actor}" "${stderr_output}"; then
         echo "${fixture}: missing expected actor context: ${expected_actor}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "missing expected actor context"
+        return 0
     fi
     if grep -qF -- 'hew: trap in main context' "${stderr_output}"; then
         echo "${fixture}: actor-context bounds trap fell through to main-context fallback" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "actor-context bounds trap fell through to main-context fallback"
+        return 0
     fi
 }
 
 run_accept_expect_stdout() {
     local fixture="$1"
+    local fail_count_before="${fail_count}"
     run_accept_expect_status "${fixture}" 0
-    diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+    [[ "${fail_count}" -ne "${fail_count_before}" ]] && return 0
+    if ! diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"; then
+        record_failure "${fixture}" "stdout did not match ${fixture}.expected"
+        return 0
+    fi
 }
 
 run_accept_expect_stdout_contains() {
     local fixture="$1"
     shift
+    local fail_count_before="${fail_count}"
     run_accept_expect_status "${fixture}" 0
+    [[ "${fail_count}" -ne "${fail_count_before}" ]] && return 0
     for expected in "$@"; do
         if ! grep -qF -- "${expected}" "${stdout_output}"; then
             echo "expected ${fixture} stdout to contain: ${expected}" >&2
             cat "${stdout_output}" >&2
-            exit 1
+            record_failure "${fixture}" "stdout missing: ${expected}"
+            return 0
         fi
     done
 }
@@ -192,7 +257,7 @@ run_accept_expect_stdout_contains() {
 run_accept_expect_trap() {
     local fixture="$1"
     echo "RUN ${fixture}"
-    compile_accept "${fixture}"
+    compile_accept "${fixture}" || return 0
     local bin="${ROOT}/.tmp/compile-out/${fixture}"
     local status=0
     if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}"; then
@@ -206,16 +271,22 @@ run_accept_expect_trap() {
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected a trap signal (132 or 133), got ${status}"
+        return 0
     fi
-    echo "PASS ${fixture}"
+    mark_pass "${fixture}"
 }
 
 run_accept_expect_status_and_stdout() {
     local fixture="$1"
     local expected_status="$2"
+    local fail_count_before="${fail_count}"
     run_accept_expect_status "${fixture}" "${expected_status}"
-    diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+    [[ "${fail_count}" -ne "${fail_count_before}" ]] && return 0
+    if ! diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"; then
+        record_failure "${fixture}" "stdout did not match ${fixture}.expected"
+        return 0
+    fi
 }
 
 # Run a fixture that is expected to call panic() — verifies exit 101 (hew_panic's
@@ -235,7 +306,7 @@ run_accept_expect_panic() {
     local expected_stderr_substr="$2"
     local expected_stdout="${3:-}"
     echo "RUN ${fixture}"
-    compile_accept "${fixture}"
+    compile_accept "${fixture}" || return 0
     local bin="${ROOT}/.tmp/compile-out/${fixture}"
     local status=0
     if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}"; then
@@ -248,23 +319,29 @@ run_accept_expect_panic() {
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected exit 101 (panic), got ${status}"
+        return 0
     fi
     if ! grep -qF -- "${expected_stderr_substr}" "${stderr_output}"; then
         echo "expected ${fixture} stderr to contain: ${expected_stderr_substr}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "stderr missing: ${expected_stderr_substr}"
+        return 0
     fi
     if grep -qF -- "panicked at" "${stderr_output}"; then
         echo "expected ${fixture} stderr to carry only the Hew panic message," >&2
         echo "but it also carries Rust's default panic hook output" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "stderr carries Rust's default panic hook output"
+        return 0
     fi
     if [[ -n "${expected_stdout}" ]]; then
-        diff -u "${expected_stdout}" "${stdout_output}"
+        if ! diff -u "${expected_stdout}" "${stdout_output}"; then
+            record_failure "${fixture}" "stdout did not match ${expected_stdout}"
+            return 0
+        fi
     fi
-    echo "PASS ${fixture}"
+    mark_pass "${fixture}"
 }
 
 run_check_run_expect_stdout() {
@@ -284,10 +361,14 @@ run_check_run_expect_stdout() {
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected hew run to exit 0, got ${status}"
+        return 0
     fi
-    diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
-    echo "PASS ${fixture}"
+    if ! diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"; then
+        record_failure "${fixture}" "stdout did not match ${fixture}.expected"
+        return 0
+    fi
+    mark_pass "${fixture}"
 }
 
 expect_check_fail_contains() {
@@ -296,12 +377,14 @@ expect_check_fail_contains() {
     local label="$3"
     if "${HEW}" check "${fixture_path}" >"${reject_output}" 2>&1; then
         echo "expected ${label} to fail closed under hew check" >&2
-        exit 1
+        record_failure "${label}" "expected to fail closed under hew check"
+        return 0
     fi
     if ! grep -qF -- "${expected_substr}" "${reject_output}"; then
         echo "expected ${label} diagnostic to contain: ${expected_substr}" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${label}" "diagnostic missing: ${expected_substr}"
+        return 0
     fi
 }
 
@@ -313,11 +396,14 @@ expect_check_fail_contains_without() {
     local expected_substr="$2"
     local forbidden_substr="$3"
     local label="$4"
+    local fail_count_before="${fail_count}"
     expect_check_fail_contains "${fixture_path}" "${expected_substr}" "${label}"
+    [[ "${fail_count}" -ne "${fail_count_before}" ]] && return 0
     if grep -qF -- "${forbidden_substr}" "${reject_output}"; then
         echo "expected ${label} diagnostic NOT to contain: ${forbidden_substr}" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${label}" "diagnostic unexpectedly contains: ${forbidden_substr}"
+        return 0
     fi
 }
 
@@ -327,14 +413,16 @@ expect_check_fail_error_count() {
     local label="$3"
     if "${HEW}" check "${fixture_path}" >"${reject_output}" 2>&1; then
         echo "expected ${label} to fail closed under hew check" >&2
-        exit 1
+        record_failure "${label}" "expected to fail closed under hew check"
+        return 0
     fi
     local actual_count
     actual_count="$(grep -Ec '^[^:]+:[0-9]+:[0-9]+: error:' "${reject_output}" || true)"
     if [[ "${actual_count}" -ne "${expected_count}" ]]; then
         echo "expected ${label} to emit ${expected_count} error(s), got ${actual_count}" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${label}" "expected ${expected_count} error(s), got ${actual_count}"
+        return 0
     fi
 }
 
@@ -351,21 +439,24 @@ expect_check_fail_error_count_no_cascade() {
     shift 3
     if "${HEW}" check "${fixture_path}" >"${reject_output}" 2>&1; then
         echo "expected ${label} to fail closed under hew check" >&2
-        exit 1
+        record_failure "${label}" "expected to fail closed under hew check"
+        return 0
     fi
     local actual_count
     actual_count="$(grep -Ec '^[^:]+:[0-9]+:[0-9]+: error:' "${reject_output}" || true)"
     if [[ "${actual_count}" -ne "${expected_count}" ]]; then
         echo "expected ${label} to emit ${expected_count} error(s), got ${actual_count}" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${label}" "expected ${expected_count} error(s), got ${actual_count}"
+        return 0
     fi
     local forbidden
     for forbidden in "$@"; do
         if grep -qF -- "${forbidden}" "${reject_output}"; then
             echo "expected ${label} to suppress cascade secondary '${forbidden}', but it was present" >&2
             cat "${reject_output}" >&2
-            exit 1
+            record_failure "${label}" "cascade secondary '${forbidden}' unexpectedly present"
+            return 0
         fi
     done
 }
@@ -420,13 +511,16 @@ fi
 if [[ "${borrow_reject_status}" -ne 1 ]]; then
     echo "expected borrow_type_outside_extern to exit 1, got ${borrow_reject_status}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # The diagnostic's backticks must remain literal.
-grep -qF -- \
+if grep -qF -- \
     '`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code' \
-    "${reject_output}"
-echo "PASS borrow_type_outside_extern (reject)"
+    "${reject_output}"; then
+    mark_pass "borrow_type_outside_extern (reject)"
+else
+    record_failure "borrow_type_outside_extern" "diagnostic missing"
+fi
 
 # `--dump-mir raw` (retired) used to confirm the literal `-> string`/`-> i64`
 # return-type text in the MIR dump; physical MIR's structured (Debug) dump
@@ -446,7 +540,7 @@ fi
 if [[ "${arith_status}" -ne 5 ]]; then
     echo "expected arith_call fixture to exit 5, got ${arith_status}" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 run_accept_expect_stdout "hello_println"
@@ -471,9 +565,10 @@ if "${HEW}" compile --target wasm32-unknown-unknown \
     "${ROOT}/tests/vertical-slice/reject/machine_wasm_blocking_recv.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected machine_wasm_blocking_recv fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
+grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject (totality at the wasm boundary): the `Node` distributed cluster API
 # (`Node.start` / `connect` / `load_keys`) must fail closed AT CHECK on BOTH
@@ -488,15 +583,16 @@ for triple in wasm32-unknown-unknown wasm32-wasip1; do
     if "${HEW}" check --target "${triple}" "${node_wasm_fixture}" >"${reject_output}" 2>&1; then
         echo "expected node_wasm_distributed_failclosed to fail closed under ${triple}" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
-    grep -q 'Distributed node and remote-actor operations are not supported on WASM32' "${reject_output}"
+    grep -q 'Distributed node and remote-actor operations are not supported on WASM32' "${reject_output}" ||
+        record_failure "row ${LINENO}" "assertion failed"
 done
 # Native parity: the identical Node program type-checks cleanly off-wasm.
 if ! "${HEW}" check "${node_wasm_fixture}" >"${reject_output}" 2>&1; then
     echo "expected node_wasm_distributed_failclosed to pass hew check on native" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Accept: `fork child = worker(42)` inside a machine state entry block
@@ -504,7 +600,7 @@ fi
 # arg-bearing named forks ride the fork-entry shim env. Compile-only (main
 # never instantiates the machine); lower-level HIR tests continue to pin the
 # Item::Machine task-gate walker directly.
-compile_accept "machine_fork_args_spawn"
+compile_accept "machine_fork_args_spawn" || true
 
 # A generic machine used as a record field (`m: Lifecycle<i64>`) must compile
 # and run without "record type Box has a value class MIR cannot lower yet".
@@ -524,12 +620,13 @@ run_accept_expect_stdout "machine_dotted_struct_variant_body"
 # refused there, and the diagnostic names the module-qualified owner the fix
 # mints. The accept side of the same shape lives in
 # tests/hew/imported_machine_context_variant_test.hew.
+_fcb=${fail_count}
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/machine_context_variant_unknown/main.hew" \
     'E_PATH_MEMBER_NOT_FOUND: expected type `lights.Light` has no variant `Nope`' \
     "machine_context_variant_unknown"
-echo "PASS machine_context_variant_unknown (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_context_variant_unknown (reject)"
 
 # Accept: regression for #3264. A body-less transition (`on E: Src => Tgt;`)
 # whose target is a bare (non-`.`-prefixed) state name must resolve against
@@ -541,13 +638,14 @@ run_accept_expect_stdout "machine_bare_transition_target"
 # names no declared state is still refused, with a machine "unknown state"
 # diagnostic — never E_BARE_VARIANT_EXPR, which would mean the fix silenced
 # the checker for every bare identifier in transition-target position.
+_fcb=${fail_count}
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 expect_check_fail_contains_without \
     "${ROOT}/tests/vertical-slice/reject/machine_bare_transition_target_unknown.hew" \
     'machine `Light`: transition references unknown state `Bogus`' \
     'E_BARE_VARIANT_EXPR' \
     "machine_bare_transition_target_unknown"
-echo "PASS machine_bare_transition_target_unknown (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_bare_transition_target_unknown (reject)"
 
 # #2434 split coverage: the generic-record owned-field path is clean on its own
 # (`string.repeat` single fresh producer), while the real leak root is the
@@ -974,9 +1072,10 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/spawned_closure_non_send_capture.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected spawned_closure_non_send_capture fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q "spawned closure captures non-Send value 'r'" "${reject_output}"
+grep -q "spawned closure captures non-Send value 'r'" "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/var_by_value_param_noncopy.hew" \
     "by-value parameter" \
@@ -1033,11 +1132,12 @@ run_accept_expect_stdout "actor_method_from_hook_and_init"
 
 # ... and unreachable from outside the actor, as a User-channel refusal rather
 # than the internal-error pair the unresolvable target used to produce.
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/actor_method_from_main.hew" \
     "E_ACTOR_METHOD_OUTSIDE" \
     "actor_method_from_main"
-echo "PASS actor_method_from_main (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "actor_method_from_main (reject)"
 
 # A Sink<string> half moved into actor state is accepted: the actor's
 # state_drop_fn is the single free site (closed exactly once at teardown), so
@@ -1086,11 +1186,11 @@ run_accept_expect_stdout "opaque_handle_user_shadow"
 if grep -qF -- "resolves to non-pointer type" "${accept_output}"; then
     echo "opaque_handle_user_shadow: raw LLVM dump leaked into compile output" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # Declaration-level generic bounds are authority at nominal instantiation sites:
 # valid arguments compile, invalid arguments fail closed at the reference site.
-compile_accept "generic_decl_bound_satisfied"
+compile_accept "generic_decl_bound_satisfied" || true
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/p0b_typedecl_bound_dropped.hew" \
     "type \`NoDisplay\` does not implement trait \`Display\` required by \`T\`" \
@@ -1144,7 +1244,7 @@ if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" ||
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
     echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 run_accept_expect_stdout "static_trait_dispatch_inline_supertrait"
 run_accept_expect_stdout "static_trait_dispatch_intermediate_inline_supertrait"
@@ -1159,9 +1259,12 @@ run_accept_expect_status_and_stdout "var_self_concrete_specialised_trait_impl" 0
 # `assert_eq` to a comparison and `panic`, so it exits 212 (UserPanic) and
 # reports both rendered operands.
 run_accept_expect_status "assert_eq_fail" 212
-grep -q 'assertion failed: left != right' "${stderr_output}"
-grep -q '  left: 4' "${stderr_output}"
-grep -q '  right: 5' "${stderr_output}"
+grep -q 'assertion failed: left != right' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q '  left: 4' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q '  right: 5' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 run_accept_expect_status "exit_42" 42
 run_accept_expect_status "for_vec_sum_42" 42
@@ -1331,9 +1434,10 @@ run_accept_expect_stdout "labeled_break_defer_window"
 
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/labeled_break_unknown_label.hew" >"${reject_output}" 2>&1; then
     echo "expected labeled_break_unknown_label fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF "unknown loop label \`@nonexistent\`" "${reject_output}"
+grep -qF "unknown loop label \`@nonexistent\`" "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # WASM parity: the for-range `continue` CFG (increment block + overflow traps,
 # the most complex loop-control shape) must compile under wasm32. Loop control
@@ -1386,7 +1490,8 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew" \
     'binding `child` is used after it was consumed' \
     "consume param transfer builder use after move"
-grep -qF 'MIR kind: UseAfterConsume' "${reject_output}"
+grep -qF 'MIR kind: UseAfterConsume' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
 # `#[linear]` value in a machine state payload has no wired release on
@@ -1394,30 +1499,33 @@ grep -qF 'MIR kind: UseAfterConsume' "${reject_output}"
 # its `close` silently. Three shapes pin the fail-closed floor: a reenter that
 # carries the handle through, a scope exit holding the handle live, and a
 # resource beside a heap-owning sibling (one diagnostic per offending state).
+_fcb=${fail_count}
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_reenter.hew" \
     'machine `Session` state `Active` holds `#[resource]`/`#[linear]` value `Handle`' \
     "machine_state_resource_payload_reenter"
-echo "PASS machine_state_resource_payload_reenter (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_state_resource_payload_reenter (reject)"
 
+_fcb=${fail_count}
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_scope_exit.hew" \
     'machine `ConnSession` state `Active` holds `#[resource]`/`#[linear]` value `Handle`' \
     "machine_state_resource_payload_scope_exit"
-echo "PASS machine_state_resource_payload_scope_exit (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_state_resource_payload_scope_exit (reject)"
 
 expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew" \
     2 \
     "machine_state_resource_payload_heap_sibling"
+_fcb=${fail_count}
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew" \
     'machine `Plain` state `Live` holds `#[resource]`/`#[linear]` value `Handle`' \
     "machine_state_resource_payload_heap_sibling"
-echo "PASS machine_state_resource_payload_heap_sibling (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_state_resource_payload_heap_sibling (reject)"
 
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited
@@ -1441,9 +1549,10 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/user_resource_missing_close.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.030 V10: expected user_resource_missing_close to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'ResourceMissingClose' "${reject_output}"
+grep -q 'ResourceMissingClose' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # V11 — inline `TypeBodyItem::Method` close on a `#[resource]` ->
 # ResourceCloseSourceUnsupported (Q-α-B).
@@ -1451,9 +1560,10 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/user_resource_inline_close_source.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.030 V11: expected user_resource_inline_close_source to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'ResourceCloseSourceUnsupported' "${reject_output}"
+grep -q 'ResourceCloseSourceUnsupported' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # --- #[linear] / consuming-self surface -----------------------------------
 #
@@ -1472,18 +1582,20 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/linear_unconsumed.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected linear_unconsumed to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'MustConsume' "${reject_output}"
+grep -q 'MustConsume' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Consuming a `#[linear]` binding twice is rejected (`UseAfterConsume`).
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/linear_double_consume.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected linear_double_consume to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'UseAfterConsume' "${reject_output}"
+grep -q 'UseAfterConsume' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # A type-body `consume self` on a `#[linear]` is rejected with a directive to
 # the sibling-inherent-impl surface (`LinearConsumingMethodSourceUnsupported`).
@@ -1491,18 +1603,20 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/linear_inline_consuming_source.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected linear_inline_consuming_source to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'LinearConsumingMethodSourceUnsupported' "${reject_output}"
+grep -q 'LinearConsumingMethodSourceUnsupported' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reusing a non-copy binding after a `consume self` call is rejected.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/consuming_self_use_after_move.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected consuming_self_use_after_move to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'moved value' "${reject_output}"
+grep -q 'moved value' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # V12 — inherent-impl `close` returning non-unit -> ResourceCloseMustReturnUnit
 # (Q-β-C). Fallible cleanup composes via `defer`, not a non-unit close.
@@ -1510,9 +1624,10 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/user_resource_close_non_unit_return.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.030 V12: expected user_resource_close_non_unit_return to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
+grep -q 'ResourceCloseMustReturnUnit' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # RAII-2 boundary consume discipline (#1295). A `#[resource]` handle passed by
 # value across an invisible-body boundary — an `extern` fn or a bodyless trait
@@ -1570,7 +1685,8 @@ run_accept_expect_status "actor_counter" 42
 run_accept_expect_stdout "actor_self_state_field"
 run_accept_expect_stdout "actor_bare_state_field"
 diff -u "${ROOT}/tests/vertical-slice/accept/actor_bare_state_field.expected" \
-    "${ROOT}/tests/vertical-slice/accept/actor_self_state_field.expected"
+    "${ROOT}/tests/vertical-slice/accept/actor_self_state_field.expected" ||
+    record_failure "actor_bare_state_field/actor_self_state_field" "expected outputs diverged"
 
 # Mixing the two spellings for different fields in one body: `init`, the
 # start hook, and the handlers each reach one field through the receiver and
@@ -1624,7 +1740,8 @@ expect_check_fail_contains \
 # the receiver is spelled or not: same expected output as the bare twin.
 run_accept_expect_stdout "actor_self_field_method_dispatch"
 diff -u "${ROOT}/tests/vertical-slice/accept/actor_field_method_dispatch.expected" \
-    "${ROOT}/tests/vertical-slice/accept/actor_self_field_method_dispatch.expected"
+    "${ROOT}/tests/vertical-slice/accept/actor_self_field_method_dispatch.expected" ||
+    record_failure "actor_field_method_dispatch/actor_self_field_method_dispatch" "expected outputs diverged"
 
 # A `for` binder may not take a state field's name in either spelling. The
 # binder used to capture the read while the write still landed in state, so one
@@ -1736,7 +1853,7 @@ imported_generics_fixture="${ROOT}/tests/vertical-slice/accept/imported_generics
 grep -q ": OK$" "${accept_output}" || {
     echo "imported_generics_resolve: expected hew check to print ': OK' (imported generic actor/trait/supervisor must resolve)" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 }
 
 # Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler
@@ -1874,17 +1991,23 @@ run_accept_expect_status "ask_reply_owned_select_loser" 18
 # once, the actor balance oracle must remain exact, and the unrecovered actor
 # panic must fail the process after the recovery output settles.
 run_accept_expect_status "await_owned_string_crash_cleanup" 1 HEW_ACTOR_LEAK_CHECK=1
-grep -qF -- "used=fresh-value" "${stdout_output}"
-grep -qF -- "handled-crash" "${stdout_output}"
-grep -qF -- "handled crash after fresh string use" "${stderr_output}"
+grep -qF -- "used=fresh-value" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF -- "handled-crash" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF -- "handled crash after fresh string use" "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # The select winner writes an owned string directly into its binding. Prove the
 # shared winner tail arms that slot before a later handled actor panic, while
 # the unrecovered crash still fails the process.
 run_accept_expect_status "select_owned_string_crash_cleanup" 1 HEW_ACTOR_LEAK_CHECK=1
-grep -qF -- "selected=selected-value" "${stdout_output}"
-grep -qF -- "select-handled-crash" "${stdout_output}"
-grep -qF -- "handled crash after select string use" "${stderr_output}"
+grep -qF -- "selected=selected-value" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF -- "select-handled-crash" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF -- "handled crash after select string use" "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
 # reply always arrives after the 10 ms deadline, so the after-arm wins and the
@@ -1922,9 +2045,10 @@ echo 'PASS select_recv_guard'
 # late MIR/codegen error.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_await_task_dropped.hew" >"${reject_output}" 2>&1; then
     echo "expected select_arm_await_task_dropped fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}"
+grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject (SELECT ship-3, HEW-SPEC §4.11.1): the stream-next arm
 # `<id> from <stream>.recv()` over a Stream<T> is NOT a sealed select form — the
@@ -1933,9 +2057,10 @@ grep -qF 'select arm source must await a Task or invoke an actor ask or channel 
 # form error, not the owned-handle aggregate-extraction fail-closed.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_stream_recv_dropped.hew" >"${reject_output}" 2>&1; then
     echo "expected select_arm_stream_recv_dropped fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}"
+grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;
 # main returns 42 after bootstrap completes successfully.
@@ -2051,26 +2176,29 @@ run_accept_expect_status "supervisor_pool_count_clause" 20
 
 # The retired spelling fails closed with the clause form as its fix-it, instead
 # of passing `count` on as an init field the checker then blames on the actor.
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/supervisor_pool_count_init_arg.hew" \
     "pool arity is a child clause" \
     "supervisor_pool_count_init_arg"
-echo "PASS supervisor_pool_count_init_arg (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "supervisor_pool_count_init_arg (reject)"
 
 # The clause is refused on a static child: one actor has no arity.
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/supervisor_count_clause_on_static_child.hew" \
     "\`count:\` is a pool clause" \
     "supervisor_count_clause_on_static_child"
-echo "PASS supervisor_count_clause_on_static_child (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "supervisor_count_clause_on_static_child (reject)"
 
 # A pool without the clause has no declared size, so the checker fails closed
 # rather than guessing one.
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/supervisor_pool_count_clause_missing.hew" \
     "E_SUPERVISOR_POOL_COUNT_MISSING" \
     "supervisor_pool_count_clause_missing"
-echo "PASS supervisor_pool_count_clause_missing (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "supervisor_pool_count_clause_missing (reject)"
 
 # Whole-field pool access: bind `let workers = sup.workers`, then route len,
 # trapping index, and safe get through the first-class pool view.
@@ -2127,7 +2255,7 @@ run_accept_expect_status "supervisor_childref_value_flow_states" 1
 if ! grep -qxF -- "CHILDREF_FLOW_STATE_MATRIX_OK" "${stdout_output}"; then
     echo "supervisor_childref_value_flow_states: sentinel missing" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
@@ -2181,12 +2309,12 @@ watch_cancel_block="$(awk '
 if [[ -z "${watch_cancel_block}" ]]; then
     echo "drop-safety: could not find Watcher__recv__watch cancel_exit block in IR" >&2
     echo "${watch_ll}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if grep -q 'hew_actor_demonitor' <<<"${watch_cancel_block}"; then
     echo "drop-safety REGRESSION: handler cancel_exit demonitors a not-yet-live MonitorRef" >&2
     echo "${watch_cancel_block}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
@@ -2242,8 +2370,10 @@ run_accept_expect_status "on_exit_hook" 42
 # hook, not merely its compile-time declaration. The hook can observe the
 # unsupervised linked actor crash, but cannot recover it for process status.
 run_accept_expect_status "on_exit_hook_delivery" 1
-diff -u "${ROOT}/tests/vertical-slice/accept/on_exit_hook_delivery.expected" "${stdout_output}"
-grep -qF -- "fire linked exit hook" "${stderr_output}"
+diff -u "${ROOT}/tests/vertical-slice/accept/on_exit_hook_delivery.expected" "${stdout_output}" ||
+    record_failure "on_exit_hook_delivery" "stdout did not match expected"
+grep -qF -- "fire linked exit hook" "${stderr_output}" ||
+    record_failure "on_exit_hook_delivery" "stderr missing: fire linked exit hook"
 
 # Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
 # DownNotification payload and route HewSysMsg::Down through actor dispatch.
@@ -2255,20 +2385,22 @@ run_accept_expect_status "on_down_hook" 42
 # internal-looking HIR/MIR layout failure. The two accept fixtures above pin
 # the imported form; the checker unit matrix pins unused-import accounting.
 echo "RUN on_exit_hook_missing_import (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains_without \
     "${ROOT}/tests/vertical-slice/reject/on_exit_hook_missing_import.hew" \
     "unknown type \`CrashNotification\`" \
     "CheckerBoundaryViolation" \
     "on_exit_hook_missing_import"
-echo "PASS on_exit_hook_missing_import (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "on_exit_hook_missing_import (reject)"
 
 echo "RUN on_down_hook_missing_import (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains_without \
     "${ROOT}/tests/vertical-slice/reject/on_down_hook_missing_import.hew" \
     "unknown type \`DownNotification\`" \
     "CheckerBoundaryViolation" \
     "on_down_hook_missing_import"
-echo "PASS on_down_hook_missing_import (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "on_down_hook_missing_import (reject)"
 
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
@@ -2316,11 +2448,12 @@ run_accept_expect_status "mailbox_bounded_drop_new" 0
 # `main` runs on the process main thread, and the worker woken by the first
 # send can drain the queue before the second send observes it.
 run_accept_expect_status "mailbox_drop_new_visible" 42 HEW_WORKERS=1
-grep -qFx -- "LOSS_VISIBLE" "${stdout_output}"
+grep -qFx -- "LOSS_VISIBLE" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -qF -- "DROPPED_WORK_DELIVERED" "${stdout_output}"; then
     echo "mailbox_drop_new_visible delivered the dropped work" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/mailbox_loss_result_ignored.hew" \
@@ -2331,26 +2464,30 @@ expect_check_fail_contains \
 # every other tell; discarding it deliberately is all the reliable common case
 # has to write.
 run_accept_expect_status "mailbox_normal_send_ergonomic" 42 HEW_WORKERS=1
-grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}"
+grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # `fail` uses the same checked-send surface, but reports rejection as Full
 # instead of trapping a unit-typed sender with no usable diagnostic. Same
 # actor-handler sender shape as above for the same determinism reason.
 run_accept_expect_status "mailbox_fail_observable" 43 HEW_WORKERS=1
-grep -qFx -- "FAIL_VISIBLE" "${stdout_output}"
+grep -qFx -- "FAIL_VISIBLE" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -qF -- "REJECTED_WORK_DELIVERED" "${stdout_output}"; then
     echo "mailbox_fail_observable delivered rejected work" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # A bounded mailbox's default `block` policy must suspend an actor sender,
 # freeing the only scheduler worker to consume and create capacity. The former
 # Condvar path times out here because Driver parks the sole worker.
 run_accept_expect_status "mailbox_block_single_worker" 42 HEW_WORKERS=1
-grep -qFx -- "BLOCK_WORK_DELIVERED" "${stdout_output}"
+grep -qFx -- "BLOCK_WORK_DELIVERED" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 run_accept_expect_status "mailbox_block_supervised_childref_single_worker" 42 HEW_WORKERS=1
-grep -qFx -- "CHILDREF_BLOCK_WORK_DELIVERED" "${stdout_output}"
+grep -qFx -- "CHILDREF_BLOCK_WORK_DELIVERED" "${stdout_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/mailbox_coalesce_block_fallback.hew" \
     "coalesce fallback 'block' is unsupported" \
@@ -2368,20 +2505,24 @@ run_accept_expect_status "coalesce_owned_payload_leak" 0
 # UndefinedField with a fuzzy suggestion for `w1`.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/supervisor_unknown_child.hew" >"${reject_output}" 2>&1; then
     echo "expected supervisor-unknown-child fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'has no child named' "${reject_output}"
-grep -q 'w1' "${reject_output}"
+grep -q 'has no child named' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'w1' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: field access on a plain actor LocalPid, not a supervisor.
 # `w.child` on LocalPid<Worker> — the checker emits UndefinedField because
 # LocalPid has no user-visible fields and is not in the supervisor_children map.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/supervisor_child_on_plain_actor.hew" >"${reject_output}" 2>&1; then
     echo "expected supervisor-child-on-plain-actor fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'no field' "${reject_output}"
-grep -q 'LocalPid' "${reject_output}"
+grep -q 'no field' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'LocalPid' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
@@ -2556,7 +2697,7 @@ run_accept_expect_stdout "tls_ffi_result_lowering"
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/tls_active_attach.hew" >"${reject_output}" 2>&1; then
     echo "expected tls_active_attach fixture to pass hew check; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 run_accept_expect_stdout "template_compiled_free_function_p0"
@@ -2580,12 +2721,15 @@ run_accept_expect_panic "vec_iter_free_fold_unwind" "free fold boom" \
     "${ROOT}/tests/vertical-slice/accept/vec_iter_free_fold_unwind.expected"
 
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
-grep -q 'regex.new: invalid pattern' "${stderr_output}"
+grep -q 'regex.new: invalid pattern' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 run_accept_expect_status "fs_read_missing_returns_not_found" 0
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_url_parse_invalid.hew" "std_panic_wrapper_url_parse_invalid" 101
-grep -q 'url.parse: invalid URL' "${stderr_output}"
+grep -q 'url.parse: invalid URL' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_cron_parse_invalid.hew" "std_panic_wrapper_cron_parse_invalid" 101
-grep -q 'cron.parse: invalid expression' "${stderr_output}"
+grep -q 'cron.parse: invalid expression' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 run_accept_expect_status "std_panic_wrappers_success" 0
 
 # Negative controls for the std error-message-function deletions: each
@@ -2593,36 +2737,42 @@ run_accept_expect_status "std_panic_wrappers_success" 0
 # public name must no longer resolve. Pinning the checker's "no function"
 # diagnostic (rather than a bare non-zero exit) keeps an unrelated future
 # break in the fixture from passing vacuously.
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/encrypt_error_message_removed.hew" \
     "no function \`error_message\` in module \`encrypt\`" \
     "encrypt_error_message_removed"
-echo "PASS encrypt_error_message_removed (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "encrypt_error_message_removed (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/fs_io_error_message_removed.hew" \
     "no function \`io_error_message\` in module \`fs\`" \
     "fs_io_error_message_removed"
-echo "PASS fs_io_error_message_removed (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "fs_io_error_message_removed (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/jwt_error_message_removed.hew" \
     "no function \`error_message\` in module \`jwt\`" \
     "jwt_error_message_removed"
-echo "PASS jwt_error_message_removed (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "jwt_error_message_removed (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/net_error_message_removed.hew" \
     "no function \`net_error_message\` in module \`net\`" \
     "net_error_message_removed"
-echo "PASS net_error_message_removed (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "net_error_message_removed (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/net_write_error_message_removed.hew" \
     "no function \`write_error_message\` in module \`net\`" \
     "net_write_error_message_removed"
-echo "PASS net_write_error_message_removed (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "net_write_error_message_removed (reject)"
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/path_error_message_removed.hew" \
     "no function \`path_error_message\` in module \`path\`" \
     "path_error_message_removed"
-echo "PASS path_error_message_removed (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "path_error_message_removed (reject)"
 
 # F1.3: a trap in main/free-fn context must emit a diagnostic to stderr and
 # never be silent. The fixture triggers an out-of-bounds Vec index in main;
@@ -2630,7 +2780,8 @@ echo "PASS path_error_message_removed (reject)"
 # process terminates. Exit is 132 (SIGILL+128 on x86_64) or 133 (SIGTRAP+128
 # on aarch64/macOS) from the llvm.trap terminator.
 run_accept_expect_trap "crash_main_context_diagnostic"
-grep -q 'hew: trap in main context' "${stderr_output}"
+grep -q 'hew: trap in main context' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # F4.3: an actor crash must name the function/context in the diagnostic, not
 # emit an opaque msg_type integer. The fixture spawns an actor that traps in
@@ -2639,11 +2790,12 @@ grep -q 'hew: trap in main context' "${stderr_output}"
 # "msg_type=-N". The unsupervised crash must also report exit 1 after main's
 # sleep gives the diagnostic time to settle.
 run_accept_expect_status "crash_actor_context_diagnostic" 1
-grep -q 'Crasher' "${stderr_output}"
+grep -q 'Crasher' "${stderr_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -q 'msg_type=-' "${stderr_output}"; then
     echo "crash_actor_context_diagnostic: stderr still contains opaque msg_type=-N format" >&2
     cat "${stderr_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Runtime FFI bounds checks inside actor dispatch must crash only the actor, not
@@ -2716,21 +2868,23 @@ run_accept_expect_status "directory_module_call" 7
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
     echo "expected unresolved symbol fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'undefined variable' "${reject_output}"
+grep -q 'undefined variable' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/cascade_error_binary_operand.hew" \
     1 \
     "cascade_error_binary_operand"
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-grep -qF 'undefined variable `undefined_var`' "${reject_output}"
+grep -qF 'undefined variable `undefined_var`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 if grep -qF '<error>' "${reject_output}" || grep -qF 'cannot apply `+`' "${reject_output}"; then
     echo "cascade_error_binary_operand emitted a downstream binary-op diagnostic" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 expect_check_fail_error_count \
@@ -2738,12 +2892,13 @@ expect_check_fail_error_count \
     1 \
     "cascade_error_index_object"
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-grep -qF 'undefined variable `undefined_var`' "${reject_output}"
+grep -qF 'undefined variable `undefined_var`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 if grep -qF '<error>' "${reject_output}" || grep -qF 'cannot index into `<error>`' "${reject_output}"; then
     echo "cascade_error_index_object emitted a downstream index diagnostic" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 expect_check_fail_error_count \
@@ -2751,14 +2906,16 @@ expect_check_fail_error_count \
     1 \
     "real_binary_type_error_preserved"
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-grep -qF 'cannot apply `+` to `string` and `i64`' "${reject_output}"
+grep -qF 'cannot apply `+` to `string` and `i64`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/real_index_type_error_preserved.hew" \
     1 \
     "real_index_type_error_preserved"
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-grep -qF 'cannot index into `i64`' "${reject_output}"
+grep -qF 'cannot index into `i64`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 for fixture in \
     string_local_share_after_copy \
@@ -2766,18 +2923,24 @@ for fixture in \
     string_record_share \
     string_enum_share \
     string_array_share; do
-    compile_accept "${fixture}"
+    compile_accept "${fixture}" || continue
 done
 
 reject_check_use_after_consume() {
     local fixture="$1"
     if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" >"${reject_output}" 2>&1; then
         echo "expected ${fixture} fixture to fail" >&2
-        exit 1
+        record_failure "${fixture}" "expected to fail closed under hew check"
+        return 0
     fi
-    grep -q 'E_MIR_CHECK' "${reject_output}"
-    grep -q 'used after it was consumed' "${reject_output}"
-    grep -q 'UseAfterConsume' "${reject_output}"
+    if ! grep -q 'E_MIR_CHECK' "${reject_output}" ||
+        ! grep -q 'used after it was consumed' "${reject_output}" ||
+        ! grep -q 'UseAfterConsume' "${reject_output}"; then
+        echo "expected ${fixture} diagnostic to carry E_MIR_CHECK/UseAfterConsume" >&2
+        cat "${reject_output}" >&2
+        record_failure "${fixture}" "diagnostic missing E_MIR_CHECK/UseAfterConsume"
+        return 0
+    fi
 }
 
 for fixture in \
@@ -2799,43 +2962,48 @@ done
 # the defer's lexical reference — Q205-B fail-closed boundary.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/defer_uses_moved_binding.hew" >"${reject_output}" 2>&1; then
     echo "expected defer-uses-moved-binding fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'UseAfterConsume' "${reject_output}"
+grep -q 'UseAfterConsume' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
     echo "expected unresolved-inference fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'UnresolvedInferenceVar' "${reject_output}"
+grep -q 'UnresolvedInferenceVar' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
     echo "expected unknown-named-type fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # F1 reports an undefined type name at the type-name resolution site (`unknown
 # type `Foo``) — earlier than, and superseding, the D10 MIR-boundary
 # `UnknownType` fail-closed (which remains as defense-in-depth).
-grep -q 'unknown type' "${reject_output}"
+grep -q 'unknown type' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
     echo "expected unknown-named-tuple-type fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'unknown type' "${reject_output}"
+grep -q 'unknown type' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -q 'panicked at' "${reject_output}"; then
     echo "unknown-named-tuple-type fixture panicked instead of reporting a diagnostic" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
     echo "expected unknown-named-array-type fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'unknown type' "${reject_output}"
+grep -q 'unknown type' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -q 'panicked at' "${reject_output}"; then
     echo "unknown-named-array-type fixture panicked instead of reporting a diagnostic" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Lambda-actor and Duplex surface: runnable fixtures end-to-end through
@@ -2853,7 +3021,8 @@ expect_check_fail_error_count \
     "lambda actor constructor"
 grep -qF \
     "call to \`std.concurrency.lambda_actor.LambdaActorHandle.new\` has no MIR body or runtime-ABI lowering; only module functions, extern fns, monomorphisation instantiations, and recognised runtime symbols are callable here" \
-    "${reject_output}"
+    "${reject_output}" ||
+    record_failure "lambda_actor_constructor" "diagnostic missing"
 
 # Accept: send-shaped lambda actor call dispatch — exercises spawn,
 # `hew_lambda_actor_new`, env-less body synthesis, tell-send, and the
@@ -2931,14 +3100,14 @@ run_accept_expect_status "actor_nested_handle_tuple_transfer" 0
 if diff -u "${ROOT}/tests/vertical-slice/accept/actor_nested_handle_tuple_transfer.expected" \
     "${stdout_output}" >/dev/null; then
     echo "actor_nested_handle_tuple_transfer: #3127 is fixed; remove this known-failure ratchet" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if [[ "$(cat "${stdout_output}")" != $'worker got payload: \ndone' ]]; then
     echo "actor_nested_handle_tuple_transfer: #3127 changed from the exact empty-payload failure" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-echo "KNOWN actor_nested_handle_tuple_transfer (#3127: actor message loses the nested string payload)"
+mark_known "actor_nested_handle_tuple_transfer (#3127: actor message loses the nested string payload)"
 
 # Accept + run: the value a `match` over a channel `recv()` produces must
 # survive the match. A channel receive is lowered as an intercepted
@@ -2954,14 +3123,14 @@ run_accept_expect_status "channel_recv_match_result_survives" 0
 if diff -u "${ROOT}/tests/vertical-slice/accept/channel_recv_match_result_survives.expected" \
     "${stdout_output}" >/dev/null; then
     echo "channel_recv_match_result_survives: #3127 is fixed; remove this known-failure ratchet" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if [[ "$(cat "${stdout_output}")" != $'direct: []\nvia local: [via local]\ntry: []' ]]; then
     echo "channel_recv_match_result_survives: #3127 changed from the exact empty-payload failure" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-echo "KNOWN channel_recv_match_result_survives (#3127: match over recv() loses its own result)"
+mark_known "channel_recv_match_result_survives (#3127: match over recv() loses its own result)"
 
 # Accept + run: the ASan gate's recv-frame balance fixture (#3127) also has an
 # ordinary stdout oracle. The loop/early-return/forward/record shapes already
@@ -2973,23 +3142,25 @@ run_accept_expect_status "recv_frame_release_balance" 0
 if diff -u "${ROOT}/tests/vertical-slice/accept/recv_frame_release_balance.expected" \
     "${stdout_output}" >/dev/null; then
     echo "recv_frame_release_balance: #3127 is fixed; remove this known-failure ratchet" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if [[ "$(cat "${stdout_output}")" != $'drain: 8390\nearly: 105\nforward: 8390\nrecords: 11780\nchannel: 0' ]]; then
     echo "recv_frame_release_balance: #3127 changed from the exact empty-payload failure" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-echo "KNOWN recv_frame_release_balance (#3127: direct match rx.recv() result loses its payload)"
+mark_known "recv_frame_release_balance (#3127: direct match rx.recv() result loses its payload)"
 
 # Accept + run: user records named `Sender` and `Receiver` are not builtin
 # channel handles. They must keep ordinary actor-send treatment and emit CBOR
 # codecs instead of being skipped by bare short name.
 run_accept_expect_stdout "actor_channel_shadow_sender_codec"
 grep -q '__hew_cbor_serialize_Sender' \
-    "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll"
+    "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll" ||
+    record_failure "actor_channel_shadow_sender_codec" "missing __hew_cbor_serialize_Sender"
 grep -q '__hew_cbor_serialize_Receiver' \
-    "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll"
+    "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll" ||
+    record_failure "actor_channel_shadow_sender_codec" "missing __hew_cbor_serialize_Receiver"
 
 # Accept + run: a single-argument actor receive handler whose ONLY parameter is
 # a process-local pid payload (`LocalPid<T>`). `echo.hear(this)` passes the
@@ -3012,38 +3183,42 @@ run_accept_expect_stdout "actor_single_arg_pid_payload"
 # indirect-dispatch error.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/actor_field_ask_without_await.hew" >"${reject_output}" 2>&1; then
     echo "expected actor_field_ask_without_await fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the CLI diagnostic's pretty-printed `Actor.method` / `await` names, not
 # command substitution.
-grep -qF 'actor ask `W.get` requires `await`' "${reject_output}"
+grep -qF 'actor ask `W.get` requires `await`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
     echo "expected duplex-non-send fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
+grep -q 'E_DUPLEX_NON_SEND' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: non-Send ask reply type on a declared actor (E_DUPLEX_NON_SEND).
 # Companion to duplex_non_send.hew (which gates the message): an ask-shaped
 # reply crosses the actor boundary back to the caller, so it must be Send.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/ask_reply_non_send.hew" >"${reject_output}" 2>&1; then
     echo "expected ask-reply-non-send fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
+grep -q 'E_DUPLEX_NON_SEND' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: consume-on-split affine discipline. `.send_half()` moves the unified
 # Duplex handle out; a second use of the source binding fails the move-checker.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_split_use_after_move.hew" >"${reject_output}" 2>&1; then
     echo "expected duplex-split-use-after-move fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal — they match the
 # diagnostic's pretty-printed `a` binding name.
-grep -qF 'use of moved value `a`' "${reject_output}"
+grep -qF 'use of moved value `a`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept + run: the channel-Duplex split round-trip delivers the exact value.
 # Split a symmetric pair, send 7 on the send-half, receive it on the recv-half,
@@ -3053,20 +3228,22 @@ run_accept_expect_status "duplex_split_roundtrip" 7
 # Reject: removed <- operator (E_OPERATOR_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-arrow-operator fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_OPERATOR_REMOVED' "${reject_output}"
+grep -q 'E_OPERATOR_REMOVED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: the §6.5 codec/adapter freeze. `Stream<bytes>.lines()` is not part of
 # the shipped stream surface; the checker rejects it so a future widening that
 # breaks the freeze fails the gate.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/stream_bytes_lines_frozen.hew" >"${reject_output}" 2>&1; then
     echo "expected stream-bytes-lines-frozen fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the diagnostic's pretty-printed `lines` / `Stream<bytes>` names.
-grep -qF 'no method `lines` on `Stream<bytes>`' "${reject_output}"
+grep -qF 'no method `lines` on `Stream<bytes>`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: the lazy stream adapters (#2530 diagnostic-honesty gate).
 # `Stream<T>.take/map/filter` type-check but have no MIR lowering; they must
@@ -3082,9 +3259,10 @@ expect_check_fail_error_count_no_cascade \
     "reached verification"
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/stream_lazy_adapter_unsupported.hew" >"${reject_output}" 2>&1; then
     echo "expected stream-lazy-adapter-unsupported fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'E_STREAM_ADAPTER_UNSUPPORTED' "${reject_output}"
+grep -qF 'E_STREAM_ADAPTER_UNSUPPORTED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept + run: the §6.5 first-class stream pipe round-trips bytes end-to-end.
 # Two writes then a close drain through `for await`; the summed chunk lengths
@@ -3121,31 +3299,35 @@ run_accept_expect_stdout "lambda_close"
 # accepted and dropped.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_method_send_extra_arg.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-method-send-extra-arg fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'LambdaPid.send expects one argument' "${reject_output}"
+grep -q 'LambdaPid.send expects one argument' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: LambdaPid.close accepts no arguments. MIR lowers only the receiver,
 # so surplus args must not be silently accepted and dropped.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_close_extra_arg.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-close-extra-arg fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'LambdaPid.close expects no arguments' "${reject_output}"
+grep -q 'LambdaPid.close expects no arguments' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-return-mismatch fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_LAMBDA_RETURN_TYPE_MISMATCH' "${reject_output}"
+grep -q 'E_LAMBDA_RETURN_TYPE_MISMATCH' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: actor body returns Duplex handle (E_LAMBDA_SELF_ESCAPE).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_escape.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-self-escape fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}"
+grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept + run: lambda-actor closure captures through the heap-boxed env
 # record. BitCopy captures (tell + ask shapes) read the env field back on
@@ -3263,7 +3445,8 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/closure_await_fail_closed.hew" \
     "E_NOT_YET_IMPLEMENTED" \
     "closure_await_fail_closed"
-grep -qF -- 'suspension inside a closure' "${reject_output}"
+grep -qF -- 'suspension inside a closure' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
 # receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The
@@ -3299,9 +3482,10 @@ expect_check_fail_contains \
 # Reject: removed spawn-lambda syntax (E_SPAWN_LAMBDA_SYNTAX_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew" >"${reject_output}" 2>&1; then
     echo "expected spawn-lambda-removed fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}"
+grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # ---------------------------------------------------------------------------
 # scope{} / fork — fail-closed surface pins
@@ -3316,13 +3500,18 @@ run_accept_expect_stdout "free_fn_actor_scope_spawn"
 # at MIR-lower time, before codegen.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_in_default.hew" >"${reject_output}" 2>&1; then
     echo "expected free-fn-scope-spawn-in-default fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'compiler limitation:' "${reject_output}"
-grep -q 'E_LIMIT_MAIN_CONTEXT' "${reject_output}"
-grep -qF "spawning \`worker\` needs an execution context" "${reject_output}"
-grep -qF 'ctx-bearing execution context' "${reject_output}"
-grep -qF 'W4.010-followup-caller-ctx-routing' "${reject_output}"
+grep -qF 'compiler limitation:' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'E_LIMIT_MAIN_CONTEXT' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF "spawning \`worker\` needs an execution context" "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'ctx-bearing execution context' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'W4.010-followup-caller-ctx-routing' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept: generic free-function task spawn — actor handler forks a generic
 # callee at two concrete type args (i64 and string); the monomorphized TaskEntry
@@ -3334,11 +3523,12 @@ run_accept_expect_stdout "generic_spawn_unit"
 # only have a spawn context inside a `scope { }` body.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/fork_outside_scope.hew" >"${reject_output}" 2>&1; then
     echo "expected fork-outside-scope fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the diagnostic text, not a command substitution.
-grep -qF 'only valid inside a `scope { }` body' "${reject_output}"
+grep -qF 'only valid inside a `scope { }` body' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept (TI-2 end to end): `fork name = call();` binds Task<()> inside a
 # scope body; `await name` joins the child before the scope exits. The
@@ -3365,14 +3555,15 @@ run_accept_expect_stdout "scope_move_closure_owned_capture"
 
 run_accept_expect_status "fork_multi_statement_concurrent" 0
 for marker in first-start second-start first-end second-end complete; do
-    grep -qFx -- "${marker}" "${stdout_output}"
+    grep -qFx -- "${marker}" "${stdout_output}" ||
+        record_failure "row ${LINENO}" "assertion failed"
 done
 last_start_line="$(grep -nE '^(first|second)-start$' "${stdout_output}" | tail -n 1 | cut -d: -f1)"
 first_end_line="$(grep -nE '^(first|second)-end$' "${stdout_output}" | head -n 1 | cut -d: -f1)"
 if [[ "${last_start_line}" -ge "${first_end_line}" ]]; then
     echo "expected both fork children to start before either child finished" >&2
     cat "${stdout_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic delimiters.
 expect_check_fail_contains \
@@ -3395,20 +3586,24 @@ expect_check_fail_contains \
 # `scope { fork name = call(...); }` form.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/scope_handle_legacy_launch.hew" >"${reject_output}" 2>&1; then
     echo "expected scope-handle-legacy-launch fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF "scope |s| { s.launch / s.spawn / s.cancel }' has been removed" "${reject_output}"
+grep -qF "scope |s| { s.launch / s.spawn / s.cancel }' has been removed" "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: fork-spawned callee returns a non-Unit value (here i64).
 # Pins the fail-closed boundary at hew-mir/src/lower.rs direct_no_arg_unit_callee gate.
 # Moves to accept/ when S2 lands value-bearing task propagation.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_non_unit_return.hew" >"${reject_output}" 2>&1; then
     echo "expected fork-non-unit-return fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'spawned call' "${reject_output}"
-grep -qF 'no-argument functions returning unit' "${reject_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'spawned call' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'no-argument functions returning unit' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: implicit-spawn callee takes arguments (non-named form stays nullary).
 # Pins the HIR no-argument gate for non-named spawns in validate_task_spawn_call.
@@ -3416,10 +3611,12 @@ grep -qF 'no-argument functions returning unit' "${reject_output}"
 # statement spawns and fork-block bodies must be nullary.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_with_args.hew" >"${reject_output}" 2>&1; then
     echo "expected fork-with-args fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_HIR' "${reject_output}"
-grep -qF 'spawned call must have zero arguments' "${reject_output}"
+grep -q 'E_HIR' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'spawned call must have zero arguments' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: fork-block body with a type-mismatched argument.
 # Arg-bearing single-call fork blocks are now a first-class form, so the
@@ -3428,14 +3625,15 @@ grep -qF 'spawned call must have zero arguments' "${reject_output}"
 # the checker, never E_CODEGEN_FRONT downstream.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_block_arg_type_mismatch.hew" >"${reject_output}" 2>&1; then
     echo "expected fork-block-arg-type-mismatch fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the diagnostic text, not a command substitution.
-grep -qF 'type mismatch: expected `bool`, found `i64`' "${reject_output}"
+grep -qF 'type mismatch: expected `bool`, found `i64`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -q 'E_CODEGEN_FRONT' "${reject_output}"; then
     echo "fork-block arg type mismatch must fail at the checker, not codegen" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: `after(duration) { ... }` with a non-empty timeout body in a
@@ -3445,40 +3643,48 @@ fi
 # closed at MIR with E_NOT_YET_IMPLEMENTED, not silently drop the body.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/scope_deadline_body.hew" >"${reject_output}" 2>&1; then
     echo "expected scope-deadline-body fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'MIR lowering for scope deadline body is not implemented yet' "${reject_output}"
-grep -qF 'a contextless caller has no parkable continuation' "${reject_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'MIR lowering for scope deadline body is not implemented yet' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'a contextless caller has no parkable continuation' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # #2269 fail-closed: a suspending `#[on(stop)]` hook cannot be resumed at teardown
 # (the actor is already terminal). Refuse at codegen rather than silently truncate
 # the work after the suspension point.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/on_stop_suspension.hew" >"${reject_output}" 2>&1; then
     echo "expected on-stop-suspension fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
-grep -qF 'an `#[on(stop)]` hook' "${reject_output}"
-grep -qF 'cannot be resumed' "${reject_output}"
+grep -qF 'an `#[on(stop)]` hook' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'cannot be resumed' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # #2269 fail-closed: a suspending `init()` alongside an `#[on(start)]` hook would
 # need two sequential coroutines parked on one actor; refuse at codegen.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/init_and_on_start_both_suspend.hew" >"${reject_output}" 2>&1; then
     echo "expected init-and-on-start-both-suspend fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
-grep -qF 'a suspending `init()`' "${reject_output}"
-grep -qF 'not supported' "${reject_output}"
+grep -qF 'a suspending `init()`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'not supported' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: `for x in non_iterable` — Vec<T> is accepted through IntoIterator,
 # but values with no iterable contract must still fail closed.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/for_non_range_iterable.hew" >"${reject_output}" 2>&1; then
     echo "expected for-non-range-iterable fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'type is not iterable' "${reject_output}"
+grep -qF 'type is not iterable' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # ---------------------------------------------------------------------------
 # gen{} checker — typed generator blocks
@@ -3490,31 +3696,33 @@ grep -qF 'type is not iterable' "${reject_output}"
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_outside_receive.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-block-outside-receive fixture to pass hew check; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: empty gen{} has no yield expressions; yield type cannot be inferred.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_empty.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-block-empty fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backtick in the pattern is Hew diagnostic syntax, not shell expansion
-grep -q 'body contains no `yield` expression' "${reject_output}"
+grep -q 'body contains no `yield` expression' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: gen{} inside an actor receive handler is permanently forbidden.
 # Pins GenBlockInActorReceive from fa8e8c64.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/genblock_in_actor_receive.hew" >"${reject_output}" 2>&1; then
     echo "expected genblock-in-actor-receive fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'blocks are forbidden inside actor receive handlers' "${reject_output}"
+grep -q 'blocks are forbidden inside actor receive handlers' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept: gen{} with a tail expression but no yield — Return component inferred as i64.
 # Exercises the return_var inference path; E_EMPTY_GENERATOR must NOT fire.
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_final_expr_returns.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-block-final-expr-returns fixture to pass; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Accept: gen{} with explicit `return` but no yield — Return component inferred.
@@ -3522,7 +3730,7 @@ fi
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_explicit_return.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-block-explicit-return fixture to pass; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Accept: gen{} with both yield expressions and a tail-expression return.
@@ -3530,22 +3738,24 @@ fi
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_yields_and_returns.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-block-yields-and-returns fixture to pass; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: yield expressions with incompatible types — type mismatch (not EmptyGenerator).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_yield_type_mismatch.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-block-yield-type-mismatch fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'type mismatch' "${reject_output}"
+grep -q 'type mismatch' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: bare yield at function scope (not inside gen{}) — YieldOutsideGenerator.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"${reject_output}" 2>&1; then
     echo "expected yield-outside-gen fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'outside of generator' "${reject_output}"
+grep -q 'outside of generator' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: a `gen fn` return type that spells the generator handle
 # `Generator<Y, R>` instead of the yield type `Y` (HEW-SPEC-2026 §4.12).
@@ -3557,14 +3767,15 @@ expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/gen_fn_return_type_spells_handle.hew" \
     1 \
     "gen_fn_return_type_spells_handle"
-grep -q 'E_GEN_RETURN_SPELLING' "${reject_output}"
+grep -q 'E_GEN_RETURN_SPELLING' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept: negative control — naming the yield type directly is the accepted
 # spelling and must not trip E_GEN_RETURN_SPELLING.
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_fn_return_type_yield_spelling.hew" >"${reject_output}" 2>&1; then
     echo "expected gen-fn-return-type-yield-spelling fixture to pass; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Accept + run: generator bodies that read FREE VARIABLES — a `gen fn`'s formal
@@ -3813,24 +4024,28 @@ assert_receive_gen_stream_faulted() {
         "${stderr_output}"; then
         echo "${fixture}: heap allocator abort on the fault-cleanup path (double-free/corruption)" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "heap allocator abort on the fault-cleanup path"
+        return 0
     fi
     if ! grep -qF -- 'receive-gen stream: producer actor' "${stderr_output}"; then
         echo "expected ${fixture} stderr to carry the receive-gen fault diagnostic" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "stderr missing the receive-gen fault diagnostic"
+        return 0
     fi
     if [[ "${actual_status}" -ne 134 ]]; then
         echo "expected ${fixture} to exit 134 after the receive-gen fault, got ${actual_status}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected exit 134 after the receive-gen fault, got ${actual_status}"
+        return 0
     fi
     if [[ "$(cat "${stdout_output}")" != "${expected_stdout}" ]]; then
         echo "expected ${fixture} stdout to be '${expected_stdout}'" >&2
         cat "${stdout_output}" >&2
-        exit 1
+        record_failure "${fixture}" "stdout did not match expected"
+        return 0
     fi
-    echo "PASS ${fixture}"
+    mark_pass "${fixture}"
 }
 
 # Fault (producer crash): the producer's generator is RUNNING when it traps, so
@@ -3870,7 +4085,7 @@ run_accept_expect_stdout "receive_gen_fn_owned_state_capture"
 if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/sink_i64_typed.hew" >"${reject_output}" 2>&1; then
     echo "expected sink_i64_typed fixture to pass hew check; got:" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: Sink<LocalPid<Foo>> payload does not implement Encode + Decode.
@@ -3878,9 +4093,10 @@ fi
 # The Wire-capability admissibility gate must emit SinkPayloadNotWire.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/sink_non_wire_payload.hew" >"${reject_output}" 2>&1; then
     echo "expected sink_non_wire_payload fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'Encode + Decode' "${reject_output}"
+grep -qF 'Encode + Decode' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept: literal payload subpattern in a constructor match arm compares the
 # payload value. Shape.Line(1) must not silently lower as a wildcard that also
@@ -3932,19 +4148,21 @@ run_accept_expect_stdout "regex_literal_dual_alias"
 # The type checker validates regex syntax before HIR lowering.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew" >"${reject_output}" 2>&1; then
     echo "expected regex_invalid_pattern fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'invalid regex pattern' "${reject_output}"
+grep -qF 'invalid regex pattern' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: closing a `regex.Pattern` twice is a move-checker error (compiler-
 # enforced exactly-once cleanup for the resource this PR migrated).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_pattern_double_close.hew" >"${reject_output}" 2>&1; then
     echo "expected regex_pattern_double_close fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal — they match the
 # diagnostic's pretty-printed `pat` binding name.
-grep -qF 'resource `pat` cannot be closed more than once' "${reject_output}"
+grep -qF 'resource `pat` cannot be closed more than once' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # ---------------------------------------------------------------------------
 # Move/release tracking across branch joins.
@@ -3971,14 +4189,14 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/branch_join_use_after_join.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected branch_join_use_after_join fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 branch_join_use_after_join_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
 if [[ "${branch_join_use_after_join_count}" -ne 4 ]]; then
     echo "expected 4 post-join use diagnostics, got ${branch_join_use_after_join_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # The two shapes whose arms closed also carry the discharge diagnostic; the two
 # that merely moved do not.
@@ -3987,7 +4205,7 @@ branch_join_released_count="$(grep -c 'cannot consume released resource `held`' 
 if [[ "${branch_join_released_count}" -ne 2 ]]; then
     echo "expected 2 post-join released-resource diagnostics, got ${branch_join_released_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: a close reached on one path still discharges on that path.
@@ -3995,14 +4213,14 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/branch_join_double_close_after_join.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected branch_join_double_close_after_join fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 branch_join_double_close_count="$(grep -c 'resource `held` cannot be closed more than once' "${reject_output}")"
 if [[ "${branch_join_double_close_count}" -ne 3 ]]; then
     echo "expected 3 double-close diagnostics, got ${branch_join_double_close_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: consuming across a loop back edge. This one is the checked-MIR pass's
@@ -4012,15 +4230,16 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/branch_join_move_in_loop.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected branch_join_move_in_loop fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'E_MIR_CHECK: binding `held` is used after it was consumed' "${reject_output}"
+grep -qF 'E_MIR_CHECK: binding `held` is used after it was consumed' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 if grep -qF 'use of moved value `held`' "${reject_output}"; then
     echo "env checker must not duplicate the checked-MIR loop verdict" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject: a `break` or `continue` arm leaves the LOOP, not the function, so its
@@ -4034,18 +4253,19 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/branch_join_break_escape.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected branch_join_break_escape fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 branch_join_escape_count="$(grep -c 'use of moved value' "${reject_output}")"
 if [[ "${branch_join_escape_count}" -ne 4 ]]; then
     echo "expected 4 loop-escape consume diagnostics, got ${branch_join_escape_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # The opaque-handle wrapper is the case with no backstop; name it explicitly so
 # a future change that drops only that one is still caught.
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'use of moved value `w`' "${reject_output}"
+grep -qF 'use of moved value `w`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: only the BODIES of a `select` are alternatives. Consuming the handle
 # in every body is one consume per path and must NOT be reported — the absence
@@ -4056,64 +4276,65 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/branch_join_select_use_after_join.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected branch_join_select_use_after_join fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 branch_join_select_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
 if [[ "${branch_join_select_count}" -ne 1 ]]; then
     echo "expected exactly 1 post-select use diagnostic, got ${branch_join_select_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # B-1 safe stdlib resource migration: every migrated handle surface resolves
 # `close(self)` through its wrapper impl, including the same-short-name Message
 # wrappers that must be compiled in separate importer fixtures.
-compile_accept "safe_handle_resources_close"
+compile_accept "safe_handle_resources_close" || true
 run_accept_expect_stdout "json_value_resource_exactly_once"
 run_accept_expect_stdout "toml_value_resource_exactly_once"
 run_accept_expect_stdout "yaml_value_resource_exactly_once"
 
-compile_accept "http_client_response_resource_close"
-compile_accept "websocket_message_resource_close"
-compile_accept "protobuf_message_resource_close"
-compile_accept "http_resource_dual_import_close"
-compile_accept "same_name_message_resources_close"
+compile_accept "http_client_response_resource_close" || true
+compile_accept "websocket_message_resource_close" || true
+compile_accept "protobuf_message_resource_close" || true
+compile_accept "http_resource_dual_import_close" || true
+compile_accept "same_name_message_resources_close" || true
 
 # Reject: each migrated safe handle is unavailable after explicit close.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/safe_handle_resources_use_after_close.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected safe_handle_resources_use_after_close fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 safe_handle_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
 if [[ "${safe_handle_use_after_close_count}" -ne 11 ]]; then
     echo "expected 11 safe-handle use-after-close diagnostics, got ${safe_handle_use_after_close_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/value_tree_resources_use_after_close.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected value_tree_resources_use_after_close fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
 value_tree_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
 if [[ "${value_tree_use_after_close_count}" -ne 1 ]]; then
     echo "expected 1 TOML use-after-close diagnostic, got ${value_tree_use_after_close_count}" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/unicode_rune_len_wrong_type.hew" >"${reject_output}" 2>&1; then
     echo "expected unicode_rune_len_wrong_type fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'rune_len' "${reject_output}"
+grep -q 'rune_len' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # ---------------------------------------------------------------------------
 # W3.029 — user record/type ValueClass inference
@@ -4337,20 +4558,22 @@ if "${TIMEOUT}" 30 "${HEW}" check \
     >"${accept_output}" 2>&1; then
     echo "W3 Stage 3: expected VecIter MIR lowering to remain diagnostic until implemented" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if grep -q "no method \`into_iter\`" "${accept_output}"; then
     echo "W3 Stage 3: Vec<T>.into_iter must resolve through IntoIterator impl" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if grep -q "no field\|undefined type \`VecIter\`" "${accept_output}"; then
     echo "W3 Stage 3: VecIter<T> must be defined in std/builtins.hew" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${accept_output}"
-grep -q 'VecIter' "${accept_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${accept_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'VecIter' "${accept_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: the retired Vec::<i64, i32>::new() spelling must identify both legacy
 # separators and provide its exact dotted Hew replacement.
@@ -4358,36 +4581,42 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.004: expected vec_new_turbofish_arity_mismatch to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016
-grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _v = Vec<i64, i32>.new();`' "${reject_output}"
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _v = Vec<i64, i32>.new();`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 # shellcheck disable=SC2016
-grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _v = Vec<i64, i32>.new();`' "${reject_output}"
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _v = Vec<i64, i32>.new();`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: the retired HashMap turbofish spelling suggests dotted Hew syntax.
 if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashmap_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected hashmap_new_turbofish_arity_mismatch to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016
-grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _m = HashMap<i64>.new();`' "${reject_output}"
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _m = HashMap<i64>.new();`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 # shellcheck disable=SC2016
-grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _m = HashMap<i64>.new();`' "${reject_output}"
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _m = HashMap<i64>.new();`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: the retired HashSet turbofish spelling suggests dotted Hew syntax.
 if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected hashset_new_turbofish_arity_mismatch to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016
-grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _s = HashSet<i64, i64>.new();`' "${reject_output}"
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _s = HashSet<i64, i64>.new();`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 # shellcheck disable=SC2016
-grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _s = HashSet<i64, i64>.new();`' "${reject_output}"
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _s = HashSet<i64, i64>.new();`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept: concrete generic user aggregate with a heap-owning string field.
 run_accept_expect_status "user_record_non_bitcopy" 0
@@ -4503,7 +4732,7 @@ run_accept_expect_stdout "try_op_heap_result"
 # F17 ABI regression: compile the same `?` chain across scalar, owned-record,
 # opaque-pointer, and nested-Result payloads. The opaque case previously failed
 # codegen-front with `Move type mismatch: src=ptr dest=%std.encoding.json.Value`.
-compile_accept "result_try_payload_abi"
+compile_accept "result_try_payload_abi" || true
 
 # Double-free guard: 50k iterations each construct, return, and drop a
 # heap-owning Result across both arms. A clean exit (no SIGABRT from the
@@ -4560,9 +4789,10 @@ run_accept_expect_status "identity_aggregates" 0
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/negative_fn_msg_remote_send.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected negative_fn_msg_remote_send fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'Serializable' "${reject_output}"
+grep -q 'Serializable' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 printf '%s\n' \
     'type Ping { n: i64 }' \
     'actor Worker { receive fn ping(msg: Ping) {} }' \
@@ -4603,7 +4833,7 @@ w2006_fixture="${ROOT}/tests/vertical-slice/accept/w2006_scope_spawn.hew"
 grep -q ": OK$" "${accept_output}" || {
     echo "W2.006: expected hew check to print ': OK' on the scope_spawn fixture" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 }
 
 run_accept_expect_status "w2006_scope_spawn" 0
@@ -4631,27 +4861,27 @@ if ! (
 ) >"${accept_output}" 2>&1; then
     echo "qualified_call_reachability: expected package build to succeed" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 for reachable_function in run_once reachable_helper; do
     if grep -qF "function \`${reachable_function}\` is never called" "${accept_output}"; then
         echo "qualified_call_reachability: ${reachable_function} must be reachable" >&2
         cat "${accept_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
 done
 # shellcheck disable=SC2016  # Backticks are literal Hew diagnostic syntax.
 grep -qF 'function `genuinely_uncalled` is never called' "${accept_output}" || {
     echo "qualified_call_reachability: expected the negative control warning" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 }
 # shellcheck disable=SC2016  # Backticks are literal Hew diagnostic syntax.
 qualified_dead_count="$(grep -c 'function `[^`]*` is never called' "${accept_output}")"
 if [[ "${qualified_dead_count}" -ne 1 ]]; then
     echo "qualified_call_reachability: expected one dead-code warning, got ${qualified_dead_count}" >&2
     cat "${accept_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Accept: a flat file import publishes a pub free function into the importing
@@ -4667,27 +4897,31 @@ run_accept_expect_status "multilevel_import" 42
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_module.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.025: expected unresolved_module to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'does_not_exist' "${reject_output}"
+grep -q 'does_not_exist' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: duplicate short module name (import alpha; import beta.alpha — both short name "alpha")
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/duplicate_short_name.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.025: expected duplicate_short_name to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 grep -q "imports both \`alpha\` and \`beta.alpha\` under the ambiguous binding \`alpha\`" \
-    "${reject_output}"
+    "${reject_output}" ||
+    record_failure "duplicate_short_name" "diagnostic missing"
 
 # Reject: ambiguous module resolution (both flat ambig_mod.hew and dir ambig_mod/ambig_mod.hew exist)
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/ambiguous_module.hew" \
     >"${reject_output}" 2>&1; then
     echo "W3.025: expected ambiguous_module to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'is ambiguous' "${reject_output}"
-grep -q 'Rename or remove one' "${reject_output}"
+grep -q 'is ambiguous' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'Rename or remove one' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # WASM parity: must either succeed or emit a structured WASM diagnostic — never silent failure.
 # Matches hew-cli/src/main.rs CodegenError::WasmUnsupportedSubstrate ("WASM target does not support").
@@ -4697,7 +4931,7 @@ if ! "${HEW}" compile --target wasm32-unknown-unknown \
     grep -qE 'WASM target does not support|wasm32' "${accept_output}" || {
         echo "W3.025: WASM multi-file compile failed silently (no named WASM diagnostic)" >&2
         cat "${accept_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     }
 fi
 
@@ -4710,7 +4944,7 @@ else
 fi
 if [[ "${run_status}" -ne 7 ]]; then
     echo "W3.025: hew run multi-file: expected exit 7, got ${run_status}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # W3.041b: native-only layout-keyed HashMap/HashSet run-pass. WASM is
@@ -4727,7 +4961,7 @@ run_native_under_memory_cap "${ROOT}/examples/v05/hashmap_run_pass.hew"
 out="$(run_native_under_memory_cap "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
 if [[ "${out}" != "ok" ]]; then
     echo "W4.045: hashset actor drop run-pass: expected 'ok', got '${out}'" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # W5.001 (F0a): Vec<i64> + HashMap<string,i64> actor-state drop run-pass.
@@ -4742,7 +4976,7 @@ fi
 out="$(run_native_under_memory_cap "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
 if [[ "${out}" != "ok" ]]; then
     echo "W5.001: collection actor drop run-pass: expected 'ok', got '${out}'" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # W5.002 (F0b): Vec<string> actor-state drop run-pass. Pins the Vec migration
@@ -4756,7 +4990,7 @@ fi
 out="$(run_native_under_memory_cap "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
 if [[ "${out}" != "ok" ]]; then
     echo "W5.002: vec<string> actor drop run-pass: expected 'ok', got '${out}'" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4781,7 +5015,8 @@ q004_check_reject() {
         >"${reject_output}" 2>&1; then
         echo "Q004: expected ${fixture} fixture to fail" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected to fail closed"
+        return 0
     fi
     # Q004 diagnostics are rendered as human-readable messages anchored at the
     # impl method span ("impl method `Type.method` ..."). We check both the
@@ -4790,12 +5025,14 @@ q004_check_reject() {
     grep -q 'error: impl method `' "${reject_output}" || {
         echo "Q004: ${fixture}: expected impl-method-anchored diagnostic" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${fixture}" "expected impl-method-anchored diagnostic"
+        return 0
     }
     grep -q -- "${detail_substr}" "${reject_output}" || {
         echo "Q004: ${fixture}: expected diagnostic to mention '${detail_substr}'" >&2
         cat "${reject_output}" >&2
-        exit 1
+        record_failure "${fixture}" "diagnostic missing: ${detail_substr}"
+        return 0
     }
 }
 
@@ -4824,23 +5061,26 @@ run_accept_expect_status "opaque_handle_ffi_round_trip" 3
 # do so. The checker must emit E_OPAQUE_CONSTRUCT (not a downstream MIR NYI).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_construct/main.hew" >"${reject_output}" 2>&1; then
     echo "expected opaque_handle_construct fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_OPAQUE_CONSTRUCT' "${reject_output}"
+grep -q 'E_OPAQUE_CONSTRUCT' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: field access — an opaque handle has no fields.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_field_access.hew" >"${reject_output}" 2>&1; then
     echo "expected opaque_handle_field_access fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'no field' "${reject_output}"
+grep -q 'no field' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: #[opaque] on a non-empty body.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_non_empty_body.hew" >"${reject_output}" 2>&1; then
     echo "expected opaque_handle_non_empty_body fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}"
+grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # G1: HashMap.get returns an owned Option<V>, so heap values must clone out of
 # the slot and V with no clone_fn must fail closed at check time.
@@ -4872,9 +5112,10 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/channel_vec_indirect_enum.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected channel_vec_indirect_enum fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'cannot ride the element-layout queue witness' "${reject_output}"
+grep -q 'cannot ride the element-layout queue witness' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject (CAP-11): a CAPTURING closure passed where a generator declares a
 # `fn(..)` parameter fails CLOSED at check time. The closure unifies
@@ -4885,9 +5126,10 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/gen_fn_capturing_closure_arg.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected gen_fn_capturing_closure_arg fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'can never release a capturing closure' "${reject_output}"
+grep -q 'can never release a capturing closure' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject (CAP-11, forwarded-param leg): an intermediate function cannot
 # launder a capturing closure into a generator through its `fn(..)` parameter.
@@ -4896,10 +5138,12 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/gen_fn_forwarded_fn_param.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected gen_fn_forwarded_fn_param fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -q 'can never release a capturing closure' "${reject_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'can never release a capturing closure' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject (CAP-11, call-result leg): a fn-valued call result can hide a
 # capturing closure env before it reaches the generator constructor.
@@ -4907,10 +5151,12 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/gen_fn_forwarded_fn_call_result.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected gen_fn_forwarded_fn_call_result fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -q 'can never release a capturing closure' "${reject_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'can never release a capturing closure' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Reject (CAP-11, rebind leg): a `fn(..)`-typed var REASSIGNED a capturing
 # closure is tainted by a whole-body pre-pass — including back-edge
@@ -4920,9 +5166,10 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/gen_fn_capturing_closure_rebind.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected gen_fn_capturing_closure_rebind fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'can never release a capturing closure' "${reject_output}"
+grep -q 'can never release a capturing closure' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Accept (CAP-11 boundary): the two null-env `fn(..)` shapes stay admitted —
 # a named-fn reference and a capture-free closure both carry a null env word
@@ -5033,7 +5280,8 @@ assert_peer_files_offset_aligned() {
         echo "  sit at identical byte offsets. That collision is what the fixture" >&2
         echo "  exercises; without it the test passes even with the fix reverted." >&2
         diff <(printf '%s\n' "$la") <(printf '%s\n' "$lb") >&2 || true
-        exit 1
+        record_failure "peer-offset-alignment: $(basename "$a")/$(basename "$b")" "byte lengths diverged"
+        return 0
     fi
 }
 _peer_dir="${ROOT}/tests/vertical-slice/accept/dir_module_peer_span_identity/zoo"
@@ -5082,10 +5330,11 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/record_clone_unclonable_field.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected record_clone_unclonable_field fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -q 'member `inner` contains opaque value' "${reject_output}"
+grep -q 'member `inner` contains opaque value' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Affine records are move-only even when their physical fields are all
 # structurally cloneable. Both explicit clone spellings must reject resource
@@ -5094,15 +5343,17 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/affine_record_clone.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected affine_record_clone fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 4 ]]; then
     echo "expected four affine record-clone diagnostics" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'affine close contract' "${reject_output}"
-grep -q 'consumed exactly once' "${reject_output}"
+grep -q 'affine close contract' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'consumed exactly once' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # The affine veto is transitive and substitution-aware: plain and generic
 # wrappers must not hide resource/linear fields behind a structurally cloneable
@@ -5111,21 +5362,29 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/affine_record_clone_transitive.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected affine_record_clone_transitive fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 9 ]]; then
     echo "expected nine transitive affine record-clone diagnostics" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'PlainWrapper.*ResourceToken' "${reject_output}"
-grep -q 'GenericWrapper<ResourceToken>.*ResourceToken' "${reject_output}"
-grep -q 'GenericWrapper<LinearTicket>.*LinearTicket' "${reject_output}"
-grep -q 'ResourceEnvelope.*ResourceToken' "${reject_output}"
-grep -q 'TupleWrapper.*ResourceToken' "${reject_output}"
-grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
-grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}"
-grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}"
+grep -q 'PlainWrapper.*ResourceToken' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'GenericWrapper<ResourceToken>.*ResourceToken' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'GenericWrapper<LinearTicket>.*LinearTicket' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'ResourceEnvelope.*ResourceToken' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'TupleWrapper.*ResourceToken' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Built-in aggregates and records share the same member-wise clone admission.
 # A resource nested through record -> Option -> tuple must name the exact member
@@ -5134,11 +5393,13 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/structural_clone_resource_member.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected structural_clone_resource_member fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `item.Some.1`' "${reject_output}"
-grep -q 'affine close contract and no semantic clone' "${reject_output}"
+grep -qF 'member `item.Some.1`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'affine close contract and no semantic clone' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Equality refusal likewise names the first member without a meaningful
 # structural comparison path.
@@ -5146,11 +5407,13 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/structural_equality_function_member.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected structural_equality_function_member fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `callback` is ineligible' "${reject_output}"
-grep -qF 'fn(i64) -> i64' "${reject_output}"
+grep -qF 'member `callback` is ineligible' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'fn(i64) -> i64' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # A type parameter's clone capability inside a generic template comes from its
 # declared BOUND. An unbounded `T` grants none, and the refusal names the member
@@ -5159,11 +5422,13 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/structural_clone_unbounded_generic.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected structural_clone_unbounded_generic fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `Some` of type `T`' "${reject_output}"
-grep -q 'has no Clone capability' "${reject_output}"
+grep -qF 'member `Some` of type `T`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'has no Clone capability' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Structural equality over a type parameter is admitted in the template and
 # re-decided at instantiation. The CHECKER must refuse an ineligible
@@ -5172,14 +5437,16 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/structural_equality_generic_instantiation.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected structural_equality_generic_instantiation fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `Some` is ineligible' "${reject_output}"
-grep -qF 'HashMap<string, i64>' "${reject_output}"
+grep -qF 'member `Some` is ineligible' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'HashMap<string, i64>' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
     echo "codegen must not be the first to notice an ineligible instantiation" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Method applications record their instantiation through the same authority as
@@ -5190,14 +5457,16 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/structural_equality_method_instantiation.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected structural_equality_method_instantiation fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `Some` is ineligible' "${reject_output}"
-grep -qF 'HashMap<string, i64>' "${reject_output}"
+grep -qF 'member `Some` is ineligible' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -qF 'HashMap<string, i64>' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
     echo "codegen must not be the first to notice a method instantiation" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # A refcounted shared handle inside an aggregate has no aggregate-ingress
@@ -5207,11 +5476,13 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/structural_clone_rc_member.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected structural_clone_rc_member fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `0` of type `Rc<Node>`' "${reject_output}"
-grep -q 'no aggregate-ingress retain' "${reject_output}"
+grep -qF 'member `0` of type `Rc<Node>`' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+grep -q 'no aggregate-ingress retain' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the
@@ -5221,10 +5492,11 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/generic_record_clone_opaque_leaf.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected generic_record_clone_opaque_leaf fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -q 'member `item` contains opaque value' "${reject_output}"
+grep -q 'member `item` contains opaque value' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # Enum twin: `clone <enum>` on an enum whose variant payload is an opaque handle
 # must be rejected too — the admissibility opaque walk recurses into enum
@@ -5233,10 +5505,11 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/enum_clone_unclonable_payload.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected enum_clone_unclonable_payload fixture to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -q 'member `Live.0` contains opaque value' "${reject_output}"
+grep -q 'member `Live.0` contains opaque value' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
 
 # ---------------------------------------------------------------------------
 # let-destructure: record/struct product-type irrefutable patterns
@@ -5298,12 +5571,12 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/let_refutable_pattern_rejected.hew" \
     >"${reject_output}" 2>&1; then
     echo "expected let_refutable_pattern_rejected to fail" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 if grep -q 'has no binding' "${reject_output}"; then
     echo "let_refutable_pattern_rejected cascaded into 'has no binding'" >&2
     cat "${reject_output}" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
 
 # Reject (PR #2003): a record let-destructuring pattern that names a different
@@ -5519,12 +5792,14 @@ run_accept_expect_status "loop_breakless_match_arm" 3
 #   (3) plain bare `break`
 # Each case pairs `if c { 5 }` (i64) with the breakable loop; the type
 # mismatch (i64 vs Unit) must be detected and rejected.
+_fcb=${fail_count}
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/loop_breakable_not_never.hew" >"${reject_output}" 2>&1; then
     echo "expected loop_breakable_not_never to fail (breakable loop must not be typed Never)" >&2
-    exit 1
+    record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF "type mismatch" "${reject_output}"
-echo "PASS loop_breakable_not_never (reject)"
+grep -qF "type mismatch" "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "loop_breakable_not_never (reject)"
 
 # Reject: a `break` reachable from a loop-header, scrutinee, or iterable
 # sub-expression must mark the enclosing loop breakable too.  These cover the
@@ -5534,30 +5809,35 @@ echo "PASS loop_breakable_not_never (reject)"
 # never be masked by another position still rejecting.  A loop-header break
 # (`while` condition, `for` iterable) targets the OUTER loop because the header
 # is evaluated in the enclosing scope.
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/loop_break_in_if_condition.hew" \
     "type mismatch" "loop_break_in_if_condition"
-echo "PASS loop_break_in_if_condition (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "loop_break_in_if_condition (reject)"
 
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/loop_break_in_while_condition.hew" \
     "type mismatch" "loop_break_in_while_condition"
-echo "PASS loop_break_in_while_condition (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "loop_break_in_while_condition (reject)"
 
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/loop_break_in_for_iterable.hew" \
     "type mismatch" "loop_break_in_for_iterable"
-echo "PASS loop_break_in_for_iterable (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "loop_break_in_for_iterable (reject)"
 
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/loop_break_in_match_scrutinee.hew" \
     "type mismatch" "loop_break_in_match_scrutinee"
-echo "PASS loop_break_in_match_scrutinee (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "loop_break_in_match_scrutinee (reject)"
 
+_fcb=${fail_count}
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/loop_break_in_iflet_scrutinee.hew" \
     "type mismatch" "loop_break_in_iflet_scrutinee"
-echo "PASS loop_break_in_iflet_scrutinee (reject)"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "loop_break_in_iflet_scrutinee (reject)"
 
 # ---------------------------------------------------------------------------
 # string.split("", "") and split-to-chars semantics (empty separator)
@@ -5745,15 +6025,15 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
     if diff -u "${ROOT}/tests/vertical-slice/accept/match_nested_aggregate_payload_owner.expected" \
         "${stdout_output}" >/dev/null; then
-        echo "KNOWN match_nested_aggregate_payload_owner (#3226: nested aggregate payload double-frees at teardown)"
+        mark_known "match_nested_aggregate_payload_owner (#3226: nested aggregate payload double-frees at teardown)"
     else
         echo "match_nested_aggregate_payload_owner: #3226 changed from the exact stdout-then-crash failure" >&2
         diff -u "${ROOT}/tests/vertical-slice/accept/match_nested_aggregate_payload_owner.expected" "${stdout_output}" >&2 || true
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
 
     # Tuple element read out of a record field (`r.pair.0`): stdout is correct,
@@ -5769,15 +6049,15 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
     if diff -u "${ROOT}/tests/vertical-slice/accept/projected_tuple_element_owner.expected" \
         "${stdout_output}" >/dev/null; then
-        echo "KNOWN projected_tuple_element_owner (#3226: tuple-element projection crashes at teardown)"
+        mark_known "projected_tuple_element_owner (#3226: tuple-element projection crashes at teardown)"
     else
         echo "projected_tuple_element_owner: #3226 changed from the exact stdout-then-crash failure" >&2
         diff -u "${ROOT}/tests/vertical-slice/accept/projected_tuple_element_owner.expected" "${stdout_output}" >&2 || true
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
 
     # A payload destructured out of an inline enum field of a BY-VALUE parameter
@@ -5797,7 +6077,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
     match_param_field_payload_carrier_lines=()
     while IFS= read -r match_param_field_payload_carrier_line; do
@@ -5806,7 +6086,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     if [[ "${#match_param_field_payload_carrier_lines[@]}" -ne 7 ]]; then
         echo "match_param_field_payload_carrier: #3226 expected 7 stdout lines, got ${#match_param_field_payload_carrier_lines[@]}" >&2
         cat "${stdout_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
     if [[ "${match_param_field_payload_carrier_lines[0]}" != "15" ||
         "${match_param_field_payload_carrier_lines[1]}" != "3" ||
@@ -5816,13 +6096,13 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         "${match_param_field_payload_carrier_lines[6]}" != "9" ]]; then
         echo "match_param_field_payload_carrier: #3226 changed from the known partial-output failure" >&2
         cat "${stdout_output}" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
     if [[ "${match_param_field_payload_carrier_lines[2]}" == "3" ]]; then
         echo "match_param_field_payload_carrier: #3226 may be fixed (line 3 now reads 3); verify and remove this ratchet" >&2
-        exit 1
+        record_failure "row ${LINENO}" "see stderr above"
     fi
-    echo "KNOWN match_param_field_payload_carrier (#3226: use-after-free read then double-free abort on a by-value parameter's inline enum field)"
+    mark_known "match_param_field_payload_carrier (#3226: use-after-free read then double-free abort on a by-value parameter's inline enum field)"
 
 else
     echo "SKIP match_nested_aggregate_payload_owner, projected_tuple_element_owner, match_param_field_payload_carrier (#3226: glibc-specific abort/segv signature not characterized on $(uname -s))"
@@ -5868,3 +6148,18 @@ expect_check_fail_contains \
 # the handler's value is still its explicit `return`.
 run_accept_expect_stdout "break_control_flow_only"
 run_accept_expect_stdout "scope_statement_tail"
+
+# ---------------------------------------------------------------------------
+# Summary: report every fixture's disposition instead of stopping at the
+# first unexpected outcome, so a batch-head run says something about the
+# other ~470 fixtures, not just the one that happened to fail first.
+# ---------------------------------------------------------------------------
+echo
+echo "vertical-slice: ${pass_count} pass, ${fail_count} fail, ${known_count} expected-fail"
+if [[ "${fail_count}" -gt 0 ]]; then
+    echo "unexpected failures:" >&2
+    for i in "${!fail_names[@]}"; do
+        echo "  - ${fail_names[$i]} (${fail_reasons[$i]})" >&2
+    done
+    record_failure "row ${LINENO}" "see stderr above"
+fi

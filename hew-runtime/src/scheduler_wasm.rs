@@ -164,6 +164,9 @@ pub struct HewActor {
     /// activation ownership. Stop requests cancel and drain this invocation
     /// before its frame can be destroyed. Null between checked turns.
     pub checked_invocation: AtomicPtr<c_void>,
+    /// Retained terminal cleanup result for checked native actor observers.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -2777,6 +2780,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }
     }
 
@@ -7685,6 +7690,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

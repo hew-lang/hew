@@ -31,6 +31,13 @@ struct FaultDiagnostic {
 }
 
 impl HewFault {
+    pub(crate) fn with_message(code: i32, message: String) -> Self {
+        Self {
+            code,
+            message: Some(message.into_boxed_str()),
+            secondary: Vec::new(),
+        }
+    }
     pub(crate) fn code(&self) -> i32 {
         self.code
     }

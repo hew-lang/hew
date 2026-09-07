@@ -601,8 +601,20 @@ impl Checker {
                     // But NOT for method calls that happen to return an actor handle —
                     // those should pass through the method's declared return type.
                     _ if inner_ty.as_actor_handle().is_some()
-                        && !matches!(effective_expr, Expr::MethodCall { .. }) =>
+                        && (!matches!(
+                            effective_expr,
+                            Expr::MethodCall { .. } | Expr::Call { .. }
+                        ) || matches!(
+                            self.actor_delivery_calls
+                                .get(&SpanKey::in_module(effective_span, self.current_module_idx)),
+                            Some(crate::actor_delivery::ActorDeliveryCall::Close)
+                        )) =>
                     {
+                        self.actor_delivery_calls.insert(
+                            SpanKey::in_module(span, self.current_module_idx),
+                            crate::actor_delivery::ActorDeliveryCall::AwaitClosed,
+                        );
+                        self.record_submission_suspension(span, true);
                         Ty::Unit
                     }
                     _ => inner_ty,

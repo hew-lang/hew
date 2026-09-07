@@ -1608,6 +1608,9 @@ pub struct HewActor {
     /// activation ownership. Stop requests cancel and drain this invocation
     /// before its frame can be destroyed. Null between checked turns.
     pub checked_invocation: AtomicPtr<c_void>,
+    /// Retained terminal cleanup result for checked native actor observers.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -2637,18 +2640,10 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
     //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
     //    the caller's spec bytes at registration time.
-    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
-    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
-        if let Some(state_drop_fn) = a.state_drop_fn {
-            if !a.state.is_null() {
-                // SAFETY: `a.state` is the live state allocation;
-                // `state_drop_fn` is a codegen-emitted function that walks
-                // owned fields and tolerates null sub-pointers per LESSONS
-                // row `raii-null-after-move`.
-                unsafe { state_drop_fn(a.state) };
-            }
-        }
-    }
+    // SAFETY: terminal teardown owns every remaining state field.
+    unsafe { drop_initialized_actor_state(a) };
+    // SAFETY: all native state fields are released before publishing completion.
+    unsafe { crate::actor_native::finish_native_terminal(a) };
 
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
@@ -2830,6 +2825,25 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
 
 // ── Terminate callback invocation ───────────────────────────────────────
 
+/// Release initialized state once, shared by native terminal completion and free.
+///
+/// # Safety
+/// No active handler or lifecycle callback may borrow the actor's state.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn drop_initialized_actor_state(a: &HewActor) {
+    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
+    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
+        if let Some(state_drop_fn) = a.state_drop_fn {
+            if !a.state.is_null() {
+                // SAFETY: `a.state` is the live state allocation;
+                // `state_drop_fn` is a codegen-emitted function that walks
+                // owned fields after the completed activation releases its borrows.
+                unsafe { state_drop_fn(a.state) };
+            }
+        }
+    }
+}
+
 /// Run the actor's terminate callback exactly once, with crash recovery.
 ///
 /// Sets up the actor lane and catches Hew language panics unwinding from the
@@ -2853,11 +2867,15 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
 
     let Some(terminate_fn) = a.terminate_fn else {
         a.terminate_finished.store(true, Ordering::Release);
+        // SAFETY: no lifecycle callback or handler borrows this terminal state.
+        unsafe { crate::actor_native::finish_native_terminal(a) };
         return;
     };
 
     if a.state.is_null() {
         a.terminate_finished.store(true, Ordering::Release);
+        // SAFETY: no lifecycle callback or handler borrows this terminal state.
+        unsafe { crate::actor_native::finish_native_terminal(a) };
         return;
     }
 
@@ -2911,6 +2929,8 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     }
 
     a.terminate_finished.store(true, Ordering::Release);
+    // SAFETY: the lifecycle callback has returned and the native turn is finished.
+    unsafe { crate::actor_native::finish_native_terminal(a) };
     let restored_context = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored_context, &raw mut execution_context);
 }
@@ -3237,6 +3257,9 @@ fn build_spawned_actor(
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
+            .then(|| std::sync::Arc::new(crate::actor_native::NativeActorCompletion::default())),
     })
 }
 
@@ -3779,6 +3802,21 @@ pub(crate) unsafe fn try_submit_native_envelope(
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: sends have no reply reference; the envelope transfers on admission.
     unsafe { try_submit_native_request(token, message, envelope, std::ptr::null_mut()) }
+}
+
+/// Register native capacity readiness while the exact destination is pinned.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn register_native_capacity(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    waker: &std::sync::Arc<crate::wake::OwnedWaker>,
+) {
+    if let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) {
+        live_actors::with_actor_send_by_id(actor_id, |actor| {
+            // SAFETY: the send guard pins the actor and its mailbox during registration.
+            let mailbox = unsafe { &*(*actor).mailbox.cast::<HewMailbox>() };
+            mailbox.native_capacity.register(waker);
+        });
+    }
 }
 
 /// Submit an envelope and optional reply sender reference to the exact target.
@@ -7127,6 +7165,14 @@ unsafe fn hew_actor_trap_inner(
         TrapMailboxReclaim::OmitForTest => {}
     }
 
+    if matches!(mailbox_reclaim, TrapMailboxReclaim::OwnedActivation)
+        || !a.dispatch_active.load(Ordering::Acquire)
+    {
+        // SAFETY: the trap owns completed dispatch cleanup or observes a
+        // quiescent terminal actor; the checked-frame guard retains live turns.
+        unsafe { crate::actor_native::finish_native_terminal(a) };
+    }
+
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {
@@ -8647,6 +8693,8 @@ pub mod composition_test_support {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }))
     }
 
@@ -10304,6 +10352,8 @@ mod tests {
                 state_drop_borrowed: AtomicBool::new(false),
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
                 checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+                #[cfg(not(target_arch = "wasm32"))]
+                native_completion: None,
             }));
             (actor, mailbox)
         }
@@ -11405,6 +11455,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -16191,6 +16243,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

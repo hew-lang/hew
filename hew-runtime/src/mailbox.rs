@@ -19,6 +19,10 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "mailbox_native.rs"]
+pub(crate) mod native;
+
 use crate::util::{CondvarExt, MutexExt};
 #[cfg(test)]
 use std::cell::Cell;
@@ -1471,6 +1475,8 @@ pub struct HewMailbox {
     /// Separate from `slow_path` because close may be invoked by a callback
     /// while that queue lock is already held.
     blocked_senders: Mutex<VecDeque<BlockedSender>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_capacity: crate::wake::ReadinessRegistrations,
     /// Queued user messages plus bounded fast-path slots reserved by in-flight
     /// producers.
     pub(crate) count: AtomicI64,
@@ -1652,6 +1658,8 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: -1,
@@ -1693,6 +1701,8 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: i64::from(capacity),
@@ -1743,6 +1753,8 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: cap,
@@ -1785,6 +1797,8 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: cap,
@@ -3414,6 +3428,8 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
         // coalesce key/drop callback. Always use the protocol: a sender may
         // already be parked even if coalesce configuration changed afterward.
         mb.notify_not_full_all();
+        #[cfg(not(target_arch = "wasm32"))]
+        mb.native_capacity.notify();
     }
 }
 
@@ -3531,6 +3547,8 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
                 // Preserve the foreign-thread blocking sender path.
                 mb.notify_not_full_one();
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            mb.native_capacity.notify();
             return RecvNode {
                 node,
                 origin: Origin::User,
@@ -3542,6 +3560,8 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         if !node.is_null() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            #[cfg(not(target_arch = "wasm32"))]
+            mb.native_capacity.notify();
             return RecvNode {
                 node,
                 origin: Origin::User,

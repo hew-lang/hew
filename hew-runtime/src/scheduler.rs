@@ -2402,6 +2402,10 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` is owned by the calling activation frame (the Running CAS is held).
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the activation resume and cleanup sequence together"
+)]
 unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
@@ -2471,7 +2475,11 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     }));
     let poll = match poll {
         Ok(poll) => {
-            if let Some(fault) = resume_context.checked_fault.take() {
+            let fault = resume_context.checked_fault.take().and_then(|fault| {
+                // SAFETY: this scheduler activation owns the actor and completed fault.
+                unsafe { crate::actor_native::normalize_stopped_turn(actor, fault) }
+            });
+            if let Some(fault) = fault {
                 // SAFETY: the checked body returned through its cleanup graph;
                 // this activation owns the completed frame and actor state.
                 unsafe {
@@ -2604,7 +2612,7 @@ unsafe fn finish_failed_resume(
                 eprintln!("fatal: checked resumed actor failure retained crash-cleanup owners");
                 std::process::abort();
             }
-            fault.code()
+            crate::actor_native::report_checked_failure(&fault)
         }
         crate::actor_native::DispatchFailure::Unwind(payload) => {
             let code = payload
@@ -2973,6 +2981,10 @@ impl Drop for ActivationOwnership<'_> {
         #[cfg(test)]
         run_activation_pre_terminal_lock_hook(self.actor);
 
+        let native_pin = self.actor.native_completion.as_ref().and_then(|_| {
+            crate::lifetime::live_actors::pin_actor_by_id(self.actor.id)
+                .filter(|pin| std::ptr::eq(pin.actor(), self.actor))
+        });
         // Test terminal state, perform the final drain, and publish ownership
         // release under one terminal-reclaim lock. If an external trap gets the
         // lock first and observes this owner, this check must run afterward and
@@ -3001,6 +3013,18 @@ impl Drop for ActivationOwnership<'_> {
                     self.actor.dispatch_active.store(false, Ordering::Release);
                 },
             );
+        }
+        if let Some(pin) = native_pin {
+            let actor = pin.actor();
+            let state = actor.actor_state.load(Ordering::Acquire);
+            if (state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32)
+                && !actor.dispatch_active.load(Ordering::Acquire)
+            {
+                // SAFETY: the terminal state excludes future handler execution;
+                // the pin retains the allocation after activation release. All
+                // mailbox locks have been released before invoking destructors.
+                unsafe { crate::actor_native::finish_native_terminal(actor) };
+            }
         }
     }
 }
@@ -6077,6 +6101,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -8874,6 +8900,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

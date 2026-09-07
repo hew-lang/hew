@@ -75,6 +75,8 @@ impl SendPolicy {
 /// Selected operations carried independently of source and linker spellings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActorDeliveryCall {
+    Close,
+    AwaitClosed,
     Policy {
         policy: SendPolicy,
     },

@@ -11,9 +11,17 @@ use crate::execution_context::HewExecutionContext;
 use crate::fault::HewFault;
 use crate::lifetime::live_actors::ActorIncarnation;
 
+#[path = "actor_native_close.rs"]
+mod close;
+pub(crate) use close::finish_native_terminal;
+pub use close::NativeActorCompletion;
+#[path = "actor_native_wait_graph.rs"]
+mod wait_graph;
+
 unsafe extern "C" fn wake_actor(context: *mut std::ffi::c_void) {
     // SAFETY: each descriptor retains the immutable incarnation allocation.
     let target = unsafe { *context.cast::<ActorIncarnation>() };
+    wait_graph::ready(target);
     crate::scheduler::enqueue_resume_by_incarnation(target);
 }
 
@@ -50,6 +58,8 @@ pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::H
     // SAFETY: the local Arc and current context retain both inputs for creation.
     let state =
         unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, context.cancel_token) };
+    // SAFETY: the new invocation belongs exclusively to this strict actor turn.
+    unsafe { (*state).actor_turn = *target };
     // SAFETY: this activation owns the actor and its one strict turn. The
     // adapter clears the borrowed slot after child completion under the same
     // activation ownership, before another turn can start.
@@ -249,7 +259,11 @@ pub(crate) unsafe fn dispatch_result(
         Err(payload) => Err(DispatchFailure::Unwind(payload)),
         Ok(handle) => {
             // SAFETY: the callback returned and this activation owns the slot.
-            match unsafe { (*ctx).checked_fault.take() } {
+            let fault = unsafe { (*ctx).checked_fault.take() }.and_then(|fault| {
+                // SAFETY: the returned dispatch context still owns this actor.
+                unsafe { normalize_stopped_turn((*ctx).actor, fault) }
+            });
+            match fault {
                 None => Ok(handle),
                 Some(fault) => {
                     if !handle.is_null() {
@@ -261,6 +275,39 @@ pub(crate) unsafe fn dispatch_result(
             }
         }
     }
+}
+
+/// Remove a clean stop's cancellation after its checked source cleanup, while
+/// preserving a destructor failure carried as a secondary diagnostic.
+///
+/// # Safety
+/// The caller owns the actor activation and this unique returned fault.
+pub(crate) unsafe fn normalize_stopped_turn(
+    actor: *mut crate::actor::HewActor,
+    fault: Box<HewFault>,
+) -> Option<Box<HewFault>> {
+    if fault.code() != crate::fault::HEW_FAULT_CANCELLED
+        // SAFETY: this activation owns the live actor and its mailbox.
+        || !unsafe { crate::mailbox::mailbox_stop_requested((*actor).mailbox.cast()) }
+    {
+        return Some(fault);
+    }
+    // SAFETY: normalization consumes and returns unique optional fault owners.
+    let fault = unsafe { crate::fault::hew_fault_finish_cleanup(Box::into_raw(fault)) };
+    if fault.is_null() {
+        None
+    } else {
+        // SAFETY: normalization returned one uniquely owned fault.
+        Some(unsafe { Box::from_raw(fault) })
+    }
+}
+
+/// Preserve the checked diagnostic when an unhandled actor fault reaches its
+/// existing scheduler crash and supervisor boundary.
+pub(crate) fn report_checked_failure(fault: &HewFault) -> i32 {
+    // SAFETY: the returned fault remains owned during this reporting borrow.
+    let _ = unsafe { crate::fault::hew_fault_report(fault) };
+    fault.code()
 }
 
 /// Finish the matching native completion or legacy unwind cleanup boundary.
@@ -279,7 +326,7 @@ pub(crate) unsafe fn finish_dispatch_failure(
                 eprintln!("fatal: checked actor failure retained crash-cleanup owners");
                 std::process::abort();
             }
-            fault.code()
+            report_checked_failure(&fault)
         }
         DispatchFailure::Unwind(payload) => {
             crate::execution_context::reply_channel_swap_unwind();

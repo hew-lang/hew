@@ -7,6 +7,8 @@ use inkwell::types::StructType;
 
 #[path = "physical_actor_ask.rs"]
 mod ask;
+#[path = "physical_actor_wait.rs"]
+mod wait;
 
 fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
@@ -694,7 +696,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let id = match &operation {
-            ActorOperation::Spawn(id) | ActorOperation::Submit { actor: id, .. } => *id,
+            ActorOperation::Spawn(id)
+            | ActorOperation::Close(id)
+            | ActorOperation::AwaitClosed(id)
+            | ActorOperation::Submit { actor: id, .. } => *id,
         };
         let actor =
             self.module.actors.get(id.0 as usize).ok_or_else(|| {
@@ -710,6 +715,40 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             sources.push(*source);
         }
         let status = match operation {
+            ActorOperation::Close(_) => {
+                let [source] = sources.as_slice() else {
+                    return Err(CodegenError::FailClosed(
+                        "close requires one actor identity".into(),
+                    ));
+                };
+                let value = self.load(*source, "close.actor")?;
+                let close = coro::external(
+                    self.llvm,
+                    "hew_actor_close_native",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[value.get_type().into()], false),
+                )?;
+                self.builder
+                    .build_call(close, &[value.into()], "")
+                    .llvm_ctx("request cooperative actor stop")?;
+                self.store(
+                    result.ok_or_else(|| {
+                        CodegenError::FailClosed("close requires its actor identity result".into())
+                    })?,
+                    value,
+                )?;
+                self.ctx.i32_type().const_zero()
+            }
+            ActorOperation::AwaitClosed(_) => {
+                let [source] = sources.as_slice() else {
+                    return Err(CodegenError::FailClosed(
+                        "actor wait requires one identity".into(),
+                    ));
+                };
+                self.emit_actor_await_closed(*source, unwind)?;
+                self.ctx.i32_type().const_zero()
+            }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
             ActorOperation::Submit {
                 policy,
@@ -725,7 +764,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let result = result.ok_or_else(|| {
                     CodegenError::FailClosed("submission requires its typed result".into())
                 })?;
-                self.emit_actor_submit(actor, policy, &message_ty, &result_ty, *source, result)?;
+                self.emit_actor_submit(
+                    actor,
+                    policy,
+                    &message_ty,
+                    &result_ty,
+                    *source,
+                    result,
+                    unwind,
+                )?;
                 self.ctx.i32_type().const_zero()
             }
         };
@@ -927,6 +974,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "typed submission operands and cleanup edge"
+    )]
     fn emit_actor_submit(
         &self,
         actor: &SemActor,
@@ -935,9 +986,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         result_ty: &ResolvedTy,
         source: StorageId,
         destination: StorageId,
+        unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         use hew_types::actor_delivery::SendPolicy;
-        if matches!(policy, SendPolicy::Wait | SendPolicy::ReplaceLatest) {
+        if policy == SendPolicy::ReplaceLatest {
             return Err(CodegenError::FailClosed(
                 "submission requires its checked readiness or coalescing contract".into(),
             ));
@@ -1053,30 +1105,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("message lacks its exact payload destructor".into())
             })?;
-        let policy = if policy == SendPolicy::DropNewest {
-            2
+        let request = [
+            target.into(),
+            member.into(),
+            wrapper.into(),
+            size_ty.const_int(size, false).into(),
+            drop.as_global_value().as_pointer_value().into(),
+        ];
+        let status = if policy == SendPolicy::Wait {
+            self.emit_actor_send_wait(&request, source, unwind)?
         } else {
-            0
+            let mut args = request.to_vec();
+            args.push(
+                self.ctx
+                    .i32_type()
+                    .const_int(
+                        if policy == SendPolicy::DropNewest {
+                            2
+                        } else {
+                            0
+                        },
+                        false,
+                    )
+                    .into(),
+            );
+            call_value(&self.builder, submit, &args, "submission.status")?.into_int_value()
         };
-        let status = self
-            .builder
-            .build_call(
-                submit,
-                &[
-                    target.into(),
-                    member.into(),
-                    wrapper.into(),
-                    size_ty.const_int(size, false).into(),
-                    drop.as_global_value().as_pointer_value().into(),
-                    self.ctx.i32_type().const_int(policy, false).into(),
-                ],
-                "submission.status",
-            )
-            .llvm_ctx("attempt message admission")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("submission returned void".into()))?
-            .into_int_value();
+        let admission_block = self.builder.get_insert_block().unwrap();
         self.builder
             .build_unconditional_branch(submitted)
             .llvm_ctx("join admission outcome")?;
@@ -1087,7 +1142,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("join submission status")?;
         outcome.add_incoming(&[
             (&self.ctx.i32_type().const_int(3, false), oom),
-            (&status, allocated),
+            (&status, admission_block),
         ]);
         self.write_actor_delivery_result(
             outcome.as_basic_value().into_int_value(),

@@ -454,6 +454,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }
     }
 
@@ -586,6 +588,10 @@ mod tests {
     /// from the main thread and then calling `is_actor_live` (which acquires
     /// `LIVE_ACTORS`) from another thread during the send does not deadlock.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "complete actor fixture and concurrent mailbox regression"
+    )]
     fn send_by_id_block_mailbox_full_does_not_deadlock() {
         let _rt = crate::runtime_test_guard();
 
@@ -643,6 +649,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         });
 
         // Fill the mailbox to capacity (capacity = 1).

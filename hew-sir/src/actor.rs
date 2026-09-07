@@ -297,6 +297,8 @@ pub(crate) fn verify_operation(
 /// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
+    Close(ActorId),
+    AwaitClosed(ActorId),
     Spawn(ActorId),
     Submit {
         actor: ActorId,
@@ -317,13 +319,18 @@ impl ActorOperation {
         callable: impl Fn(crate::CallableId) -> Option<crate::SemSignature>,
     ) -> Result<crate::SemSignature, String> {
         let id = match self {
-            Self::Spawn(id) | Self::Submit { actor: id, .. } => *id,
+            Self::Spawn(id)
+            | Self::Close(id)
+            | Self::AwaitClosed(id)
+            | Self::Submit { actor: id, .. } => *id,
         };
         let actor = actors
             .get(id.0 as usize)
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
+            Self::Close(_) => (vec![actor.handle_ty.clone()], actor.handle_ty.clone()),
+            Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
             Self::Spawn(_) => (
                 actor
                     .fields

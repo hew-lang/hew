@@ -154,6 +154,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm
             .get_function(&message_symbol(actor.id, message))
             .ok_or_else(|| CodegenError::FailClosed("ask request lacks its destructor".into()))?;
+        let wait_edge =
+            self.new_actor_wait_edge(self.load(sources[0], "ask.wait.target")?.into(), 0)?;
+        let cycle = self.ctx.append_basic_block(self.value, "ask.cycle.fault");
         let submit_fn = coro::external(
             self.llvm,
             "hew_actor_ask_submit_native",
@@ -232,10 +235,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(admitted, poll, rejected)
             .llvm_ctx("select admitted request")?;
         self.builder.position_at_end(rejected);
-        self.close_ask(channel, timer)?;
+        self.close_ask(channel, timer, wait_edge)?;
         self.emit_ask_result(result, submitted, None, handler)?;
         self.emit_result_edge(Some(result), normal)?;
         self.builder.position_at_end(poll);
+        self.free_handle("hew_actor_wait_edge_prepare", wait_edge)?;
         let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
         let cancellation = self
             .builder
@@ -297,7 +301,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )
                 .llvm_ctx("inspect ask deadline")?;
             self.builder.position_at_end(timed_out);
-            self.close_ask(channel, Some(timer))?;
+            self.close_ask(channel, Some(timer), wait_edge)?;
             self.emit_ask_result(
                 result,
                 self.ctx.i32_type().const_int(
@@ -314,19 +318,24 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("park pending ask")?;
         }
         self.builder.position_at_end(parked);
+        self.check_actor_wait_cycle(wait_edge, cycle)?;
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(completed);
-        self.close_ask(channel, timer)?;
+        self.close_ask(channel, timer, wait_edge)?;
         self.emit_ask_result(result, status, reply, handler)?;
         self.emit_result_edge(Some(result), normal)?;
         self.builder.position_at_end(cancelled);
-        self.close_ask(channel, timer)?;
+        self.close_ask(channel, timer, wait_edge)?;
         self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
+        self.builder.position_at_end(cycle);
+        self.initialize_actor_cycle_fault(wait_edge)?;
+        self.close_ask(channel, timer, wait_edge)?;
+        self.emit_edge(unwind)?;
         self.builder.position_at_end(failed);
-        self.close_ask(channel, timer)?;
+        self.close_ask(channel, timer, wait_edge)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
         self.emit_edge(unwind)
     }
@@ -335,7 +344,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         channel: PointerValue<'ctx>,
         timer: Option<PointerValue<'ctx>>,
+        wait_edge: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
+        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
         if let Some(timer) = timer {
             self.free_handle("hew_coro_sleep_free", timer)?;
         }

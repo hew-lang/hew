@@ -274,6 +274,33 @@ fn resource_param_is_audited_borrow_for_contract(
 mod tests {
     use super::*;
 
+    /// Every C symbol a runtime-call-family consumer looks up by literal
+    /// name here must resolve to a row. The consumers with a fixed,
+    /// enumerable symbol set (as opposed to the checker's source-declared
+    /// `extern "rt"` consumer, which is driven by user source and cannot be
+    /// enumerated in a unit test) are:
+    ///
+    ///   - `RuntimeCallFamily::consumes_receiver` (`hew-types/src/runtime_call.rs`)
+    ///     reads `extern_param_ownership("hew_tcp_attach_local", 0)` directly.
+    ///   - `FileReadHandleKind::matches` (`hew-types/src/runtime_call/file_resources.rs`)
+    ///     reads `extern_owned_resource_result(FileReadOp::Open.c_symbol())`.
+    ///
+    /// An absent row here is not fail-closed for these two call sites: they
+    /// treat "no contract" as "not consuming" / "not this resource type"
+    /// rather than refusing, so a silently dropped row would misclassify
+    /// ownership instead of erroring loudly. Pin both rows directly.
+    #[test]
+    fn runtime_call_family_symbol_lookups_have_ownership_rows() {
+        assert!(
+            extern_param_ownership("hew_tcp_attach_local", 0).is_some(),
+            "RuntimeCallFamily::consumes_receiver reads this row for TcpAttachLocal"
+        );
+        assert!(
+            extern_owned_resource_result("hew_file_read_stream_open").is_some(),
+            "FileReadHandleKind::matches reads this row for FileReadOp::Open"
+        );
+    }
+
     #[test]
     fn tcp_contracts_name_borrow_and_consume_per_parameter() {
         let read_contract = extern_ownership_contract("hew_tcp_read")

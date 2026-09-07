@@ -5,8 +5,12 @@
 # in one of the three lists below. Keep entries sorted for stable diffs.
 #
 # Ownership contracts live in [[ownership.contracts]] entries at the end of
-# this file. Every symbol in any ABI tier must either have one contract or be
-# counted by scripts/ffi-ownership-ratchet.toml.
+# this file. A row exists for a symbol only when a real consumer reads it: the
+# checker consults contracts for source-declarable `extern "rt"` symbols
+# (absence is the fail-closed "no mint" default), and a handful of
+# runtime-call families look up rows by C symbol (see hew-sir/src/resource.rs,
+# hew-types/src/runtime_call.rs, hew-types/src/runtime_call/file_resources.rs,
+# hew-types/src/check/registration.rs). Do not add a row just to lower a count.
 #
 #   result = "fresh" | "owned" | "retained" | "borrowed" | "none"
 #   params = ["borrow" | "consume" | "retain", ...]

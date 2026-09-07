@@ -1291,13 +1291,20 @@ impl Checker {
         let elem_ty = if elems.is_empty() {
             Ty::Var(TypeVar::fresh())
         } else {
-            let first_ty = self.synthesize(&elems[0].0, &elems[0].1);
+            let mut elem_ty = self.synthesize(&elems[0].0, &elems[0].1);
             self.record_callable_value_transfer(&elems[0].0, &elems[0].1);
             for elem in &elems[1..] {
-                self.check_against(&elem.0, &elem.1, &first_ty);
+                // Distinct closures and function items only meet in their
+                // erased callable type.
+                if self.subst.resolve(&elem_ty).contains_callable() {
+                    let next = self.synthesize(&elem.0, &elem.1);
+                    elem_ty = self.join_callable_values(&elem_ty, &next, &elem.1);
+                } else {
+                    self.check_against(&elem.0, &elem.1, &elem_ty);
+                }
                 self.record_callable_value_transfer(&elem.0, &elem.1);
             }
-            first_ty
+            elem_ty
         };
         self.make_vec_type(elem_ty, span)
     }
@@ -2841,9 +2848,7 @@ impl Checker {
         ) || self.submission_suspends(span)
             || matches!(expr, Expr::Call { function, .. }
             if matches!(
-                self.expr_types
-                    .get(&SpanKey::in_module(&function.1, self.current_module_idx))
-                    .map(|ty| self.subst.resolve(ty)),
+                self.callee_value_type(function).map(|ty| self.subst.resolve(&ty)),
                 Some(Ty::Named { builtin: Some(crate::BuiltinType::LambdaPid), .. })
             ));
         if replies {
@@ -4773,6 +4778,7 @@ impl Checker {
         // the `Ok` payload.
         let snapshot = self.subst.snapshot();
         if self.try_unify_with_owner_identity(&ok_ty, actual) {
+            self.record_suspension_obligations(&ok_ty, actual, span);
             self.tail_ok_coercions
                 .insert(SpanKey::in_module(span, self.current_module_idx));
             // Return the full `Result` as this expression's check-against

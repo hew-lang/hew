@@ -212,7 +212,12 @@ impl Checker {
 
     pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
         let ty = self.subst.resolve(ty);
-        let origin = self.expression_callable_origin(expr, span);
+        // A literal is its own origin; a fork body shares its span with the
+        // synthetic block whose type is already recorded there.
+        let origin = match expr {
+            Expr::Lambda { .. } | Expr::ForkBlock { .. } => CallableOrigin::Typed(ty.clone()),
+            _ => self.expression_callable_origin(expr, span),
+        };
         let key = SpanKey::in_module(span, self.current_module_idx);
         // Invocation checking has already recorded explicit consuming
         // parameters/receivers. Ordinary value operands acquire snapshots.
@@ -318,7 +323,7 @@ impl Checker {
         }
     }
 
-    fn callee_value_type(&self, callee: &Spanned<Expr>) -> Option<Ty> {
+    pub(super) fn callee_value_type(&self, callee: &Spanned<Expr>) -> Option<Ty> {
         self.expr_types
             .get(&SpanKey::in_module(&callee.1, self.current_module_idx))
             .cloned()
@@ -460,15 +465,20 @@ impl Checker {
                 Ty::Closure {
                     identity: EffectBody::Closure(key),
                     ..
-                } => self.closure_capture_facts[&key].iter().all(|capture| {
-                    (if marker == crate::traits::MarkerTrait::Sync {
-                        capture.is_sync
-                    } else {
-                        capture.is_send
-                    }) || bindings.get(&capture.binding_id).is_some_and(|origin| {
-                        self.origin_has_marker(origin, bindings, seen, marker)
-                    })
-                }),
+                } => self
+                    .closure_capture_facts
+                    .get(&key)
+                    .is_some_and(|captures| {
+                        captures.iter().all(|capture| {
+                            (if marker == crate::traits::MarkerTrait::Sync {
+                                capture.is_sync
+                            } else {
+                                capture.is_send
+                            }) || bindings.get(&capture.binding_id).is_some_and(|origin| {
+                                self.origin_has_marker(origin, bindings, seen, marker)
+                            })
+                        })
+                    }),
                 ty => self.registry.implements_marker(&ty, marker),
             },
             CallableOrigin::Aggregate(fields) => fields

@@ -539,6 +539,20 @@ impl Checker {
             .collect()
     }
 
+    /// The one type two callable-bearing values share, erasing distinct
+    /// closures to their written callable type; anything else must coerce.
+    pub(super) fn join_callable_values(&mut self, left: &Ty, right: &Ty, span: &Span) -> Ty {
+        let snapshot = self.subst.snapshot();
+        if let Some(joined) = self.join_callable_types(left, right) {
+            self.expect_type(&joined, left, span);
+            self.expect_type(&joined, right, span);
+            return joined;
+        }
+        self.subst.restore(snapshot);
+        self.expect_type(left, right, span);
+        self.subst.resolve(left)
+    }
+
     pub(super) fn join_callable_types(&mut self, left: &Ty, right: &Ty) -> Option<Ty> {
         if left == right {
             return Some(left.clone());

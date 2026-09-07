@@ -864,7 +864,66 @@ fn await_on_a_plain_call_warns_and_await_on_a_value_is_rejected() {
             .collect::<Vec<_>>(),
         vec!["`await` waits on a task, an actor reply or an actor's close; `i64` is none of these"]
     );
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = await worker.value(); let task = fork { 1 }; let _joined = await task; await close(worker); }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = await worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = await callback(1); await close(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.warnings.is_empty(), "{:?}", output.warnings);
+}
+
+#[test]
+fn fork_bodies_prove_send_through_captured_record_fields() {
+    let output = check_source("type Job { run: fn() -> i64 } fn main() { let job = Job { run: || 1 }; let task = fork { job.run(); }; }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source("type Job { run: fn() -> i64 } fn main() { let value = Rc.new(1); let job = Job { run: move || { let held = value; 1 } }; let task = fork { job.run(); }; }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, crate::error::TypeErrorKind::InvalidSend)),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn collection_callbacks_follow_a_written_parameter_type() {
+    let source =
+        "fn apply(f: fn(i64) -> i64, values: Vec<i64>) -> Vec<i64> { values.map(f) } fn main() {}";
+    assert_call_effect(source, "values.map(f)", SuspensionEffect::Never);
+    assert_call_effect(
+        &source.replace("f: fn(i64)", "f: fn[suspends](i64)"),
+        "values.map(f)",
+        SuspensionEffect::MaySuspend,
+    );
+}
+
+#[test]
+fn array_literals_join_distinct_callables_into_their_written_type() {
+    let source = "fn double(x: i64) -> i64 { x * 2 } fn triple(x: i64) -> i64 { x * 3 } fn main() { let fns = [double, triple]; let closures = [|x: i64| x + 1, |x: i64| x + 2]; let value = fns[0](1) + closures[1](1); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let slow = source.replace("|x: i64| x + 2", "|x: i64| { sleep(1ms); x }");
+    let output = check_source(&slow);
+    assert_eq!(
+        output.errors.iter().map(|error| error.message.as_str()).collect::<Vec<_>>(),
+        vec!["closure suspends via `sleep(...)`; `fn[clone](i64) -> i64` never suspends, write `fn[suspends]`"]
+    );
+}
+
+#[test]
+fn ok_coerced_tails_keep_the_written_callable_contract() {
+    let output = check_source("fn make() -> Result<fn() -> i64, string> { || 1 } fn main() {}");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(
+        "fn make() -> Result<fn() -> i64, string> { || { sleep(1ms); 1 } } fn main() {}",
+    );
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "closure suspends via `sleep(...)`; `fn() -> i64` never suspends, write `fn[suspends]`"
+        ]
+    );
 }

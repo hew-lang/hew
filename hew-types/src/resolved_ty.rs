@@ -1224,11 +1224,11 @@ mod tests {
         let mut canonical = std::collections::HashSet::new();
         let mut functions = Vec::new();
         for call in [Read, Var, Once] {
-            for clone in [false, true] {
+            for (clone, suspends) in [(false, false), (true, false), (false, true), (true, true)] {
                 let capabilities = CallableCapabilities {
                     call,
                     clone,
-                    suspends: false,
+                    suspends,
                 };
                 let function = ResolvedTy::Function {
                     capabilities,

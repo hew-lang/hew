@@ -328,13 +328,7 @@ impl Checker {
             }
         }
         if then_resolved.contains_callable() || else_resolved.contains_callable() {
-            let snapshot = self.subst.snapshot();
-            if let Some(joined) = self.join_callable_types(&then_resolved, &else_resolved) {
-                self.expect_type(&joined, &then_resolved, span);
-                self.expect_type(&joined, &else_resolved, span);
-                return joined;
-            }
-            self.subst.restore(snapshot);
+            return self.join_callable_values(&then_resolved, &else_resolved, span);
         }
         self.expect_type(then_ty, else_ty, span);
         self.subst.resolve(then_ty)

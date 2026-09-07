@@ -79,21 +79,29 @@ fn canonical_io_wrappers_propagate_checked_native_operation_effects() {
             "missing checked effect: {call}"
         );
     }
-    for call in ["fs.read(path)", "conn.try_read_string()"] {
-        let unawaited = SOURCE.replace(&format!("await {call}"), call);
-        std::fs::write(&input, &unawaited).unwrap();
-        let failure = run_file_frontend_to_typecheck(input.to_str().unwrap(), &options)
-            .err()
-            .expect("unawaited suspending wrapper must fail");
-        let start = unawaited.find(call).unwrap();
-        assert!(
-            failure.diagnostics.iter().any(|diagnostic| {
-                matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error)
-                if error.message.contains("this call may suspend")
-                    && error.span == (start..start + call.len())
-                    && diagnostic.source.as_deref() == Some(unawaited.as_str()))
-            }),
-            "missing rejection at unawaited call: {failure:#?}"
-        );
-    }
+    // A plain call suspends on its own; `await` on it is only a warning.
+    let start = SOURCE.find("fs.read(path)").unwrap();
+    assert!(
+        state.diagnostics.iter().any(|diagnostic| {
+            matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error)
+            if error.severity == hew_types::error::Severity::Warning
+                && error.message.contains("`await` on a plain call adds nothing")
+                && error.span == (start..start + "fs.read(path)".len()))
+        }),
+        "missing redundant await warning: {:#?}",
+        state.diagnostics
+    );
+    let plain = SOURCE.replace("await ", "");
+    std::fs::write(&input, &plain).unwrap();
+    let state = run_file_frontend_to_typecheck(input.to_str().unwrap(), &options)
+        .unwrap_or_else(|error| panic!("{error:#?}"));
+    let output = state.typecheck_result.tco.expect("checked source output");
+    let start = plain.find("fs.read(path)").unwrap();
+    assert!(output
+        .suspension_effects
+        .calls
+        .iter()
+        .any(|(key, effect)| key.module_idx == 0
+            && key.start == start
+            && *effect == SuspensionEffect::MaySuspend));
 }

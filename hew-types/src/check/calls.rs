@@ -601,6 +601,69 @@ impl Checker {
             }
         }
 
+        // Expected-type path for the map and set constructors, mirroring the
+        // `Vec.new()` block below. `var m: HashMap<K, V> = HashMap.new()` and a
+        // record-literal field initializer (`labels: HashMap.new()`) carry no
+        // turbofish, so without this branch the call falls through to the
+        // builtin catalog and reaches SIR as an opaque `HashMap::new` endpoint
+        // with no ownership contract. The callee identity is one runtime family
+        // whatever `K`/`V` turn out to be, so the target is recorded even when a
+        // type argument is still an inference variable — the same reason
+        // `Vec.new()` records eagerly.
+        if let Some((builtin, name, arity)) = match constructor_family {
+            Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) => {
+                Some((crate::BuiltinType::HashMap, "HashMap", 2))
+            }
+            Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) => {
+                Some((crate::BuiltinType::HashSet, "HashSet", 1))
+            }
+            _ => None,
+        } {
+            self.check_arity(args, 0, &format!("`{name}.new`"), span);
+            let Ty::Named {
+                name: expected_name,
+                args: expected_args,
+                ..
+            } = &resolved_expected
+            else {
+                return None;
+            };
+            if expected_name != name || expected_args.len() != arity {
+                return None;
+            }
+            let resolved_args: Vec<Ty> = expected_args
+                .iter()
+                .map(|arg| self.subst.resolve(arg))
+                .collect();
+            if resolved_args.iter().any(|arg| matches!(arg, Ty::Error)) {
+                self.record_type(span, &Ty::Error);
+                return Some(Ty::Error);
+            }
+            let result_ty = Ty::Named {
+                builtin: Some(builtin),
+                name: name.to_string(),
+                args: resolved_args.clone(),
+            };
+            if !resolved_args.iter().any(|arg| matches!(arg, Ty::Var(_))) {
+                match builtin {
+                    crate::BuiltinType::HashMap => {
+                        self.validate_concrete_hashmap_type(&result_ty, span);
+                    }
+                    _ => {
+                        self.validate_concrete_hashset_type(&result_ty, span);
+                    }
+                }
+            }
+            self.record_type(span, &result_ty);
+            self.record_direct_call_target(
+                span,
+                CallTarget::Runtime(
+                    constructor_family.expect("matched a canonical collection constructor"),
+                ),
+            );
+            return Some(result_ty);
+        }
+
         if constructor_family == Some(crate::runtime_call::RuntimeCallFamily::VecNew) {
             self.check_arity(args, 0, "`Vec.new`", span);
 

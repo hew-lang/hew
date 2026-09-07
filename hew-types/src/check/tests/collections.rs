@@ -3718,3 +3718,107 @@ fn nested_generic_record_vec_new_publishes_its_runtime_target() {
         output.direct_call_targets
     );
 }
+
+/// `HashMap.new()` and `HashSet.new()` without a turbofish take their type
+/// arguments from the expected type — an annotated binding, or a record-literal
+/// field whose declared type supplies the shape. Both must publish the canonical
+/// runtime constructor target: a call that reaches semantic lowering carrying
+/// only the builtin catalog endpoint has no ownership contract and fails closed
+/// with `E_SIR_UNSUPPORTED`.
+#[test]
+fn annotated_map_and_set_constructors_publish_their_runtime_targets() {
+    let output = check_source(
+        r#"
+        fn main() {
+            var labels: HashMap<string, i64> = HashMap.new();
+            var members: HashSet<string> = HashSet.new();
+            labels.insert("one", 1);
+            members.insert("one");
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "annotated map and set constructors must typecheck: {:#?}",
+        output.errors
+    );
+    for family in [
+        crate::runtime_call::RuntimeCallFamily::HashMapNew,
+        crate::runtime_call::RuntimeCallFamily::HashSetNew,
+    ] {
+        assert!(
+            output.direct_call_targets.values().any(|target| matches!(
+                target,
+                crate::check::dispatch::CallTarget::Runtime(published) if *published == family
+            )),
+            "annotated constructor must publish {family:?}: {:#?}",
+            output.direct_call_targets
+        );
+    }
+}
+
+/// The same property through a record-literal field initializer, the shape the
+/// collection-field acceptance cases use. The field's declared type is the
+/// expected type, so the constructor resolves there and nowhere else.
+#[test]
+fn record_field_map_and_set_constructors_publish_their_runtime_targets() {
+    let output = check_source(
+        r#"
+        type Registry { labels: HashMap<string, string>, members: HashSet<string>, }
+
+        fn main() {
+            var r = Registry { labels: HashMap.new(), members: HashSet.new() };
+            r.members.insert("one");
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "record field map and set constructors must typecheck: {:#?}",
+        output.errors
+    );
+    for family in [
+        crate::runtime_call::RuntimeCallFamily::HashMapNew,
+        crate::runtime_call::RuntimeCallFamily::HashSetNew,
+    ] {
+        assert!(
+            output.direct_call_targets.values().any(|target| matches!(
+                target,
+                crate::check::dispatch::CallTarget::Runtime(published) if *published == family
+            )),
+            "record field constructor must publish {family:?}: {:#?}",
+            output.direct_call_targets
+        );
+    }
+}
+
+/// Negative control: a map constructor whose expected type is not a `HashMap`
+/// must not publish the map constructor target. Falling through to the ordinary
+/// resolver is what produces the type-mismatch diagnostic.
+#[test]
+fn map_constructor_against_a_non_map_expectation_publishes_no_target() {
+    let output = check_source(
+        r"
+        fn main() {
+            var wrong: Vec<i64> = HashMap.new();
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "a map constructor assigned to a `Vec` binding must be rejected"
+    );
+    assert!(
+        !output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::HashMapNew
+            )
+        )),
+        "a mismatched map constructor must not publish the map target: {:#?}",
+        output.direct_call_targets
+    );
+}

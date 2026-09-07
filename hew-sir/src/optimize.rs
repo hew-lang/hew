@@ -126,6 +126,7 @@ fn canonicalize_verified_function(
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
+            | SemTerminator::ExternCall { .. }
             | SemTerminator::ActorCall { .. }
             | SemTerminator::ValueCall { .. }
             | SemTerminator::IndirectCall { .. }

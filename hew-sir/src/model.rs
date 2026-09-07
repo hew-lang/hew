@@ -1761,6 +1761,18 @@ pub enum SemTerminator {
         normal: Edge,
         unwind: CallUnwind,
     },
+    /// A call to a declared C-ABI symbol. Per-operand ownership comes from the
+    /// `extern` declaration carried in `signature`, never from the spelling of
+    /// the symbol. A C call cannot raise a Hew fault, so `unwind` is always
+    /// [`CallUnwind::NotApplicable`].
+    ExternCall {
+        id: OpId,
+        signature: Box<crate::ExternSignature>,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
     /// Copy a borrowed string into an owned logical panic fault, then enter
     /// the explicit cleanup region. There is no result or successful edge.
     /// The message occupies operand slot zero; cleanup arguments follow it.
@@ -1825,6 +1837,7 @@ impl SemTerminator {
             Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
             Self::Call { args, .. }
             | Self::RtCall { args, .. }
+            | Self::ExternCall { args, .. }
             | Self::ActorCall { args, .. }
             | Self::ValueCall { args, .. } => {
                 for (index, argument) in args.iter().enumerate() {
@@ -1888,6 +1901,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::ExternCall {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::ActorCall {
                 result: CallResult::Value(result),
                 ..
@@ -1929,6 +1946,10 @@ impl SemTerminator {
                 ..
             }
             | Self::RtCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::ExternCall {
                 result: CallResult::Unit | CallResult::Never,
                 ..
             }
@@ -2068,6 +2089,12 @@ impl SemTerminator {
                 visit_call_operands(args, normal.as_ref(), unwind, argument_start, visit);
             }
             Self::RtCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ExternCall {
                 args,
                 normal,
                 unwind,
@@ -2227,6 +2254,12 @@ impl SemTerminator {
                 unwind,
                 ..
             }
+            | Self::ExternCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
             | Self::ActorCall {
                 args,
                 normal,
@@ -2343,6 +2376,7 @@ impl SemTerminator {
                 }
             }
             Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
@@ -2438,6 +2472,7 @@ impl SemTerminator {
                 }
             }
             Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
@@ -2513,6 +2548,7 @@ impl SemTerminator {
                 _ => None,
             },
             Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => match slot.0 {
                 0 => Some(normal),
@@ -2597,6 +2633,7 @@ impl SemTerminator {
                 _ => None,
             },
             Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => match slot.0 {
                 0 => Some(normal),
@@ -2699,6 +2736,7 @@ impl SemTerminator {
             }
             Self::Call { args, .. }
             | Self::RtCall { args, .. }
+            | Self::ExternCall { args, .. }
             | Self::ActorCall { args, .. }
             | Self::ValueCall { args, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < args.len()) =>
@@ -2713,6 +2751,7 @@ impl SemTerminator {
                 "call normal-edge argument"
             }
             Self::RtCall { args, normal, .. }
+            | Self::ExternCall { args, normal, .. }
             | Self::ActorCall { args, normal, .. }
             | Self::ValueCall { args, normal, .. }
                 if usize::try_from(slot.0)
@@ -2722,6 +2761,7 @@ impl SemTerminator {
             }
             Self::Call { .. }
             | Self::RtCall { .. }
+            | Self::ExternCall { .. }
             | Self::ActorCall { .. }
             | Self::ValueCall { .. }
             | Self::IndirectCall { .. }

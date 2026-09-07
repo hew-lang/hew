@@ -872,6 +872,7 @@ impl<'a> Flow<'a> {
             }
             SemTerminator::ActorCall { normal, unwind, .. }
             | SemTerminator::RtCall { normal, unwind, .. }
+            | SemTerminator::ExternCall { normal, unwind, .. }
             | SemTerminator::ValueCall { normal, unwind, .. } => {
                 Self::require_fault(id, DEAD, &state, emit);
                 let mut returned = state.clone();
@@ -902,6 +903,8 @@ impl<'a> Flow<'a> {
                         SemTerminator::RtCall { family, .. } => family
                             .semantic_contract()
                             .is_some_and(hew_types::RuntimeSemanticContract::propagates_fault),
+                        // A C call has no fault ABI and therefore no unwind edge.
+                        SemTerminator::ExternCall { .. } => false,
                         _ => unreachable!("matched call terminator"),
                     };
                     if transfers_fault {
@@ -1635,6 +1638,7 @@ impl<'a> Flow<'a> {
                     } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
                         | SemTerminator::RtCall { .. }
+                        | SemTerminator::ExternCall { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }
                         | SemTerminator::DynCall { .. }

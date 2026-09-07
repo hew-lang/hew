@@ -492,6 +492,21 @@ enum SourceCandidateOutcome {
     },
 }
 
+/// The reason one type cannot cross a C-ABI boundary, if it cannot.
+///
+/// Only shapes with no possible C representation are refused here. Records,
+/// opaque handles and the runtime's pointer-carrier builtins pass through:
+/// the physical target resolver is the authority on their layout.
+fn unmarshallable_extern_ty(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Tuple(_) => Some("is a tuple"),
+        Ty::Array(..) | Ty::Slice(_) => Some("is an array or slice"),
+        Ty::Function { .. } | Ty::Closure { .. } => Some("is a callable value"),
+        Ty::TraitObject { .. } => Some("is a trait object"),
+        _ => None,
+    }
+}
+
 fn validated_resource_candidate(
     resource_declaration: crate::DefId,
     typed_result: crate::ffi_contracts::ExternOwnedResourceResult,
@@ -9822,7 +9837,7 @@ impl Checker {
         for (declaration_ordinal, f) in eb.functions.iter().enumerate() {
             let mut hole_vars = Vec::new();
             let param_names = f.params.iter().map(|p| p.name.clone()).collect();
-            let params = f
+            let params: Vec<Ty> = f
                 .params
                 .iter()
                 .map(|p| {
@@ -9840,6 +9855,29 @@ impl Checker {
                     TypeResolutionContext::ExternSignature,
                 )
             });
+            for (index, ty) in params.iter().chain([&return_type]).enumerate() {
+                let Some(reason) = unmarshallable_extern_ty(ty) else {
+                    continue;
+                };
+                let span = f
+                    .params
+                    .get(index)
+                    .map_or_else(|| f.span.clone(), |param| param.ty.1.clone());
+                let position = if index < f.params.len() {
+                    format!("parameter {index}")
+                } else {
+                    "return type".to_string()
+                };
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "`extern fn {}` {position} is `{}`, which {reason} and has no C-ABI representation",
+                        f.name,
+                        ty.user_facing()
+                    ),
+                ));
+            }
             let mut sig = FnSig {
                 param_ownership: f
                     .params

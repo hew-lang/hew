@@ -1129,6 +1129,7 @@ fn check_function_with_context(
         }
         if let SemTerminator::Call { id, .. }
         | SemTerminator::RtCall { id, .. }
+        | SemTerminator::ExternCall { id, .. }
         | SemTerminator::ActorCall { id, .. }
         | SemTerminator::ValueCall { id, .. }
         | SemTerminator::IndirectCall { id, .. }
@@ -3595,6 +3596,126 @@ fn verify_direct_call_terminator(
     }
 }
 
+/// Verify one extern call against the declaration it carries.
+///
+/// The declaration is the whole contract: argument types and boundary
+/// decisions, and the result type and ownership. A C call has no fault ABI,
+/// so an unwind edge is invalid.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the terminator's own fields plus the module type context"
+)]
+fn verify_extern_call_terminator(
+    function: &SemFunction,
+    id: OpId,
+    signature: &crate::ExternSignature,
+    args: &[crate::BoundaryOperand],
+    result: &crate::CallResult,
+    normal: &crate::Edge,
+    unwind: &crate::CallUnwind,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let symbol = &signature.symbol;
+    if !matches!(unwind, crate::CallUnwind::NotApplicable) {
+        invalid_operation(
+            function,
+            id,
+            format!("extern `{symbol}` has no fault ABI and cannot carry an unwind edge"),
+            diagnostics,
+        );
+    }
+    if args.len() != signature.params.len() || args.len() != signature.consumes.len() {
+        invalid_operation(
+            function,
+            id,
+            format!(
+                "extern `{symbol}` declares {} parameters, called with {}",
+                signature.params.len(),
+                args.len()
+            ),
+            diagnostics,
+        );
+        return;
+    }
+    for (index, argument) in args.iter().enumerate() {
+        let declared = &signature.params[index];
+        let Some(actual) = types.get(&argument.operand.value) else {
+            continue;
+        };
+        if actual != declared {
+            invalid_operation(
+                function,
+                id,
+                format!(
+                    "extern `{symbol}` argument {index} is `{}`, declared `{}`",
+                    actual.user_facing(),
+                    declared.user_facing()
+                ),
+                diagnostics,
+            );
+            continue;
+        }
+        let expected = match crate::OwnKind::of_ty(declared, facts) {
+            Ok(crate::OwnKind::None) => crate::BoundaryDecision::Copy,
+            Ok(_) if signature.consumes[index] => crate::BoundaryDecision::Move,
+            Ok(_) => crate::BoundaryDecision::Borrow,
+            Err(reason) => {
+                invalid_operation(function, id, reason, diagnostics);
+                continue;
+            }
+        };
+        if argument.decision != expected {
+            invalid_operation(
+                function,
+                id,
+                format!(
+                    "extern `{symbol}` argument {index} has {:?} boundary, its declaration requires {expected:?}",
+                    argument.decision
+                ),
+                diagnostics,
+            );
+        }
+    }
+    match result {
+        crate::CallResult::Unit if signature.result == ResolvedTy::Unit => {
+            if !normal.args.is_empty() {
+                invalid_operation(
+                    function,
+                    id,
+                    format!("unit extern `{symbol}` forwards a normal-edge value"),
+                    diagnostics,
+                );
+            }
+        }
+        crate::CallResult::Value(value) if value.ty == signature.result => {
+            match crate::OwnKind::of_ty(&signature.result, facts) {
+                Ok(own) if own == value.own => {}
+                Ok(own) => invalid_operation(
+                    function,
+                    id,
+                    format!(
+                        "extern `{symbol}` result is {:?}, its declared type requires {own:?}",
+                        value.own
+                    ),
+                    diagnostics,
+                ),
+                Err(reason) => invalid_operation(function, id, reason, diagnostics),
+            }
+        }
+        _ => invalid_operation(
+            function,
+            id,
+            format!(
+                "extern `{symbol}` result disagrees with its declared `{}`",
+                signature.result.user_facing()
+            ),
+            diagnostics,
+        ),
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -4172,6 +4293,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
+            | SemTerminator::ExternCall { .. }
             | SemTerminator::ActorCall { .. }
             | SemTerminator::ValueCall { .. }
             | SemTerminator::IndirectCall { .. }
@@ -4618,6 +4740,25 @@ fn verify_terminator_shape(
                 ));
             }
         }
+        SemTerminator::ExternCall {
+            id,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+        } => verify_extern_call_terminator(
+            function,
+            *id,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+            types,
+            variants.facts,
+            diagnostics,
+        ),
         SemTerminator::RtCall {
             id,
             family,
@@ -5008,6 +5149,7 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
             args.len()..args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
         }
         SemTerminator::RtCall { args, normal, .. }
+        | SemTerminator::ExternCall { args, normal, .. }
         | SemTerminator::ActorCall { args, normal, .. }
         | SemTerminator::ValueCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()

@@ -1146,6 +1146,15 @@ pub enum PhysicalTerminator {
         normal: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// A direct call to a declared C-ABI symbol through its declared
+    /// signature. Argument transfers carry the ownership the `extern`
+    /// declaration pinned; a C call has no fault ABI and no unwind edge.
+    ExternCall {
+        symbol: String,
+        args: Vec<ArgumentTransfer>,
+        result: Option<StorageId>,
+        normal: PhysicalEdge,
+    },
     /// A closed no-unwind runtime operation. Logical failures are explicit
     /// SIR-authored CFG edges and never become C unwinds.
     RuntimeCall {
@@ -2243,6 +2252,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             result: CallResult::Value(result),
             ..
         }
+        | SemTerminator::ExternCall {
+            result: CallResult::Value(result),
+            ..
+        }
         | SemTerminator::ActorCall {
             result: CallResult::Value(result),
             ..
@@ -2935,6 +2948,21 @@ impl FunctionLowerer<'_> {
                     CallUnwind::NotApplicable => None,
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
                 },
+            }),
+            SemTerminator::ExternCall {
+                signature,
+                args,
+                result,
+                normal,
+                ..
+            } => Ok(PhysicalTerminator::ExternCall {
+                symbol: signature.symbol.clone(),
+                args: self.argument_transfers(args)?,
+                result: match result {
+                    CallResult::Unit | CallResult::Never => None,
+                    CallResult::Value(value) => Some(self.value(value.id)?),
+                },
+                normal: self.lower_edge(normal)?,
             }),
             SemTerminator::RtCall {
                 family,
@@ -6120,6 +6148,12 @@ fn terminator_successors(
             state,
             block,
         ),
+        PhysicalTerminator::ExternCall {
+            args,
+            result,
+            normal,
+            ..
+        } => call_successors(function, args, *result, Some(normal), None, state, block),
         PhysicalTerminator::RuntimeCall {
             action,
             args,
@@ -6925,6 +6959,32 @@ fn verify_terminator(
                 .ok_or_else(|| PhysicalError::new("actor boundary lacks fault cleanup"))?;
             edge(normal)?;
             edge(unwind)
+        }
+        PhysicalTerminator::ExternCall {
+            symbol,
+            args,
+            result,
+            normal,
+        } => {
+            // Types and ownership were proven against the `extern`
+            // declaration in SIR; the physical form only has to keep its
+            // transfers and edges well formed.
+            for argument in args {
+                let id = match argument {
+                    ArgumentTransfer::Borrow(id)
+                    | ArgumentTransfer::BorrowMut(id)
+                    | ArgumentTransfer::Move(id)
+                    | ArgumentTransfer::Clone { source: id, .. } => *id,
+                };
+                slot(id)?;
+            }
+            if symbol.is_empty() {
+                return Err(PhysicalError::new("extern call has no linker symbol"));
+            }
+            if let Some(result) = result {
+                slot(*result)?;
+            }
+            edge(normal)
         }
         PhysicalTerminator::RuntimeCall {
             action,

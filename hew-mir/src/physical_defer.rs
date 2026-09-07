@@ -201,6 +201,7 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         PhysicalTerminator::RuntimeCall {
             normal, failure, ..
         } => std::iter::once(normal).chain(failure).collect(),
+        PhysicalTerminator::ExternCall { normal, .. } => vec![normal],
         PhysicalTerminator::Return { .. }
         | PhysicalTerminator::PropagateFault
         | PhysicalTerminator::Trap(_)

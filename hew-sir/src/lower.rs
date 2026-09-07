@@ -2606,7 +2606,7 @@ fn lower_initial_value_transfer(
         ));
     }
     builder.service.require_type_facts(&ty)?;
-    if !is_initial_call_value(&ty) {
+    if !is_initial_call_value(&ty) && !is_opaque_handle(&builder.service.checked_facts, &ty) {
         if is_concrete_variant_type(builder.service.module, &ty) {
             builder
                 .service
@@ -7468,6 +7468,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     value_required,
                 )
             }
+            CallTarget::Extern {
+                declaration,
+                endpoint,
+                ..
+            } => self.lower_extern_call(expr, declaration, endpoint, args, value_required),
             CallTarget::Runtime(hew_types::RuntimeCallFamily::SupervisorStop) => {
                 let [handle] = args.as_slice() else {
                     return Err("supervisor stop takes exactly one handle".into());
@@ -7925,6 +7930,246 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if value_required && continuation.is_none() {
             return Err(format!(
                 "unit-valued runtime family `{family:?}` cannot produce an SSA value"
+            ));
+        }
+        Ok(continuation)
+    }
+
+    /// The exact `extern` declaration behind one call target.
+    fn extern_signature(
+        &self,
+        declaration: &hew_types::DefId,
+        endpoint: &str,
+    ) -> Result<crate::ExternSignature, String> {
+        self.service
+            .module
+            .items
+            .iter()
+            .find_map(|item| {
+                let hew_hir::HirItem::ExternFn(function) = item else {
+                    return None;
+                };
+                (&function.declaration == declaration && function.name == endpoint).then(|| {
+                    crate::ExternSignature {
+                        declaration: function.declaration.clone(),
+                        symbol: function.name.clone(),
+                        params: function.param_tys.clone(),
+                        consumes: function.param_consume.clone(),
+                        result: function.return_ty.clone(),
+                    }
+                })
+            })
+            .ok_or_else(|| format!("extern call names no HIR declaration for `{endpoint}`"))
+    }
+
+    /// Refuse a declaration that disagrees with the generated ownership row.
+    ///
+    /// The row is the audited truth for a classified runtime symbol; an
+    /// unclassified symbol has no row and the declaration stands alone. Only
+    /// parameters that carry a Hew obligation are compared: a `#[opaque]`
+    /// pointer-width handle is a bit-copied id whose lifecycle belongs to its
+    /// `#[resource]` owner, so a row that frees the underlying C allocation
+    /// says nothing about the handle's Hew boundary.
+    fn verify_extern_declaration_ownership(
+        signature: &crate::ExternSignature,
+        obligations: &[bool],
+        result_owned: bool,
+    ) -> Result<(), String> {
+        use hew_types::ffi_contracts::{
+            extern_ownership_contract, ExternParamOwnership, ExternResultOwnership,
+        };
+        let Some(contract) = extern_ownership_contract(&signature.symbol).contract() else {
+            return Ok(());
+        };
+        if contract.params.len() == signature.consumes.len() {
+            for (index, (declared, audited)) in
+                signature.consumes.iter().zip(contract.params).enumerate()
+            {
+                if obligations[index] && *declared != (*audited == ExternParamOwnership::Consume) {
+                    return Err(format!(
+                        "extern `{}` parameter {index} declares {}, its audited ownership row says {audited:?}",
+                        signature.symbol,
+                        if *declared { "`consume`" } else { "a borrow" }
+                    ));
+                }
+            }
+        }
+        match contract.result {
+            ExternResultOwnership::Borrowed => Err(format!(
+                "extern `{}` returns a borrow of a foreign allocation, which has no owner to borrow from",
+                signature.symbol
+            )),
+            ExternResultOwnership::None if result_owned => Err(format!(
+                "extern `{}` declares an owned result, its audited ownership row transfers nothing",
+                signature.symbol
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Lower a call to a declared C-ABI symbol.
+    ///
+    /// The `extern` declaration is the ownership authority: `consume` pins a
+    /// transfer, its absence a borrow, and the declared return type decides
+    /// whether the caller receives an owner. A C call cannot raise a Hew
+    /// fault, so the call has no unwind edge.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one extern boundary: declaration admission, operand transfer and result"
+    )]
+    fn lower_extern_call(
+        &mut self,
+        expr: &HirExpr,
+        declaration: &hew_types::DefId,
+        endpoint: &str,
+        args: &[HirExpr],
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let signature = self.extern_signature(declaration, endpoint)?;
+        if signature.params.len() != args.len() || signature.consumes.len() != args.len() {
+            return Err(format!(
+                "extern `{endpoint}` declares {} parameters, called with {}",
+                signature.params.len(),
+                args.len()
+            ));
+        }
+        if signature.result == ResolvedTy::Never {
+            return Err(format!(
+                "extern `{endpoint}` cannot be declared to never return"
+            ));
+        }
+        if self.ty(&expr.ty) != signature.result {
+            return Err(format!(
+                "extern `{endpoint}` returns `{}`, used as `{}`",
+                signature.result.user_facing(),
+                self.ty(&expr.ty).user_facing()
+            ));
+        }
+        for ty in signature
+            .params
+            .iter()
+            .chain(std::iter::once(&signature.result))
+        {
+            if *ty != ResolvedTy::Unit {
+                self.service.require_type_facts(ty)?;
+            }
+        }
+        let mut decisions = Vec::with_capacity(args.len());
+        for (index, ty) in signature.params.iter().enumerate() {
+            decisions.push(
+                if OwnKind::of_ty(ty, self.service.checked_facts.rows())? == OwnKind::None {
+                    crate::BoundaryDecision::Copy
+                } else if signature.consumes[index] {
+                    crate::BoundaryDecision::Move
+                } else {
+                    crate::BoundaryDecision::Borrow
+                },
+            );
+        }
+        let obligations = decisions
+            .iter()
+            .map(|decision| *decision != crate::BoundaryDecision::Copy)
+            .collect::<Vec<_>>();
+        let result_owned = signature.result != ResolvedTy::Unit
+            && OwnKind::of_ty(&signature.result, self.service.checked_facts.rows())?
+                == OwnKind::Owned;
+        Self::verify_extern_declaration_ownership(&signature, &obligations, result_owned)?;
+        let read_only = decisions
+            .iter()
+            .all(|decision| *decision != crate::BoundaryDecision::Move);
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut loans = Vec::new();
+        for (index, (arg, decision)) in args.iter().zip(&decisions).enumerate() {
+            let value = if *decision == crate::BoundaryDecision::Move {
+                self.lower_consuming_value(arg)?
+            } else {
+                let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
+                self.lower_call_read(arg, &mut loans, stable_tail, read_only)?
+                    .value
+            };
+            lowered_args.push(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision: *decision,
+            });
+        }
+        let argument_temporaries: Vec<_> = self
+            .owned_live
+            .keys()
+            .filter(|value| {
+                !live_before_arguments.contains(value)
+                    && !lowered_args.iter().any(|arg| {
+                        arg.decision == crate::BoundaryDecision::Move
+                            && arg.operand.value == **value
+                    })
+            })
+            .copied()
+            .collect();
+        for argument in &lowered_args {
+            if argument.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&argument.operand.value);
+            }
+        }
+        let live_at_call = self.owned_live.clone();
+        let (result, normal, continuation) = if signature.result == ResolvedTy::Unit {
+            (
+                CallResult::Unit,
+                Edge {
+                    target: self.new_block(Vec::new()),
+                    args: Vec::new(),
+                },
+                None,
+            )
+        } else {
+            let own = OwnKind::of_ty(&signature.result, self.service.checked_facts.rows())?;
+            let raw = self.fresh_value();
+            let continuation = self.fresh_value();
+            let normal = self.new_block(vec![BlockArg {
+                value: continuation,
+                ty: signature.result.clone(),
+                own,
+            }]);
+            (
+                CallResult::Value(ValueDef {
+                    id: raw,
+                    ty: signature.result.clone(),
+                    own,
+                }),
+                Edge {
+                    target: normal,
+                    args: vec![Operand { value: raw }],
+                },
+                Some(continuation),
+            )
+        };
+        let id = OpId(self.ops);
+        self.ops += 1;
+        let normal_target = normal.target;
+        self.set_terminator(SemTerminator::ExternCall {
+            id,
+            signature: Box::new(signature),
+            args: lowered_args,
+            result,
+            normal,
+            unwind: CallUnwind::NotApplicable,
+        })?;
+        self.current = normal_target;
+        self.owned_live = live_at_call;
+        self.end_call_loans(&loans)?;
+        for value in argument_temporaries.into_iter().rev() {
+            self.emit_destroy(value)?;
+        }
+        if let Some(continuation) = continuation {
+            let ty = self
+                .value_ty(continuation)
+                .ok_or_else(|| "extern continuation lost its type".to_string())?;
+            if self.value_own_kind(continuation) == Some(OwnKind::Owned) {
+                self.owned_live.insert(continuation, ty);
+            }
+        } else if value_required {
+            return Err(format!(
+                "unit-valued extern `{endpoint}` cannot produce an SSA value"
             ));
         }
         Ok(continuation)

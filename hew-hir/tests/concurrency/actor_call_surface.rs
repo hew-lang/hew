@@ -300,21 +300,18 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
         "spawn Counter site should lower to HirExprKind::Spawn: {:#?}",
         main.body
     );
-    // The call is the send: one site builds the addressed description and
-    // submits it, so the `ActorMessage` node is the submission's operand.
+    // The call is the send: there is no separate `send` keyword, so an
+    // ordinary call on an actor handle waits for completion like any other
+    // call. `c.increment(10)` lowers to `HirExprKind::ActorAsk` with a
+    // `Unit` reply type (the one-way view lives in `mailbox(target,
+    // on_full: ..)`, not in a distinct HIR node).
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorDelivery {
-                receiver,
-                operation: hew_types::actor_delivery::ActorDeliveryCall::Submit { .. },
-                ..
-            } if matches!(
-                &receiver.kind,
-                HirExprKind::ActorMessage { method_id, .. } if method_id == "Counter::increment"
-            )
+            HirExprKind::ActorAsk { method_id, reply_ty: hew_types::ResolvedTy::Unit, .. }
+                if method_id == "Counter::increment"
         )),
-        "c.increment(10) should lower to a Submit over HirExprKind::ActorMessage: {:#?}",
+        "c.increment(10) should lower to HirExprKind::ActorAsk with a Unit reply: {:#?}",
         main.body
     );
     assert!(

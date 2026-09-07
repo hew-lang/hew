@@ -2230,21 +2230,20 @@ mod tests {
         assert!(verify(&f).is_empty());
     }
 
-    #[test]
-    fn borrowed_parameter_cannot_be_transferred_into_an_owned_block_argument() {
-        let mut continuation = block(1, vec![destroy(1, 1)], done());
-        continuation.args.push(BlockArg {
-            value: ValueId(1),
-            ty: ResolvedTy::String,
-            own: OwnKind::Owned,
-        });
-        let mut f = function(vec![
-            block(0, Vec::new(), SemTerminator::Goto(edge(1, &[0]))),
-            continuation,
-        ]);
-        f.params[0].own = OwnKind::Guaranteed;
-        assert!(verify(&f).iter().any(|v| v.value == Some(ValueId(0))));
-    }
+    // `borrowed_parameter_cannot_be_transferred_into_an_owned_block_argument`
+    // pinned the pre-D432 rule that forwarding a guaranteed value across any
+    // Goto edge is a consuming transfer, refused for a guaranteed source.
+    // D432 (hew-sir/src/lifetime.rs `edge`, "a guaranteed value carries no
+    // obligation, so forwarding it names the same loan in the successor
+    // rather than transferring one") deliberately drops that refusal:
+    // `consume` now gates only on the source's guaranteed-ness, so this
+    // exact scenario verifies clean. The invariants this test meant to
+    // guard — a guaranteed value cannot itself be consumed, and crossing a
+    // boundary still requires an explicit owned copy — remain covered by
+    // `borrowed_parameter_cannot_be_consumed` and
+    // `borrowed_parameter_requires_explicit_copy_before_return` below.
+    // Deleted rather than rewritten: no meaningful refusal survives at this
+    // call shape to pin.
 
     #[test]
     fn return_transfers_the_owned_result() {

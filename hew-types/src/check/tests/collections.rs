@@ -1716,7 +1716,13 @@ fn recursive_collection_admission_preserves_finite_nested_generic_copy_layout() 
 }
 
 #[test]
-fn recursive_collection_admission_preserves_resource_clone_refusal() {
+fn recursive_collection_admission_borrows_a_nested_resource_element() {
+    // D432: `for value in vec` no longer requires a semantic clone. An
+    // element with none — here a `#[resource]` type reached through nested
+    // heap indirection — is bound as a borrowed loan of the slot instead of
+    // being refused. The premise this test pinned before D432 (that
+    // recursive nesting must still refuse resource cloning) died: cloning
+    // is no longer what direct iteration does at all.
     let output = check_source(
         r"
         #[resource]
@@ -1731,12 +1737,8 @@ fn recursive_collection_admission_preserves_resource_clone_refusal() {
         ",
     );
     assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::InvalidOperation
-                && error.message.contains("VecIter<")
-                && error.message.contains("resource/linear value `Token`")
-        }),
-        "recursive heap indirection must not admit resource cloning: {:#?}",
+        output.errors.is_empty(),
+        "borrowed iteration over a recursively nested resource element must be admitted: {:#?}",
         output.errors,
     );
 }
@@ -2219,7 +2221,12 @@ fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
 }
 
 #[test]
-fn vec_iter_clone_totality_rejects_direct_function_element() {
+fn vec_iter_borrows_direct_function_element() {
+    // D432: a function/closure element has no semantic clone, so direct
+    // `for` iteration binds it as a borrowed loan instead of refusing at a
+    // clone-totality boundary. The old refusal this test pinned applied to
+    // the pre-D432 design, where `for` always cloned; that premise died
+    // with the borrowed-iteration mode.
     let output = check_source(
         r"
         fn scan(callbacks: Vec<fn(i64) -> i64>) {
@@ -2229,23 +2236,9 @@ fn vec_iter_clone_totality_rejects_direct_function_element() {
         }
         ",
     );
-
-    let matching: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error
-                .message
-                .contains("`VecIter<fn(i64) -> i64>` is not supported")
-                && error
-                    .message
-                    .contains("has no semantic clone/retain operation")
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "direct iteration over a function/closure element must fail once at the clone-totality boundary: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "direct iteration over a function/closure element must borrow, not refuse: {:#?}",
         output.errors
     );
 }

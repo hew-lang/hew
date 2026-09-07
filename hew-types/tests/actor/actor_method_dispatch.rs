@@ -32,11 +32,18 @@ fn actor_method_dispatch_classifies_message_and_ask_sites() {
         "counter actor should typecheck: {:?}",
         output.errors
     );
+    // The call is the send (no `send` keyword): a plain call on an actor
+    // handle waits for completion like any other call, so `increment` is
+    // dispatched as an ask with a `Unit` reply, not a fire-and-forget
+    // `Message`. The one-way view lives in `mailbox(target, on_full: ..)`.
     assert!(
         output.actor_method_dispatch.values().any(|kind| {
-            matches!(kind, ActorMethodKind::Message { method_id, .. } if method_id == "Counter::increment")
+            matches!(
+                kind,
+                ActorMethodKind::Ask { method_id, reply_ty: Ty::Unit, .. } if method_id == "Counter::increment"
+            )
         }),
-        "increment call should be recorded as actor message description: {:?}",
+        "increment call should be recorded as an actor ask with a Unit reply: {:?}",
         output.actor_method_dispatch
     );
     assert!(

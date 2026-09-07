@@ -158,7 +158,7 @@ fn main() {
 }
 
 #[test]
-fn labelled_exits_close_started_generators_before_enclosing_defers() {
+fn labelled_exits_run_defers_and_close_generators_before_parent_cleanup() {
     run_loop(
         r#"
 gen fn words() -> string {
@@ -180,7 +180,7 @@ fn main() {
     println("done");
 }
 "#,
-        "OWNED\ngenerator cleaned\ninner\nOWNED\ngenerator cleaned\ninner\ndone\nparent\n",
+        "OWNED\ninner\ngenerator cleaned\nOWNED\ninner\ngenerator cleaned\ndone\nparent\n",
         0,
         "",
     );

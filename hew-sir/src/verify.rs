@@ -3413,6 +3413,16 @@ pub(crate) fn defer_drain_suffix(
         | SemTerminator::FinishDefer { .. }
         | SemTerminator::CleanupDispatch { .. }
         | SemTerminator::RecoverFault { .. } => true,
+        SemTerminator::Suspend {
+            kind: crate::SuspendKind::ValueClose { .. },
+            resumes,
+            cancel,
+            unwind,
+            ..
+        } => resumes
+            .iter()
+            .chain([cancel, unwind])
+            .all(|edge| defer_drain_suffix(edge.target, blocks, visiting)),
         SemTerminator::Goto(edge) => defer_drain_suffix(edge.target, blocks, visiting),
         SemTerminator::Branch {
             then_target,
@@ -4770,6 +4780,79 @@ mod binding_table_tests {
                 SirDiagnosticKind::UnknownBinding { .. }
             )),
             "{diagnostics:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod defer_close_suffix_tests {
+    use super::{defer_drain_suffix, BTreeSet, BlockId, SemTerminator};
+    use crate::Edge;
+
+    #[test]
+    fn value_close_requires_finite_cleanup_on_every_successor() {
+        let edge = |id| Edge {
+            target: BlockId(id),
+            args: Vec::new(),
+        };
+        let close = |resume, cancel, unwind| SemTerminator::Suspend {
+            kind: crate::SuspendKind::ValueClose {
+                place: Some(crate::PlaceId(0)),
+            },
+            inputs: Vec::new(),
+            result: crate::CallResult::Unit,
+            resumes: vec![edge(resume)],
+            cancel: edge(cancel),
+            unwind: edge(unwind),
+        };
+        let check = |terminator| {
+            let blocks = [
+                crate::SemBlock {
+                    id: BlockId(0),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator,
+                },
+                crate::SemBlock {
+                    id: BlockId(1),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::CleanupDispatch {
+                        normal: edge(2),
+                        fault: edge(2),
+                    },
+                },
+                crate::SemBlock {
+                    id: BlockId(2),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Unreachable,
+                },
+            ];
+            let map = blocks.iter().map(|block| (block.id, block)).collect();
+            defer_drain_suffix(BlockId(0), &map, &mut BTreeSet::new())
+        };
+        assert!(check(close(1, 1, 1)));
+        for exits in [
+            (0, 1, 1),
+            (1, 0, 1),
+            (1, 1, 0),
+            (2, 1, 1),
+            (1, 2, 1),
+            (1, 1, 2),
+        ] {
+            assert!(
+                !check(close(exits.0, exits.1, exits.2)),
+                "invalid cleanup exits {exits:?}"
+            );
+        }
+        let mut ordinary = close(1, 1, 1);
+        if let SemTerminator::Suspend { kind, .. } = &mut ordinary {
+            *kind = crate::SuspendKind::Yield;
+        }
+        assert!(
+            !check(ordinary),
+            "ordinary suspension cannot become cleanup"
         );
     }
 }

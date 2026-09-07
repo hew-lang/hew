@@ -555,7 +555,9 @@ fn drain_suffix(
         | PhysicalTerminator::FinishDefer { .. }
         | PhysicalTerminator::CleanupDispatch { .. }
         | PhysicalTerminator::RecoverFault { .. } => true,
-        PhysicalTerminator::Goto(_) | PhysicalTerminator::Branch { .. } => edges(&block.terminator)
+        PhysicalTerminator::Goto(_)
+        | PhysicalTerminator::Branch { .. }
+        | PhysicalTerminator::ValueClose { .. } => edges(&block.terminator)
             .iter()
             .all(|e| drain_suffix(e.target, blocks, visiting)),
         _ => false,

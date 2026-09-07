@@ -868,3 +868,79 @@ fn cancelled_running_file_read_drains_before_its_cleanup_wake() {
     assert_eq!(*readiness.notifications.lock().unwrap(), 0);
     assert_eq!(*cleanup.notifications.lock().unwrap(), 1);
 }
+
+#[test]
+fn tcp_read_timeout_is_an_io_error_and_releases_the_connection_for_reuse() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor;
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    assert_eq!(crate::transport::hew_tcp_set_read_timeout(handle, 50), 0);
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: keep the connection and request alive through producer quiescence.
+    unsafe {
+        let operation = hew_async_tcp_read(handle, &descriptor(&signal));
+        await_ready(&signal);
+        assert_eq!(
+            hew_async_io_restore_error(operation),
+            AsyncIoStatus::Error as i32
+        );
+        assert_eq!(crate::stream_error::take_last_errno(), libc::ETIMEDOUT);
+        let cleanup = Arc::new(ReadySignal::default());
+        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
+            await_ready(&cleanup);
+        }
+        hew_async_io_free(operation);
+        assert_eq!(crate::transport::hew_tcp_set_read_timeout(handle, -1), 0);
+        let next = Arc::new(ReadySignal::default());
+        let operation = hew_async_tcp_read(handle, &descriptor(&next));
+        peer.write_all(b"after timeout").unwrap();
+        await_ready(&next);
+        assert_eq!(
+            hew_async_io_status(operation),
+            AsyncIoStatus::Success as i32
+        );
+        let cleanup = Arc::new(ReadySignal::default());
+        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
+            await_ready(&cleanup);
+        }
+        hew_async_io_free(operation);
+    }
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn tcp_write_timeout_reports_partial_progress_as_an_io_error() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor;
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(crate::transport::hew_tcp_set_write_timeout(handle, 250), 0);
+    let payload = vec![0x5a; 16 * 1024 * 1024];
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: submission copies the bytes; the connection survives quiescence.
+    unsafe {
+        let bytes = crate::bytes::hew_bytes_from_static(
+            payload.as_ptr(),
+            u32::try_from(payload.len()).unwrap(),
+        );
+        let operation = hew_async_tcp_write(handle, &raw const bytes, &descriptor(&signal));
+        crate::bytes::hew_bytes_drop(bytes.ptr);
+        await_ready(&signal);
+        assert_eq!(
+            hew_async_io_restore_error(operation),
+            AsyncIoStatus::Error as i32
+        );
+        assert_eq!(crate::stream_error::take_last_errno(), libc::ETIMEDOUT);
+        let cleanup = Arc::new(ReadySignal::default());
+        if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
+            await_ready(&cleanup);
+        }
+        hew_async_io_free(operation);
+    }
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+    let mut received = Vec::new();
+    peer.read_to_end(&mut received).unwrap();
+    assert!(!received.is_empty() && received.len() < payload.len());
+    assert!(received.iter().all(|byte| *byte == 0x5a));
+}

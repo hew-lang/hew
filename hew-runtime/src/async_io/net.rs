@@ -31,7 +31,7 @@ pub unsafe extern "C" fn hew_async_tcp_read(
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller supplies the borrowed handle and readiness descriptor.
-    unsafe { start(connection, AsyncIoAction::Read, waker) }
+    unsafe { start(connection, AsyncIoAction::Read { deadline: None }, waker) }
 }
 
 /// Start a one-shot nonblocking accept. The operation owns the newly accepted

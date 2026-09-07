@@ -549,6 +549,7 @@ fn reactor_loop(poller: *mut HewIoPoller) {
         }
 
         drain_pending(poller);
+        async_io::expire_deadlines(poller);
 
         // SAFETY: `poller` is valid for the reactor's lifetime; the buffers are
         // MAX_READY long; we own the poller exclusively.
@@ -561,6 +562,7 @@ fn reactor_loop(poller: *mut HewIoPoller) {
                 MAX_READY,
             )
         };
+        async_io::expire_deadlines(poller);
         if n <= 0 {
             // n == 0: timeout (loop to re-drain pending + re-check stop).
             // n < 0: poll error; back off one tick rather than busy-loop.

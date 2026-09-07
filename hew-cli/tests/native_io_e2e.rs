@@ -147,3 +147,66 @@ fn main() {
         );
     }
 }
+
+#[test]
+fn accepted_tcp_connection_composes_read_write_and_resource_cleanup() {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+
+    require_codegen();
+    for opt in ["0", "2"] {
+        let directory = tempdir();
+        let binary = build(
+            r#"
+import std.fs;
+import std.net;
+fn main() {
+    match net.listen("127.0.0.1:0") {
+        .Ok(listener) => {
+            let port = listener.local_port();
+            let _announced = await fs.write("port", f"{port}");
+            let conn = await listener.accept();
+            match await conn.try_read_string() {
+                .Ok(text) => println(text),
+                .Err(_) => panic("read failed"),
+            }
+            match await conn.write_string("native reply") {
+                .Ok(_) => println("written"),
+                .Err(_) => panic("write failed"),
+            }
+        },
+        .Err(_) => panic("listen failed"),
+    }
+}
+"#,
+            directory.path(),
+            opt,
+        );
+        let port_file = directory.path().join("port");
+        let peer = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let port = loop {
+                if let Ok(text) = std::fs::read_to_string(&port_file) {
+                    if let Ok(port) = text.parse::<u16>() {
+                        break port;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "listener did not announce its port"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let mut connection = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            connection
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            connection.write_all(b"native request").unwrap();
+            let mut reply = Vec::new();
+            connection.read_to_end(&mut reply).unwrap();
+            reply
+        });
+        run(&binary, directory.path(), "native request\nwritten\n");
+        assert_eq!(peer.join().unwrap(), b"native reply");
+    }
+}

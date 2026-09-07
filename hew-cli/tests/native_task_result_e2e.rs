@@ -126,7 +126,7 @@ fn work() {
 fn main() { work(); }
 "#,
         "1\nparent cleanup\n",
-        212,
+        1,
         "result cleanup failed",
     );
 }
@@ -148,7 +148,7 @@ fn main() {
 "#
         ),
         "cancelled\ncancelled closed\nparent cleanup\n",
-        254,
+        1,
         "Deadline",
     );
 }

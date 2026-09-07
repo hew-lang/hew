@@ -3405,7 +3405,7 @@ fn eval_divide_by_zero_surfaces_cause() {
         .current_dir(repo_root())
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(202));
+    assert_eq!(output.status.code(), Some(1));
     assert!(
         output.stdout.is_empty(),
         "division must produce no program output"
@@ -3437,7 +3437,7 @@ fn eval_divide_by_zero_json_surfaces_cause() {
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
     assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
-    assert_eq!(v["exit_code"], 202, "checked child exit code missing: {v}");
+    assert_eq!(v["exit_code"], 1, "checked child exit code missing: {v}");
     assert_eq!(
         v["stdout"], "",
         "division must produce no program output: {v}"

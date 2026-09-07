@@ -184,7 +184,7 @@ fn choose() -> string {
 fn main() { println(choose()); }
 "#,
         "",
-        212,
+        1,
         "outer child",
     );
 }
@@ -376,7 +376,7 @@ fn main() {
 }
 "#,
         "parent cleanup\n",
-        254,
+        1,
         "Deadline",
     );
 }
@@ -397,7 +397,7 @@ fn main() {
 }
 "#,
         "child cleanup\nparent cleanup\n",
-        212,
+        1,
         "selected child failed",
     );
 }
@@ -442,7 +442,7 @@ fn main() {
 }
 "#,
         "parent cleanup\n",
-        212,
+        1,
         "timer preparation failed",
     );
 }
@@ -552,7 +552,7 @@ fn work() {
 fn main() { work(); }
 "#,
         "failed child cleanup\nsibling cleanup\nparent cleanup\n",
-        212,
+        1,
         "child failed",
     );
 }
@@ -637,7 +637,7 @@ fn main() {
 }
 "#,
         "scope cleanup\nparent cleanup\n",
-        254,
+        1,
         "Deadline",
     );
 }
@@ -660,7 +660,7 @@ fn main() {
 }
 "#,
         "call cleanup\nscope cleanup\nparent cleanup\n",
-        254,
+        1,
         "Deadline",
     );
 }

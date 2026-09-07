@@ -191,6 +191,7 @@
     "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "capture": "Private closure capture prefix capture(var name, ...) before pipe parameters; an ordinary identifier outside that prefix.",
     "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
+    "suspends": "Suspending invocation effect inside written function type qualifiers: fn[suspends](...) -> T; an ordinary identifier elsewhere.",
     "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
     "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
     "error": "Explicit error return: return error expression; an ordinary identifier elsewhere.",

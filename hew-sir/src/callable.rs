@@ -307,6 +307,7 @@ mod tests {
             ret: Box::new(ResolvedTy::I64),
             captures: vec![ResolvedTy::I64],
             capabilities: CallableCapabilities {
+                suspends: false,
                 call: CallableCallMode::Var,
                 clone: true,
             },
@@ -409,6 +410,7 @@ mod tests {
             params: vec![ResolvedTy::I64],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
+                suspends: false,
                 call: CallableCallMode::Once,
                 clone: false,
             },

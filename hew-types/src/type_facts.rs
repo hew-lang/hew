@@ -1100,6 +1100,7 @@ mod tests {
     fn closure_over(captures: Vec<ResolvedTy>) -> ResolvedTy {
         ResolvedTy::Closure {
             capabilities: crate::CallableCapabilities {
+                suspends: false,
                 clone: captures.iter().all(|capture| {
                     matches!(
                         facts(capture).0,

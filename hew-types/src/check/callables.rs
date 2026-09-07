@@ -219,6 +219,7 @@ impl Checker {
             clone: captures
                 .iter()
                 .all(|fact| self.capture_is_cloneable(&fact.ty)),
+            suspends: false,
         }
     }
     /// Match the independent entry copy required for mutable Borrow parameters.
@@ -560,6 +561,7 @@ impl Checker {
                 let capabilities = CallableCapabilities {
                     call: lc.call.max(rc.call),
                     clone: lc.clone && rc.clone,
+                    suspends: lc.suspends || rc.suspends,
                 };
                 let params = lp.iter().map(|ty| trial.resolve(ty)).collect();
                 let ret = Box::new(trial.resolve(lr));

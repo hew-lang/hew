@@ -51,13 +51,20 @@ fn compose(flag: bool, left: fn[clone]() -> Option<i64>, right: fn[once, clone](
 
 #[test]
 fn callable_qualifiers_preserve_nested_types_and_round_trip() {
-    for (qualifiers, call, clone) in [
-        ("", CallableCallMode::Read, false),
-        ("[clone]", CallableCallMode::Read, true),
-        ("[var]", CallableCallMode::Var, false),
-        ("[var, clone]", CallableCallMode::Var, true),
-        ("[once]", CallableCallMode::Once, false),
-        ("[once, clone]", CallableCallMode::Once, true),
+    for (qualifiers, call, clone, suspends) in [
+        ("", CallableCallMode::Read, false, false),
+        ("[clone]", CallableCallMode::Read, true, false),
+        ("[var]", CallableCallMode::Var, false, false),
+        ("[var, clone]", CallableCallMode::Var, true, false),
+        ("[once]", CallableCallMode::Once, false, false),
+        ("[once, clone]", CallableCallMode::Once, true, false),
+        ("[suspends]", CallableCallMode::Read, false, true),
+        (
+            "[once, clone, suspends]",
+            CallableCallMode::Once,
+            true,
+            true,
+        ),
     ] {
         let source =
             format!("fn accept(f: fn{qualifiers}(i64) -> fn[clone]() -> i64) {{}} fn once() {{}}");
@@ -76,6 +83,7 @@ fn callable_qualifiers_preserve_nested_types_and_round_trip() {
         };
         assert_eq!(capabilities.call, call);
         assert_eq!(capabilities.clone, clone);
+        assert_eq!(capabilities.suspends, suspends);
         assert!(
             matches!(return_type.0, TypeExpr::Function { capabilities, .. } if capabilities.clone)
         );
@@ -113,6 +121,7 @@ fn malformed_capture_prefixes_and_qualifiers_are_rejected() {
         "[var, var]",
         "[once, once]",
         "[clone, clone]",
+        "[suspends, suspends]",
         "[Copy]",
         "[Clone]",
         "[var, Clone]",

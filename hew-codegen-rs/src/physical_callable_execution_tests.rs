@@ -142,6 +142,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
             params: vec![ResolvedTy::I64],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
+                suspends: false,
                 call: CallableCallMode::Once,
                 clone: false,
             },
@@ -261,6 +262,7 @@ fn counter_module(
         ret: Box::new(ResolvedTy::I64),
         captures: vec![ResolvedTy::I64],
         capabilities: CallableCapabilities {
+            suspends: false,
             call: mode,
             clone: true,
         },
@@ -270,6 +272,7 @@ fn counter_module(
             params: vec![ResolvedTy::I64],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
+                suspends: false,
                 call: CallableCallMode::Once,
                 clone: false,
             },

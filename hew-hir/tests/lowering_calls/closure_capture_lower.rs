@@ -524,6 +524,7 @@ fn mutable_callable_field_call_keeps_the_selected_projection() {
         callee.ty,
         ResolvedTy::Function {
             capabilities: hew_types::CallableCapabilities {
+                suspends: false,
                 call: hew_types::CallableCallMode::Var,
                 clone: true
             },

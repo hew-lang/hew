@@ -238,6 +238,8 @@ fn callable_parameter_and_result_signatures_remain_invariant() {
         ),
         ("fn() -> fn() -> i64", "fn() -> fn[clone]() -> i64"),
         ("fn(i64) -> i64", "fn(i32) -> i64"),
+        ("fn() -> i64", "fn[suspends]() -> i64"),
+        ("fn(fn() -> i64) -> i64", "fn(fn[suspends]() -> i64) -> i64"),
     ] {
         let source =
             format!("fn accept(f: {expected}) {{}} fn forward(f: {actual}) {{ accept(f); }}");

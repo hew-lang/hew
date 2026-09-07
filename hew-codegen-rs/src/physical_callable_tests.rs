@@ -141,6 +141,7 @@ fn vector_environment() -> PhysicalModule {
         .unwrap();
     let ty = ResolvedTy::Closure {
         capabilities: hew_types::CallableCapabilities {
+            suspends: false,
             call: hew_types::CallableCallMode::Read,
             clone: true,
         },
@@ -314,6 +315,7 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
     let mut physical = vector_environment();
     let nested = ResolvedTy::Function {
         capabilities: hew_types::CallableCapabilities {
+            suspends: false,
             call: hew_types::CallableCallMode::Read,
             clone: true,
         },

@@ -229,6 +229,7 @@ impl Builder<'_, '_> {
         let mut closure = expression.clone();
         closure.ty = ResolvedTy::Closure {
             capabilities: hew_types::CallableCapabilities {
+                suspends: false,
                 call: hew_types::CallableCallMode::Once,
                 clone: false,
             },

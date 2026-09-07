@@ -301,7 +301,7 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
             },
         ) => {
             let capabilities_match = if weaken {
-                bc.call <= ac.call && (!ac.clone || bc.clone)
+                bc.call <= ac.call && (!ac.clone || bc.clone) && (!bc.suspends || ac.suspends)
             } else {
                 ac == bc
             };

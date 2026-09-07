@@ -42,9 +42,17 @@ impl Parser<'_> {
                     self.advance();
                     capabilities.clone = true;
                 }
+                Some(Token::Identifier("suspends")) => {
+                    if capabilities.suspends {
+                        self.error_at("duplicate callable `suspends` qualifier".into(), span);
+                        return None;
+                    }
+                    self.advance();
+                    capabilities.suspends = true;
+                }
                 _ => {
                     self.error_at(
-                        "expected callable qualifier `var`, `once` or `clone`".into(),
+                        "expected callable qualifier `var`, `once`, `clone` or `suspends`".into(),
                         span,
                     );
                     return None;

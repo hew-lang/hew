@@ -2069,6 +2069,7 @@ mod tests {
             ]);
             f.params[0].ty = ResolvedTy::Function {
                 capabilities: hew_types::CallableCapabilities {
+                    suspends: false,
                     call: match decision {
                         BoundaryDecision::BorrowMut => hew_types::CallableCallMode::Var,
                         BoundaryDecision::Move => hew_types::CallableCallMode::Once,

@@ -1135,6 +1135,9 @@ fn mangle_function_like_segment(
     let params_seg = mangle_type_list_segment(params, type_param_mode)?;
     let ret_seg = mangle_resolved_ty_segment(ret, type_param_mode)?;
     let mut out = format!("{head}$k{call}$k{clone}$x{params_seg}$r{ret_seg}");
+    if capabilities.suspends {
+        out.push_str("$ksuspends");
+    }
     if let Some(captures) = captures {
         out.push_str("$e");
         out.push_str(&mangle_type_list_segment(captures, type_param_mode)?);
@@ -1215,7 +1218,11 @@ mod tests {
         let mut functions = Vec::new();
         for call in [Read, Var, Once] {
             for clone in [false, true] {
-                let capabilities = CallableCapabilities { call, clone };
+                let capabilities = CallableCapabilities {
+                    call,
+                    clone,
+                    suspends: false,
+                };
                 let function = ResolvedTy::Function {
                     capabilities,
                     params: vec![ResolvedTy::I64],

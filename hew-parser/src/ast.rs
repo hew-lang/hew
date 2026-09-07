@@ -27,6 +27,10 @@ pub struct CallableCapabilities {
     pub call: CallableCallMode,
     /// Independent value duplication, not necessarily bitwise `Copy`.
     pub clone: bool,
+    /// Invocation may suspend the caller: `fn[suspends](...) -> T`. A written
+    /// callable type never suspends unless it says so; a closure literal or
+    /// named function infers the effect from its body instead.
+    pub suspends: bool,
 }
 
 impl CallableCapabilities {
@@ -34,6 +38,7 @@ impl CallableCapabilities {
     pub const FUNCTION_ITEM: Self = Self {
         call: CallableCallMode::Read,
         clone: true,
+        suspends: false,
     };
 }
 
@@ -42,19 +47,19 @@ impl std::fmt::Display for CallableCapabilities {
         if *self == Self::default() {
             return Ok(());
         }
-        write!(f, "[")?;
+        let mut qualifiers = Vec::new();
         match self.call {
             CallableCallMode::Read => {}
-            CallableCallMode::Var => write!(f, "var")?,
-            CallableCallMode::Once => write!(f, "once")?,
+            CallableCallMode::Var => qualifiers.push("var"),
+            CallableCallMode::Once => qualifiers.push("once"),
         }
         if self.clone {
-            if self.call != CallableCallMode::Read {
-                write!(f, ", ")?;
-            }
-            write!(f, "clone")?;
+            qualifiers.push("clone");
         }
-        write!(f, "]")
+        if self.suspends {
+            qualifiers.push("suspends");
+        }
+        write!(f, "[{}]", qualifiers.join(", "))
     }
 }
 

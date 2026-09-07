@@ -313,8 +313,8 @@ ROWS.append(
 
 # record
 REC = """type Rec {
-    a: i64;
-    b: string;
+    a: i64,
+    b: string,
 }
 """
 ROWS.append(
@@ -329,7 +329,7 @@ ROWS.append(
         exp=lambda i: f"{1 + i} x{i}",
         display=False,
         owns_resource=(
-            TOK + "\ntype ResRec {\n    t: Tok;\n}\n",
+            TOK + "\ntype ResRec {\n    t: Tok,\n}\n",
             lambda n: f"let {n} = ResRec {{ t: Tok {{ id: 1 }} }};",
             ["close 1"],
         ),
@@ -338,8 +338,8 @@ ROWS.append(
 
 # enum without payload
 ENUM_UNIT = """enum Colour {
-    Red;
-    Green;
+    Red,
+    Green,
 }
 """
 ROWS.append(
@@ -358,9 +358,9 @@ ROWS.append(
 
 # enum with payload
 ENUM_PAY = """enum Shape {
-    Empty;
-    Circle(i64);
-    Rect { w: i64; h: i64 }
+    Empty,
+    Circle(i64),
+    Rect { w: i64, h: i64 }
 }
 """
 ROWS.append(
@@ -379,7 +379,7 @@ ROWS.append(
         exp=lambda i: f"circle {3 + i}",
         display=False,
         owns_resource=(
-            TOK + "\nenum Held {\n    Nothing;\n    One(Tok);\n}\n",
+            TOK + "\nenum Held {\n    Nothing,\n    One(Tok),\n}\n",
             lambda n: f"let {n}: Held = .One(Tok {{ id: 1 }});",
             ["close 1"],
         ),
@@ -409,8 +409,8 @@ type DqH {
 
 #[resource]
 type Dq {
-    handle: DqH;
-    tag: i64;
+    handle: DqH,
+    tag: i64,
 }
 
 impl Dq {
@@ -453,9 +453,9 @@ ROWS.append(
 
 # machine
 MACHINE = """machine Counter {
-    events { Inc; Reset; }
-    state Zero;
-    state NonZero { value: i64; }
+    events { Inc, Reset, }
+    state Zero,
+    state NonZero { value: i64, },
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
     on Reset: NonZero => Zero { .Zero }
@@ -482,9 +482,9 @@ ROWS.append(
             TOK
             + """
 machine Gate {
-    events { Open; Shut; }
-    state Closed;
-    state Opened { tok: Tok; }
+    events { Open, Shut, }
+    state Closed,
+    state Opened { tok: Tok, },
     on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }
     on Shut: Opened => Closed { .Closed }
     default { state }
@@ -498,7 +498,7 @@ machine Gate {
 
 # actor
 ACTOR = """actor Echo {
-    var seen: i64;
+    var seen: i64,
 
     receive fn take(v: i64) -> i64 {
         seen = seen + v;
@@ -559,7 +559,7 @@ TRAITOBJ = """trait Named {
 }
 
 type P {
-    n: string;
+    n: string,
 }
 
 impl Named for P {
@@ -569,7 +569,7 @@ impl Named for P {
 }
 
 type Q {
-    n: string;
+    n: string,
 }
 
 impl Named for Q {
@@ -765,7 +765,7 @@ def col_actor_send(r):
     decls = (r.decls.rstrip() + "\n\n") if r.decls else ""
     actor = (
         "actor Sink {\n"
-        "    var hits: i64;\n\n"
+        "    var hits: i64,\n\n"
         f"    receive fn take(v: {r.ty}) -> i64 {{\n"
         + ind(r.show("v"), 8)
         + "\n        hits = hits + 1;\n        hits\n    }\n}\n"
@@ -785,7 +785,7 @@ def col_across_suspend(r):
     decls = (r.decls.rstrip() + "\n\n") if r.decls else ""
     actor = (
         "actor Holder {\n"
-        "    var ready: bool;\n\n"
+        "    var ready: bool,\n\n"
         f"    receive fn hold(v: {r.ty}) -> i64 {{\n"
         "        sleep(2ms);\n"
         + ind(r.show("v"), 8)

@@ -157,9 +157,6 @@ fn float_parse_start(s: string, slen: i64) -> i64 {
     var start = 0;
     let first = s.slice(0, 1);
     let has_sign = first == "-" || first == "+";
-    unsafe {
-        hew_string_drop(first)
-    };
     if has_sign {
         start = 1;
     }
@@ -174,9 +171,6 @@ fn parse_valid_float_literal(s: string) -> f64 {
     let start = float_parse_start(s, slen);
     let first = s.slice(0, 1);
     let negative = first == "-";
-    unsafe {
-        hew_string_drop(first)
-    };
     let exponent_index = find_exponent_index(s, start, slen);
     let significand_end = if exponent_index < 0 {
         slen
@@ -217,9 +211,6 @@ fn find_exponent_index(s: string, start: i64, end: i64) -> i64 {
     for i in start .. end {
         let ch = s.slice(i, i + 1);
         let is_exponent = ch == "e" || ch == "E";
-        unsafe {
-            hew_string_drop(ch)
-        };
         if is_exponent {
             if exponent_index >= 0 {
                 return -2;
@@ -240,18 +231,12 @@ fn is_valid_float_significand(s: string, start: i64, end: i64) -> bool {
         let ch = s.slice(i, i + 1);
         let is_decimal = ch == ".";
         if is_decimal {
-            unsafe {
-                hew_string_drop(ch)
-            };
             if saw_decimal {
                 return false;
             }
             saw_decimal = true;
         } else {
             let digit = digit_value(ch);
-            unsafe {
-                hew_string_drop(ch)
-            };
             if digit < 0 {
                 return false;
             }
@@ -268,9 +253,6 @@ fn is_valid_float_exponent(s: string, start: i64, end: i64) -> bool {
     var index = start;
     let first = s.slice(start, start + 1);
     let has_sign = first == "-" || first == "+";
-    unsafe {
-        hew_string_drop(first)
-    };
     if has_sign {
         index = start + 1;
     }
@@ -280,9 +262,6 @@ fn is_valid_float_exponent(s: string, start: i64, end: i64) -> bool {
     for i in index .. end {
         let digit = s.slice(i, i + 1);
         let value = digit_value(digit);
-        unsafe {
-            hew_string_drop(digit)
-        };
         if value < 0 {
             return false;
         }
@@ -299,16 +278,10 @@ fn parse_float_significand(s: string, start: i64, end: i64) -> f64 {
         let ch = s.slice(i, i + 1);
         let is_decimal = ch == ".";
         if is_decimal {
-            unsafe {
-                hew_string_drop(ch)
-            };
             saw_decimal = true;
             continue;
         }
         let value = digit_value(ch);
-        unsafe {
-            hew_string_drop(ch)
-        };
         let digit = digit_to_float(value);
         if saw_decimal {
             fraction = fraction * 10.0 + digit;
@@ -326,9 +299,6 @@ fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
     let first = s.slice(start, start + 1);
     let has_negative_sign = first == "-";
     let has_positive_sign = first == "+";
-    unsafe {
-        hew_string_drop(first)
-    };
     if has_negative_sign {
         negative = true;
         index = start + 1;
@@ -339,9 +309,6 @@ fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
     for i in index .. end {
         let digit = s.slice(i, i + 1);
         let value = digit_value(digit);
-        unsafe {
-            hew_string_drop(digit)
-        };
         exponent = exponent * 10 + value;
     }
     if negative {
@@ -858,5 +825,4 @@ pub trait ToString {
 // ── FFI bindings ─────────────────────────────────────────────────────
 extern "C" {
     fn hew_char_to_string(code: i32) -> string;
-    fn hew_string_drop(consume s: string);
 }

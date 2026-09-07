@@ -36369,10 +36369,7 @@ impl Widget {
                     child
                 }}
                 fn field_probe(value: Value) -> Value {{
-                    let child = value
-                        .get_field("key")
-                        .expect("get_field succeeds")
-                        .expect("the field is present");
+                    let child = value.get_field("key").expect("a").expect("b");
                     child
                 }}
             "#

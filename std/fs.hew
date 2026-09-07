@@ -201,7 +201,7 @@ fn last_io_error() -> IoError {
 /// }
 /// ```
 pub fn read(file_path: string) -> Result<string, IoError> {
-    let data = (read_bytes(file_path))?;
+    let data = read_bytes(file_path)?;
     match utf8.decode(data) {
         .Ok(text) => Ok(text),
         .Err(_) => Err(IoError.Other(0)),

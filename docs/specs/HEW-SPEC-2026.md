@@ -4883,6 +4883,14 @@ failure and carries more information than `1`. A zero never masks a fault. This
 rule applies on EVERY termination path — returning from `main`, and an explicit
 `exit(code)` anywhere — so `exit(0)` cannot report success over a crashed actor.
 
+**Traps and panics are faults under this rule.** A trap or a `panic()` that no
+supervisor recovers ends the process with status 1, wherever it was raised,
+`main` included. It first writes one line to stderr: `hew: failure: ` followed
+by the trap kind and its code, and, for a panic, `: ` and the panic text — for
+example `hew: failure: IndexOutOfBounds (205)`. The code in that line is the
+runtime's internal fault tag and names the failure for a reader; it is never
+the process exit status.
+
 **`fn main() -> Result<(), E>`** requires `E: Error` (§2.2.1). Returning
 `Ok(())` sets `user_code` to 0. Returning `Err(e)` writes one line to stderr —
 `error: ` followed by the error's `Display` text — and sets `user_code` to 1.

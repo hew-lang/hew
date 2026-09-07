@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "CALLER OWNER\nCALLEE OWNER\n"
 stderr = "hew: failure: UserPanic (212): expect failed: the request had already failed\n"
-exit = 212
+exit = 1

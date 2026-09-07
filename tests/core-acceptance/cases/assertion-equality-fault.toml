@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "CALLER OWNER\n"
 stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: Point(3, ACTUAL)\n  right: Point(4, EXPECTED)\n"
-exit = 212
+exit = 1

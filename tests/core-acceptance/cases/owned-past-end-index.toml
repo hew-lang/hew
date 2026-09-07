@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = ""
 stderr = "hew: failure: IndexOutOfBounds (205)\n"
-exit = 205
+exit = 1

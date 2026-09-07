@@ -1,0 +1,8 @@
+// An index trap in `main` is an unrecovered fault: the typed line reaches
+// stderr and the process reports 1, not the trap's private code.
+fn main() {
+    let v: Vec<i64> = [1, 2, 3];
+    println("before");
+    println(v[7]);
+    println("unreachable");
+}

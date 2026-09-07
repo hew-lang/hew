@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "orig:body:1\norig:again:2\n"
 stderr = "hew: failure: UserPanic (212): sequence exhausted\n"
-exit = 212
+exit = 1

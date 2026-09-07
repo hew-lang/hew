@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "rollback:ORIGINAL\n"
 stderr = "hew: failure: DivideByZero (202)\n"
-exit = 202
+exit = 1

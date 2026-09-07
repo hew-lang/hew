@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "5\n"
 stderr = "hew: failure: UserPanic (212): body\nhew: secondary failure: UserPanic (212): D2\nhew: secondary failure: UserPanic (212): D1\nhew: secondary failure: UserPanic (212): nested\n"
-exit = 212
+exit = 1

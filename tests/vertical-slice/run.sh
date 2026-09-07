@@ -214,12 +214,6 @@ run_actor_bounds_trap_fixture() {
         record_failure "${fixture}" "missing expected actor context"
         return 0
     fi
-    if grep -qF -- 'hew: trap in main context' "${stderr_output}"; then
-        echo "${fixture}: actor-context bounds trap fell through to main-context fallback" >&2
-        cat "${stderr_output}" >&2
-        record_failure "${fixture}" "actor-context bounds trap fell through to main-context fallback"
-        return 0
-    fi
 }
 
 run_accept_expect_stdout() {
@@ -249,13 +243,14 @@ run_accept_expect_stdout_contains() {
     done
 }
 
-# Run a fixture that is expected to terminate via a hardware trap. Accepts exit
-# code 132 (SIGILL+128 on x86_64 Linux: `ud2`) or 133 (SIGTRAP+128 on
-# aarch64/macOS: `brk #1`) — both are valid trap-signal encodings of
-# `llvm.trap` depending on the platform's code-generation target. Any other
-# exit code (including 0) is a failure: it means the trap guard did not fire.
+# Run a fixture whose guard must trap. An unrecovered trap is a fault under the
+# one exit rule (HEW-SPEC-2026 5.8): the process exits 1 after printing its
+# typed line. The trap KIND is the real subject — exit 1 alone cannot tell a
+# fired bounds check from any other failure — so every caller names it and the
+# stderr line is asserted. Exit 0 is a failure: the guard did not fire.
 run_accept_expect_trap() {
     local fixture="$1"
+    local expected_kind="$2"
     echo "RUN ${fixture}"
     compile_accept "${fixture}" || return 0
     local bin="${ROOT}/.tmp/compile-out/${fixture}"
@@ -265,13 +260,18 @@ run_accept_expect_trap() {
     else
         status=$?
     fi
-    # 132 = SIGILL+128 (x86_64 Linux ud2); 133 = SIGTRAP+128 (aarch64/macOS brk #1).
-    if [[ "${status}" -ne 132 && "${status}" -ne 133 ]]; then
-        echo "expected ${fixture} to exit with a trap signal (132 or 133), got ${status}" >&2
+    if [[ "${status}" -ne 1 ]]; then
+        echo "expected ${fixture} to exit 1 after its trap, got ${status}" >&2
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        record_failure "${fixture}" "expected a trap signal (132 or 133), got ${status}"
+        record_failure "${fixture}" "expected exit 1 after its trap, got ${status}"
+        return 0
+    fi
+    if ! grep -qF -- "hew: failure: ${expected_kind}" "${stderr_output}"; then
+        echo "expected ${fixture} stderr to name the trap kind ${expected_kind}" >&2
+        cat "${stderr_output}" >&2
+        record_failure "${fixture}" "stderr missing: hew: failure: ${expected_kind}"
         return 0
     fi
     mark_pass "${fixture}"
@@ -289,9 +289,10 @@ run_accept_expect_status_and_stdout() {
     fi
 }
 
-# Run a fixture that is expected to call panic() — verifies exit 101 (hew_panic's
-# clean-exit contract), that the panic message appears on stderr, and that the
-# stderr shape is Hew's and not Rust's.
+# Run a fixture that is expected to call panic() — verifies exit 1 (an
+# unrecovered panic is a fault under the one exit rule, HEW-SPEC-2026 5.8),
+# that the panic message appears on stderr, and that the stderr shape is Hew's
+# and not Rust's.
 #
 # The `panicked at` control matters because a main-context panic is now a real
 # Rust unwind (hew-lang/hew#3074): if the runtime's typed-unwind hook filter
@@ -314,12 +315,12 @@ run_accept_expect_panic() {
     else
         status=$?
     fi
-    if [[ "${status}" -ne 101 ]]; then
-        echo "expected ${fixture} to exit 101 (panic), got ${status}" >&2
+    if [[ "${status}" -ne 1 ]]; then
+        echo "expected ${fixture} to exit 1 (panic), got ${status}" >&2
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
-        record_failure "${fixture}" "expected exit 101 (panic), got ${status}"
+        record_failure "${fixture}" "expected exit 1 (panic), got ${status}"
         return 0
     fi
     if ! grep -qF -- "${expected_stderr_substr}" "${stderr_output}"; then
@@ -1268,7 +1269,7 @@ run_accept_expect_status_and_stdout "var_self_concrete_specialised_trait_impl" 0
 # A failed assertion is a recoverable logical fault, not an abort: HIR lowers
 # `assert_eq` to a comparison and `panic`, so it exits 212 (UserPanic) and
 # reports both rendered operands.
-run_accept_expect_status "assert_eq_fail" 212
+run_accept_expect_status "assert_eq_fail" 1
 grep -q 'assertion failed: left != right' "${stderr_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 grep -q '  left: 4' "${stderr_output}" ||
@@ -1335,37 +1336,37 @@ run_accept_expect_status "isize_literal_coerce" 0
 # Boundary: shift by width-1 is in range (exits 0, asserts i64.MIN).
 run_accept_expect_status "isize_shift_boundary" 0
 # Trap negatives: div-by-zero and shift-by-width trap at runtime, proving the
-# fail-closed guards fire -- they do not produce garbage. The trap signal is
-# arch-dependent (SIGILL/132 on x86_64 Linux; SIGTRAP/133 on aarch64/macOS);
-# run_accept_expect_trap accepts either.
-run_accept_expect_trap "isize_div_by_zero_traps"
-run_accept_expect_trap "isize_shift_oob_traps"
+# fail-closed guards fire -- they do not produce garbage. An unrecovered trap
+# exits 1 and names its kind on stderr (HEW-SPEC-2026 5.8), so each row asserts
+# the kind, not a platform signal number.
+run_accept_expect_trap "isize_div_by_zero_traps" "DivideByZero"
+run_accept_expect_trap "isize_shift_oob_traps" "ShiftOutOfRange"
 # #2372: a negated integer literal at exactly TYPE.MIN must not trap (the
 # fold to a signed literal removes the runtime negate); negating a runtime
 # value that happens to equal i32.MIN must still trap.
 run_accept_expect_status "int_negate_min_literal_no_trap" 0
-run_accept_expect_trap "int_negate_runtime_min_traps"
+run_accept_expect_trap "int_negate_runtime_min_traps" "IntegerOverflow"
 
 # Indexed-accessor trap negatives: `v[i]` on an out-of-bounds index traps
 # (IndexOutOfBounds) for every element class — the trapping `at` half of the
-# `Index<Idx>` model (the `get` half returns `None`). Same arch-dependent trap
-# signal (132/133) as the arithmetic trap negatives above.
-run_accept_expect_trap "vec_index_oob_traps"
-run_accept_expect_trap "vec_enum_index_oob_traps"
+# `Index<Idx>` model (the `get` half returns `None`). Same exit 1 plus typed
+# stderr line as the arithmetic trap negatives above.
+run_accept_expect_trap "vec_index_oob_traps" "IndexOutOfBounds"
+run_accept_expect_trap "vec_enum_index_oob_traps" "IndexOutOfBounds"
 
 # Indexed-accessor trap negatives for HashMap: `m[k]` on an absent key traps
 # (IndexOutOfBounds) for every value class — the trapping `at` half of the
 # `Index<Idx>` model and the m[k] INVERSION (the non-aborting outcome is now
-# `m.get(k) -> Option<V>`). Same arch-dependent trap signal (132/133).
-run_accept_expect_trap "hashmap_index_absent_traps"
-run_accept_expect_trap "hashmap_enum_index_absent_traps"
+# `m.get(k) -> Option<V>`). Same exit 1 plus typed stderr line.
+run_accept_expect_trap "hashmap_index_absent_traps" "IndexOutOfBounds"
+run_accept_expect_trap "hashmap_enum_index_absent_traps" "IndexOutOfBounds"
 
 # Indexed-accessor trap negative for bytes: `b[i]` on an out-of-bounds index
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
 # (the `get` half returns `Option<u8>`). bytes routes `b[i]` through the
 # `hew_bytes_index` runtime getter, which routes through the runtime bounds trap.
 # In main context the trap helper aborts: exit 134 (SIGABRT+128).
-run_accept_expect_status "bytes_index_oob_traps" 134
+run_accept_expect_status "bytes_index_oob_traps" 1
 
 # Indexed-accessor trap negative for string: `s[i]` on an out-of-bounds index
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
@@ -1373,7 +1374,7 @@ run_accept_expect_status "bytes_index_oob_traps" 134
 # `hew_string_index` runtime getter, which routes through the runtime bounds
 # trap. In main context the trap helper aborts: exit 134 (SIGABRT+128), the same
 # fail-closed termination as `bytes_index_oob_traps`.
-run_accept_expect_status "string_index_oob_traps" 134
+run_accept_expect_status "string_index_oob_traps" 1
 
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7
@@ -2228,7 +2229,7 @@ run_accept_expect_status "supervisor_static_pool_restart" 7
 # instead of trapping OOB. The runtime now bounds-checks the real,
 # untruncated index, so this must trap (Vec[i] OOB parity) instead of
 # resolving to any member; exit 0/42 would mean the wraparound regressed.
-run_accept_expect_trap "supervisor_static_pool_huge_index_traps"
+run_accept_expect_trap "supervisor_static_pool_huge_index_traps" "IndexOutOfBounds"
 
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
 # child at each send/ask, so a handle BOUND before a crash and held ACROSS the
@@ -2681,20 +2682,20 @@ run_accept_expect_status "bytes_unitop_match_value" 0
 # Fail-closed negatives: pop on an empty buffer and set past the end route via
 # the bytes runtime bounds trap. In main context the trap helper aborts:
 # exit 134 = SIGABRT+128, the same fail-closed termination as bytes_index_oob_traps.
-run_accept_expect_status "bytes_pop_empty_traps" 134
-run_accept_expect_status "bytes_set_oob_traps" 134
+run_accept_expect_status "bytes_pop_empty_traps" 1
+run_accept_expect_status "bytes_set_oob_traps" 1
 
 # Main-context Vec method bounds ratchets: runtime FFI checks route through the
 # actor-isolating trap seam, but when no actor recovery frame exists the helper
 # must still abort instead of returning.
-run_accept_expect_status "vec_set_oob_traps" 134
-run_accept_expect_status "vec_pop_empty_traps" 134
-run_accept_expect_status "vec_remove_oob_traps" 134
+run_accept_expect_status "vec_set_oob_traps" 1
+run_accept_expect_status "vec_pop_empty_traps" 1
+run_accept_expect_status "vec_remove_oob_traps" 1
 
 # Main-context Deque method bounds ratchets: same fail-closed contract as the
 # Vec pops above — no actor recovery frame, so the trap helper aborts.
-run_accept_expect_status "deque_pop_front_empty_traps" 134
-run_accept_expect_status "deque_pop_back_empty_traps" 134
+run_accept_expect_status "deque_pop_front_empty_traps" 1
+run_accept_expect_status "deque_pop_back_empty_traps" 1
 
 run_accept_expect_stdout "regex_captures_find_all"
 run_accept_expect_stdout "regex_find_no_match_empty_string"
@@ -2730,14 +2731,14 @@ run_accept_expect_panic "panic_main_unwind_runs_resource_close" "boom" \
 run_accept_expect_panic "vec_iter_free_fold_unwind" "free fold boom" \
     "${ROOT}/tests/vertical-slice/accept/vec_iter_free_fold_unwind.expected"
 
-run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 1
 grep -q 'regex.new: invalid pattern' "${stderr_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 run_accept_expect_status "fs_read_missing_returns_not_found" 0
-run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_url_parse_invalid.hew" "std_panic_wrapper_url_parse_invalid" 101
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_url_parse_invalid.hew" "std_panic_wrapper_url_parse_invalid" 1
 grep -q 'url.parse: invalid URL' "${stderr_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
-run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_cron_parse_invalid.hew" "std_panic_wrapper_cron_parse_invalid" 101
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_cron_parse_invalid.hew" "std_panic_wrapper_cron_parse_invalid" 1
 grep -q 'cron.parse: invalid expression' "${stderr_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 run_accept_expect_status "std_panic_wrappers_success" 0
@@ -2786,12 +2787,10 @@ expect_check_fail_contains \
 
 # F1.3: a trap in main/free-fn context must emit a diagnostic to stderr and
 # never be silent. The fixture triggers an out-of-bounds Vec index in main;
-# hew_trap_with_code emits "hew: trap in main context: <kind>" before the
-# process terminates. Exit is 132 (SIGILL+128 on x86_64) or 133 (SIGTRAP+128
-# on aarch64/macOS) from the llvm.trap terminator.
-run_accept_expect_trap "crash_main_context_diagnostic"
-grep -q 'hew: trap in main context' "${stderr_output}" ||
-    record_failure "row ${LINENO}" "assertion failed"
+# no actor owns the trap, so `hew_trap_with_code` prints the typed line and the
+# process exits 1 — the same diagnostic and the same status a checked fault
+# produces, which is what the helper asserts.
+run_accept_expect_trap "crash_main_context_diagnostic" "IndexOutOfBounds"
 
 # F4.3: an actor crash must name the function/context in the diagnostic, not
 # emit an opaque msg_type integer. The fixture spawns an actor that traps in
@@ -4043,10 +4042,10 @@ assert_receive_gen_stream_faulted() {
         record_failure "${fixture}" "stderr missing the receive-gen fault diagnostic"
         return 0
     fi
-    if [[ "${actual_status}" -ne 134 ]]; then
-        echo "expected ${fixture} to exit 134 after the receive-gen fault, got ${actual_status}" >&2
+    if [[ "${actual_status}" -ne 1 ]]; then
+        echo "expected ${fixture} to exit 1 after the receive-gen fault, got ${actual_status}" >&2
         cat "${stderr_output}" >&2
-        record_failure "${fixture}" "expected exit 134 after the receive-gen fault, got ${actual_status}"
+        record_failure "${fixture}" "expected exit 1 after the receive-gen fault, got ${actual_status}"
         return 0
     fi
     if [[ "$(cat "${stdout_output}")" != "${expected_stdout}" ]]; then
@@ -4412,9 +4411,9 @@ run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_record_range_slice"
 run_accept_expect_stdout "vec_enum_range_slice"
 run_accept_expect_stdout "vec_element_widths"
-run_accept_expect_trap "vec_element_width_oob_traps"
+run_accept_expect_trap "vec_element_width_oob_traps" "IndexOutOfBounds"
 run_accept_expect_status "vec_index_assign_round_trip" 24
-run_accept_expect_trap "vec_index_assign_oob_traps"
+run_accept_expect_trap "vec_index_assign_oob_traps" "IndexOutOfBounds"
 run_accept_expect_stdout "slice_annotation_alias"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
@@ -4551,7 +4550,7 @@ run_accept_expect_stdout "char_cast_roundtrip"
 # Accept (panic semantics): out-of-bounds codepoint slice routes through the
 # runtime bounds trap. In main context the trap helper aborts with exit 134
 # (SIGABRT). Q-CS1 locks panic-on-OOB; no clamp / null / empty-string fallback.
-run_accept_expect_status "string_slice_oob_panics" 134
+run_accept_expect_status "string_slice_oob_panics" 1
 
 # Accept (S1): Vec<i64> push/pop/get/contains via catalog entries. Exit 10.
 run_accept_expect_status "vec_i64_basic" 10
@@ -5670,19 +5669,19 @@ run_accept_expect_status "wire_cbor_roundtrip_packet" 42
 # An unnamed fresh bytes call-result into decode: the transient-bytes drop
 # pass must not free the operand before the WireCodec decode reads it.
 run_accept_expect_status "wire_cbor_fresh_call_result" 42
-run_accept_expect_trap "wire_cbor_decode_malformed_traps"
-run_accept_expect_trap "wire_cbor_enum_oob_tag_traps"
-run_accept_expect_trap "wire_cbor_narrow_int_over_range_traps"
-run_accept_expect_trap "wire_cbor_enum_arity_mismatch_traps"
+run_accept_expect_trap "wire_cbor_decode_malformed_traps" "WireDecodeFailed"
+run_accept_expect_trap "wire_cbor_enum_oob_tag_traps" "WireDecodeFailed"
+run_accept_expect_trap "wire_cbor_narrow_int_over_range_traps" "WireDecodeFailed"
+run_accept_expect_trap "wire_cbor_enum_arity_mismatch_traps" "WireDecodeFailed"
 run_accept_expect_status "wire_cbor_int_widths" 0
 run_accept_expect_status "wire_cbor_scalars" 0
 run_accept_expect_status "wire_cbor_bytes" 0
 run_accept_expect_status "wire_cbor_option_some" 42
 run_accept_expect_status "wire_cbor_option_none" 42
 run_accept_expect_status "wire_presence_matrix" 42
-run_accept_expect_trap "wire_cbor_missing_required_value_traps"
-run_accept_expect_trap "wire_cbor_missing_required_option_traps"
-run_accept_expect_trap "wire_cbor_null_required_value_traps"
+run_accept_expect_trap "wire_cbor_missing_required_value_traps" "WireDecodeFailed"
+run_accept_expect_trap "wire_cbor_missing_required_option_traps" "WireDecodeFailed"
+run_accept_expect_trap "wire_cbor_null_required_value_traps" "WireDecodeFailed"
 run_accept_expect_status "wire_cbor_vec_int" 42
 run_accept_expect_status "wire_cbor_vec_struct" 42
 run_accept_expect_status "wire_cbor_vec_string" 42

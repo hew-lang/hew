@@ -7468,8 +7468,12 @@ pub extern "C-unwind" fn hew_panic() {
         // cross a frame that cannot catch it and can terminate with an unwinder
         // initialization failure instead of Hew's documented panic status, so
         // process termination is the ownership boundary here and the OS reclaims
-        // all remaining process resources.
-        std::process::exit(101);
+        // all remaining process resources. The status is `1`: an unrecovered
+        // panic is a fault under the one exit rule (HEW-SPEC-2026 5.8), and the
+        // panic's own text has already reached stderr.
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        std::process::exit(1);
     }
 }
 
@@ -7479,8 +7483,8 @@ pub extern "C-unwind" fn hew_panic() {
 /// function, which is what makes a main-context `panic()` a controlled unwind
 /// rather than an immediate exit: the platform unwinder finds a handler, so
 /// phase-2 cleanup runs every MIR-authored landing pad on the way out and drop
-/// obligations discharge exactly as they do inside an actor. The process still
-/// ends with the panic's status and its message already on stderr.
+/// obligations discharge exactly as they do inside an actor. The process then
+/// ends with status `1` and the panic's message already on stderr.
 ///
 /// `body` is the generated `__hew_main_entry` adapter and `frame` the caller's
 /// argument-and-result frame for it. Everything shaped by the source travels in
@@ -7515,11 +7519,12 @@ pub unsafe extern "C-unwind" fn hew_main_unwind_boundary(
             // payload carries the status, anything else is an unclassified
             // crash, and the payload is released through the containment
             // authority before the process ends.
-            let code = payload
-                .downcast_ref::<HewPanic>()
-                .map_or(101, |panic| panic.code);
             crate::util::quarantine_panic_payload(payload);
-            std::process::exit(code);
+            // The payload's code is the fault's private tag; the process status
+            // for an unrecovered panic is `1` (HEW-SPEC-2026 5.8).
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+            std::process::exit(1);
         }
     }
 }

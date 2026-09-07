@@ -1689,11 +1689,12 @@ pub enum HirExprKind {
     },
     /// Wrap a concrete value in a `dyn Trait` fat pointer. Emitted at
     /// every accepted `T → dyn Trait` coercion site (the checker's
-    /// `TypeCheckOutput::dyn_trait_coercions` side table). MIR lowers
-    /// 1:1 to `Instr::CoerceToDynTrait`.
+    /// `TypeCheckOutput::dyn_trait_coercions` side table). SIR lowers
+    /// 1:1 to `SemOpKind::DynMake` against the dispatch table it interns
+    /// from `vtable_entries`.
     ///
-    /// The carried `method_table` mirrors `DynCoercion::method_table` —
-    /// codegen consumes it to materialise per-trait vtable statics.
+    /// The carried `method_table` mirrors `DynCoercion::method_table` and
+    /// remains diagnostic payload; `vtable_entries` is the authority.
     /// `concrete_type` is the resolved `Self` type at the coercion site
     /// (after `materialize_literal_defaults`), which doubles as the
     /// `(Trait, ImplType)` dedup key for the vtable static.
@@ -1707,8 +1708,8 @@ pub enum HirExprKind {
     /// Dispatch a method call through a `dyn Trait` fat pointer's
     /// vtable. Emitted in place of an `HirExprKind::Call` whenever
     /// the receiver typed as `Ty::TraitObject` (the checker's
-    /// `TypeCheckOutput::dyn_trait_method_calls` side table). MIR
-    /// lowers 1:1 to `Instr::CallTraitMethod`.
+    /// `TypeCheckOutput::dyn_trait_method_calls` side table). SIR
+    /// lowers 1:1 to `SemTerminator::DynCall`.
     ///
     /// `slot` is the pre-computed vtable index
     /// (`3 + method_decl_order` for the originating trait — see
@@ -1726,11 +1727,10 @@ pub enum HirExprKind {
         /// Caller-side method signature after the checker substituted
         /// trait type parameters and associated-type bindings from the
         /// receiver's `Ty::TraitObject` bound (e.g. `Self::Item -> int`).
-        /// Mirrors [`hew_types::DynMethodCall::signature`]; MIR lowering
-        /// clones it onto `Instr::CallTraitMethod.signature` so codegen
-        /// (W3.031 Stage 7) can derive the erased indirect-call type
-        /// without re-resolving the trait/method. Receiver parameter is
-        /// already filtered out.
+        /// Mirrors [`hew_types::DynMethodCall::signature`]; SIR reads its
+        /// receiver mode from it and derives the erased boundary from the
+        /// argument types, so no later stage re-resolves the trait method.
+        /// Receiver parameter is already filtered out.
         ///
         /// Boxed to keep the `HirExprKind` variant under the
         /// `clippy::large_enum_variant` threshold.

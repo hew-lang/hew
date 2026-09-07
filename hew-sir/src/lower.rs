@@ -3818,6 +3818,45 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let mut loans = Vec::new();
         let operand = self.lower_call_read(message, &mut loans, true, true)?;
+        self.finish_panic(operand, &loans)
+    }
+
+    fn lower_assert(&mut self, expr: &HirExpr, args: &[HirExpr]) -> Result<(), String> {
+        let [condition] = args else {
+            return Err("assert requires exactly one boolean condition".into());
+        };
+        if self.ty(&condition.ty) != ResolvedTy::Bool || self.ty(&expr.ty) != ResolvedTy::Unit {
+            return Err("assert requires a boolean condition and a unit result".into());
+        }
+        let condition = self.lower_read_operand(condition, "assert condition")?;
+        let success = self.new_block(Vec::new());
+        let failure = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition,
+            then_target: Edge {
+                target: success,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: failure,
+                args: Vec::new(),
+            },
+        })?;
+        let before = self.control_state();
+        self.current = failure;
+        let literal = self.service.intern_string("assertion failed");
+        let message = self.emit_typed(
+            Provenance::Site(expr.site),
+            &ResolvedTy::String,
+            SemOpKind::ConstStr(literal),
+        )?;
+        self.finish_panic(Operand { value: message }, &[])?;
+        self.restore_control_state(&before);
+        self.current = success;
+        Ok(())
+    }
+
+    fn finish_panic(&mut self, operand: Operand, loans: &[ValueId]) -> Result<(), String> {
         let cleanup = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Panic {
             message: crate::BoundaryOperand {
@@ -3830,7 +3869,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             },
         })?;
         self.current = cleanup;
-        self.end_call_loans(&loans)?;
+        self.end_call_loans(loans)?;
         self.finish_fault_exit()
     }
 
@@ -6346,6 +6385,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         };
         match target {
+            CallTarget::Builtin { endpoint } if endpoint == "assert" => {
+                self.lower_assert(expr, args)?;
+                Ok(None)
+            }
             CallTarget::Builtin { endpoint } if endpoint == "sleep" => {
                 self.lower_sleep(expr, args)?;
                 Ok(None)

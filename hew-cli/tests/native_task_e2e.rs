@@ -6,6 +6,40 @@ use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
 #[test]
+fn assertions_evaluate_once_and_unwind_through_scope_recovery() {
+    run_task(
+        r#"
+fn check(value: bool) -> bool { println("condition"); value }
+fn fail() {
+    let owned = "owned assertion value";
+    defer println(owned);
+    assert(check(false));
+    println("unreachable");
+}
+fn main() {
+    let kept = "still live";
+    assert(check(true));
+    println(kept);
+    scope {
+        defer println("parent cleanup");
+        let child = fork fail();
+        await child;
+    } handle failure {
+        match failure {
+            .Fault { message } => println(message),
+            .Deadline { message } => println("wrong failure"),
+        }
+    };
+    println(kept);
+}
+"#,
+        "condition\nstill live\ncondition\nowned assertion value\nparent cleanup\nhew: failure: UserPanic (212): assertion failed\n\nstill live\n",
+        0,
+        "",
+    );
+}
+
+#[test]
 fn discarded_results_close_temporaries_and_preserve_existing_owners() {
     run_task(
         r#"

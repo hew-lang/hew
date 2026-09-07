@@ -16559,19 +16559,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_native_add_child( HewLocalPidId, c_int, HewNativeChildSpawnFn, ) -> c_int"
-      },
-      "symbol": "hew_supervisor_native_add_child"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "codegen-stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_supervisor_native_await_restart( HewLocalPidId, u32, )"
       },
       "symbol": "hew_supervisor_native_await_restart"
@@ -16598,22 +16585,9 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_native_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, ) -> HewLocalPidId"
+        "native": "fn hew_supervisor_native_spawn( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, *mut *mut HewFault, ) -> HewLocalPidId"
       },
-      "symbol": "hew_supervisor_native_new"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "codegen-stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_native_start( HewLocalPidId, ) -> c_int"
-      },
-      "symbol": "hew_supervisor_native_start"
+      "symbol": "hew_supervisor_native_spawn"
     },
     {
       "availability": [

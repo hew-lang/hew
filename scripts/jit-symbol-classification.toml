@@ -1571,18 +1571,14 @@ codegen-stable = [
   # emits the literal and the call); user code has no way to name it that is
   # not a forged system-dispatch registration.
   "hew_supervisor_add_child_spec",
-  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_native_add_child`
-  # registers a declared child whose incarnation source is a compiler-emitted
-  # spawn adapter, and the shared restart path installs the runtime's own
-  # system dispatch on every incarnation. Codegen emits
-  # `hew_supervisor_native_new` -> `hew_supervisor_native_add_child` ->
-  # `hew_supervisor_native_start` as one lowering of a `supervisor`
-  # declaration; user code has no way to name any of them.
-  "hew_supervisor_native_add_child",
+  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_native_spawn` spawns
+  # every declared child from compiler-emitted adapters, and the shared
+  # restart path installs the runtime's own system dispatch on each
+  # incarnation. It is the whole lowering of a `supervisor` declaration; user
+  # code has no way to name it or the child table it reads.
   "hew_supervisor_native_await_restart",
   "hew_supervisor_native_child",
-  "hew_supervisor_native_new",
-  "hew_supervisor_native_start",
+  "hew_supervisor_native_spawn",
   "hew_supervisor_role_await_send",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
   # `supervisor_sys_dispatch` trampoline on the supervisor's not-yet-published

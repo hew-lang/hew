@@ -11377,15 +11377,25 @@ pub extern "C" fn hew_supervisor_native_start(
     unsafe { hew_supervisor_start(pin.supervisor()) }
 }
 
-/// Resolve one declared child's current incarnation. `INVALID` means the role
-/// has no live occupant right now — restarting, or spent.
+/// Resolve one declared child's current incarnation, reporting what the role
+/// holds in `out_tag`: `0` live, `1` restarting, `2` spent. `INVALID` is
+/// returned for anything but a live occupant.
+///
+/// # Safety
+///
+/// `out_tag` is writable or null.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
-pub extern "C" fn hew_supervisor_native_child(
+pub unsafe extern "C" fn hew_supervisor_native_child(
     token: crate::lifetime::local_handles::HewLocalPidId,
     slot: u32,
+    out_tag: *mut c_int,
 ) -> usize {
     let result = hew_local_pid_supervisor_child_get(token, slot);
+    if !out_tag.is_null() {
+        // SAFETY: the caller supplies a writable occupancy slot.
+        unsafe { out_tag.write(c_int::from(result.tag)) };
+    }
     if result.tag == 0 {
         result.handle as usize
     } else {

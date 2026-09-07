@@ -1327,6 +1327,19 @@ fn verify_callable_table<'a>(
                     }));
                 }
             }
+            CallableInstance::SupervisorChild { supervisor, child } => {
+                if module
+                    .supervisor(*supervisor)
+                    .and_then(|supervisor| supervisor.children.get(*child as usize))
+                    .is_none_or(|declared| declared.spawn != callable.id)
+                {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "supervisor child body is not its declared child's spawn callable"
+                            .to_string(),
+                    }));
+                }
+            }
             CallableInstance::EntryAdapter => {
                 if module.entry_callable != Some(callable.id) {
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {

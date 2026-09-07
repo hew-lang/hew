@@ -582,7 +582,8 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         CallableInstance::Generic(key) => key,
         CallableInstance::Monomorphic
         | CallableInstance::Closure(_)
-        | CallableInstance::EntryAdapter => {
+        | CallableInstance::EntryAdapter
+        | CallableInstance::SupervisorChild { .. } => {
             panic!("id<i64> must retain a semantic instance key")
         }
     };

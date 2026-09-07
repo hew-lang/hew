@@ -72,6 +72,13 @@ pub enum CallableInstance {
     /// The synthesized process-entry body that realizes a `Result` exit plan
     /// under the entry declaration's identity.
     EntryAdapter,
+    /// One declared child's spawn body, synthesized under its supervisor's
+    /// bootstrap declaration. Every child of one supervisor shares that
+    /// declaration, so the child index is what distinguishes them.
+    SupervisorChild {
+        supervisor: crate::SupervisorId,
+        child: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

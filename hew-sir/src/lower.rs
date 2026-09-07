@@ -1528,12 +1528,7 @@ impl<'a> InstanceService<'a> {
             });
         }
         if let Some(function) = self.synthetic_sources.get(&callable) {
-            return Ok(LoweringInput {
-                function: Cow::Owned(function.clone()),
-                callable: callable_meta,
-                substitution: TypeSubstitution::empty(),
-                source: BodySource::Function,
-            });
+            return Ok(synthetic_input(function.clone(), callable_meta));
         }
         let function = *self
             .table
@@ -1559,8 +1554,10 @@ impl<'a> InstanceService<'a> {
             });
         }
         let substitution = match &callable_meta.instance {
-            CallableInstance::Closure(_) | CallableInstance::EntryAdapter => {
-                unreachable!("closure and entry adapter inputs are resolved above")
+            CallableInstance::Closure(_)
+            | CallableInstance::EntryAdapter
+            | CallableInstance::SupervisorChild { .. } => {
+                unreachable!("closure, entry adapter and child spawn inputs are resolved above")
             }
             CallableInstance::Monomorphic => {
                 if !function.type_params.is_empty() {
@@ -2052,6 +2049,16 @@ struct LoweringInput<'a> {
     callable: SemCallable,
     substitution: TypeSubstitution,
     source: BodySource,
+}
+
+/// A body the lowering synthesized itself: no HIR item, no type parameters.
+fn synthetic_input<'a>(function: HirFn, callable: SemCallable) -> LoweringInput<'a> {
+    LoweringInput {
+        function: Cow::Owned(function),
+        callable,
+        substitution: TypeSubstitution::empty(),
+        source: BodySource::Function,
+    }
 }
 
 enum BodySource {
@@ -2856,7 +2863,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             &self.callable.instance,
             self.function.type_params.is_empty(),
         ) {
-            (CallableInstance::Monomorphic, true) => {}
+            (CallableInstance::Monomorphic | CallableInstance::SupervisorChild { .. }, true) => {}
             (CallableInstance::Closure(_), _) if matches!(source, BodySource::Closure(_)) => {}
             (CallableInstance::EntryAdapter, _)
                 if matches!(source, BodySource::EntryAdapter(_)) => {}

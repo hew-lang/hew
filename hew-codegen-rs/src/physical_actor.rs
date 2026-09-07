@@ -1270,11 +1270,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("read message target")?;
         // A role addresses its actor through the supervisor: resolve the
         // current incarnation here, at the send.
-        let target = if args[0].is_builtin(hew_types::BuiltinType::ChildRef) {
-            self.resolve_role_handle(target.into_struct_value())?.into()
-        } else {
-            target
-        };
+        let role = args[0]
+            .is_builtin(hew_types::BuiltinType::ChildRef)
+            .then(|| self.resolve_role(target.into_struct_value()))
+            .transpose()?;
+        let target = role.map_or(target, |(handle, _)| handle.into());
         let member = self
             .builder
             .build_extract_value(object, 1, "submission.member")
@@ -1289,6 +1289,56 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let submitted = self.ctx.append_basic_block(self.value, "submission.result");
+        // A role with no live occupant never allocates a wrapper: the message
+        // stays with the sender and the refusal names why, spent or restarting.
+        let vacant = role
+            .map(|(_, tag)| {
+                let live = self
+                    .ctx
+                    .append_basic_block(self.value, "submission.role.live");
+                let vacant = self
+                    .ctx
+                    .append_basic_block(self.value, "submission.role.vacant");
+                let occupied = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        self.ctx.i32_type().const_zero(),
+                        "submission.role.occupied",
+                    )
+                    .llvm_ctx("classify the role's occupant")?;
+                self.builder
+                    .build_conditional_branch(occupied, live, vacant)
+                    .llvm_ctx("send only to an occupied role")?;
+                self.builder.position_at_end(vacant);
+                let spent = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        self.ctx.i32_type().const_int(2, false),
+                        "submission.role.spent",
+                    )
+                    .llvm_ctx("separate a spent role from a restarting one")?;
+                let status = self
+                    .builder
+                    .build_select(
+                        spent,
+                        self.ctx.i32_type().const_int(5, false),
+                        self.ctx.i32_type().const_int(2, false),
+                        "submission.role.status",
+                    )
+                    .llvm_ctx("report why the role took no message")?
+                    .into_int_value();
+                self.builder
+                    .build_unconditional_branch(submitted)
+                    .llvm_ctx("return the vacant role refusal")?;
+                self.builder.position_at_end(live);
+                CodegenResult::Ok((status, vacant))
+            })
+            .transpose()?;
         let allocate = get_or_declare_external(
             self.llvm,
             "hew_actor_payload_try_alloc",
@@ -1310,7 +1360,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ctx
             .append_basic_block(self.value, "submission.allocated");
         let oom = self.ctx.append_basic_block(self.value, "submission.oom");
-        let submitted = self.ctx.append_basic_block(self.value, "submission.result");
         let failed = self
             .builder
             .build_is_null(wrapper, "submission.no_memory")
@@ -1401,6 +1450,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             (&self.ctx.i32_type().const_int(3, false), oom),
             (&status, admission_block),
         ]);
+        if let Some((status, block)) = vacant {
+            outcome.add_incoming(&[(&status, block)]);
+        }
         self.write_actor_delivery_result(
             outcome.as_basic_value().into_int_value(),
             object,
@@ -1501,6 +1553,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "submission.full",
             )
             .llvm_ctx("classify full mailbox")?;
+        let spent = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_int(5, false),
+                "submission.spent",
+            )
+            .llvm_ctx("classify a spent supervised role")?;
         let reason = self
             .builder
             .build_select(
@@ -1510,6 +1571,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "submission.reason",
             )
             .llvm_ctx("classify admission failure")?;
+        let reason = self
+            .builder
+            .build_select(
+                spent,
+                self.ctx.i8_type().const_int(11, false),
+                reason.into_int_value(),
+                "submission.reason.role",
+            )
+            .llvm_ctx("name a spent supervised role")?;
         let reason = self
             .builder
             .build_select(

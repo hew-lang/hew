@@ -560,14 +560,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(value.into_int_value())
     }
 
-    /// Resolve a role to its current incarnation's handle. `0` means the role
-    /// has no live occupant, which every boundary reports rather than guesses.
-    pub(super) fn resolve_role_handle(
+    /// Resolve a role to its current incarnation. The tag says what the role
+    /// holds — `0` live, `1` restarting, `2` spent — because liveness is
+    /// reported here, never guessed from a null handle.
+    pub(super) fn resolve_role(
         &self,
         role: inkwell::values::StructValue<'ctx>,
-    ) -> CodegenResult<IntValue<'ctx>> {
+    ) -> CodegenResult<(IntValue<'ctx>, IntValue<'ctx>)> {
         let target = TargetData::create(&self.module.target.data_layout);
         let word = self.ctx.ptr_sized_int_type(&target, None);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
         let handle = self
             .builder
             .build_extract_value(role, 0, "role.supervisor")
@@ -576,18 +578,44 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_extract_value(role, 1, "role.slot")
             .llvm_ctx("read the role's slot")?;
+        let tag = self
+            .builder
+            .build_alloca(self.ctx.i32_type(), "role.tag")
+            .llvm_ctx("allocate the role's occupancy")?;
         let resolve = get_or_declare_external(
             self.llvm,
             "hew_supervisor_native_child",
-            word.fn_type(&[word.into(), self.ctx.i32_type().into()], false),
+            word.fn_type(
+                &[word.into(), self.ctx.i32_type().into(), ptr.into()],
+                false,
+            ),
         )?;
-        Ok(self
+        let current = self
             .builder
-            .build_call(resolve, &[handle.into(), slot.into()], "role.current")
+            .build_call(
+                resolve,
+                &[handle.into(), slot.into(), tag.into()],
+                "role.current",
+            )
             .llvm_ctx("resolve the role's current incarnation")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("role resolution returned void".into()))?
-            .into_int_value())
+            .into_int_value();
+        let tag = self
+            .builder
+            .build_load(self.ctx.i32_type(), tag, "role.occupancy")
+            .llvm_ctx("read the role's occupancy")?
+            .into_int_value();
+        Ok((current, tag))
+    }
+
+    /// The current incarnation's handle alone, for a boundary whose own
+    /// refusal already reports an absent destination.
+    pub(super) fn resolve_role_handle(
+        &self,
+        role: inkwell::values::StructValue<'ctx>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        Ok(self.resolve_role(role)?.0)
     }
 }

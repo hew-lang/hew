@@ -215,7 +215,10 @@ impl InstanceService<'_> {
             id,
             function: source.id,
             declaration: source.bootstrap_declaration.clone(),
-            instance: CallableInstance::Monomorphic,
+            instance: CallableInstance::SupervisorChild {
+                supervisor,
+                child: u32::try_from(index).map_err(|_| "supervisor child count exceeds u32")?,
+            },
             symbol: format!("__hew_supervisor_{}_child_{index}", supervisor.0),
             source_origin: function_source_origin(self.module, &function),
             signature,

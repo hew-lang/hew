@@ -118,6 +118,9 @@ pub enum SendError {
     /// The declared mailbox policy discarded, replaced, or coalesced work
     /// while processing this send.
     MessageLost,
+    /// The supervised role the send addressed has no occupant and will not
+    /// get one: its restart budget is spent.
+    Dead,
 }
 
 impl Display for SendError {
@@ -134,6 +137,7 @@ impl Display for SendError {
             SendError.Unauthorized => "the peer rejected the send because the caller lacks authority",
             SendError.Backpressure => "the destination or route is applying flow control",
             SendError.MessageLost => "the declared mailbox policy discarded, replaced, or coalesced this send",
+            SendError.Dead => "the supervised role has no occupant and its restart budget is spent",
         }
     }
 }

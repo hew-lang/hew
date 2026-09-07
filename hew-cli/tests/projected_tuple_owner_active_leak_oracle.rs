@@ -137,34 +137,6 @@ fn main() -> i64 {
 "
 }
 
-fn dump_mir(source: &str, name: &str, stage: &str) -> String {
-    let dir = tempfile::Builder::new()
-        .prefix("projected-tuple-owner-mir-")
-        .tempdir()
-        .expect("tempdir");
-    let source_path = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&source_path, source).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", stage])
-        .arg(&source_path)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile --dump-mir");
-    assert!(
-        output.status.success(),
-        "{stage} MIR dump failed:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
-}
-
-fn build_section(mir: &str) -> &str {
-    mir.split("fn build ->")
-        .nth(1)
-        .and_then(|section| section.split("fn main ->").next())
-        .expect("build MIR section")
-}
-
 fn compile_to_llvm(source: &str, name: &str) -> String {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -274,101 +246,30 @@ fn projected_owner_paths_are_exactly_once_under_malloc_scribble() {
     }
 }
 
-#[test]
-fn checked_and_elaborated_mir_write_the_disjoint_release_contract() {
-    let source = projected_tuple_source(1);
-    let checked_dump = dump_mir(&source, "projected_tuple_owner_checked", "checked");
-    let checked = build_section(&checked_dump);
-    assert_eq!(
-        checked.matches("aggregate_projection_neutralize").count(),
-        1,
-        "the field transfer needs exactly one root-relative neutralization:\n{checked}"
-    );
-    // Derive the root and transferee locals from the neutralize statement
-    // itself rather than pinning local numbers, which renumber on unrelated
-    // codegen changes. The semantic teeth stay: the authority must name the
-    // original tuple root, exact field 0, and the loaded transferee, and the
-    // load/neutralize/bind edges must appear in that order.
-    let neutralize_stmt = checked
-        .lines()
-        .find(|line| line.contains("aggregate_projection_neutralize"))
-        .expect("projection neutralize")
-        .trim();
-    let mut parts = neutralize_stmt.split_whitespace();
-    assert_eq!(parts.next(), Some("aggregate_projection_neutralize"));
-    let root = parts.next().expect("neutralize names the tuple root");
-    assert_eq!(
-        parts.next(),
-        Some("fields=[0]"),
-        "the authority must name the exact transferred field:\n{checked}"
-    );
-    assert_eq!(parts.next(), Some("->"));
-    let transferee = parts
-        .next()
-        .expect("neutralize names the loaded transferee");
-    let load = checked
-        .find(&format!("{transferee} = {root}.0"))
-        .expect("tuple field load");
-    let neutralize = checked
-        .find("aggregate_projection_neutralize")
-        .expect("projection neutralize");
-    let bind = checked
-        .lines()
-        .scan(0, |offset, line| {
-            let line_start = *offset;
-            *offset += line.len() + 1;
-            Some((line_start, line))
-        })
-        .find(|(_, line)| line.trim_end().ends_with(&format!("= move {transferee}")))
-        .map(|(offset, _)| offset)
-        .expect("items binding move");
-    assert!(
-        load < neutralize && neutralize < bind,
-        "the original slot must be cleared after its handle is loaded and \
-         before the new owner is exposed:\n{checked}"
-    );
-
-    let elaborated_dump = dump_mir(&source, "projected_tuple_owner_elab", "elab");
-    let elaborated = build_section(&elaborated_dump);
-    let return_plan = elaborated
-        .split("return[")
-        .nth(1)
-        .expect("build return drop plan");
-    assert_eq!(
-        return_plan.matches("kind=cow_heap(hew_vec_free)").count(),
-        1,
-        "the projected Vec binding must own one release:\n{return_plan}"
-    );
-    assert_eq!(
-        return_plan.matches("kind=tuple_in_place").count(),
-        1,
-        "the partially neutralized tuple must keep one structural sibling drop:\n{return_plan}"
-    );
-}
-
-#[test]
-fn cancellation_exit_keeps_both_disjoint_drops() {
-    let dump = dump_mir(
-        &cancellation_source(1),
-        "projected_tuple_owner_cancel",
-        "elab",
-    );
-    let build = build_section(&dump);
-    let cancellation_has_both = build.split("cancel[").skip(1).any(|section| {
-        let plan = section
-            .lines()
-            .skip(1)
-            .take_while(|line| line.starts_with("      "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        plan.contains("kind=cow_heap(hew_vec_free)") && plan.contains("kind=tuple_in_place")
-    });
-    assert!(
-        cancellation_has_both,
-        "a loop-backedge cancellation after the projection transfer must drop \
-         the Vec owner and the neutralized tuple exactly once:\n{build}"
-    );
-}
+// `checked_and_elaborated_mir_write_the_disjoint_release_contract` and
+// `cancellation_exit_keeps_both_disjoint_drops` pinned this same disjoint-
+// release contract (root-relative neutralize before the new owner is
+// exposed; both the projected Vec and the neutralized tuple released
+// exactly once, including on the loop-backedge/cancellation exit) against
+// the retired checked/elaborated MIR text dumps (`--dump-mir checked` /
+// `elab`), which no longer exist (`--dump-mir` now accepts only
+// `physical`). Physical MIR's debug dump carries no source-level ordering
+// text to re-pin the same way (bindings are positional `StorageId`s with no
+// retained names), so re-deriving an equally precise structural match would
+// mean reconstructing this contract from raw op offsets.
+//
+// Coverage lost on Linux CI: this was the only always-on pin for the
+// disjoint-release ordering and the cancellation-exit both-drops fact.
+// `llvm_clears_the_tuple_slot_before_either_release` targets the same
+// generated-code invariant but is independently failing on this branch
+// today (`missing @build in LLVM IR`, pre-existing, not touched by this
+// change) so it is not currently covering evidence, only a stated intent.
+// `projected_owner_paths_are_exactly_once_under_malloc_scribble` exercises
+// the same three fixtures (including `cancellation_source`) end to end
+// under a poisoned allocator, but is macOS-only and `ignore`d elsewhere, so
+// it asserts nothing on the CI that runs this file. No current test proves
+// the disjoint-release-on-cancellation fact on Linux; that gap is reported
+// separately rather than silently accepted.
 
 #[test]
 fn llvm_clears_the_tuple_slot_before_either_release() {

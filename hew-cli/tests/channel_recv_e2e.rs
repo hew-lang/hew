@@ -4,9 +4,28 @@
 //! The `examples/channel/*.hew` fixtures are COMPILED AND RUN and their stdout
 //! asserted under both the default pool AND `HEW_WORKERS=1` — the single-worker
 //! run is the worker-freeing proof (a blocking recv would strand the lone
-//! worker). Two MIR-dump oracles prove `await rx.recv()` flips to
-//! `SuspendingChannelRecv` ONLY in an execution-context caller (an actor
-//! handler), keeping the blocking `Terminator::Call` path in `main`.
+//! worker).
+//!
+//! This file used to also carry three `--dump-mir checked` oracles proving
+//! `await rx.recv()` flips to the `SuspendingChannelRecv` carrier ONLY in an
+//! execution-context caller (an actor handler), keeping the blocking
+//! `Terminator::Call` path in `main`. `--dump-mir checked` no longer exists
+//! (only `physical` does), and physical MIR has no channel-recv or
+//! stream-next `PhysicalTerminator` variant yet (`hew-mir/src/physical.rs`'s
+//! `PhysicalTerminator` enum has none; an unhandled `SuspendKind` fails
+//! closed with a `PhysicalError` per `physical.rs:2746`, which is exactly
+//! the "this call may suspend; use await or fork on this call" diagnostic
+//! `std/channel/channel.hew`'s `hew_channel_recv_layout` hits today). With no
+//! physical-dump marker to look for and no way to compile `await rx.recv()`
+//! at all on this branch, those three oracles were deleted rather than
+//! migrated. Lost coverage: the actor-vs-main suspend-flip negative control
+//! (that `main` keeps the blocking `Call` path while an actor handler flips
+//! to a suspend terminator). The positive that `await rx.recv()` runs
+//! correctly at all is still pinned by
+//! `await_recv_actor_binds_some_then_none_under_both_pools` below and by
+//! `eval_e2e.rs`'s `for_await_*_drains_to_completion_under_single_worker`
+//! tests; both currently fail on the same suspend gap and will resume
+//! proving it once physical MIR grows a channel-recv terminator.
 
 mod support;
 
@@ -97,11 +116,6 @@ fn mir_dump(source: &str, stage: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Compile a Hew program to `--dump-mir checked` and return the dump.
-fn mir_checked_dump(source: &str) -> String {
-    mir_dump(source, "checked")
-}
-
 fn handler_section<'a>(dump: &'a str, name: &str) -> &'a str {
     let start = dump
         .find(name)
@@ -109,88 +123,6 @@ fn handler_section<'a>(dump: &'a str, name: &str) -> &'a str {
     let rest = &dump[start..];
     let end = rest.find("\nfn ").unwrap_or(rest.len());
     &rest[..end]
-}
-
-/// True when the Checked-MIR dump carries a suspend terminator, indicating
-/// that the channel-recv flip was applied.
-///
-/// The carrier name has evolved across dump-renderer generations:
-///   - derived-`Debug`: `SuspendingChannelRecv`
-///   - structured renderer: `suspend.channel_recv`
-///   - post–side-table collapse: `suspend is_final=` (bare Suspend terminator;
-///     kind detail lives in the side-table, visible only in the Raw dump)
-///
-/// The flip's PRESENCE is the load-bearing signal; any of the three forms
-/// confirms it. The negative oracle uses the `Checked` dump's bare form, which
-/// is absent on the blocking-call (non-flipped) path from `main`.
-fn dump_has_channel_recv_suspend(dump: &str) -> bool {
-    dump.contains("SuspendingChannelRecv")
-        || dump.contains("suspend.channel_recv")
-        || dump.contains("suspend is_final=")
-}
-
-/// NEW-4 oracle: `await rx.recv()` in an actor handler (an execution-context
-/// caller) flips to the `SuspendingChannelRecv` carrier.
-#[test]
-fn actor_await_recv_flips_to_suspending_channel_recv() {
-    let dump = mir_checked_dump(
-        "import std.channel.channel;\n\
-         actor Worker {\n\
-         \x20   receive fn run(unused: i64) {\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       tx.send(\"x\");\n\
-         \x20       tx.close();\n\
-         \x20       match await rx.recv() { .Some(v) => {}, .None => {}, }\n\
-         \x20       rx.close();\n\
-         \x20   }\n\
-         }\n\
-         fn main() { let w = spawn Worker(); w.run(0); }\n",
-    );
-    assert!(
-        dump_has_channel_recv_suspend(&dump),
-        "actor `await rx.recv()` must flip to SuspendingChannelRecv:\n{dump}"
-    );
-}
-
-/// NEW-4 oracle: `await rx.recv()` from `main` (a context-free caller) must NOT
-/// flip — it keeps the blocking `Terminator::Call` recv path.
-#[test]
-fn main_await_recv_does_not_flip() {
-    let dump = mir_checked_dump(
-        "import std.channel.channel;\n\
-         fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   tx.send(7);\n\
-         \x20   tx.close();\n\
-         \x20   match await rx.recv() { .Some(v) => {}, .None => {}, }\n\
-         \x20   rx.close();\n\
-         }\n",
-    );
-    assert!(
-        !dump_has_channel_recv_suspend(&dump),
-        "`await rx.recv()` from main must NOT flip to SuspendingChannelRecv:\n{dump}"
-    );
-}
-
-/// Plain `main` keeps `for await rx` on the blocking layout-recv call path.
-/// That ABI borrows its Receiver endpoint while moving only each decoded item;
-/// W3.053 must therefore accept the source-to-cursor handoff rather than
-/// treating the blocking read as a second untracked owner.
-#[test]
-fn main_for_await_receiver_compiles_through_blocking_recv_abi() {
-    let dump = mir_checked_dump(
-        "import std.channel.channel;\n\
-         fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   tx.send(\"ready\");\n\
-         \x20   tx.close();\n\
-         \x20   for await item in rx { println(item); }\n\
-         }\n",
-    );
-    assert!(
-        !dump_has_channel_recv_suspend(&dump),
-        "plain main must retain the blocking layout-recv path:\n{dump}"
-    );
 }
 
 /// The `for await` cursor takes the receiver's ownership, while the sibling

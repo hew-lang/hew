@@ -205,49 +205,26 @@ fn generic_record_with_owned_field_admits_and_runs() {
 fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
     require_codegen();
 
+    // The previous MIR-half of this oracle golden-diffed specific
+    // `return[bb4]`/`panic[bb6]`/`cancel[bb7]` drop lines out of `--dump-mir
+    // elab`/`raw` text dumps to prove the generic enum-record's owned drop
+    // covers the overwrite, error, AND cancel exits, plus a `raw` dump line
+    // proving the untouched record releases before its final return. Both
+    // dump stages are gone (`--dump-mir` now accepts only `physical`, whose
+    // `{:#?}` `Debug` dump of `PhysicalModule` carries no comparable
+    // block-by-block text form to pin against). The compiled-and-executed
+    // proof below is narrower: the LLVM clone/drop/overwrite-release
+    // helpers below must exist (bodied, not merely declared), and the
+    // poisoned-allocator run over 256 overwrite iterations plus the
+    // untouched path must exit clean, which an over-release (double-free)
+    // on either of THOSE two paths would not survive. Neither the helper
+    // check nor the run proves anything about the panic or cancel exits
+    // specifically — this fixture's `main` never triggers a panic or a
+    // cancellation, so those two exits are exercised by neither half; a
+    // missed release (leak) on any exit is likewise undetected by either
+    // half. Lost coverage: exactly-once release on the panic/cancel exits
+    // specifically, and leak detection generally.
     let source = fixture_path("generic_enum_record_scope_drop.hew");
-    let mir = std::process::Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "elab"])
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("dump elaborated MIR");
-    assert!(
-        mir.status.success(),
-        "generic enum-record MIR should elaborate; stderr: {}",
-        String::from_utf8_lossy(&mir.stderr)
-    );
-    let mir = String::from_utf8_lossy(&mir.stdout);
-    assert!(
-        mir.contains("return[bb4] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place")
-            && mir.contains(
-                "panic[bb6] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
-            )
-            && mir.contains(
-                "cancel[bb7] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
-            ),
-        "generic enum-record drop must cover overwrite, error, and cancel exits:\n{mir}"
-    );
-
-    let raw = std::process::Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "raw"])
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("dump raw MIR");
-    assert!(
-        raw.status.success(),
-        "generic enum-record raw MIR should lower; stderr: {}",
-        String::from_utf8_lossy(&raw.stderr)
-    );
-    let raw = String::from_utf8_lossy(&raw.stdout);
-    assert!(
-        raw.contains(
-            "_8 = _7.field[1]\n    snapshot_drop _7 ty=EnumHolder<string> plan=UserRecord { name: \"EnumHolder$$string\" } boundary=LocalCall\n    ownership Release { owner: OwnerId { binding: BindingId(3), generation: 0 }, place: Local(7) }\n    ret = move _8"
-        ),
-        "untouched generic enum-record must release after its final borrow and before return:\n{raw}"
-    );
-
     let emit_dir = support::tempdir();
     let mut command = std::process::Command::new(hew_binary());
     command

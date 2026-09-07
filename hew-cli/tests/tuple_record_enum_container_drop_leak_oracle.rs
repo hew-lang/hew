@@ -23,7 +23,7 @@ use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, measure_leaks_exact,
     run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 const TUPLE_RECORD_ENUM_TEMPLATE: &str = r#"
 type Holder {
@@ -271,31 +271,6 @@ fn expected_lines(frames: usize) -> usize {
     frames
 }
 
-fn dump_elaborated_mir(source: &str, name: &str) -> String {
-    let dir = tempfile::Builder::new()
-        .prefix("tuple-record-enum-elab-")
-        .tempdir()
-        .expect("tempdir");
-    let path = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&path, source).expect("write Hew source");
-    let output = std::process::Command::new(hew_binary())
-        .args([
-            "compile",
-            "--dump-mir",
-            "elab",
-            path.to_str().expect("Hew source path is UTF-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("run hew compile --dump-mir elab");
-    assert!(
-        output.status.success(),
-        "elaborated MIR dump failed:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
-}
-
 fn enum_carrier_one_frame_source(frame: i64, expected: i64) -> String {
     let helper = ENUM_CARRIER_FORWARD_REBIND_SOURCE
         .split("\nfn main()")
@@ -306,55 +281,26 @@ fn enum_carrier_one_frame_source(frame: i64, expected: i64) -> String {
     )
 }
 
-#[test]
-fn empty_enum_carrier_projection_forwarding_keeps_tuple_and_enum_drop_authorities() {
-    let dump = dump_elaborated_mir(
-        ENUM_CARRIER_FORWARD_REBIND_SOURCE,
-        "enum_carrier_forward_rebind",
-    );
-    let helper = dump
-        .split("fn helper")
-        .nth(1)
-        .and_then(|section| section.split("\nfn main").next())
-        .expect("helper elaborated MIR section");
-
-    assert!(
-        helper.contains("ty=(Option<Payload>, Vec<string>) kind=tuple_in_place"),
-        "the terminal plan must retain TupleInPlace for pair after the exact empty-enum carrier \
-         overwrite:\n{helper}"
-    );
-    assert!(
-        helper.contains("ty=Option<Payload> kind=enum_in_place"),
-        "the forwarded enum owner must retain its active Payload Vec release authority:\n{helper}"
-    );
-    assert!(
-        !helper.contains("kind=record_in_place"),
-        "the payload alias must not receive a separate RecordInPlace drop:\n{helper}"
-    );
-    let helper_lines: Vec<_> = helper.lines().collect();
-    for exit in ["cancel[", "panic[", "return["] {
-        assert!(
-            helper_lines.iter().enumerate().any(|(index, line)| {
-                if !line.trim_start().starts_with(exit) {
-                    return false;
-                }
-                let drops: Vec<_> = helper_lines[index + 1..]
-                    .iter()
-                    .take_while(|drop| drop.starts_with("      "))
-                    .copied()
-                    .collect();
-                drops
-                    .iter()
-                    .any(|drop| drop.contains("ty=Option<Payload> kind=enum_in_place"))
-                    && drops.iter().any(|drop| {
-                        drop.contains("ty=(Option<Payload>, Vec<string>) kind=tuple_in_place")
-                    })
-            }),
-            "an active forwarded payload must keep both its enum authority and the residual \
-             tuple-sibling authority on a {exit} exit:\n{helper}"
-        );
-    }
-}
+// `empty_enum_carrier_projection_forwarding_keeps_tuple_and_enum_drop_authorities`
+// pinned the same fact this file's
+// `empty_enum_carrier_helper_releases_payload_and_tuple_sibling_on_both_paths`
+// proves directly: that a forwarded `Option<Payload>` carrier and its
+// residual tuple sibling both keep their own release authority, on every
+// exit, for both the transferring (even) and non-transferring (odd) frame.
+// It matched text (`kind=tuple_in_place`, `cancel[`/`panic[`/`return[`
+// drop-plan headers) from the retired elaborated MIR dump (`--dump-mir
+// elab`, no longer accepted; only `physical` is). Physical MIR's debug dump
+// carries no equivalent per-exit drop-plan listing to re-pin the same way
+// (release actions live per-block, not grouped by exit kind, and bindings
+// are positional `StorageId`s with no retained source names).
+//
+// Coverage lost on Linux CI: this was the only always-on pin for the fact.
+// The runtime sibling below runs this exact fixture, plus single even/odd
+// frames, under a poisoned allocator and a leak count, which would fail on
+// precisely the missing- or double-release class this test existed to
+// catch — but it is macOS-only and `ignore`d elsewhere (this file now runs
+// zero tests on Linux), so it asserts nothing on the CI that runs this
+// file. That gap is reported separately rather than silently accepted.
 
 #[cfg_attr(
     not(target_os = "macos"),

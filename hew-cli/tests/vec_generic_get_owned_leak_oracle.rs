@@ -164,10 +164,72 @@ fn vec_generic_get_owned_element_exact_contents_under_malloc_scribble() {
     );
 }
 
+/// Count `destroy: Some(...)` (or inline `action: ...`) release entries in
+/// `section` whose payload starts with `kind`, tolerating the debug dump's
+/// indentation rather than pinning it.
+fn destroy_action_count(section: &str, kind: &str) -> usize {
+    let mut count = 0;
+    let mut search_from = 0;
+    while let Some(offset) = section[search_from..].find("destroy: Some(") {
+        let pos = search_from + offset;
+        let window = &section[pos..(pos + 200).min(section.len())];
+        if window
+            .split_whitespace()
+            .nth(2)
+            .is_some_and(|tok| tok.starts_with(kind))
+        {
+            count += 1;
+        }
+        search_from = pos + "destroy: Some(".len();
+    }
+    count
+}
+
+/// Slice out the `PhysicalFunction` body for `symbol` from a `--dump-mir
+/// physical` dump. `callables` and `functions` are keyed by `CallableId`,
+/// and dead prelude callables are declared but never lowered into a
+/// `functions` entry, so the callable id (not position) must be resolved
+/// first.
+fn physical_function_section<'a>(dump: &'a str, symbol: &str) -> &'a str {
+    let callables_start = dump.find("callables: [").expect("callables section");
+    let functions_start = dump.find("functions: [").expect("functions section");
+    let callables = &dump[callables_start..functions_start];
+    let marker = format!("symbol: \"__hew_fn_{symbol}\"");
+    let symbol_pos = callables
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing `{marker}` in physical MIR dump:\n{dump}"));
+    let block_start = callables[..symbol_pos]
+        .rfind("PhysicalCallable {")
+        .expect("enclosing PhysicalCallable");
+    let id_pos = callables[block_start..]
+        .find("id: CallableId(")
+        .expect("callable id")
+        + block_start;
+    let id_digits: String = callables[id_pos..]
+        .chars()
+        .skip("id: CallableId(".len())
+        .skip_while(|c| c.is_whitespace())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let header = format!(
+        "PhysicalFunction {{\n            callable: CallableId(\n                {id_digits},\n            ),"
+    );
+    let functions = &dump[functions_start..];
+    let start = functions.find(&header).unwrap_or_else(|| {
+        panic!("no PhysicalFunction with callable id {id_digits} for `{symbol}`")
+    });
+    let tail = &functions[start..];
+    let end = tail[1..]
+        .find("PhysicalFunction {")
+        .map_or(tail.len(), |offset| offset + 1);
+    &tail[..end]
+}
+
 /// The fresh `Option<Name>` clone-out transfers its selected payload into the
 /// match binder. The enum shell no longer releases that active payload, so the
 /// resulting `Name` must retain one recursive record drop; projection-alias
-/// taint must not suppress it.
+/// taint must not suppress it. Independently, the source Vec keeps its own
+/// release, since the getter only borrowed it.
 #[test]
 fn vec_generic_get_owned_element_emits_selected_payload_drop() {
     require_codegen();
@@ -178,28 +240,25 @@ fn vec_generic_get_owned_element_emits_selected_payload_drop() {
     let source = dir.path().join("payload_drop.hew");
     std::fs::write(&source, generic_get_loop_source(3)).expect("write Hew source");
     let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "elab"])
+        .args(["compile", "--dump-mir", "physical"])
         .arg(&source)
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile --dump-mir elab");
+        .expect("invoke hew compile --dump-mir physical");
     assert!(
         output.status.success(),
-        "elaborated MIR dump must succeed:\n{}",
+        "physical MIR dump must succeed:\n{}",
         describe_output(&output)
     );
     let dump = String::from_utf8_lossy(&output.stdout);
-    let run_cycle = dump
-        .split("fn ")
-        .find(|section| section.starts_with("run_cycle"))
-        .expect("run_cycle section present");
+    let run_cycle = physical_function_section(&dump, "run_cycle");
     assert!(
-        run_cycle.contains("ty=Name kind=record_in_place"),
-        "the selected fresh payload must keep one recursive Name release after \
+        destroy_action_count(run_cycle, "Aggregate") > 0,
+        "the selected fresh payload must keep a recursive Name release after \
          it moves out of the Option shell:\n{run_cycle}"
     );
     assert!(
-        run_cycle.contains("kind=cow_heap(hew_vec_free_owned)"),
+        destroy_action_count(run_cycle, "Vector") > 0,
         "payload transfer must not suppress the independent source Vec release:\n{run_cycle}"
     );
 }

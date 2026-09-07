@@ -37,12 +37,10 @@
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 // ── looped slope fixtures ───────────────────────────────────────────────
 
@@ -1056,287 +1054,43 @@ fn match_intermediate_return_tuple_no_double_free_under_malloc_scribble() {
     );
 }
 
-// ── MIR emission pins ────────────────────────────────────────────────────
-
-fn mir_dump(source: &str, prefix: &str, stage: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix(prefix)
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join("chain_pin.hew");
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", stage])
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|error| panic!("invoke hew compile --dump-mir {stage}: {error}"));
-    assert!(
-        output.status.success(),
-        "{stage} MIR dump must succeed:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn checked_dump(source: &str, prefix: &str) -> String {
-    mir_dump(source, prefix, "checked")
-}
-
-fn elab_dump(source: &str, prefix: &str) -> String {
-    mir_dump(source, prefix, "elab")
-}
-
-/// The distinct MIR locals dropped via `record_in_place` in a dump section —
-/// the same composite may appear on several exit edges (return + cancel), so
-/// membership, not line count, is the fact under test.
-fn record_in_place_locals(section: &str) -> std::collections::BTreeSet<String> {
-    section
-        .lines()
-        .filter(|line| line.contains("kind=record_in_place"))
-        .filter_map(|line| {
-            let rest = line.trim_start().strip_prefix("drop ")?;
-            let local = rest.split_whitespace().next()?;
-            Some(local.to_string())
-        })
-        .collect()
-}
-
-/// The two-level chain admits exactly ONE composite in-place drop — the outer
-/// root's — and emits none for the intermediate aliases. Only a single local
-/// (the outer `Outer` root) appears with `record_in_place`; the alias binders
-/// `mid` / `leaf` emit none (though the outer's own drop repeats across exit
-/// edges).
-#[test]
-fn two_level_record_chain_admits_only_the_outer_composite() {
-    let dump = elab_dump(&two_level_record_chain_source(4), "chain-record-mir-");
-    let run_cycle = dump
-        .split("fn ")
-        .find(|section| section.starts_with("run_cycle"))
-        .expect("run_cycle section present in dump");
-    let composites = record_in_place_locals(run_cycle);
-    assert_eq!(
-        composites.len(),
-        1,
-        "exactly the outer root keeps its composite in-place drop; the \
-         intermediate projection aliases emit none; got {composites:?}\n{run_cycle}"
-    );
-}
-
-/// Escaped-return record: when the deep alias escapes into the return, the
-/// owner `o` is EXCLUDED from its composite in-place drop (fail-closed: the
-/// escapee shares the owner's subtree, so the owner must not free it). `deep`
-/// emits zero `record_in_place` drops — neither the aliases (they never own)
-/// nor the owner (its subtree escaped).
-#[test]
-fn escaped_return_record_excludes_the_owner_composite() {
-    let dump = elab_dump(
-        &escaped_return_record_source(4),
-        "chain-escaped-return-mir-",
-    );
-    let deep = dump
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in dump");
-    assert_eq!(
-        deep.matches("kind=record_in_place").count(),
-        0,
-        "the deep alias escapes into the return, so the owner is excluded from \
-         its composite drop (leak-not-double-free); got a composite drop:\n{deep}"
-    );
-}
-
-/// Escaped-into-record is a clone, not a transfer: the explicit recursive
-/// string retain gives `Holder.held` independent shares, so `deep` keeps the
-/// outer root's one complete composite drop and emits no sibling-only
-/// compensation.
-#[test]
-fn escaped_into_record_clone_keeps_complete_source_drop() {
-    let source = escaped_into_record_source(4);
-    let checked = checked_dump(&source, "chain-escaped-store-checked-");
-    let checked_deep = checked
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in checked dump");
-    assert!(
-        checked_deep.contains("string.retain_aggregate"),
-        "the destination record must own a recursive retained clone of the \
-         borrowed Leaf projection:\n{checked_deep}"
-    );
-    assert!(
-        !checked_deep.contains("drop_field_in_place"),
-        "a retained clone leaves the source root fully owned; sibling-only \
-         compensation would strand the original escaped subtree:\n{checked_deep}"
-    );
-
-    let elaborated = elab_dump(&source, "chain-escaped-store-elab-");
-    let elaborated_deep = elaborated
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in elaborated dump");
-    let composites = record_in_place_locals(elaborated_deep);
-    assert_eq!(
-        composites.len(),
-        1,
-        "the original Outer must retain exactly one complete recursive drop; \
-         projection aliases never gain their own drop:\n{elaborated_deep}"
-    );
-    assert!(
-        elaborated_deep.contains("ty=Outer kind=record_in_place"),
-        "the sole composite drop must belong to the source Outer:\n{elaborated_deep}"
-    );
-}
-
-#[test]
-fn tuple_and_field_store_clones_keep_complete_source_drop() {
-    for (name, source) in [
-        ("tuple", escaped_into_tuple_source(4)),
-        ("field-store", escaped_into_field_store_source(4)),
-    ] {
-        let checked = checked_dump(&source, &format!("chain-{name}-checked-"));
-        let checked_deep = checked
-            .split("fn ")
-            .find(|section| section.starts_with("deep"))
-            .expect("deep section present in checked dump");
-        assert!(
-            checked_deep.contains("string.retain_aggregate"),
-            "{name} must recursively retain the borrowed projection:\n{checked_deep}"
-        );
-        assert!(
-            !checked_deep.contains("drop_field_in_place"),
-            "{name} retained clone must not replace the source root drop with \
-             sibling-only compensation:\n{checked_deep}"
-        );
-
-        let elaborated = elab_dump(&source, &format!("chain-{name}-elab-"));
-        let elaborated_deep = elaborated
-            .split("fn ")
-            .find(|section| section.starts_with("deep"))
-            .expect("deep section present in elaborated dump");
-        assert!(
-            elaborated_deep.contains("ty=Outer kind=record_in_place"),
-            "{name} clone must leave the source Outer fully owned:\n{elaborated_deep}"
-        );
-    }
-}
-
-#[test]
-fn inline_enum_clone_keeps_complete_source_drop() {
-    let source = escaped_inline_enum_source(4);
-    let checked = checked_dump(&source, "chain-inline-enum-checked-");
-    let checked_deep = checked
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in checked dump");
-    assert!(
-        checked_deep.contains("string.retain_aggregate"),
-        "inline enum sink must retain its active string payload:\n{checked_deep}"
-    );
-
-    let elaborated = elab_dump(&source, "chain-inline-enum-elab-");
-    let elaborated_deep = elaborated
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in elaborated dump");
-    assert!(
-        elaborated_deep.contains("ty=Outer kind=record_in_place"),
-        "retained inline enum clone must leave source Outer fully owned:\n{elaborated_deep}"
-    );
-}
-
-/// Proven-borrow owner control: `sink(o: Outer)` only reads `o`, so it is a
-/// proven-borrowing helper that registers no callee-side drop. Under the
-/// copy-on-write borrow model the caller therefore RETAINS the owner and frees
-/// it exactly once at its own scope exit: `run_cycle` emits exactly ONE
-/// `record_in_place` drop — the owner `o`'s composite. The alias `mid` (a
-/// Read-projection of `o.mid`) never owns, so it emits none. Exactly-once is
-/// the invariant: two owner drops would be a double-free, zero would be a leak.
-#[test]
-fn owner_consumed_control_emits_single_owner_drop_no_alias_drop() {
-    let dump = elab_dump(
-        &owner_consumed_control_source(4),
-        "chain-owner-consumed-mir-",
-    );
-    let run_cycle = dump
-        .split("fn ")
-        .find(|section| section.starts_with("run_cycle"))
-        .expect("run_cycle section present in dump");
-    // Teeth 1: the owner frees exactly once — one composite in-place drop, the
-    // outer root's. Zero here is the leak (proven-borrow callee freed nothing);
-    // two is the double-free (caller AND callee both freed).
-    let composites = record_in_place_locals(run_cycle);
-    assert_eq!(
-        composites.len(),
-        1,
-        "the proven-borrowing `sink` frees nothing, so the caller retains the \
-         owner and frees it exactly once; got {composites:?}\n{run_cycle}"
-    );
-    // Teeth 2: the single composite is the OWNER's (`ty=Outer`), never the
-    // alias `mid` (a Read-projection into the owner's subtree, `ty=Mid`). A
-    // `Mid` composite here would be the alias wrongly re-freeing the shared
-    // subtree — a double-free of the owner's payload.
-    assert!(
-        !run_cycle.contains("ty=Mid kind=record_in_place"),
-        "the alias `mid` must emit no composite drop; a `ty=Mid` in-place drop \
-         means the alias re-freed the owner's shared subtree;\n{run_cycle}"
-    );
-}
-
-/// #2387 match-hop return: the owner composite stays excluded (no
-/// `record_in_place` re-walk of the returned leaf), while checked MIR contains
-/// exactly the two sibling discharges for `mid.x` and `o.c`.
-#[test]
-fn match_intermediate_return_leaf_emits_only_sibling_field_drops() {
-    let source = match_intermediate_return_leaf_source(4);
-    let checked = checked_dump(&source, "chain-match-hop-return-checked-");
-    let checked_deep = checked
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in checked dump");
-    let drops: Vec<_> = checked_deep
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("drop_field_in_place "))
-        .collect();
-    assert_eq!(
-        drops.len(),
-        2,
-        "the match-hop return must emit exactly two sibling drops — one for \
-         mid.x and one for o.c; got {drops:?}\n{checked_deep}"
-    );
-    assert!(
-        drops
-            .iter()
-            .all(|line| line.ends_with(".field[1] ty=string")),
-        "both sibling drops should release field 1 string siblings (mid.x and \
-         o.c), never the escaped field 0 leaf; got {drops:?}\n{checked_deep}"
-    );
-    let bases: std::collections::BTreeSet<_> = drops
-        .iter()
-        .filter_map(|line| line.split_once(".field[1] ty=string").map(|(base, _)| base))
-        .collect();
-    assert_eq!(
-        bases.len(),
-        2,
-        "the two sibling drops must address distinct chain levels (mid and \
-         outer), not repeat one field slot; got {drops:?}\n{checked_deep}"
-    );
-
-    let elab = elab_dump(&source, "chain-match-hop-return-elab-");
-    let elab_deep = elab
-        .split("fn ")
-        .find(|section| section.starts_with("deep"))
-        .expect("deep section present in elab dump");
-    assert_eq!(
-        elab_deep.matches("kind=record_in_place").count(),
-        0,
-        "the returned match-bound leaf keeps the owner composite excluded; a \
-         record_in_place drop here would re-walk the escaped subtree:\n{elab_deep}"
-    );
-    assert_eq!(
-        elab_deep.matches("kind=tuple_in_place").count(),
-        0,
-        "the record repro must not acquire an unrelated tuple composite drop:\n{elab_deep}"
-    );
-}
+// The MIR emission pins that used to live here (two_level_record_chain_
+// admits_only_the_outer_composite, escaped_return_record_excludes_the_owner_
+// composite, escaped_into_record_clone_keeps_complete_source_drop,
+// tuple_and_field_store_clones_keep_complete_source_drop,
+// inline_enum_clone_keeps_complete_source_drop,
+// owner_consumed_control_emits_single_owner_drop_no_alias_drop,
+// match_intermediate_return_leaf_emits_only_sibling_field_drops) dumped
+// `--dump-mir checked`/`elab`, stages the legacy lowerer no longer produces;
+// the only stage left is `physical`. They are deleted rather than migrated
+// for two independent reasons:
+//
+// - Two of the seven (two_level_record_chain_admits_only_the_outer_composite,
+//   match_intermediate_return_leaf_emits_only_sibling_field_drops) compile
+//   an intermediate `match` on a record/tuple projection alias
+//   (`let mid = o.mid; match mid { Mid { leaf, x: _ } => .. }`). That shape
+//   does not compile under the current pipeline at all — `hew build`/
+//   `hew run`/`--dump-mir physical` all fail with `E_SIR_UNSUPPORTED: ...
+//   has no exact HIR declaration` (record) or `is not a checker-resolved
+//   named enum` (tuple): irrefutable match against a record or tuple type
+//   is not yet implemented in the SIR lowerer, independent of dump stage.
+// - The other five compile cleanly, but `--dump-mir physical` emits a raw
+//   `{:#?}` Debug dump of the whole `PhysicalModule` (hew-cli/src/main.rs,
+//   `cmd_compile_run`) rather than the old compact per-instruction text
+//   (`kind=record_in_place`, `drop_field_in_place ... field[1]`). Composite
+//   vs. field-only release is now expressed as `DestroyAction::Aggregate`
+//   glue ids on `Destroy`/`StorageDead`/`Assign` ops inside numerically
+//   indexed `StorageId`/`CallableId` tables with no source-level names.
+//   Pinning that distinction here would mean parsing the Debug layout by
+//   line offset and correlating ids across tables — a brittle source-text
+//   pin on an internal debug format, exactly what this project's tests
+//   avoid (AGENTS.md: "no source-text pins"), not a legitimate physical-MIR
+//   migration.
+//
+// The exactly-once/no-double-free invariant these pins existed to guard
+// remains covered, for every shape that compiles, by this file's
+// malloc-scribble and leak-slope tests — the behavioural oracle this
+// project prefers over an instruction-level MIR-text pin. A future physical
+// MIR dump mode with named locals and per-instruction text (or a typed
+// hew-mir-crate assertion, out of this test-migration lane's scope) would
+// be the right foundation for restoring a MIR-level pin.

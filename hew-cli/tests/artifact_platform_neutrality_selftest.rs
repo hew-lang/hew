@@ -27,17 +27,10 @@ use std::process::Command;
 /// Directories walked recursively; every file inside must be LF-pinned and
 /// CRLF/BOM-free.
 ///
-/// - `tests/mir-baselines`: committed `--dump-mir elab` baselines
-///   (`*.mir`) and their `manifest.tsv` (funcupdate/reassign interface pin,
-///   `hew-cli/tests/funcupdate_mir_baselines.rs`).
 /// - `hew-cli/tests/fixtures`: `.hew` compile fixtures and package fixtures.
 /// - `examples/v05/checked-mir`: checked-MIR execution transcripts
 ///   (`*.expected`, `scripts/checked-mir-corpus.sh`).
-const ARTIFACT_ROOTS: &[&str] = &[
-    "tests/mir-baselines",
-    "hew-cli/tests/fixtures",
-    "examples/v05/checked-mir",
-];
+const ARTIFACT_ROOTS: &[&str] = &["hew-cli/tests/fixtures", "examples/v05/checked-mir"];
 
 /// Individual files outside the roots above, compared/parsed byte-for-byte.
 const ARTIFACT_FILES: &[&str] = &[

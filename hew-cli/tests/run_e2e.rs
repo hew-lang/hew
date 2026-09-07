@@ -4428,216 +4428,14 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "whole-ok\n");
 }
 
-// ---------------------------------------------------------------------------
-// W5.021 defect #1 — returned-aggregate member drop spine.
-//
-// The exactly-once ORACLE these tests use is the cheap authoritative one the
-// independent review used: a callee that RETURNS an aggregate of owned
-// handles must elaborate an EMPTY drop-plan for that return — no
-// `Stream.close` / `Sink.close` — because the caller (who received the
-// byte-copied aggregate) now owns the members. A non-empty plan IS the
-// double-free: two `Box::from_raw` of one allocation (the runtime close is an
-// unguarded free; see the codegen Stream/Sink drop comment). `leaks --atExit`
-// does NOT flag an un-closed handle Box and exit-success does not prove
-// no-double-free, so this dump-mir assertion is the real oracle; the paired
-// `hew run` success is the runtime negative-control. These shapes (let-bound
-// return, if/match tails, nested) all SIGSEGV'd before the value-flow
-// `derive_returned_aggregate_member_bindings` fix.
-// ---------------------------------------------------------------------------
-
-/// Compile `source` with `--dump-mir elab` and return the number of
-/// `kind=duplex_half_close` drops in `callee`'s elaborated body. The
-/// oracle: a callee returning an owned-handle aggregate must report ZERO.
-fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
-    let dir = support::tempdir();
-    let hew_src = dir.path().join("oracle.hew");
-    std::fs::write(&hew_src, source).unwrap();
-    let out = support::run_hew_in(
-        repo_root(),
-        &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
-    );
-    assert!(
-        out.status.success(),
-        "dump-mir elab must succeed; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    let dump = String::from_utf8_lossy(&out.stdout);
-    // Slice the dump to the named callee function (from its `fn <name> ->` header
-    // to the next function header) so closes belonging to `main` (which
-    // legitimately closes its own destructured handles) are not counted.
-    // The structured MIR renderer emits `fn {name} -> {ret}` (not `name: "{name}"`).
-    let header = format!("fn {callee} ->");
-    let start = dump
-        .find(&header)
-        .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
-    let rest = &dump[start + header.len()..];
-    // Next function starts with `\nfn ` in the structured renderer.
-    let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
-    let body = &rest[..end];
-    // Structured renderer emits `kind=duplex_half_close(recv)` for Stream drops
-    // and `kind=duplex_half_close(send)` for Sink drops.
-    body.matches("duplex_half_close").count()
-}
-
-/// Compile `source` with `--dump-mir elab` and return the number of owned
-/// HANDLE-place releases (`Duplex::close` `drop_fn` / `LambdaActorRelease` drop
-/// kind) in `callee`'s *return plans*. The oracle: a callee returning an
-/// aggregate of owned handle-place members (`Duplex`/lambda-actor handles) must
-/// report ZERO on the successful return path — the members are handed to the
-/// caller. Other plans, such as an exhaustiveness-fallthrough panic, correctly
-/// release still-live handles.
-///
-/// A separate counter from `callee_handle_close_drops` because handle-place
-/// members register in `binding_locals` as their handle Place (not a `Local`),
-/// elaborate a `kind=lambda_actor_release`/`kind=duplex_close` drop (not
-/// `kind=duplex_half_close`), AND fail closed at codegen-front (the
-/// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
-/// the runtime negative-control the Stream/Sink shapes use is impossible — this
-/// dump-mir assertion is the only oracle.
-fn return_plan_marker_count(body: &str, marker: &str) -> usize {
-    let mut in_return_plan = false;
-    let mut count = 0;
-    for line in body.lines() {
-        if line.starts_with("    return[") {
-            in_return_plan = true;
-        } else if line.starts_with("    ") && line.contains("] ->") {
-            in_return_plan = false;
-        }
-        if in_return_plan {
-            count += line.matches(marker).count();
-        }
-    }
-    count
-}
-
-#[test]
-fn return_plan_marker_count_excludes_required_panic_cleanup() {
-    let body = "  drop_plans:\n    return[bb1] ->\n      (none)\n    panic[bb2] ->\n      drop lambda1 kind=lambda_actor_release\n    return[bb3] ->\n      drop lambda2 kind=lambda_actor_release\n";
-    assert_eq!(return_plan_marker_count(body, "lambda_actor_release"), 1);
-    assert_eq!(
-        return_plan_marker_count(
-            "  drop_plans:\n    return[bb1] ->\n      drop lambda1 kind=lambda_actor_release\n      drop lambda2 kind=lambda_actor_release\n",
-            "lambda_actor_release",
-        ),
-        2,
-        "counterfactual: a second successful-return release must remain visible"
-    );
-}
-
-fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
-    let dir = support::tempdir();
-    let hew_src = dir.path().join("oracle.hew");
-    std::fs::write(&hew_src, source).unwrap();
-    let out = support::run_hew_in(
-        repo_root(),
-        &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
-    );
-    assert!(
-        out.status.success(),
-        "dump-mir elab must succeed; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    let dump = String::from_utf8_lossy(&out.stdout);
-    // Structured renderer emits `fn {name} -> {ret}` (not `name: "{name}"`).
-    let header = format!("fn {callee} ->");
-    let start = dump
-        .find(&header)
-        .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
-    let rest = &dump[start + header.len()..];
-    // Next function starts with `\nfn ` in the structured renderer.
-    let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
-    let body = &rest[..end];
-    // Structured renderer emits `kind=lambda_actor_release` (not `LambdaActorRelease`).
-    return_plan_marker_count(body, "lambda_actor_release")
-}
-
-/// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
-/// (`let pair = (s, r); pair`) — the most ordinary form — must leave the callee
-/// with an empty return drop-plan. The syntactic move-out missed this (it only
-/// saw the tail `BindingRef(pair)`), so `s`/`r` stayed drop-eligible and the
-/// callee double-freed. Value-flow follows the constructed tuple into `ReturnSlot`.
-#[test]
-fn returned_let_bound_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let pair = (s, r);\n\
-         \x20   pair\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (sink, input) = make_pair();\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a let-bound tuple of handles must not drop its members \
-         (double-free); got {closes} handle closes in its drop-plan"
-    );
-}
-
-/// Oracle: a `(Sink, Stream)` returned from an `if`-expression tail. `If` is a
-/// distinct `HirExprKind` the syntactic walk never matched → double-free.
-#[test]
-fn returned_if_tail_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   if c { (s, r) } else { (s, r) }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (sink, input) = make_pair(true);\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a tuple from an if-tail must not drop its members; \
-         got {closes} handle closes"
-    );
-}
-
-/// Oracle: a `(Sink, Stream)` returned from a `match`-expression tail.
-#[test]
-fn returned_match_tail_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   match c {\n\
-         \x20       true => (s, r),\n\
-         \x20       false => (s, r),\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (sink, input) = make_pair(true);\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a tuple from a match-tail must not drop its members; \
-         got {closes} handle closes"
-    );
-}
-
-/// Return the `--dump-mir checked` text for `source`.
+/// Return the `--dump-mir physical` text for `source`.
 ///
 /// Runs the compiler from the repo root so that stdlib imports (`std::stream`,
 /// `std::net`, etc.) are resolvable; the source file is written to a tempdir
-/// and passed by absolute path.
-fn mir_checked_dump(source: &str) -> String {
+/// and passed by absolute path. The legacy Checked/Elaborated MIR stages
+/// (`--dump-mir checked` / `elab`) no longer exist; physical MIR is the one
+/// remaining dump stage.
+fn mir_physical_dump(source: &str) -> String {
     let dir = support::tempdir();
     let hew_src = dir.path().join("oracle.hew");
     std::fs::write(&hew_src, source).unwrap();
@@ -4646,120 +4444,16 @@ fn mir_checked_dump(source: &str) -> String {
         &[
             "compile",
             "--dump-mir",
-            "checked",
+            "physical",
             hew_src.to_str().unwrap(),
         ],
     );
     assert!(
         out.status.success(),
-        "dump-mir checked must succeed; stderr: {}",
+        "dump-mir physical must succeed; stderr: {}",
         String::from_utf8_lossy(&out.stderr),
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// NEW-7 oracle: `await stream.recv()` / `await sink.send(x)` over a
-/// `Stream<bytes>` / `Sink<bytes>` in an actor handler (an execution-context
-/// caller) flip to the suspending terminators; a context-free caller (`main`,
-/// free fn) keeps the blocking `hew_stream_next_layout` / `hew_sink_write_bytes`
-/// call.
-#[test]
-fn suspending_stream_recv_send_flip_in_execution_context() {
-    let dump = mir_checked_dump(
-        // The stream externs are scaffolding for the suspend-lowering subject,
-        // so they must restate the shipped contract exactly: the pair handle is
-        // `stream.StreamPair`, not a private opaque, and the free consumes it.
-        // A private handle type or a borrowing free is a real contract
-        // disagreement and the checker rejects it.
-        "import std.stream.{ Sink, Stream };\n\
-         extern \"C\" {\n\
-         \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
-         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
-         \x20   fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;\n\
-         \x20   fn hew_stream_pair_free(consume pair: stream.StreamPair);\n\
-         \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
-         }\n\
-         actor Runner {\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
-         \x20       let sink = unsafe { hew_stream_pair_sink_bytes(pair) };\n\
-         \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
-         \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       await sink.send(unsafe { hew_string_to_bytes(\"a\") });\n\
-         \x20       sink.close();\n\
-         \x20       let item = await input.recv();\n\
-         \x20       match item { .Some(v) => {}, .None => {}, }\n\
-         \x20   }\n\
-         }\n\
-         fn main() { let r = spawn Runner(); r.go(0); }\n",
-    );
-    // After the SuspendKind side-table collapse the old carrier-spelled
-    // terminators (`SuspendingStreamNext`, `SuspendingStreamSend`) no longer
-    // exist as Terminator variants; both lower to the bare `Terminator::Suspend`
-    // (rendering: `suspend is_final=...`).  The actor body has two await sites
-    // (recv + send), so two bare suspend terminators must be present.
-    let suspend_count = dump.matches("suspend is_final=").count();
-    assert!(
-        suspend_count >= 2,
-        "actor `await stream.recv()` + `await sink.send()` must each lower to \
-         a bare `suspend is_final=` terminator (expected >=2, found {suspend_count}):\n{dump}"
-    );
-}
-
-/// NEW-2 oracle: `await listener.accept()` in an actor handler (an
-/// execution-context caller) flips to the `SuspendingAccept` terminator; a
-/// context-free caller (`main`, free fn) keeps the blocking `hew_tcp_accept`
-/// call. The listener-readiness sibling of the conn-read flip.
-#[test]
-fn suspending_listener_accept_flip_in_execution_context() {
-    let dump = mir_checked_dump(
-        "import std.net;\n\
-         actor Acceptor {\n\
-         \x20   let addr: string,\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let listener = match net.listen(addr) { .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), };\n\
-         \x20       let conn = await listener.accept();\n\
-         \x20       let _ = conn.close();\n\
-         \x20       let _ = listener.close();\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn Acceptor(addr: \"127.0.0.1:0\");\n\
-         \x20   a.go(0);\n\
-         }\n",
-    );
-    // After the SuspendKind side-table collapse `SuspendingAccept` no longer
-    // exists as a Terminator variant; it lowers to the bare `Terminator::Suspend`
-    // (rendering: `suspend is_final=...`).
-    assert!(
-        dump.contains("suspend is_final="),
-        "actor `await listener.accept()` must lower to a bare `suspend is_final=` \
-         terminator (SuspendKind::Accept in the side-table):\n{dump}"
-    );
-}
-
-/// NEW-2 negative: a context-free caller (`fn main`) keeps the BLOCKING accept
-/// (`hew_tcp_accept`); the caller-conv flip must NOT emit `SuspendingAccept`
-/// where there is no parkable continuation (mirrors the conn-read negative).
-#[test]
-fn blocking_listener_accept_in_main_keeps_blocking_call() {
-    let dump = mir_checked_dump(
-        "import std.net;\n\
-         fn main() {\n\
-         \x20   let listener = match net.listen(\"127.0.0.1:0\") { .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), };\n\
-         \x20   let conn = await listener.accept();\n\
-         \x20   let _ = conn.close();\n\
-         \x20   let _ = listener.close();\n\
-         }\n",
-    );
-    assert!(
-        !dump.contains("SuspendingAccept") && !dump.contains("suspend.accept"),
-        "`await listener.accept()` from main must NOT flip to SuspendingAccept:\n{dump}"
-    );
-    assert!(
-        dump.contains("hew_tcp_accept"),
-        "`await listener.accept()` from main must keep the blocking hew_tcp_accept:\n{dump}"
-    );
 }
 
 /// NEW-5 oracle: a cross-node `peer.ask(msg, timeout)` in an actor handler (an
@@ -4769,7 +4463,7 @@ fn blocking_listener_accept_in_main_keeps_blocking_call() {
 /// cross-node sibling of the local-ask flip.
 #[test]
 fn suspending_remote_ask_flip_in_execution_context() {
-    let dump = mir_checked_dump(
+    let dump = mir_physical_dump(
         "actor Echo {\n\
          \x20   receive fn handle(req: i64) -> i64 { req }\n\
          }\n\
@@ -4803,7 +4497,7 @@ fn suspending_remote_ask_flip_in_execution_context() {
 /// where there is no parkable continuation (mirrors the local-ask negative).
 #[test]
 fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
-    let dump = mir_checked_dump(
+    let dump = mir_physical_dump(
         "actor Echo {\n\
          \x20   receive fn handle(req: i64) -> i64 { req }\n\
          }\n\
@@ -4826,152 +4520,6 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
     assert!(
         dump.contains("RemoteAsk") || dump.contains("remote_ask"),
         "`peer.ask()` from main must keep the blocking RemoteAsk terminator:\n{dump}"
-    );
-}
-
-/// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
-/// value-flow decomposition must recurse through the inner `TupleConstruct`.
-#[test]
-fn returned_nested_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let inner = (s,);\n\
-         \x20   let pair = (inner, r);\n\
-         \x20   pair\n\
-         }\n\
-         fn main() {\n\
-         \x20   let ((sink,), input) = make_nested();\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_nested",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a nested tuple of handles must not drop any member \
-         (the value-flow walk recurses into the inner tuple); got {closes} closes"
-    );
-}
-
-/// Oracle: a RECORD of owned handles let-bound then returned by name — the
-/// record analogue of the let-bound-tuple double-free. `RecordInit` element
-/// sources must be followed into the return.
-#[test]
-fn returned_record_of_handles_callee_does_not_drop_fields() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
-         fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let p = Pipe { sink: s, input: r };\n\
-         \x20   p\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = make_pipe();\n\
-         \x20   p.sink.close();\n\
-         \x20   p.input.close();\n\
-         }\n",
-        "make_pipe",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a record of handles must not drop its fields; \
-         got {closes} handle closes"
-    );
-}
-
-/// Oracle: a tuple of owned HANDLE-place members (lambda-actor `LambdaPid` handles)
-/// returned by a direct tail. Handle members register in `binding_locals` as
-/// their handle Place, so they surface as `TupleConstruct` elements as that
-/// handle Place; the value-flow pass originally gated member sources on
-/// `Place::Local(_)` and dropped the handle members on the floor, leaving the
-/// callee to double-release them after the caller received the tuple. The pass
-/// must now admit owned handle places — callee Return drop-plan empty.
-///
-/// No `require_codegen` / runtime control: handle-place lowering fails closed at
-/// codegen-front (`SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is
-/// unwired), so the native binary cannot be produced. The dump-mir Return-plan
-/// assertion is the only oracle. Non-tautological: the pre-fix binary emits
-/// `LambdaActorRelease` drops here.
-#[test]
-fn returned_handle_tuple_callee_does_not_drop_members() {
-    let releases = callee_handle_release_drops(
-        "fn make_pair() -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
-         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
-         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
-         \x20   (a, b)\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (a, b) = make_pair();\n\
-         \x20   a.send(1);\n\
-         \x20   println(\"done\");\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        releases, 0,
-        "callee returning a tuple of owned handle members must not release them \
-         (double-free); got {releases} LambdaActorRelease drops in its drop-plan"
-    );
-}
-
-/// Oracle: a tuple of owned handle members returned through a let-bound rebind
-/// tail (`let pair = (a, b); pair`). The value-flow pass must follow the
-/// whole-value rebind into `ReturnSlot` and decompose the `TupleConstruct`'s
-/// handle-place elements. Callee Return drop-plan empty.
-#[test]
-fn returned_let_bound_handle_tuple_callee_does_not_drop_members() {
-    let releases = callee_handle_release_drops(
-        "fn make_pair() -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
-         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
-         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
-         \x20   let pair = (a, b);\n\
-         \x20   pair\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (a, b) = make_pair();\n\
-         \x20   a.send(1);\n\
-         \x20   println(\"done\");\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        releases, 0,
-        "callee returning a let-bound tuple of owned handle members must not \
-         release them; got {releases} LambdaActorRelease drops"
-    );
-}
-
-/// Oracle: a tuple of owned handle members returned from a `match`-expression
-/// tail (two `TupleConstruct`s flowing to one `ReturnSlot`). The pass must admit
-/// the handle-place members of every flowing construct. Callee Return drop-plan
-/// empty.
-#[test]
-fn returned_match_tail_handle_tuple_callee_does_not_drop_members() {
-    let releases = callee_handle_release_drops(
-        "fn make_pair(c: bool) -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
-         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
-         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
-         \x20   match c {\n\
-         \x20       true => (a, b),\n\
-         \x20       false => (a, b),\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (a, b) = make_pair(true);\n\
-         \x20   a.send(1);\n\
-         \x20   println(\"done\");\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        releases, 0,
-        "callee returning a tuple of owned handle members from a match-tail must \
-         not release them; got {releases} LambdaActorRelease drops"
     );
 }
 

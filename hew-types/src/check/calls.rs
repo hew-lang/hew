@@ -2526,7 +2526,7 @@ impl Checker {
             // LambdaPid<Msg, Reply>: lambda-actor handle — call-syntax dispatch.
             //
             // tell-shaped: `LambdaPid<Msg, ()>` — `handle(msg)` returns `Result<(), SendError>`
-            // ask-shaped:  `LambdaPid<Msg, R>`  — `handle(msg)` returns `Result<R, AskError>`
+            // ask-shaped:  `LambdaPid<Msg, R>`  — `handle(msg)` returns `Result<R, ActorError>`
             //
             // Exactly one argument required (the message). The message type must match
             // the handle's message type (M). The message must be Send (crosses actor boundary).

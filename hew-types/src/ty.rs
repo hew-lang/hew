@@ -1103,7 +1103,7 @@ impl Ty {
     ///
     /// The struct is declared in `std/link_monitor.hew` and registered via
     /// `register_builtin_monitor_ref_surface`. At the checker layer this is a
-    /// named-type marker, consistent with how `SendError`/`AskError` are encoded.
+    /// named-type marker, consistent with how `SendError` is encoded.
     #[must_use]
     pub fn monitor_ref() -> Ty {
         Self::builtin_named(BuiltinType::MonitorRef, vec![])

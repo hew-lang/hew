@@ -4371,7 +4371,7 @@ pub fn lower_program_with_mono_cap(
                             // overwrite `enum_type_params["Result"]` with an
                             // empty param list, silently turning every later
                             // `try_register_enum_instantiation` for that enum
-                            // into a no-op (the ask-site `Result<R, AskError>`
+                            // into a no-op (the ask-site `Result<R, ActorError>`
                             // layout then never registers and codegen-front
                             // fails closed with registration-mismatch).
                             if decl.kind == TypeDeclKind::Enum {
@@ -26792,7 +26792,7 @@ impl LowerCtx {
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: "RemotePid.ask".to_string(),
                             reason: format!(
-                                "expected Result<Reply, AskError>, got {}",
+                                "expected Result<Reply, ActorError>, got {}",
                                 ret_ty.user_facing()
                             ),
                         },
@@ -36945,7 +36945,7 @@ impl Widget {
     /// A user record sharing a prelude generic enum's name (`type Result {
     /// handle: i64 }`) must not poison the enum-layout registries or the
     /// handler return-type resolution: the actor ask still registers the
-    /// builtin `Result<Result, AskError>` instantiation and the handler's
+    /// builtin `Result<Result, ActorError>` instantiation and the handler's
     /// return type resolves to the USER record (matching the checker), not
     /// the builtin enum.
     #[test]
@@ -36995,7 +36995,7 @@ impl Widget {
             ResolvedTy::named_user("QueryReply".to_string(), vec![]),
             "handler return type must resolve to the user record, not the builtin enum"
         );
-        // The ask site registered the builtin `Result<Result, AskError>`
+        // The ask site registered the builtin `Result<Result, ActorError>`
         // layout — the record name must not have clobbered the prelude's
         // `enum_type_params` entry (which would silently no-op registration).
         assert!(
@@ -37006,7 +37006,7 @@ impl Widget {
                 .any(|layout| layout.key.origin_name == "Result"
                     && layout.key.type_args.first()
                         == Some(&ResolvedTy::named_user("QueryReply".to_string(), vec![]))),
-            "ask-site Result<Result, AskError> layout missing from enum_layouts: {:?}",
+            "ask-site Result<Result, ActorError> layout missing from enum_layouts: {:?}",
             lowered
                 .module
                 .enum_layouts

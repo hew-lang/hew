@@ -327,6 +327,14 @@ impl Checker {
         payload: Ty,
         policy: SendPolicy,
     ) -> Ty {
+        // An actor-state field annotated with the bare actor name is still a
+        // handle; the sealed message names the handle, which is the form every
+        // downstream stage has a contract for.
+        let target = if target.as_local_actor_ref().is_some() {
+            target.clone()
+        } else {
+            Ty::local_pid(target.clone())
+        };
         let (success, failure) = match reply_ty.as_result() {
             Some((success, failure)) if self.receive_fails_methods.contains(method_id) => {
                 (success.clone(), failure.clone())
@@ -335,10 +343,7 @@ impl Checker {
         };
         Ty::result(
             success,
-            Ty::actor_error(
-                failure,
-                delivery::message_type(target.clone(), payload, policy),
-            ),
+            Ty::actor_error(failure, delivery::message_type(target, payload, policy)),
         )
     }
 

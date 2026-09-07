@@ -232,11 +232,9 @@ fn main() {
         .Ok(parcel) => { println(parcel.label); println(parcel.notes[0]); }
         .Err(_) => panic("unexpected ask failure"),
     }
-    let error = AskError.HandlerTrapped;
-    println(f"{error}");
 }
 "#,
-        "text\nnumber\n7\nLABEL\nOWNED\nthe receiving handler failed before replying\n",
+        "text\nnumber\n7\nLABEL\nOWNED\n",
         0,
         "",
     );
@@ -312,19 +310,21 @@ fn native_ask_receiver_fault_returns_error_without_cancelling_caller() {
         panic("receiver-fault");
     }
 }
-fn report(result: Result<string, AskError>) {
-    match result {
-        .Ok(value) => println(value),
-        .Err(AskError.HandlerTrapped) => println("handler-trapped"),
-        .Err(_) => println("unexpected-error"),
-    }
-}
+fn report(value: string) { println(value); }
 fn main() {
     let first = spawn Broken();
-    report(first.fail("direct-cleanup".to_upper()));
+    match first.fail("direct-cleanup".to_upper()) {
+        .Ok(value) => report(value),
+        .Err(ActorError.Trapped) => println("handler-trapped"),
+        .Err(_) => println("unexpected-error"),
+    }
     let second = spawn Broken();
     let child = fork second.fail("fork-cleanup".to_upper());
-    report(await child);
+    match await child {
+        .Ok(value) => report(value),
+        .Err(ActorError.Trapped) => println("handler-trapped"),
+        .Err(_) => println("unexpected-error"),
+    }
     println("caller-continues");
 }
 "#,

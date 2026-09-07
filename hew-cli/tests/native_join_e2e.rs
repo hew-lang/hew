@@ -74,17 +74,15 @@ actor Opener {
         "second".to_upper()
     }
 }
-fn report(result: Result<string, AskError>) {
-    match result { .Ok(value) => println(value), .Err(_) => panic("join failed"), }
-}
+fn report(result: string) { println(result); }
 fn main() {
     let gate = spawn Gate();
     let waiter = spawn Waiter();
     let opener = spawn Opener();
     scope within 1s {
         let (first, second) = join { waiter.wait(gate), opener.open(gate) };
-        report(first);
-        report(second);
+        match first { .Ok(value) => report(value), .Err(_) => panic("join failed"), }
+        match second { .Ok(value) => report(value), .Err(_) => panic("join failed"), }
     };
 }
 "#,
@@ -112,12 +110,7 @@ fn receiver(consume input: ReceiverInput) -> LocalPid<Maker> {
 }
 fn mark(label: string) -> string { println(label); label.to_upper() }
 fn late(label: string) -> string { println(label); sleep(10ms); label.to_upper() }
-fn report(result: Result<Parcel, AskError>) {
-    match result {
-        .Ok(parcel) => { println(parcel.label); println(parcel.notes[0]); },
-        .Err(_) => panic("join failed"),
-    }
-}
+fn report(parcel: Parcel) { println(parcel.label); println(parcel.notes[0]); }
 fn main() {
     let first = spawn Maker();
     let second = spawn Maker();
@@ -127,8 +120,8 @@ fn main() {
         receiver(left_input).make(second: mark("b"), first: mark("a")),
         receiver(right_input).make(second: late("d"), first: mark("c")),
     };
-    report(left);
-    report(right);
+    match left { .Ok(parcel) => report(parcel), .Err(_) => panic("join failed"), }
+    match right { .Ok(parcel) => report(parcel), .Err(_) => panic("join failed"), }
 }
 "#,
         "receiver one\nb\na\nreceiver two\nd\nc\nhandler\nhandler\nA:B\nOWNED\nC:D\nOWNED\n",
@@ -144,7 +137,7 @@ fn one_branch_returns_its_result_without_a_tuple_wrapper() {
 actor Echo { receive fn echo(value: string) -> string { value.to_upper() } }
 fn main() {
     let echo = spawn Echo();
-    let result: Result<string, AskError> = join { echo.echo("one") };
+    let result = join { echo.echo("one") };
     match result { .Ok(value) => println(value), .Err(_) => panic("join failed"), }
 }
 "#,
@@ -171,7 +164,7 @@ fn main() {
     let healthy = spawn Healthy();
     let (failed, success) = join { broken.fail(), healthy.echo() };
     match failed {
-        .Err(AskError.HandlerTrapped) => println("ordinary error"),
+        .Err(ActorError.Trapped) => println("ordinary error"),
         .Err(_) => panic("wrong error"),
         .Ok(_) => panic("wrong success"),
     }

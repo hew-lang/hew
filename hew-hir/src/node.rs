@@ -1349,7 +1349,7 @@ pub enum HirExprKind {
         /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
         /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
         /// deadline elapses before the reply, the in-flight ask is cancelled and the
-        /// `Result<R, AskError>` resolves to `Err(AskError::Timeout)`. `None` is a
+        /// `Result<R, ActorError>` resolves to `Err(ActorError.Timeout)`. `None` is a
         /// plain ask. Only literal `Duration` deadlines are carried (codegen-locals
         /// side-table); non-literal durations fail closed at CHECK time.
         deadline_ns: Option<i64>,
@@ -1369,7 +1369,7 @@ pub enum HirExprKind {
     },
     /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
     ///
-    /// The expression type is the full `Result<T::Reply, AskError>`; `reply_ty`
+    /// The expression type is the full `Result<T.Reply, ActorError>`; `reply_ty`
     /// carries the decoded Ok payload type for MIR/codegen reply sizing.
     RemoteActorAsk {
         receiver: Box<HirExpr>,

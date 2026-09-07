@@ -328,7 +328,7 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
 fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
     // An actor ask is an ordinary call (U383): no `await`. The HIR node must be
     // `HirExprKind::ActorAsk` carrying the handler's declared return type (the
-    // inner `i64`), not the wrapped `Result<i64, AskError>`. The
+    // inner `i64`), not the wrapped `Result<i64, ActorError>`. The
     // `let v = g.get()` binding stores the full `Result` value; the `ActorAsk`
     // node itself records the inner reply type for codegen sizing.
     let output = lower_checked(
@@ -339,7 +339,7 @@ fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
             }
         }
 
-        fn request_value() -> Result<i64, AskError> {
+        fn request_value() -> Result<i64, ActorError<Never, Never>> {
             let g = spawn Getter;
             let v = g.get();
             return v;

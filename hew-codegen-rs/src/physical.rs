@@ -73,7 +73,7 @@ use inkwell::module::{Linkage, Module};
 use inkwell::targets::{FileType, TargetData, TargetMachine};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue, StructValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
@@ -2156,6 +2156,87 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 fields,
                 glue,
             } => self.emit_variant_make(*dest, *variant, fields, *glue),
+            PhysicalOp::VariantIs {
+                dest,
+                source,
+                variant,
+                glue,
+            } => {
+                let (tag, _) = self.load_variant_tag(*source, *glue)?;
+                let matches = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        tag.get_type().const_int(u64::from(*variant), false),
+                        "variant.is",
+                    )
+                    .llvm_ctx("compare physical variant tag")?;
+                let bool_ty =
+                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?.into_int_type();
+                let value = if matches.get_type() == bool_ty {
+                    matches
+                } else {
+                    self.builder
+                        .build_int_z_extend(matches, bool_ty, "bool.widen")
+                        .llvm_ctx("widen physical variant test")?
+                };
+                self.store(*dest, value.into())
+            }
+            PhysicalOp::VariantProjectCopy {
+                dest,
+                source,
+                variant,
+                field,
+                glue,
+                action,
+            } => {
+                let payload = self.variant_field_payload(*source, *variant, *glue)?;
+                let field_value = self
+                    .builder
+                    .build_extract_value(payload, *field, "variant.project.field")
+                    .llvm_ctx("extract physical variant field for copy")?;
+                let value = self.value_emitter().clone_loaded_value(
+                    field_value,
+                    &self.storage(*dest)?.layout,
+                    *action,
+                )?;
+                self.store(*dest, value)
+            }
+            PhysicalOp::VariantProjectBorrow {
+                dest,
+                source,
+                variant,
+                field,
+                glue,
+            } => {
+                let payload = self.variant_field_payload(*source, *variant, *glue)?;
+                let value = self
+                    .builder
+                    .build_extract_value(payload, *field, "variant.borrow.field")
+                    .llvm_ctx("extract verified borrowed variant field")?;
+                self.store(*dest, value)
+            }
+            PhysicalOp::VariantDestructure {
+                source,
+                variant,
+                fields,
+                glue,
+            } => {
+                if let Some(payload) = self.load_variant_payload(*source, *variant, *glue)? {
+                    for (index, field) in fields.iter().enumerate() {
+                        let index = u32::try_from(index).map_err(|_| {
+                            CodegenError::FailClosed("variant field index exceeds u32".into())
+                        })?;
+                        let value = self
+                            .builder
+                            .build_extract_value(payload, index, "variant.destructure.field")
+                            .llvm_ctx("extract physical variant payload field")?;
+                        self.store(*field, value)?;
+                    }
+                }
+                self.clear_owned(*source)
+            }
             PhysicalOp::Transfer { dest, source } => {
                 let value = self.load(*source, "transfer")?;
                 self.store(*dest, value)?;
@@ -2282,6 +2363,86 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .llvm_ctx("store physical variant payload")?;
         }
         Ok(())
+    }
+
+    /// Read the tag of one direct variant object and its layout.
+    fn load_variant_tag(
+        &self,
+        source: StorageId,
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<(IntValue<'ctx>, &PhysicalVariantLayout)> {
+        let glue = self.value_emitter().variant_glue(glue_id)?;
+        let layout = self.value_emitter().variant_layout(&glue.ty)?;
+        if layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant projection is not yet admitted".into(),
+            ));
+        }
+        let object = self
+            .load(source, "variant.project.source")?
+            .into_struct_value();
+        let tag = self
+            .builder
+            .build_extract_value(object, 0, "variant.project.tag")
+            .llvm_ctx("read physical variant tag")?
+            .into_int_value();
+        Ok((tag, layout))
+    }
+
+    /// Load one tested case's payload, absent for a payload-free case. A
+    /// different runtime tag is corrupt representation and traps, exactly
+    /// like an unmatched switch arm.
+    fn load_variant_payload(
+        &self,
+        source: StorageId,
+        variant: u32,
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<Option<StructValue<'ctx>>> {
+        let (tag, layout) = self.load_variant_tag(source, glue_id)?;
+        let matches = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                tag.get_type().const_int(u64::from(variant), false),
+                "variant.project.tested",
+            )
+            .llvm_ctx("compare physical variant tag")?;
+        let valid = self.ctx.append_basic_block(self.value, "variant.project");
+        let invalid = self.ctx.append_basic_block(self.value, "variant.invalid");
+        self.builder
+            .build_conditional_branch(matches, valid, invalid)
+            .llvm_ctx("branch on physical variant tag")?;
+        self.builder.position_at_end(invalid);
+        self.value_emitter().emit_invalid_variant_tag()?;
+        self.builder.position_at_end(valid);
+        let payload_ty =
+            llvm_type(self.ctx, &layout.variants[variant as usize].repr)?.into_struct_type();
+        if payload_ty.count_fields() == 0 {
+            return Ok(None);
+        }
+        let payload_ptr = self
+            .value_emitter()
+            .variant_payload_ptr(self.slots[source.0 as usize], layout)?;
+        Ok(Some(
+            self.builder
+                .build_load(payload_ty, payload_ptr, "variant.project.payload")
+                .llvm_ctx("load physical variant payload")?
+                .into_struct_value(),
+        ))
+    }
+
+    /// The payload a field projection reads; a projected case always has one.
+    fn variant_field_payload(
+        &self,
+        source: StorageId,
+        variant: u32,
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<StructValue<'ctx>> {
+        self.load_variant_payload(source, variant, glue_id)?
+            .ok_or_else(|| {
+                CodegenError::FailClosed("variant projection reads a payload-free case".into())
+            })
     }
 
     fn emit_variant_switch(

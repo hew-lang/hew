@@ -1628,6 +1628,7 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
             | SemOpKind::TupleMake { .. }
             | SemOpKind::AggregateMake { .. }
             | SemOpKind::VariantMake { .. }
+            | SemOpKind::VariantDestructure { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::Move { .. }
             | SemOpKind::Fork { .. }

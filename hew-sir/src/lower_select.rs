@@ -20,6 +20,7 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         let outer_live = self.owned_live.clone();
         let outer_bindings = self.bindings.keys().copied().collect();
+        let probe_depth = self.argument_receiver_loans.len();
         let result_ty = self.ty(&expression.ty);
         let provenance = Provenance::Site(expression.site);
         let mut tasks = Vec::new();
@@ -206,7 +207,7 @@ impl Builder<'_, '_> {
                 }
                 // The selected result survives normal candidate cleanup, but
                 // must still be released if closing another owner fails.
-                self.cleanup_match_candidate(&protected_live, &outer_bindings)?;
+                self.cleanup_match_candidate(&protected_live, probe_depth, &outer_bindings)?;
                 if let Some(result) = &result {
                     self.owned_live.remove(&result.value);
                 }

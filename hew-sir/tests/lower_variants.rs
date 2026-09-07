@@ -603,14 +603,22 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
         .iter()
         .find(|function| function.declaration.full_path() == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
-    assert!(
+    assert_eq!(
         choose
             .blocks
             .iter()
             .filter(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. }))
-            .count()
-            >= 3,
-        "the outer Result and independently initialized nested Option tests must be explicit"
+            .count(),
+        1,
+        "only the outer Result is consumed; the nested Option is probed in place"
+    );
+    assert!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|op| matches!(op.kind, SemOpKind::VariantIs { .. })),
+        "the nested Option tag test must be an explicit non-consuming probe"
     );
     assert!(choose.blocks.iter().any(|block| matches!(
         block.terminator,
@@ -806,4 +814,203 @@ fn owning_if_expression_joins_independent_string_values() {
             .iter()
             .any(|argument| argument.ty == ResolvedTy::String)
     }));
+}
+
+const NESTED_AFFINE_SOURCE: &str = r#"
+    enum Choice { Values(Generator<string, ()>, i64), Empty }
+
+    gen fn words() -> string { yield "word"; }
+
+    fn drive(consume choice: Option<Choice>) -> string {
+        match choice {
+            .Some(.Values(_, 0)) => "zero",
+            .Some(.Values(values, weight)) if weight > 10 => "heavy",
+            .Some(.Values(values, weight)) => { let _kept = values; "kept" }
+            .Some(.Empty) => "empty",
+            .None => "none",
+        }
+    }
+
+    fn keep_text(value: string) {}
+    fn main() {
+        keep_text(await drive(Some(Choice.Values(words(), 7))));
+    }
+"#;
+
+fn drive_function(lowered: &hew_sir::LoweredModule) -> &hew_sir::SemFunction {
+    lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "drive")
+        .unwrap_or_else(|| panic!("drive must have a body: {:#?}", lowered.statuses))
+}
+
+#[test]
+fn nested_affine_payloads_are_probed_without_consuming_their_enum() {
+    let lowered = lower_source(NESTED_AFFINE_SOURCE);
+    assert_main_lowered(&lowered);
+    let drive = drive_function(&lowered);
+    let ops = || drive.blocks.iter().flat_map(|block| &block.ops);
+    let probes = ops()
+        .filter(|op| matches!(op.kind, SemOpKind::VariantIs { .. }))
+        .count();
+    assert_eq!(
+        probes, 4,
+        "each nested candidate tests the Choice tag in place"
+    );
+    let loans = ops()
+        .filter(|op| matches!(op.kind, SemOpKind::VariantProjectBorrow { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        loans.len(),
+        3,
+        "each candidate borrows the generator payload"
+    );
+    assert!(
+        loans
+            .iter()
+            .all(|op| op.results[0].own == hew_sir::OwnKind::Guaranteed),
+        "a probed affine payload is a loan, never a second owner"
+    );
+    assert!(
+        ops().any(|op| matches!(op.kind, SemOpKind::VariantProjectCopy { .. })),
+        "the scalar weight is copied for its literal and guard tests"
+    );
+    assert!(
+        !ops().any(|op| matches!(op.kind, SemOpKind::CopyValue { .. })
+            && op.results[0]
+                .ty
+                .user_facing()
+                .to_string()
+                .contains("Choice")),
+        "the affine Choice is never copied"
+    );
+    let takes = ops()
+        .filter(|op| matches!(op.kind, SemOpKind::VariantDestructure { .. }))
+        .count();
+    assert_eq!(
+        takes, 4,
+        "each selected candidate transfers its payload exactly once"
+    );
+}
+
+#[test]
+fn probe_cannot_consume_its_enum_while_a_payload_loan_is_live() {
+    let mut lowered = lower_source(NESTED_AFFINE_SOURCE);
+    assert_main_lowered(&lowered);
+    let drive = lowered
+        .module
+        .functions
+        .iter_mut()
+        .find(|function| function.declaration.full_path() == "drive")
+        .unwrap();
+    let block = drive
+        .blocks
+        .iter_mut()
+        .find(|block| {
+            block
+                .ops
+                .iter()
+                .any(|op| matches!(op.kind, SemOpKind::VariantDestructure { .. }))
+        })
+        .expect("a selected candidate takes its payload");
+    let take = block
+        .ops
+        .iter()
+        .position(|op| matches!(op.kind, SemOpKind::VariantDestructure { .. }))
+        .unwrap();
+    let loan_end = block.ops[..take]
+        .iter()
+        .rposition(|op| matches!(op.kind, SemOpKind::EndBorrow { .. }))
+        .expect("the probe loan ends before the take");
+    let ended = block.ops.remove(loan_end);
+    block.ops.insert(take, ended);
+
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::OwnershipLifetime { reason, .. }
+                if reason.contains("dependent borrow is live")
+        )),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn variant_projection_requires_an_exact_case_and_field() {
+    let mut lowered = lower_source(NESTED_AFFINE_SOURCE);
+    assert_main_lowered(&lowered);
+    let mut forged = 0;
+    for operation in lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.ops)
+    {
+        match &mut operation.kind {
+            SemOpKind::VariantProjectBorrow { field, .. } if forged == 0 => {
+                *field = 7;
+                forged += 1;
+            }
+            SemOpKind::VariantIs { variant, .. } if forged == 1 => {
+                *variant = 9;
+                forged += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(forged, 2);
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("variant.project_borrow field 7 is out of bounds")
+        )),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("variant 9 is out of bounds")
+        )),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn guard_cannot_consume_a_candidate_binding() {
+    let lowered = lower_source(
+        r#"
+        enum Choice { Values(Generator<string, ()>, i64), Empty }
+
+        gen fn words() -> string { yield "word"; }
+
+        fn drain(consume values: Generator<string, ()>) -> bool { true }
+
+        fn drive(consume choice: Choice) -> string {
+            match choice {
+                .Values(values, weight) if await drain(values) => "drained",
+                .Values(_, weight) => "kept",
+                .Empty => "empty",
+            }
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            keep_text(await drive(Choice.Values(words(), 1)));
+        }
+        "#,
+    );
+    assert!(
+        lowered.statuses.iter().any(|status| status.name == "drive"
+            && matches!(&status.status, SirLoweringStatus::Unsupported { reason }
+                if reason.contains("E_OWN_GUARD_CONSUME") && reason.contains("`values`"))),
+        "{:#?}",
+        lowered.statuses
+    );
 }

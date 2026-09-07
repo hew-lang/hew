@@ -1053,6 +1053,39 @@ pub enum SemOpKind {
         variant: u32,
         fields: Vec<Operand>,
     },
+    /// Test whether one enum value holds the exact declaration-order variant.
+    /// The operand is only read, so a failed match candidate leaves it live.
+    VariantIs {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+    },
+    /// Read one payload field of the tested variant and produce an
+    /// independent logical copy. A runtime tag other than `variant` is corrupt
+    /// representation and terminates the process.
+    VariantProjectCopy {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+        field: u32,
+    },
+    /// Borrow one owning payload field of the tested variant. The guaranteed
+    /// result depends on the enum until `end_borrow`; it cannot escape as an
+    /// owned value.
+    VariantProjectBorrow {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+        field: u32,
+    },
+    /// Consume one enum whose tag was tested and transfer every payload field
+    /// of that variant, one result per field, each of which must be consumed
+    /// on every path.
+    VariantDestructure {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+    },
     Unary {
         op: hew_parser::ast::UnaryOp,
         value: Operand,
@@ -1218,6 +1251,10 @@ impl SemOpKind {
             }
             Self::AggregateProjectCopy { aggregate, .. }
             | Self::AggregateProjectBorrow { aggregate, .. } => visit(OperandSlot(0), aggregate),
+            Self::VariantIs { source, .. }
+            | Self::VariantProjectCopy { source, .. }
+            | Self::VariantProjectBorrow { source, .. }
+            | Self::VariantDestructure { source, .. } => visit(OperandSlot(0), source),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -1302,6 +1339,10 @@ impl SemOpKind {
             }
             Self::AggregateProjectCopy { aggregate, .. }
             | Self::AggregateProjectBorrow { aggregate, .. } => visit(OperandSlot(0), aggregate),
+            Self::VariantIs { source, .. }
+            | Self::VariantProjectCopy { source, .. }
+            | Self::VariantProjectBorrow { source, .. }
+            | Self::VariantDestructure { source, .. } => visit(OperandSlot(0), source),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -1360,6 +1401,10 @@ impl SemOpKind {
             | Self::AggregateProjectCopy { .. }
             | Self::AggregateProjectBorrow { .. }
             | Self::VariantMake { .. }
+            | Self::VariantIs { .. }
+            | Self::VariantProjectCopy { .. }
+            | Self::VariantProjectBorrow { .. }
+            | Self::VariantDestructure { .. }
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Cast { .. }
@@ -1389,9 +1434,10 @@ impl SemOpKind {
         match self {
             Self::BeginBorrow { owner } => Some(PlaceBase::Value(owner.value)),
             Self::LoadBorrow { place } => Some(PlaceBase::Place(*place)),
-            Self::AggregateProjectBorrow { aggregate, .. } => {
-                Some(PlaceBase::Value(aggregate.value))
-            }
+            Self::AggregateProjectBorrow { aggregate, .. }
+            | Self::VariantProjectBorrow {
+                source: aggregate, ..
+            } => Some(PlaceBase::Value(aggregate.value)),
             _ => None,
         }
     }
@@ -1425,6 +1471,9 @@ impl SemOpKind {
             | Self::VariantMake { .. }
             | Self::AggregateProjectCopy { .. }
             | Self::AggregateProjectBorrow { .. }
+            | Self::VariantProjectCopy { .. }
+            | Self::VariantProjectBorrow { .. }
+            | Self::VariantDestructure { .. }
             | Self::Destructure { .. }
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
@@ -1446,6 +1495,7 @@ impl SemOpKind {
             | Self::BytesEq { .. }
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
+            | Self::VariantIs { .. }
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Cast { .. } => EffectSet::PURE,
@@ -1472,6 +1522,7 @@ impl SemOpKind {
                 | Self::Fork { .. }
                 | Self::AggregateMake { .. }
                 | Self::VariantMake { .. }
+                | Self::VariantDestructure { .. }
                 | Self::Destructure { .. }
                 | Self::LoadTake { .. }
                 | Self::StoreInit { .. }

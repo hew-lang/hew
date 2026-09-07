@@ -1,0 +1,33 @@
+import std.stream;
+
+enum Source { File(Stream<string>, string), Missing }
+
+fn open(path: string) -> Stream<string> {
+    match await stream.from_file(path) {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+fn read(consume source: Result<Source, string>) -> string {
+    match source {
+        .Ok(.File(input, "skip")) => "skipped",
+        .Ok(.File(input, label)) if label == "closed" => {
+            input.close();
+            label + " early"
+        }
+        .Ok(.File(input, label)) => label + ":" + await input.collect(),
+        .Ok(.Missing) => "missing",
+        .Err(reason) => reason,
+    }
+}
+
+fn main() -> i64 {
+    println(await read(Ok(Source.File(await open("resource-read.bin"), "read".to_upper()))));
+    println(await read(Ok(Source.File(await open("resource-close.bin"), "skip"))));
+    println(await read(Ok(Source.File(await open("resource-scope.bin"), "closed"))));
+    println(await read(Ok(Source.Missing)));
+    println(await read(Err("broken".to_upper())));
+    println("released");
+    0
+}

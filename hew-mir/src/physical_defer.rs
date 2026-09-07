@@ -251,12 +251,32 @@ fn operation_storage(
         }
         | PhysicalOp::AggregateProjectBorrow {
             dest, aggregate, ..
+        }
+        | PhysicalOp::VariantIs {
+            dest,
+            source: aggregate,
+            ..
+        }
+        | PhysicalOp::VariantProjectCopy {
+            dest,
+            source: aggregate,
+            ..
+        }
+        | PhysicalOp::VariantProjectBorrow {
+            dest,
+            source: aggregate,
+            ..
         } => {
             defined.insert(*dest);
             used.insert(*aggregate);
         }
         PhysicalOp::AggregateDestructure {
             aggregate, fields, ..
+        }
+        | PhysicalOp::VariantDestructure {
+            source: aggregate,
+            fields,
+            ..
         } => {
             defined.extend(fields);
             used.insert(*aggregate);

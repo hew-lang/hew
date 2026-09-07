@@ -30,6 +30,7 @@ impl Builder<'_, '_> {
         };
         let result_ty = self.ty(&whole.ty);
         let outer_bindings = self.bindings.keys().copied().collect();
+        let loans = self.argument_receiver_loans.len();
         let root_live = self.owned_live.clone();
         let mut outer_live = root_live.clone();
         outer_live.remove(&selected.value);
@@ -93,15 +94,21 @@ impl Builder<'_, '_> {
                 let guard_bindings = self.bindings.keys().copied().collect();
                 let guard_live = self.owned_live.clone();
                 let condition = self.lower_read_operand(guard, "scalar match guard")?;
-                self.cleanup_match_candidate(&guard_live, &guard_bindings)?;
+                self.cleanup_match_candidate(&guard_live, loans, &guard_bindings)?;
                 failures.push(self.branch_candidate_test(condition.value)?);
             }
             let result = self.lower_selected_match_body(arm, &result_ty)?;
             if self.is_open() {
+                let mut protected_live = outer_live.clone();
+                if let Some(result) = &result {
+                    if let Some(ty) = self.owned_live.get(&result.value) {
+                        protected_live.insert(result.value, ty.clone());
+                    }
+                }
+                self.cleanup_match_candidate(&protected_live, loans, &outer_bindings)?;
                 if let Some(result) = &result {
                     self.owned_live.remove(&result.value);
                 }
-                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
                 exits.push(MatchExit {
                     state: self.control_state(),
                     result,
@@ -114,7 +121,7 @@ impl Builder<'_, '_> {
             let mut next = Vec::new();
             for failure in failures {
                 self.restore_control_state(&failure);
-                self.cleanup_match_candidate(&root_live, &outer_bindings)?;
+                self.cleanup_match_candidate(&root_live, loans, &outer_bindings)?;
                 next.push(self.control_state());
             }
             self.merge_control_states(next)?;

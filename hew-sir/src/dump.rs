@@ -254,6 +254,52 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             }
             writeln!(out, ")").expect("write to String");
         }
+        SemOpKind::VariantIs {
+            shape,
+            variant,
+            source,
+        } => {
+            writeln!(out, "variant.is #{}:{variant} {}", shape.0, operand(source))
+                .expect("write to String");
+        }
+        SemOpKind::VariantProjectCopy {
+            shape,
+            variant,
+            source,
+            field,
+        }
+        | SemOpKind::VariantProjectBorrow {
+            shape,
+            variant,
+            source,
+            field,
+        } => {
+            let operation = if op.kind.borrow_parent().is_some() {
+                "variant.project_borrow"
+            } else {
+                "variant.project_copy"
+            };
+            writeln!(
+                out,
+                "{operation} #{}:{variant} {}, {field}",
+                shape.0,
+                operand(source)
+            )
+            .expect("write to String");
+        }
+        SemOpKind::VariantDestructure {
+            shape,
+            variant,
+            source,
+        } => {
+            writeln!(
+                out,
+                "variant.destructure #{}:{variant} {}",
+                shape.0,
+                operand(source)
+            )
+            .expect("write to String");
+        }
         SemOpKind::Unary { op, value } => {
             writeln!(out, "{op:?} {}", operand(value)).expect("write to String");
         }

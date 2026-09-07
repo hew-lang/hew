@@ -1545,3 +1545,52 @@ timeout_seconds = 15
 stdout = "1\n1\n2\n2\n3\n2\nhello world\nhello\n5\nhello\nowned result\n3\n3\n5\n4\n5\nordinary error\n7\n"
 stderr = ""
 exit = 0
+
+[[case]]
+id = "affine-nested-generator"
+intent = "Nested enum candidates holding a started generator are probed without consuming it: a failed literal and a failed guard leave the owner for the next arm, the selected arm drives it, and every path releases it once."
+source = "cases/affine-nested-generator.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first\nfirst cleaned\nlater,7\nzero\nzero cleaned\nzero\nheavy\nheavy cleaned\nheavy\nempty\nnone\ndone\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "affine-nested-resource"
+intent = "Nested enum candidates holding a file stream fail a literal and a guard, then the fallback arm still reads and closes the stream, while literal and guard selections release it once."
+source = "cases/affine-nested-resource.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "READ:known file: héllo 🌲\nskipped\nclosed early\nmissing\nBROKEN\nreleased\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "affine-nested-exits"
+intent = "An early return from inside a selected nested arm and a guarded selection each release the transferred generator exactly once."
+source = "cases/affine-nested-exits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "early\nearly cleaned\nreturned:7\ndriven\ndriven cleaned\nlater\nheavy\nheavy cleaned\nheavy\ndone\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "affine-nested-guard-panic"
+intent = "A panic inside a match guard releases the probed generator payload and the caller's deferred cleanup exactly once."
+source = "cases/affine-nested-guard-panic.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "guarded\nguarded cleaned\nMAIN cleaned\n"
+stderr = "hew: failure: UserPanic (212): guard failure\n"
+exit = 212

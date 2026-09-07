@@ -1,0 +1,37 @@
+enum Choice { Values(Generator<string, ()>, i64), Empty }
+
+gen fn words(label: string) -> string {
+    defer println(label + " cleaned");
+    yield label;
+    yield "later";
+}
+
+fn started(label: string) -> Generator<string, ()> {
+    let values = words(label);
+    match await values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    values
+}
+
+fn first_or_weight(consume choice: Option<Choice>) -> string {
+    match choice {
+        .Some(.Values(values, weight)) if weight > 10 => "heavy",
+        .Some(.Values(values, weight)) => {
+            if weight > 5 {
+                return f"returned:{weight}";
+            }
+            match await values.next() {
+                .Some(value) => value,
+                .None => "exhausted",
+            }
+        }
+        .Some(.Empty) => "empty",
+        .None => "none",
+    }
+}
+
+fn main() {
+    println(await first_or_weight(Some(Choice.Values(await started("early"), 7))));
+    println(await first_or_weight(Some(Choice.Values(await started("driven"), 1))));
+    println(await first_or_weight(Some(Choice.Values(await started("heavy"), 11))));
+    println("done");
+}

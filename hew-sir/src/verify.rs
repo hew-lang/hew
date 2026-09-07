@@ -2217,6 +2217,84 @@ fn is_supported_call_return(module: &SemModule, ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, ty)
 }
 
+/// Verify one consuming destructure: exact per-field recipes and result arity.
+fn verify_destructure_shape(
+    function: &SemFunction,
+    operation: &SemOp,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let destructure = match &operation.kind {
+        SemOpKind::Destructure { shape, aggregate } => types.get(&aggregate.value).map(|ty| {
+            (
+                "aggregate.destructure",
+                ty,
+                crate::aggregate_field_recipes(*shape, ty, aggregate_shapes, facts),
+            )
+        }),
+        SemOpKind::VariantDestructure {
+            shape,
+            variant,
+            source,
+        } => types.get(&source.value).map(|ty| {
+            (
+                "variant.destructure",
+                ty,
+                crate::variant_field_recipes(*shape, *variant, ty, variant_shapes, facts),
+            )
+        }),
+        _ => None,
+    };
+    let Some((operation_name, source_ty, recipes)) = destructure else {
+        return;
+    };
+    let recipes = match recipes {
+        Ok(recipes) => recipes,
+        Err(reason) => {
+            invalid_operation(function, operation.id, reason, diagnostics);
+            return;
+        }
+    };
+    if crate::OwnKind::of_ty(source_ty, facts).is_err() {
+        invalid_operation(
+            function,
+            operation.id,
+            format!(
+                "{operation_name} operand `{}` has no exact ownership facts",
+                source_ty.user_facing()
+            ),
+            diagnostics,
+        );
+    }
+    if operation.results.len() != recipes.len() {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidResultArity {
+                op: operation.id,
+                actual: operation.results.len(),
+            },
+        ));
+        return;
+    }
+    for (index, (result, recipe)) in operation.results.iter().zip(recipes).enumerate() {
+        if result.ty != recipe.ty {
+            invalid_operation(
+                function,
+                operation.id,
+                format!(
+                    "{operation_name} result {index} has `{}`, expected `{}`",
+                    result.ty.user_facing(),
+                    recipe.ty.user_facing()
+                ),
+                diagnostics,
+            );
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the closed first-slice operation relation table is deliberately central so additions must make their verifier rule explicit"
@@ -2230,53 +2308,19 @@ fn verify_operation_shape(
     variant_shapes: &[SemVariantShape],
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    if let SemOpKind::Destructure { shape, aggregate } = &operation.kind {
-        let Some(aggregate_ty) = types.get(&aggregate.value) else {
-            return;
-        };
-        let recipes =
-            match crate::aggregate_field_recipes(*shape, aggregate_ty, aggregate_shapes, facts) {
-                Ok(recipes) => recipes,
-                Err(reason) => {
-                    invalid_operation(function, operation.id, reason, diagnostics);
-                    return;
-                }
-            };
-        if crate::OwnKind::of_ty(aggregate_ty, facts).is_err() {
-            invalid_operation(
-                function,
-                operation.id,
-                format!(
-                    "aggregate.destructure operand `{}` has no exact ownership facts",
-                    aggregate_ty.user_facing()
-                ),
-                diagnostics,
-            );
-        }
-        if operation.results.len() != recipes.len() {
-            diagnostics.push(diag(
-                function,
-                SirDiagnosticKind::InvalidResultArity {
-                    op: operation.id,
-                    actual: operation.results.len(),
-                },
-            ));
-            return;
-        }
-        for (index, (result, recipe)) in operation.results.iter().zip(recipes).enumerate() {
-            if result.ty != recipe.ty {
-                invalid_operation(
-                    function,
-                    operation.id,
-                    format!(
-                        "aggregate.destructure result {index} has `{}`, expected `{}`",
-                        result.ty.user_facing(),
-                        recipe.ty.user_facing()
-                    ),
-                    diagnostics,
-                );
-            }
-        }
+    if matches!(
+        operation.kind,
+        SemOpKind::Destructure { .. } | SemOpKind::VariantDestructure { .. }
+    ) {
+        verify_destructure_shape(
+            function,
+            operation,
+            types,
+            facts,
+            aggregate_shapes,
+            variant_shapes,
+            diagnostics,
+        );
         return;
     }
     let expected_results = usize::from(!matches!(
@@ -2728,6 +2772,114 @@ fn verify_operation_shape(
                 );
             }
         }
+        SemOpKind::VariantIs {
+            shape,
+            variant,
+            source,
+        } => {
+            let Some(source_ty) = types.get(&source.value) else {
+                return;
+            };
+            if let Err(reason) =
+                crate::variant_field_types(*shape, *variant, source_ty, variant_shapes)
+            {
+                invalid_operation(function, operation.id, reason, diagnostics);
+            }
+            if result.ty != ResolvedTy::Bool {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "variant.is produces `{}`, expected `bool`",
+                        result.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+        }
+        SemOpKind::VariantProjectCopy {
+            shape,
+            variant,
+            source,
+            field,
+        }
+        | SemOpKind::VariantProjectBorrow {
+            shape,
+            variant,
+            source,
+            field,
+        } => {
+            let borrowing = operation.kind.borrow_parent().is_some();
+            let operation_name = if borrowing {
+                "variant.project_borrow"
+            } else {
+                "variant.project_copy"
+            };
+            let Some(source_ty) = types.get(&source.value) else {
+                return;
+            };
+            let recipes = match crate::variant_field_recipes(
+                *shape,
+                *variant,
+                source_ty,
+                variant_shapes,
+                facts,
+            ) {
+                Ok(recipes) => recipes,
+                Err(reason) => {
+                    invalid_operation(function, operation.id, reason, diagnostics);
+                    return;
+                }
+            };
+            let Some(recipe) = usize::try_from(*field)
+                .ok()
+                .and_then(|index| recipes.get(index))
+            else {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "{operation_name} field {field} is out of bounds for `{}` variant {variant} with {} field(s)",
+                        source_ty.user_facing(),
+                        recipes.len()
+                    ),
+                    diagnostics,
+                );
+                return;
+            };
+            if result.ty != recipe.ty {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "{operation_name} field {field} produces `{}`, expected `{}`",
+                        result.ty.user_facing(),
+                        recipe.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            if borrowing && recipe.own != crate::OwnKind::Owned {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "variant.project_borrow requires an owning field; no-drop fields use an ordinary copy"
+                        .to_string(),
+                    diagnostics,
+                );
+            }
+            if !borrowing && recipe.clone == hew_types::CloneKind::None {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "variant.project_copy field {field} of `{}` has no copy operation",
+                        source_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+        }
         SemOpKind::Cast { value, to } => {
             if &result.ty != to {
                 diagnostics.push(diag(
@@ -2937,6 +3089,7 @@ fn verify_operation_shape(
         | SemOpKind::DestroyValue { .. }
         | SemOpKind::Fork { .. }
         | SemOpKind::Destructure { .. }
+        | SemOpKind::VariantDestructure { .. }
         | SemOpKind::AllocPlace { .. }
         | SemOpKind::LoadCopy { .. }
         | SemOpKind::LoadTake { .. }

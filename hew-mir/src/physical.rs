@@ -672,6 +672,33 @@ pub enum PhysicalOp {
         fields: Vec<StorageId>,
         glue: PhysicalVariantId,
     },
+    VariantIs {
+        dest: StorageId,
+        source: StorageId,
+        variant: u32,
+        glue: PhysicalVariantId,
+    },
+    VariantProjectCopy {
+        dest: StorageId,
+        source: StorageId,
+        variant: u32,
+        field: u32,
+        glue: PhysicalVariantId,
+        action: CloneAction,
+    },
+    VariantProjectBorrow {
+        dest: StorageId,
+        source: StorageId,
+        variant: u32,
+        field: u32,
+        glue: PhysicalVariantId,
+    },
+    VariantDestructure {
+        source: StorageId,
+        variant: u32,
+        fields: Vec<StorageId>,
+        glue: PhysicalVariantId,
+    },
     Transfer {
         dest: StorageId,
         source: StorageId,
@@ -2406,6 +2433,64 @@ impl FunctionLowerer<'_> {
                     glue: self.variant_id(&self.storage[dest.0 as usize].ty)?,
                 })
             }
+            SemOpKind::VariantIs {
+                variant, source, ..
+            } => {
+                let source = self.value(source.value)?;
+                one(PhysicalOp::VariantIs {
+                    dest: self.one_result(operation)?,
+                    source,
+                    variant: *variant,
+                    glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
+                })
+            }
+            SemOpKind::VariantProjectCopy {
+                variant,
+                source,
+                field,
+                ..
+            } => {
+                let source = self.value(source.value)?;
+                let dest = self.one_result(operation)?;
+                one(PhysicalOp::VariantProjectCopy {
+                    dest,
+                    source,
+                    variant: *variant,
+                    field: *field,
+                    glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
+                    action: self.clone_action(&self.storage[dest.0 as usize].ty)?,
+                })
+            }
+            SemOpKind::VariantProjectBorrow {
+                variant,
+                source,
+                field,
+                ..
+            } => {
+                let source = self.value(source.value)?;
+                one(PhysicalOp::VariantProjectBorrow {
+                    dest: self.one_result(operation)?,
+                    source,
+                    variant: *variant,
+                    field: *field,
+                    glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
+                })
+            }
+            SemOpKind::VariantDestructure {
+                variant, source, ..
+            } => {
+                let source = self.value(source.value)?;
+                one(PhysicalOp::VariantDestructure {
+                    source,
+                    variant: *variant,
+                    fields: operation
+                        .results
+                        .iter()
+                        .map(|result| self.value(result.id))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
+                })
+            }
             SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => {
                 Err(PhysicalError::new(format!(
                     "SIR op {} is not yet admitted by physical MIR",
@@ -4079,6 +4164,51 @@ fn verify_aggregate_destructure(
     Ok(())
 }
 
+/// The exact case recipe of one enum storage a probe reads or a take consumes.
+/// A borrowed source may only carry an owning recipe.
+fn variant_case<'a>(
+    module: &'a PhysicalModule,
+    function: &PhysicalFunction,
+    source: StorageId,
+    variant: u32,
+    glue: PhysicalVariantId,
+) -> Result<&'a PhysicalVariantCase, PhysicalError> {
+    let source = storage(function, source)?;
+    let recipe = variant_glue(module, glue)?;
+    let source_own_matches = source.own == recipe.own
+        || (recipe.own == OwnKind::Owned && source.own == OwnKind::Guaranteed);
+    if source.ty != recipe.ty || !source_own_matches {
+        return Err(PhysicalError::new(
+            "physical variant source disagrees with its glue recipe",
+        ));
+    }
+    usize::try_from(variant)
+        .ok()
+        .and_then(|index| recipe.variants.get(index))
+        .ok_or_else(|| {
+            PhysicalError::new(format!("physical variant tag {variant} is out of bounds"))
+        })
+}
+
+fn variant_projection_field<'a>(
+    module: &'a PhysicalModule,
+    function: &PhysicalFunction,
+    source: StorageId,
+    variant: u32,
+    field: u32,
+    glue: PhysicalVariantId,
+) -> Result<&'a PhysicalValueRecipe, PhysicalError> {
+    let case = variant_case(module, function, source, variant, glue)?;
+    usize::try_from(field)
+        .ok()
+        .and_then(|index| case.fields.get(index))
+        .ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical variant projection index {field} is out of bounds"
+            ))
+        })
+}
+
 fn verify_variant_make(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -4307,6 +4437,80 @@ fn verify_operation_storage(
             fields,
             glue,
         } => verify_variant_make(module, function, *dest, *variant, fields, *glue)?,
+        PhysicalOp::VariantIs {
+            dest,
+            source,
+            variant,
+            glue,
+        } => {
+            variant_case(module, function, *source, *variant, *glue)?;
+            if storage(function, *dest)?.ty != ResolvedTy::Bool {
+                return Err(PhysicalError::new(
+                    "physical variant test must produce a boolean",
+                ));
+            }
+        }
+        PhysicalOp::VariantProjectCopy {
+            dest,
+            source,
+            variant,
+            field,
+            glue,
+            action,
+        } => {
+            let destination = storage(function, *dest)?;
+            let expected =
+                variant_projection_field(module, function, *source, *variant, *field, *glue)?;
+            if destination.ty != expected.ty
+                || destination.own != expected.own
+                || expected.clone != Some(*action)
+            {
+                return Err(PhysicalError::new(
+                    "physical variant projection disagrees with its field copy recipe",
+                ));
+            }
+            verify_clone_action(module, &destination.ty, destination.own, *action)?;
+        }
+        PhysicalOp::VariantProjectBorrow {
+            dest,
+            source,
+            variant,
+            field,
+            glue,
+        } => {
+            let destination = storage(function, *dest)?;
+            let expected =
+                variant_projection_field(module, function, *source, *variant, *field, *glue)?;
+            if destination.ty != expected.ty || expected.own != OwnKind::Owned {
+                return Err(PhysicalError::new(
+                    "physical borrowed variant projection disagrees with its owning field recipe",
+                ));
+            }
+            verify_borrow_dependency(function, *dest, *source)?;
+        }
+        PhysicalOp::VariantDestructure {
+            source,
+            variant,
+            fields,
+            glue,
+        } => {
+            let case = variant_case(module, function, *source, *variant, *glue)?;
+            if fields.len() != case.fields.len() {
+                return Err(PhysicalError::new(format!(
+                    "physical variant destructure has {} results for {} fields",
+                    fields.len(),
+                    case.fields.len()
+                )));
+            }
+            for (index, (field, expected)) in fields.iter().zip(&case.fields).enumerate() {
+                let field = storage(function, *field)?;
+                if field.ty != expected.ty || field.own != expected.own {
+                    return Err(PhysicalError::new(format!(
+                        "physical variant destructure field {index} disagrees with its glue recipe"
+                    )));
+                }
+            }
+        }
         PhysicalOp::Binary { dest, op, lhs, rhs } => {
             verify_binary(function, *dest, *op, *lhs, *rhs)?;
         }
@@ -4821,9 +5025,31 @@ fn apply_operation(
         }
         | PhysicalOp::AggregateProjectBorrow {
             dest, aggregate, ..
+        }
+        | PhysicalOp::VariantIs {
+            dest,
+            source: aggregate,
+            ..
+        }
+        | PhysicalOp::VariantProjectCopy {
+            dest,
+            source: aggregate,
+            ..
+        }
+        | PhysicalOp::VariantProjectBorrow {
+            dest,
+            source: aggregate,
+            ..
         } => {
             initialized(function, state, *aggregate, block, "aggregate projection")?;
             define(function, state, *dest, block, "aggregate projection")?;
+        }
+        PhysicalOp::VariantDestructure { source, fields, .. } => {
+            initialized(function, state, *source, block, "variant destructure")?;
+            for field in fields {
+                define(function, state, *field, block, "variant destructure")?;
+            }
+            consume_if_owned(function, state, *source)?;
         }
         PhysicalOp::AggregateDestructure {
             aggregate, fields, ..
@@ -7526,6 +7752,90 @@ mod tests {
         assert!(fault.ops.len() < before);
         let error = verify_physical_module(&physical).expect_err("loan cleanup on fault edge");
         assert!(error.message.contains("dependent loan is live"), "{error}");
+    }
+
+    fn borrowed_variant_fixture() -> PhysicalModule {
+        let semantic = lower_source(
+            r#"
+            enum Choice { Values(Vec<string>, i64), Empty }
+
+            fn drive(consume choice: Option<Choice>) -> string {
+                match choice {
+                    .Some(.Values(_, 0)) => "zero",
+                    .Some(.Values(values, weight)) => { let _kept = values; "kept" }
+                    .Some(.Empty) => "empty",
+                    .None => "none",
+                }
+            }
+
+            fn keep_text(value: string) {}
+            fn main() {
+                keep_text(drive(Some(Choice.Values(["word"], 7))));
+            }
+            "#,
+        );
+        lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .expect("probed variant payloads lower through physical storage")
+            .into_unverified()
+    }
+
+    #[test]
+    fn borrowed_variant_payloads_retain_their_enum_dependency() {
+        let physical = borrowed_variant_fixture();
+        let mut loans = 0;
+        for function in &physical.functions {
+            for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+                if let PhysicalOp::VariantProjectBorrow { dest, source, .. } = operation {
+                    loans += 1;
+                    let slot = &function.storage[dest.0 as usize];
+                    assert_eq!(slot.own, OwnKind::Guaranteed);
+                    assert_eq!(slot.borrow_parent, Some(*source));
+                }
+            }
+        }
+        assert_eq!(
+            loans, 2,
+            "each candidate borrows the generator payload once"
+        );
+        verify_physical_module(&physical).expect("probed payload loans verify");
+    }
+
+    #[test]
+    fn physical_variant_loans_refuse_forged_dependencies_and_fields() {
+        for wrong_field in [false, true] {
+            let mut physical = borrowed_variant_fixture();
+            let function = physical
+                .functions
+                .iter_mut()
+                .find(|function| {
+                    function
+                        .blocks
+                        .iter()
+                        .flat_map(|block| &block.ops)
+                        .any(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
+                })
+                .unwrap();
+            let operation = function
+                .blocks
+                .iter_mut()
+                .flat_map(|block| &mut block.ops)
+                .find(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
+                .unwrap();
+            let PhysicalOp::VariantProjectBorrow { dest, field, .. } = operation else {
+                unreachable!()
+            };
+            if wrong_field {
+                *field = u32::MAX;
+            } else {
+                function.storage[dest.0 as usize].borrow_parent = None;
+            }
+            let error = verify_physical_module(&physical).expect_err("malformed payload loan");
+            assert!(
+                error.message.contains("out of bounds")
+                    || error.message.contains("no SIR parent dependency"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

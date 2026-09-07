@@ -2261,6 +2261,7 @@ struct ControlState {
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    loans: Vec<ValueId>,
     scopes: Vec<Vec<BindingId>>,
     defers: Vec<deferred::PendingDefer>,
     task_scopes: Vec<tasks::TaskScopeFrame>,
@@ -2412,8 +2413,10 @@ struct Builder<'hir, 'service> {
     loops: Vec<Option<LoopScope>>,
     places: Vec<crate::PlaceDecl>,
     capture_places: HashMap<BindingId, crate::PlaceId>,
-    /// Receivers already evaluated while their arguments are being lowered.
-    /// A terminating argument path must end these loans before owner cleanup.
+    /// Receivers already evaluated while their arguments are being lowered,
+    /// and nested payload fields borrowed while a match candidate is probed.
+    /// A terminating path must end these loans before owner cleanup; a probe
+    /// loan also ends before its candidate fails or its owner transfers.
     argument_receiver_loans: Vec<ValueId>,
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
@@ -2834,6 +2837,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         );
                     }
                     BindingTarget::Value(source) => {
+                        if movable {
+                            self.require_selected_binding(*binding, source)?;
+                        }
                         return self.emit(
                             expr,
                             SemOpKind::CopyValue {
@@ -2987,6 +2993,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
+    /// A pattern binding names its probed payload until the arm is selected;
+    /// an owning payload transfers exactly once, after every guard has passed.
+    fn require_selected_binding(&self, binding: BindingId, value: ValueId) -> Result<(), String> {
+        if self.value_own_kind(value) == Some(OwnKind::Owned)
+            || self.argument_receiver_loans.contains(&value)
+        {
+            let name = &self.source_bindings[self.binding_declarations[&binding]].name;
+            return Err(format!(
+                "E_OWN_GUARD_CONSUME: match guard consumes pattern binding `{name}`; a guard can only read its bindings"
+            ));
+        }
+        Ok(())
+    }
+
     fn value_own_kind(&self, value: ValueId) -> Option<OwnKind> {
         self.params
             .iter()
@@ -3138,6 +3158,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings: self.bindings.clone(),
             binding_declarations: self.binding_declarations.clone(),
             owned_live: self.owned_live.clone(),
+            loans: self.argument_receiver_loans.clone(),
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
@@ -3152,6 +3173,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.binding_declarations
             .clone_from(&state.binding_declarations);
         self.owned_live = state.owned_live.clone();
+        self.argument_receiver_loans.clone_from(&state.loans);
         self.scopes.clone_from(&state.scopes);
         self.defers.clone_from(&state.defers);
         self.task_scopes.clone_from(&state.task_scopes);
@@ -3170,11 +3192,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect()
     }
 
+    /// End the loans opened since `depth`, innermost first.
+    fn end_loans_since(&mut self, depth: usize) -> Result<(), String> {
+        let loans = self.argument_receiver_loans.split_off(depth);
+        self.end_call_loans(&loans)
+    }
+
     fn cleanup_match_candidate(
         &mut self,
         root_live: &BTreeMap<ValueId, ResolvedTy>,
+        root_loans: usize,
         outer_bindings: &std::collections::HashSet<BindingId>,
     ) -> Result<(), String> {
+        self.end_loans_since(root_loans)?;
         let keep = root_live
             .iter()
             .filter(|(value, _)| self.owned_live.contains_key(value))
@@ -4014,7 +4044,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     return self.load_capture(*binding, Provenance::Site(expr.site), take);
                 }
                 match self.binding_target(*binding)? {
-                    BindingTarget::Value(value) => Ok(value),
+                    BindingTarget::Value(value) => {
+                        if binding_use != OwnedBindingUse::Copy {
+                            self.require_selected_binding(*binding, value)?;
+                        }
+                        Ok(value)
+                    }
                     BindingTarget::Place(place) => self.emit(expr, SemOpKind::LoadCopy { place }),
                 }
             }
@@ -4539,7 +4574,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .map(|(binding, declaration)| (*binding, *declaration))
             .collect::<Vec<_>>();
         selected.sort_unstable_by_key(|(_, declaration)| *declaration);
-        for (binding, declaration) in selected {
+        for (binding, _) in selected {
             let BindingTarget::Value(value) = self.bindings[&binding] else {
                 continue;
             };
@@ -4547,18 +4582,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 continue;
             }
             let target = self.acquire_binding_target(value)?;
-            // Failed-candidate control states still reference the original
-            // declaration. Give the selected owner a new declaration rather
-            // than changing the target under those saved states.
-            let mut selected = self.source_bindings[declaration].clone();
-            let declaration = self.source_bindings.len();
-            selected.id = crate::BindingId(
-                u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
-            );
-            selected.target = target;
-            self.source_bindings.push(selected);
-            self.binding_declarations.insert(binding, declaration);
-            self.bindings.insert(binding, target);
+            self.redeclare_binding(binding, target)?;
         }
         Ok(())
     }
@@ -4681,9 +4705,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     fn branch_candidate_test(&mut self, condition: ValueId) -> Result<ControlState, String> {
         let pass = self.new_block(Vec::new());
         let fail = self.new_block(Vec::new());
-        let bindings = self.bindings.clone();
-        let binding_declarations = self.binding_declarations.clone();
-        let owned_live = self.owned_live.clone();
         self.set_terminator(SemTerminator::Branch {
             condition: Operand { value: condition },
             then_target: Edge {
@@ -4695,30 +4716,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 args: Vec::new(),
             },
         })?;
+        let mut failure = self.control_state();
+        failure.block = fail;
         self.current = pass;
-        Ok(ControlState {
-            block: fail,
-            bindings,
-            binding_declarations,
-            owned_live,
-            scopes: self.scopes.clone(),
-            defers: self.defers.clone(),
-            task_scopes: self.task_scopes.clone(),
-            cleanup_may_fail: self.cleanup_may_fail,
-            cleanup_draining: self.cleanup_draining,
-        })
+        Ok(failure)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "nested predicate validation and its exhaustive probe form one ownership boundary"
-    )]
+    /// Probe one nested payload variant without consuming its enum. The tag
+    /// test and every projected field leave the owner live for a later
+    /// candidate; owning fields are borrowed until the candidate fails or
+    /// [`Self::transfer_selected_payloads`] takes them.
     fn lower_nested_predicate(
         &mut self,
         parent_fields: &[BlockArg],
         predicate: &HirPayloadVariantPredicate,
-        candidate_root_live: &BTreeMap<ValueId, ResolvedTy>,
-        outer_bindings: &std::collections::HashSet<BindingId>,
         span: &Range<usize>,
     ) -> Result<Vec<ControlState>, String> {
         let field = usize::try_from(predicate.field_idx)
@@ -4738,13 +4749,75 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 payload_ty.user_facing()
             ));
         }
-        let shape = self.service.require_variant_shape(&payload_ty)?;
+        let (shape, desired) = self.nested_variant(&payload_ty, predicate)?;
+        let source = Operand { value: field.value };
+        let condition = self.emit_typed(
+            Provenance::Synthesized,
+            &ResolvedTy::Bool,
+            SemOpKind::VariantIs {
+                shape,
+                variant: predicate.variant_idx,
+                source: source.clone(),
+            },
+        )?;
+        let mut failures = vec![self.branch_candidate_test(condition)?];
+        let mut fields = Vec::with_capacity(desired.fields.len());
+        for (index, field) in desired.fields.iter().enumerate() {
+            self.service.require_type_facts(&field.ty)?;
+            let field_index = u32::try_from(index).map_err(|_| "variant field exceeds u32")?;
+            let owning =
+                OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())? == OwnKind::Owned;
+            let kind = if owning {
+                SemOpKind::VariantProjectBorrow {
+                    shape,
+                    variant: predicate.variant_idx,
+                    source: source.clone(),
+                    field: field_index,
+                }
+            } else {
+                SemOpKind::VariantProjectCopy {
+                    shape,
+                    variant: predicate.variant_idx,
+                    source: source.clone(),
+                    field: field_index,
+                }
+            };
+            let value = self.emit_typed(Provenance::Synthesized, &field.ty, kind)?;
+            if owning {
+                self.argument_receiver_loans.push(value);
+            }
+            fields.push(BlockArg {
+                value,
+                ty: field.ty.clone(),
+                own: if owning {
+                    OwnKind::Guaranteed
+                } else {
+                    OwnKind::None
+                },
+            });
+        }
+        for literal in &predicate.literals {
+            let condition = self.lower_payload_literal_test(&fields, literal)?;
+            failures.push(self.branch_candidate_test(condition)?);
+        }
+        self.bind_match_fields(&predicate.bindings, &fields, span)?;
+        for nested in &predicate.nested {
+            failures.extend(self.lower_nested_predicate(&fields, nested, span)?);
+        }
+        Ok(failures)
+    }
+
+    fn nested_variant(
+        &mut self,
+        payload_ty: &ResolvedTy,
+        predicate: &HirPayloadVariantPredicate,
+    ) -> Result<(VariantShapeId, crate::SemVariant), String> {
+        let shape = self.service.require_variant_shape(payload_ty)?;
         let descriptor = self
             .service
             .variant_shapes
             .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
             .filter(|descriptor| descriptor.id == shape)
-            .cloned()
             .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
         let desired = descriptor
             .variants
@@ -4765,81 +4838,84 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 predicate.variant_idx, predicate.variant_match.variant_name, desired.name
             ));
         }
+        Ok((shape, desired.clone()))
+    }
 
-        let probe = match self.value_own_kind(field.value) {
-            Some(OwnKind::None) => field.value,
-            Some(OwnKind::Owned) => {
-                let facts = self
-                    .service
-                    .checked_facts
-                    .rows()
-                    .get(&TypeInstanceKey(payload_ty.clone()))
-                    .ok_or_else(|| {
-                        format!(
-                            "nested variant `{}` has no concrete type-fact row",
-                            payload_ty.user_facing()
-                        )
-                    })?;
-                if facts.clone == hew_types::CloneKind::None {
-                    return Err(format!(
-                        "nested speculative match of `{}` needs borrow/refinement support because it has no copy operation",
-                        payload_ty.user_facing()
-                    ));
-                }
-                self.emit_typed(
-                    Provenance::Synthesized,
-                    &payload_ty,
-                    SemOpKind::CopyValue {
-                        source: Operand { value: field.value },
-                    },
-                )?
+    /// Transfer every probed nested payload into the selected arm exactly
+    /// once. Each nested enum is consumed after its probe loans have ended;
+    /// bound fields become the arm's owners and unbound owning fields join the
+    /// candidate's cleanup set.
+    fn transfer_selected_payloads(
+        &mut self,
+        parent_fields: &[BlockArg],
+        predicates: &[HirPayloadVariantPredicate],
+    ) -> Result<(), String> {
+        for predicate in predicates {
+            let source = parent_fields[predicate.field_idx as usize].value;
+            let payload_ty = self.ty(&predicate.payload_ty);
+            let (shape, desired) = self.nested_variant(&payload_ty, predicate)?;
+            let mut fields = Vec::with_capacity(desired.fields.len());
+            for field in &desired.fields {
+                fields.push(ValueDef {
+                    id: self.fresh_value(),
+                    ty: field.ty.clone(),
+                    own: OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?,
+                });
             }
-            Some(OwnKind::Guaranteed) | None => {
-                return Err(format!(
-                    "nested variant `{}` has no independently testable value",
-                    payload_ty.user_facing()
-                ));
+            let id = OpId(self.ops);
+            self.current_block_mut().append_op(SemOp {
+                id,
+                results: fields.clone(),
+                kind: SemOpKind::VariantDestructure {
+                    shape,
+                    variant: predicate.variant_idx,
+                    source: Operand { value: source },
+                },
+                provenance: Provenance::Synthesized,
+            })?;
+            self.ops += 1;
+            self.owned_live.remove(&source);
+            let fields = fields
+                .into_iter()
+                .map(|field| {
+                    if field.own == OwnKind::Owned {
+                        self.owned_live.insert(field.id, field.ty.clone());
+                    }
+                    BlockArg {
+                        value: field.id,
+                        ty: field.ty,
+                        own: field.own,
+                    }
+                })
+                .collect::<Vec<_>>();
+            for binding in &predicate.bindings {
+                self.redeclare_binding(
+                    binding.binding,
+                    BindingTarget::Value(fields[binding.field_idx as usize].value),
+                )?;
             }
-        };
-        let inherited = self.control_state();
-        let branches = self.emit_variant_switch(shape, &descriptor, probe)?;
-        let mut failures = Vec::new();
-        let mut success = None;
-        for branch in branches {
-            self.restore_control_state(&inherited);
-            self.current = branch.block;
-            self.owned_live = branch.owned_live;
-            if branch.variant == predicate.variant_idx {
-                for literal in &predicate.literals {
-                    let condition = self.lower_payload_literal_test(&branch.fields, literal)?;
-                    failures.push(self.branch_candidate_test(condition)?);
-                }
-                self.bind_match_fields(&predicate.bindings, &branch.fields, span)?;
-                let mut nested_failures = Vec::new();
-                for nested in &predicate.nested {
-                    nested_failures.extend(self.lower_nested_predicate(
-                        &branch.fields,
-                        nested,
-                        candidate_root_live,
-                        outer_bindings,
-                        span,
-                    )?);
-                }
-                failures.extend(nested_failures);
-                success = Some(self.control_state());
-            } else {
-                self.cleanup_match_candidate(candidate_root_live, outer_bindings)?;
-                failures.push(self.control_state());
-            }
+            self.transfer_selected_payloads(&fields, &predicate.nested)?;
         }
-        let success = success.ok_or_else(|| {
-            format!(
-                "nested variant `{}` has no selected descriptor arm",
-                predicate.variant_match.variant_name
-            )
-        })?;
-        self.restore_control_state(&success);
-        Ok(failures)
+        Ok(())
+    }
+
+    /// Give a selected binding a new declaration for its transferred owner.
+    /// Failed-candidate control states still reference the original
+    /// declaration, so it is never changed under those saved states.
+    fn redeclare_binding(
+        &mut self,
+        binding: BindingId,
+        target: BindingTarget,
+    ) -> Result<(), String> {
+        let mut selected = self.source_bindings[self.binding_declarations[&binding]].clone();
+        let declaration = self.source_bindings.len();
+        selected.id =
+            crate::BindingId(u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?);
+        selected.target = target;
+        self.source_bindings.push(selected);
+        self.binding_declarations.insert(binding, declaration);
+        self.bindings.insert(binding, target);
+        Ok(())
     }
 
     fn lower_selected_match_body(
@@ -5032,6 +5108,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect::<std::collections::HashSet<_>>();
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
+        let outer_loans = self.argument_receiver_loans.len();
         let inherited = self.control_state();
         let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
         let mut exits = Vec::new();
@@ -5055,8 +5132,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     failures.extend(self.lower_nested_predicate(
                         &branch.fields,
                         predicate,
-                        &root_live,
-                        &outer_bindings,
                         &arm.span,
                     )?);
                 }
@@ -5072,12 +5147,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     failures.push(self.branch_candidate_test(condition)?);
                 }
 
+                self.end_loans_since(outer_loans)?;
+                self.transfer_selected_payloads(&branch.fields, &arm.payload_variant_predicates)?;
                 self.acquire_selected_match_bindings(&outer_bindings)?;
                 let result = self.lower_selected_match_body(arm, &result_ty)?;
                 if self.is_open() {
-                    if let Some(result) = &result {
-                        self.owned_live.remove(&result.value);
-                    }
                     for value in outer_live.keys() {
                         if !self.owned_live.contains_key(value) {
                             return Err(format!(
@@ -5085,7 +5159,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             ));
                         }
                     }
-                    self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                    // The selected result survives candidate cleanup, but must
+                    // still be released if closing another owner fails.
+                    let mut protected_live = outer_live.clone();
+                    if let Some(result) = &result {
+                        if let Some(ty) = self.owned_live.get(&result.value) {
+                            protected_live.insert(result.value, ty.clone());
+                        }
+                    }
+                    self.cleanup_match_candidate(&protected_live, outer_loans, &outer_bindings)?;
+                    if let Some(result) = &result {
+                        self.owned_live.remove(&result.value);
+                    }
                     exits.push(MatchExit {
                         state: self.control_state(),
                         result,
@@ -5098,7 +5183,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let mut cleaned_failures = Vec::with_capacity(failures.len());
                 for failure in failures {
                     self.restore_control_state(&failure);
-                    self.cleanup_match_candidate(&root_live, &outer_bindings)?;
+                    self.cleanup_match_candidate(&root_live, outer_loans, &outer_bindings)?;
                     cleaned_failures.push(self.control_state());
                 }
                 if candidate_position + 1 == branch_candidates.len() {
@@ -5177,6 +5262,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let inherited = self.control_state();
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
+        let outer_loans = self.argument_receiver_loans.len();
         let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
         let mut failures = Vec::new();
         let mut success = None;
@@ -5186,29 +5272,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.current = branch.block;
             self.owned_live = branch.owned_live;
             if branch.variant != success_variant {
-                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                self.cleanup_match_candidate(&outer_live, outer_loans, &outer_bindings)?;
                 failures.push(self.control_state());
                 continue;
             }
 
-            let candidate_root_live = self.owned_live.clone();
             self.bind_match_fields(bindings, &branch.fields, &scrutinee_expr.span)?;
             for predicate in nested_predicates {
                 failures.extend(self.lower_nested_predicate(
                     &branch.fields,
                     predicate,
-                    &candidate_root_live,
-                    &outer_bindings,
                     &scrutinee_expr.span,
                 )?);
             }
+            self.end_loans_since(outer_loans)?;
+            self.transfer_selected_payloads(&branch.fields, nested_predicates)?;
             self.acquire_selected_match_bindings(&outer_bindings)?;
             let escaping_bindings = self
                 .bindings
                 .keys()
                 .copied()
                 .collect::<std::collections::HashSet<_>>();
-            self.cleanup_match_candidate(&outer_live, &escaping_bindings)?;
+            self.cleanup_match_candidate(&outer_live, outer_loans, &escaping_bindings)?;
             for statement in success_prelude {
                 match &statement.kind {
                     HirStmtKind::Destructure { value, fields } => {
@@ -5234,7 +5319,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut cleaned_failures = Vec::with_capacity(failures.len());
         for failure in failures {
             self.restore_control_state(&failure);
-            self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+            self.cleanup_match_candidate(&outer_live, outer_loans, &outer_bindings)?;
             cleaned_failures.push(self.control_state());
         }
         self.merge_control_states(cleaned_failures)?;

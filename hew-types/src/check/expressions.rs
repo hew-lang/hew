@@ -2426,8 +2426,8 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::UndefinedVariable,
                     span,
-                    "`self` is not a valid identifier in Hew; \
-                     use a named receiver parameter instead: \
+                    "`self` is the actor's own handle and exists only inside an actor \
+                     body; elsewhere use a named receiver parameter: \
                      `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
                         .to_string(),
                 );

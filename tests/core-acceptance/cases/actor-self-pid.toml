@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-self-pid"
+intent = "Bare `self` in an actor body is the actor's own handle: registering it with another actor routes a later callback back to the registering actor."
+source = "cases/actor-self-pid.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "callback reached real\n"
+stderr = ""
+exit = 0

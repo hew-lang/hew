@@ -95,8 +95,9 @@ is the actor handle, and `self.stop()` finishes the current handler, runs the
 `Pid<A>` requests the same stop and returns `()`. It is idempotent: a
 `stop()` addressed to an actor that has already stopped or crashed is a
 no-op, not an error, so a caller that must know whether it was the one to end
-the actor takes a monitor instead. There is no free-function `stop`, and
-`this` is not a receiver token in Hew.
+the actor takes a monitor instead. `self` in a value position is that same
+handle, so `registry.register(self)` hands another actor this actor's own pid.
+There is no free-function `stop`, and `this` is not a receiver token in Hew.
 
 Messages queued behind a stop are dropped, and the drop is disclosed rather
 than silent. The stopped actor's `DOWN` record carries the count as

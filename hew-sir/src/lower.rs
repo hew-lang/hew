@@ -4592,6 +4592,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::Spawn { .. } => self
                 .lower_actor_boundary(expr)?
                 .ok_or_else(|| "actor spawn lacks its handle result".into()),
+            HirExprKind::ActorSelf => self
+                .lower_actor_boundary(expr)?
+                .ok_or_else(|| "`self` lacks its actor handle result".into()),
             HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),

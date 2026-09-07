@@ -579,7 +579,7 @@ trait ConnectionMethods {
 /// Trait for actors that handle a TCP connection in active mode.
 ///
 /// Implement this on an actor (declare matching `receive fn on_data(bytes)` /
-/// `receive fn on_close()`) and call `conn.attach(this)` to have the runtime
+/// `receive fn on_close()`) and call `conn.attach(self)` to have the runtime
 /// deliver socket data as actor messages. The actor never calls `read`: the
 /// runtime owns the entire connection after the consuming attach and closes it
 /// on terminal readiness or actor teardown. No `Connection` remains available
@@ -594,7 +594,7 @@ trait ConnectionMethods {
 /// Declared `pub` so the type checker can recognise that a concrete actor's
 /// `receive fn`s structurally satisfy this handler trait at the
 /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion site (the
-/// `conn.attach(this)` surface).
+/// `conn.attach(self)` surface).
 ///
 /// # Example
 ///

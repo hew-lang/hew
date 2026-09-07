@@ -360,6 +360,9 @@ pub enum ActorOperation {
     Close(ActorId),
     AwaitClosed(ActorId),
     Spawn(ActorId),
+    /// The running actor's own handle — bare `self` in an actor body. Takes no
+    /// operands: the handle is the actor the boundary already runs inside.
+    SelfHandle(ActorId),
     /// Start a stream producer turn: the request payload, whose last field is
     /// the consumer's sink, waits for mailbox capacity. A closed producer is a
     /// fault, so no consumer waits on a pipe nobody feeds.
@@ -467,6 +470,7 @@ impl ActorOperation {
             Self::Spawn(id)
             | Self::Close(id)
             | Self::AwaitClosed(id)
+            | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
             Self::SupervisorSpawn(_)
@@ -501,6 +505,7 @@ impl ActorOperation {
             | Self::SupervisorAwaitRestart { .. }
             | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),
             Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
+            Self::SelfHandle(_) => (Vec::new(), actor.handle_ty.clone()),
             Self::Spawn(_) => (
                 actor
                     .fields

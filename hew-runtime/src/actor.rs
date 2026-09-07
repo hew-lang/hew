@@ -7574,6 +7574,23 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
     unsafe { &*actor }.id
 }
 
+/// The running actor's own `LocalPid` token, or `0` outside an actor.
+///
+/// `self` in an actor body is that actor's handle, and a handle is the same
+/// token `hew_actor_spawn_native` hands back — not the `HewActor*` that
+/// [`hew_actor_self`] returns. Reading it from the registry keeps one authority
+/// for local handle identity, so a self-handle routes exactly as a spawned one
+/// does.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_actor_self_token() -> usize {
+    let actor_id = hew_actor_self_pid();
+    if actor_id == 0 {
+        return 0;
+    }
+    crate::lifetime::local_handles::current_actor_token(actor_id).map_or(0, usize::from)
+}
+
 /// Self-stop: the currently running actor requests its own shutdown.
 ///
 /// Closes the mailbox and CAS transitions from `Running` to `Stopping`.

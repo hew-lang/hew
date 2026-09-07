@@ -1,0 +1,11 @@
+// Reject fixture: the negative control for `self` as a value. Inside an actor
+// body `self` is the actor's own handle; a free function has no actor, so
+// binding `self` there is still an undefined name.
+fn own_handle() -> i64 {
+    let me = self;
+    0
+}
+
+fn main() {
+    println(own_handle());
+}

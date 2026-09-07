@@ -1,4 +1,18 @@
-# Hew Language Guide
+
+
+An actor gets its own handle by writing `self`, so it can hand another actor a way to call back:
+
+<!-- doctest: skip -->
+
+```hew
+actor Worker {
+    var registry: LocalPid<Registry>,
+    receive fn enrol() {
+        let _ = registry.take(self);   // `self` is this worker's LocalPid<Worker>
+    }
+    receive fn done() { println("called back"); }
+}
+```# Hew Language Guide
 
 A reference for writing correct idiomatic Hew. Every example below was executed against `target/debug/hew` and ran clean.
 

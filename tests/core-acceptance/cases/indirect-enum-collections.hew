@@ -45,9 +45,16 @@ fn main() -> i64 {
         .None => println("missing"),
     }
     println(index.len());
+    match index.get("two") {
+        .Some(copy) => println(render(copy)),
+        .None => println("absent"),
+    }
+    println(render(index["two"]));
+
 
     var live: Vec<Item> = Vec.new();
     live.push(Item.Nest(Item.Tag("faulting"), Item.Count(0)));
+    println(render(live[0]));
     println(render(live[live.len()]));
     0
 }

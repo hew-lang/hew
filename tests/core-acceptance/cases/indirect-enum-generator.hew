@@ -20,6 +20,16 @@ gen fn frames(count: i64) -> Frame {
     }
 }
 
+gen fn batches(count: i64) -> Vec<Frame> {
+    defer println("batches cleaned");
+    for step in 0..count {
+        var batch: Vec<Frame> = Vec.new();
+        batch.push(Frame.Label(f"b{step}"));
+        batch.push(Frame.Wrap(Frame.Depth(step)));
+        yield batch;
+    }
+}
+
 fn main() -> i64 {
     for frame in frames(2) {
         println(render(frame));
@@ -29,6 +39,21 @@ fn main() -> i64 {
         println(render(frame));
         seen = seen + 1;
         if seen == 3 {
+            break;
+        }
+    }
+    for batch in batches(2) {
+        var line = "";
+        for frame in batch {
+            line = line + render(frame) + ";";
+        }
+        println(line);
+    }
+    var batches_seen = 0;
+    for batch in batches(100) {
+        println(batch.len());
+        batches_seen = batches_seen + 1;
+        if batches_seen == 2 {
             break;
         }
     }

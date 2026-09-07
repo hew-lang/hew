@@ -434,18 +434,7 @@ echo "PASS borrow_type_outside_extern (reject)"
 # return-typed value by observed execution instead.
 run_accept_expect_stdout "string_return"
 
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/01-arith.hew" >"${accept_output}" 2>&1
-arith01_bin="${ROOT}/.tmp/compile-out/01-arith"
-if "${arith01_bin}" >>"${accept_output}" 2>&1; then
-    arith01_status=0
-else
-    arith01_status=$?
-fi
-if [[ "${arith01_status}" -ne 7 ]]; then
-    echo "expected 01-arith fixture to exit 7, got ${arith01_status}" >&2
-    cat "${accept_output}" >&2
-    exit 1
-fi
+run_accept_expect_status "01-arith" 7
 
 "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
 arith_bin="${ROOT}/.tmp/compile-out/arith_call"
@@ -1945,7 +1934,7 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_await_task_dro
     echo "expected select_arm_await_task_dropped fixture to fail" >&2
     exit 1
 fi
-grep -qF 'select arm source must be actor.method(args)' "${reject_output}"
+grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}"
 
 # Reject (SELECT ship-3, HEW-SPEC §4.11.1): the stream-next arm
 # `<id> from <stream>.recv()` over a Stream<T> is NOT a sealed select form — the
@@ -1956,7 +1945,7 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_stream_recv_dr
     echo "expected select_arm_stream_recv_dropped fixture to fail" >&2
     exit 1
 fi
-grep -qF 'select arm source must be actor.method(args)' "${reject_output}"
+grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}"
 
 # Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;
 # main returns 42 after bootstrap completes successfully.
@@ -2300,7 +2289,6 @@ echo "PASS on_down_hook_missing_import (reject)"
 #   (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text for
 #   `max_heap=65536` directly; that check is gone, so this row now only
 #   proves the annotation's effect by observed execution.)
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "actor_max_heap_basic" 42
 
 # `#[max_heap(N)]` wire-through — supervisor child path:
@@ -2313,7 +2301,6 @@ run_accept_expect_status "actor_max_heap_basic" 42
 #   (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text for
 #   `max_heap=131072` directly; that check is gone, so this row now only
 #   proves the annotation's effect by observed execution.)
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "supervisor_max_heap" 42
 
 # declared mailbox capacity + overflow policy must genuinely bound the
@@ -2329,7 +2316,6 @@ run_accept_expect_status "supervisor_max_heap" 42
 #   (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text for
 #   `mailbox_capacity=4 overflow=DropNew` directly; that check is gone, so
 #   this row now only proves the annotation's effect by observed execution.)
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/mailbox_bounded_drop_new.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "mailbox_bounded_drop_new" 0
 
 # A lossy actor send is Result-typed, reports the exact drop, and cannot be
@@ -3628,10 +3614,8 @@ run_accept_expect_stdout "gen_fn_fn_typed_param"
 #   has no equivalent single-line text to grep for the same per-local
 #   guard-flag shape, so the silent-leak coverage these two rows added is
 #   lost -- only the exit-code check remains.)
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/closure_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "closure_consume_reassign_overwrite_release" 0
 
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/gen_fn_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "gen_fn_consume_reassign_overwrite_release" 0
 
 # Reject: a generator that captures a closure-with-env must still fail closed

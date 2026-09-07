@@ -56,11 +56,11 @@ pub use optimize::{
 };
 pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, checked_binary_failure_kinds,
-    checked_binary_types_match, runtime_failure_trap_kind, variant_field_recipes,
-    variant_field_types, AggregateFieldRecipe, Binding, BindingId, BindingTarget, BoundaryDecision,
-    BytesLiteralId, OwnKind, OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin,
-    SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TaskScopeJoinMode, TrapKind,
-    ValueCloseSelection,
+    checked_binary_types_match, pipe_parts, runtime_failure_trap_kind, sink_element,
+    stream_element, variant_field_recipes, variant_field_types, AggregateFieldRecipe, Binding,
+    BindingId, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, OwnerRoot, PlaceBase,
+    PlaceDecl, PlaceId, PlaceOrigin, SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId,
+    TaskScopeJoinMode, TrapKind, ValueCloseSelection,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use resource::{verify_resource_release, ResourceCarrier, ResourceExtern, ResourceRelease};

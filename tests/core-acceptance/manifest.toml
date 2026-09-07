@@ -1708,3 +1708,51 @@ timeout_seconds = 15
 stdout = "held:err\n"
 stderr = "error: failed: too large\n"
 exit = 1
+
+[[case]]
+id = "actor-methods"
+intent = "A handler calls two actor methods by bare name, one reading and one mutating state, while the actor owns a resource field released once at terminal cleanup."
+source = "cases/actor-methods.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "total count\n2\ntotal count\n5\nclosed\n"
+exit = 0
+
+[[case]]
+id = "actor-lifecycle-hooks"
+intent = "The start hook runs before the first message, stop hooks run in lexical order with state live, and `await close` returns only after the resource field is released."
+source = "cases/actor-lifecycle-hooks.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "start\n2\nstop\n2\nstop again\nclosed\n"
+exit = 0
+
+[[case]]
+id = "actor-stop-hook-fault"
+intent = "A faulting stop hook ends the hook sequence, reaches the closing observer as a fault with the lifecycle diagnostic retained, and still releases the resource field once."
+source = "cases/actor-stop-hook-fault.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nstop\n"
+stderr = "hew: failure: UserPanic (212): goodbye failed\nhew: failure: UserPanic (212)\n"
+exit = 212
+
+[[case]]
+id = "actor-stream-consumer"
+intent = "A receive gen fn feeds another actor's `for await` from a snapshot of its state; a consumer that leaves early ends the producer turn, so a later ask is answered and the state is unchanged."
+source = "cases/actor-stream-consumer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "item:item\nitem:item\nitem:item\n3\nitem:item\nitem:item\n5\n10\nclosed\n"
+exit = 0

@@ -108,7 +108,20 @@ pub(super) type Plan = BTreeMap<BlockId, Region>;
 
 pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     match term {
+        PhysicalTerminator::StreamSend {
+            normal,
+            closed,
+            cancel,
+            unwind,
+            ..
+        } => vec![normal, closed, cancel, unwind],
         PhysicalTerminator::GeneratorYield {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::StreamNext {
             normal,
             cancel,
             unwind,
@@ -203,6 +216,9 @@ fn operation_storage(
     match operation {
         PhysicalOp::TaskScopeEnter { duration, .. } => used.extend(duration),
         PhysicalOp::TaskScopeClose { .. } => {}
+        PhysicalOp::StreamPipe { stream, sink, .. } => {
+            defined.extend([*stream, *sink]);
+        }
         PhysicalOp::GeneratorMake { dest, callable, .. }
         | PhysicalOp::TaskSpawn { dest, callable, .. } => {
             defined.insert(*dest);
@@ -360,6 +376,8 @@ pub(super) fn verify_calls(
             | PhysicalTerminator::TaskSelect { .. }
             | PhysicalTerminator::GeneratorYield { .. }
             | PhysicalTerminator::GeneratorNext { .. }
+            | PhysicalTerminator::StreamNext { .. }
+            | PhysicalTerminator::StreamSend { .. }
             | PhysicalTerminator::TaskAwait { .. }
             | PhysicalTerminator::ActorAsk { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }

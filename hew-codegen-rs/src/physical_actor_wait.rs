@@ -74,7 +74,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.store_active_fault(fault, HEW_TRAP_USER_PANIC)
     }
 
-    fn discard_pending_message(&self, source: StorageId) -> CodegenResult<()> {
+    pub(super) fn discard_pending_message(&self, source: StorageId) -> CodegenResult<()> {
         let recipe = self
             .module
             .actor_recipes

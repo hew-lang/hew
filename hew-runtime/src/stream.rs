@@ -942,6 +942,95 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
     }))
 }
 
+/// Create one bounded element pipe for a checked stream producer request.
+/// Elements move as raw bytes of `elem_size`; `elem_drop` releases whichever
+/// elements are still queued when the pipe ends.
+///
+/// # Safety
+/// `sink_out` is a writable slot that receives the owned sink half.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_pipe_native(
+    capacity: i64,
+    elem_size: usize,
+    elem_drop: Option<hew_cabi::vec::HewValueDropThunk>,
+    sink_out: *mut *mut HewSink,
+) -> *mut HewStream {
+    // SAFETY: the pair constructor accepts any capacity.
+    let pair = unsafe { hew_stream_channel(capacity) };
+    if pair.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: the pair was just allocated by `hew_stream_channel`.
+    let pair = unsafe { Box::from_raw(pair) };
+    let layout = hew_cabi::vec::HewValueLayout {
+        size: elem_size,
+        align: 1,
+        ownership_kind: if elem_drop.is_some() {
+            hew_cabi::vec::HewTypeOwnershipKind::LayoutManaged
+        } else {
+            hew_cabi::vec::HewTypeOwnershipKind::Plain
+        },
+        clone_fn: None,
+        drop_fn: elem_drop,
+        visit_close: None,
+    };
+    // SAFETY: both halves are live and share the core this pair created.
+    unsafe {
+        if let Some(core) = (*pair.stream).channel.as_ref() {
+            core.stamp_elem_layout(&layout);
+        }
+        *sink_out = pair.sink;
+    }
+    let stream = pair.stream;
+    std::mem::forget(pair);
+    stream
+}
+
+/// Poll the checked consumer side of a pipe: 1 with an element written to
+/// `out`, 2 at end of stream, 3 after a producer fault, 0 while parked.
+///
+/// # Safety
+/// `stream` is a live pipe read half, `waker` obeys the waker contract, and
+/// `out` is writable for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_next_native(
+    stream: *mut HewStream,
+    waker: *const crate::wake::HewWaker,
+    out: *mut c_void,
+    size: usize,
+) -> i32 {
+    // SAFETY: stream is a live handle per caller contract.
+    let Some(core) = (unsafe { &*stream }).channel.as_ref() else {
+        return 2;
+    };
+    // SAFETY: forwarded from the caller's contract.
+    unsafe { core.next_native(&*waker, out, size) }
+}
+
+/// Poll the checked producer side of a pipe: 1 after the element transferred,
+/// 2 when the consumer is gone, 0 while parked on capacity.
+///
+/// # Safety
+/// `sink` is a live pipe write half, `waker` obeys the waker contract, and
+/// `data` points to one live element of `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_send_native(
+    sink: *mut HewSink,
+    waker: *const crate::wake::HewWaker,
+    data: *const c_void,
+    size: usize,
+) -> i32 {
+    // SAFETY: sink is a live handle per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        return 2;
+    }
+    // SAFETY: the borrow stays valid for the sink's lifetime.
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    // SAFETY: forwarded from the caller's contract.
+    unsafe { core.send_native(&*waker, data, size) }
+}
+
 /// Return whether `pair` is a valid stream-pair handle.
 #[no_mangle]
 pub const extern "C" fn hew_stream_pair_is_valid(pair: *const HewStreamPair) -> bool {

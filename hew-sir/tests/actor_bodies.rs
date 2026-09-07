@@ -175,3 +175,137 @@ fn verifier_refuses_a_method_call_from_another_actor() {
         "{diagnostics:#?}"
     );
 }
+
+const STREAM: &str = r"
+actor Source {
+    var base: i64 = 10,
+    receive gen fn items(count: i64) -> i64 {
+        for index in 0..count {
+            base = base + 1;
+            yield base + index;
+        }
+    }
+}
+fn main() {
+    let source = spawn Source();
+    for await item in source.items(3) { println(item); }
+    await close(source);
+}
+";
+
+#[test]
+fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
+    let module = lower_source(STREAM);
+    let actor = &module.actors[0];
+    let handler = &actor.handlers[0];
+    assert_eq!(handler.stream, Some(hew_types::ResolvedTy::I64));
+    assert_eq!(handler.return_ty, hew_types::ResolvedTy::Unit);
+    let sink = handler.params.last().unwrap();
+    assert_eq!(
+        hew_sir::sink_element(sink),
+        Some(&hew_types::ResolvedTy::I64)
+    );
+    let producer = module
+        .callable(handler.callable)
+        .expect("producer callable");
+    assert_eq!(
+        producer.signature.params.last().unwrap().passing,
+        SemParamPassing::Consume,
+        "the sink is owned by the producer turn"
+    );
+    let body = module
+        .functions
+        .iter()
+        .find(|function| function.callable == handler.callable)
+        .unwrap();
+    let sends: Vec<_> = body
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::StreamSend,
+                inputs,
+                resumes,
+                ..
+            } => Some((inputs.clone(), resumes.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sends.len(), 1);
+    let (inputs, resumes) = &sends[0];
+    assert_eq!(
+        *resumes, 2,
+        "an accepted send and a closed consumer both resume"
+    );
+    assert_eq!(inputs[0].decision, BoundaryDecision::Borrow);
+    assert_eq!(inputs[0].operand.value, body.params.last().unwrap().value);
+    assert_eq!(inputs[1].decision, BoundaryDecision::Move);
+    // The body writes `base` through a local snapshot, never the state seat.
+    assert!(body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .all(|op| !matches!(
+            op.kind,
+            hew_sir::SemOpKind::StoreAssign { place, .. }
+                if body.places.iter().any(|declaration| declaration.id == place
+                    && matches!(declaration.origin, hew_sir::PlaceOrigin::ActorState { .. }))
+        )));
+    let main = module
+        .functions
+        .iter()
+        .find(|function| Some(function.callable) == module.entry_callable)
+        .unwrap();
+    assert!(main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, hew_sir::SemOpKind::StreamPipe { .. })));
+    assert!(main.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::ActorCall {
+            operation: hew_sir::ActorOperation::StreamStart { .. },
+            ..
+        }
+    )));
+    assert!(main.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::Suspend {
+            kind: hew_sir::SuspendKind::StreamNext,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn verifier_refuses_a_stream_send_that_keeps_its_element() {
+    let mut module = lower_source(STREAM);
+    let handler = module.actors[0].handlers[0].callable;
+    let body = module
+        .functions
+        .iter_mut()
+        .find(|function| function.callable == handler)
+        .unwrap();
+    let mut changed = false;
+    for block in &mut body.blocks {
+        if let SemTerminator::Suspend {
+            kind: hew_sir::SuspendKind::StreamSend,
+            inputs,
+            ..
+        } = &mut block.terminator
+        {
+            inputs[1].decision = BoundaryDecision::Borrow;
+            changed = true;
+        }
+    }
+    assert!(changed);
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidTerminator { reason }
+                if reason.contains("StreamSend suspension")
+        )),
+        "{diagnostics:#?}"
+    );
+}

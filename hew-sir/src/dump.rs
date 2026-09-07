@@ -160,6 +160,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::GeneratorMake { callable, .. } => {
             writeln!(out, "generator.make %{}", callable.value.0).expect("write to String");
         }
+        SemOpKind::StreamPipe { capacity } => {
+            writeln!(out, "stream.pipe {capacity}").expect("write to String");
+        }
         SemOpKind::TaskSpawn { scope, callable } => {
             writeln!(out, "task.spawn #{} %{}", scope.0, callable.value.0)
                 .expect("write to String");

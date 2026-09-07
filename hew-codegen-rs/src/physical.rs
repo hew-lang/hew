@@ -27,6 +27,8 @@ mod generators;
 mod io;
 #[path = "physical_select.rs"]
 mod select;
+#[path = "physical_stream.rs"]
+mod stream;
 #[path = "physical_suspend.rs"]
 mod suspend;
 
@@ -59,8 +61,9 @@ use hew_mir::{
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_runtime::internal::types::{
-    HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
-    HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_USER_PANIC,
+    HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+    HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::collection_type_arguments;
@@ -1383,6 +1386,7 @@ fn build_module_with_host<'ctx>(
     emitter.emit_collection_value_descriptors()?;
     emitter.emit_task_descriptors()?;
     emitter.emit_generator_descriptors()?;
+    emitter.emit_stream_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
@@ -1955,6 +1959,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalOp::GeneratorMake { callable, dest, .. } => {
                 self.emit_generator_make(*callable, *dest)
             }
+            PhysicalOp::StreamPipe {
+                capacity,
+                stream,
+                sink,
+                element,
+            } => self.emit_stream_pipe(*capacity, *stream, *sink, element),
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
             PhysicalOp::TaskScopeEnter {
@@ -2737,6 +2747,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
+            PhysicalTerminator::StreamNext {
+                stream,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_stream_next(stream, *result, normal, cancel, unwind),
+            PhysicalTerminator::StreamSend {
+                sink,
+                value,
+                element,
+                normal,
+                closed,
+                cancel,
+                unwind,
+            } => self.emit_stream_send(sink, value, element, normal, closed, cancel, unwind),
             PhysicalTerminator::ValueClose {
                 index,
                 destroy,

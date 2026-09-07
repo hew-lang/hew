@@ -1,0 +1,27 @@
+import std.stream;
+
+actor Keeper {
+    var journal: Stream<string>,
+    #[on(stop)]
+    fn stopping() { println("stop"); panic("goodbye failed"); }
+    #[on(stop)]
+    fn never() { println("unreachable hook"); }
+    receive fn ping() -> i64 { 1 }
+}
+
+fn open(path: string) -> Stream<string> {
+    match stream.from_file(path) {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+fn main() {
+    let keeper = spawn Keeper(journal: open("resource-read.bin"));
+    match await keeper.ping() {
+        .Ok(value) => println(value),
+        .Err(_) => panic("ping failed"),
+    }
+    await close(keeper);
+    println("unreachable");
+}

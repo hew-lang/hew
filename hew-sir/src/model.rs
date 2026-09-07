@@ -972,6 +972,12 @@ pub enum SemOpKind {
         closure: ClosureId,
         callable: Operand,
     },
+    /// Create one bounded element pipe: results are its owned `Stream<T>` and
+    /// `Sink<T>` halves. Each half releases independently; unconsumed
+    /// elements are destroyed by whichever half closes last.
+    StreamPipe {
+        capacity: u32,
+    },
     /// Begin a lexical task lifetime with explicit cancellation ancestry.
     TaskScopeEnter {
         scope: crate::TaskScopeId,
@@ -1218,6 +1224,7 @@ impl SemOpKind {
             Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
+            | Self::StreamPipe { .. }
             | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
@@ -1306,6 +1313,7 @@ impl SemOpKind {
             Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
+            | Self::StreamPipe { .. }
             | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
@@ -1395,6 +1403,7 @@ impl SemOpKind {
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
             | Self::GeneratorMake { .. }
+            | Self::StreamPipe { .. }
             | Self::FunctionMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
@@ -1464,6 +1473,7 @@ impl SemOpKind {
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
             | Self::GeneratorMake { .. }
+            | Self::StreamPipe { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::CopyValue { .. }
@@ -1520,6 +1530,7 @@ impl SemOpKind {
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }
                 | Self::GeneratorMake { .. }
+                | Self::StreamPipe { .. }
                 | Self::ClosureMake { .. }
                 | Self::CallableCoerce { .. }
                 | Self::DestroyValue { .. }

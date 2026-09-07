@@ -585,6 +585,39 @@ pub struct Binding {
     pub target: BindingTarget,
 }
 
+/// The element type of an exact `Stream<T>`.
+#[must_use]
+pub fn stream_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Stream),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// The element type of an exact `Sink<T>`.
+#[must_use]
+pub fn sink_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sink),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// The shared element type of one pipe's `Stream<T>` and `Sink<T>` halves.
+#[must_use]
+pub fn pipe_parts<'a>(stream: &'a ResolvedTy, sink: &ResolvedTy) -> Option<&'a ResolvedTy> {
+    let element = stream_element(stream)?;
+    (sink_element(sink) == Some(element)).then_some(element)
+}
+
 #[cfg(test)]
 mod tests {
     use super::OwnKind;

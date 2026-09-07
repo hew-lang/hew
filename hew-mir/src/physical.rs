@@ -573,6 +573,14 @@ impl PhysicalSetOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
+    /// One bounded element pipe. Unconsumed elements are released through
+    /// the element recipe by whichever half closes last.
+    StreamPipe {
+        capacity: u32,
+        stream: StorageId,
+        sink: StorageId,
+        element: PhysicalValueRecipe,
+    },
     GeneratorMake {
         closure: ClosureId,
         callable: StorageId,
@@ -883,6 +891,26 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    /// Park until the exclusively borrowed stream yields an element or ends.
+    StreamNext {
+        stream: ArgumentTransfer,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    /// Transfer one element into the borrowed sink, parking on capacity. The
+    /// element is consumed on every exit; `closed` resumes after the consumer
+    /// closed its half.
+    StreamSend {
+        sink: ArgumentTransfer,
+        value: ArgumentTransfer,
+        element: PhysicalValueRecipe,
+        normal: PhysicalEdge,
+        closed: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     ActorAsk {
         actor: ActorId,
         message: u32,
@@ -2344,6 +2372,19 @@ impl FunctionLowerer<'_> {
             SemOpKind::GeneratorMake { closure, callable } => {
                 one(self.lower_generator_make(operation, *closure, callable)?)
             }
+            SemOpKind::StreamPipe { capacity } => {
+                let [stream, sink] = operation.results.as_slice() else {
+                    return Err(PhysicalError::new("stream pipe lacks its two halves"));
+                };
+                let element = hew_sir::pipe_parts(&stream.ty, &sink.ty)
+                    .ok_or_else(|| PhysicalError::new("stream pipe halves disagree on element"))?;
+                one(PhysicalOp::StreamPipe {
+                    capacity: *capacity,
+                    stream: self.value(stream.id)?,
+                    sink: self.value(sink.id)?,
+                    element: physical_value_recipe(self.module, self.glue_ids, element)?,
+                })
+            }
             SemOpKind::TaskSpawn { scope, callable } => {
                 let dest = self.one_result(operation)?;
                 let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
@@ -2840,6 +2881,45 @@ impl FunctionLowerer<'_> {
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::StreamNext,
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::StreamNext {
+                stream: self.argument_transfers(inputs)?[0],
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::StreamSend,
+                inputs,
+                resumes,
+                cancel,
+                unwind,
+                ..
+            } => {
+                let transfers = self.argument_transfers(inputs)?;
+                let [normal, closed] = resumes.as_slice() else {
+                    return Err(PhysicalError::new(
+                        "stream send lacks its accepted and closed resumes",
+                    ));
+                };
+                let element = &self.storage[self.value(inputs[1].operand.value)?.0 as usize].ty;
+                Ok(PhysicalTerminator::StreamSend {
+                    sink: transfers[0],
+                    value: transfers[1],
+                    element: physical_value_recipe(self.module, self.glue_ids, element)?,
+                    normal: self.lower_edge(normal)?,
+                    closed: self.lower_edge(closed)?,
+                    cancel: self.lower_edge(cancel)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
             SemTerminator::Suspend { .. } => Err(PhysicalError::new(
                 "suspension lacks a physical operation contract",
             )),
@@ -4347,6 +4427,25 @@ fn verify_operation_storage(
 ) -> Result<(), PhysicalError> {
     match operation {
         PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
+        PhysicalOp::StreamPipe {
+            capacity,
+            stream,
+            sink,
+            element,
+        } => {
+            let stream = storage(function, *stream)?;
+            let sink = storage(function, *sink)?;
+            if *capacity == 0
+                || stream.own != OwnKind::Owned
+                || sink.own != OwnKind::Owned
+                || hew_sir::pipe_parts(&stream.ty, &sink.ty) != Some(&element.ty)
+            {
+                return Err(PhysicalError::new(
+                    "stream pipe halves disagree with their owned element contract",
+                ));
+            }
+            verify_value_recipe(module, element)?;
+        }
         PhysicalOp::TaskScopeEnter { duration, .. } => {
             if let Some(duration) = duration {
                 if storage(function, *duration)?.ty != ResolvedTy::Duration {
@@ -4993,6 +5092,10 @@ fn apply_operation(
             consume_if_owned(function, state, *callable)?;
             define(function, state, *dest, block, "task handle")?;
         }
+        PhysicalOp::StreamPipe { stream, sink, .. } => {
+            define(function, state, *stream, block, "stream half")?;
+            define(function, state, *sink, block, "sink half")?;
+        }
         PhysicalOp::FunctionMake { dest, .. } | PhysicalOp::Const { dest, .. } => {
             define(function, state, *dest, block, "constant")?;
         }
@@ -5360,6 +5463,70 @@ fn terminator_successors(
         | PhysicalTerminator::GeneratorNext { .. }
         | PhysicalTerminator::ValueClose { .. } => {
             generators::successors(function, terminator, state, block)
+        }
+        PhysicalTerminator::StreamNext {
+            stream,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let ArgumentTransfer::BorrowMut(stream) = stream else {
+                return Err(PhysicalError::new(
+                    "stream receive requires an exclusive stream",
+                ));
+            };
+            initialized(function, &state, *stream, block, "received stream")?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "stream receive cannot replace an active fault",
+                ));
+            }
+            let mut completed = state.clone();
+            define(function, &mut completed, *result, block, "received element")?;
+            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
+        PhysicalTerminator::StreamSend {
+            sink,
+            value,
+            normal,
+            closed,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let (ArgumentTransfer::Borrow(sink), ArgumentTransfer::Move(value)) = (sink, value)
+            else {
+                return Err(PhysicalError::new(
+                    "stream send borrows its sink and consumes its element",
+                ));
+            };
+            initialized(function, &state, *sink, block, "sending sink")?;
+            initialized(function, &state, *value, block, "sent element")?;
+            consume_if_owned(function, &mut state, *value)?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "stream send cannot replace an active fault",
+                ));
+            }
+            let mut successors = vec![
+                apply_edge(function, normal, state.clone(), block)?,
+                apply_edge(function, closed, state.clone(), block)?,
+            ];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
         }
         PhysicalTerminator::TaskAwait {
             task,
@@ -5940,6 +6107,51 @@ fn verify_terminator(
         | PhysicalTerminator::GeneratorNext { .. }
         | PhysicalTerminator::ValueClose { .. } => {
             generators::verify_suspend(module, function, terminator)?;
+            for successor in defer::edges(terminator) {
+                edge(successor)?;
+            }
+            Ok(())
+        }
+        PhysicalTerminator::StreamNext { stream, result, .. } => {
+            let ArgumentTransfer::BorrowMut(stream) = stream else {
+                return Err(PhysicalError::new(
+                    "stream receive requires an exclusive stream",
+                ));
+            };
+            let element = hew_sir::stream_element(&slot(*stream)?.ty)
+                .ok_or_else(|| PhysicalError::new("stream receive has no stream input"))?;
+            if slot(*result)?.ty
+                != ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![element.clone()])
+            {
+                return Err(PhysicalError::new(
+                    "stream receive changes its element type",
+                ));
+            }
+            for successor in defer::edges(terminator) {
+                edge(successor)?;
+            }
+            Ok(())
+        }
+        PhysicalTerminator::StreamSend {
+            sink,
+            value,
+            element,
+            ..
+        } => {
+            let (ArgumentTransfer::Borrow(sink), ArgumentTransfer::Move(value)) = (sink, value)
+            else {
+                return Err(PhysicalError::new(
+                    "stream send borrows its sink and consumes its element",
+                ));
+            };
+            if hew_sir::sink_element(&slot(*sink)?.ty) != Some(&element.ty)
+                || slot(*value)?.ty != element.ty
+            {
+                return Err(PhysicalError::new(
+                    "stream send element differs from its sink",
+                ));
+            }
+            verify_value_recipe(module, element)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
             }
@@ -6825,34 +7037,45 @@ fn actor_value_recipes(
     module: &SemModule,
     ids: &PhysicalGlueIds,
 ) -> Result<BTreeMap<ResolvedTy, PhysicalValueRecipe>, PhysicalError> {
-    module
-        .actors
+    let mut types = Vec::new();
+    for actor in &module.actors {
+        types.push(actor.state_ty.clone());
+        types.extend(actor.fields.iter().map(|field| field.ty.clone()));
+        for handler in &actor.handlers {
+            types.extend(handler.params.iter().cloned());
+            types.push(handler.return_ty.clone());
+        }
+    }
+    // Waiting requests retain their typed payload until admission.
+    types.extend(module.functions.iter().flat_map(|function| {
+        function
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.terminator {
+                SemTerminator::ActorCall {
+                    operation:
+                        ActorOperation::Submit {
+                            policy, message_ty, ..
+                        },
+                    ..
+                } if policy.may_suspend() => Some(message_ty.clone()),
+                SemTerminator::ActorCall {
+                    operation: ActorOperation::StreamStart { actor, message },
+                    ..
+                } => module
+                    .actor(*actor)
+                    .and_then(|actor| {
+                        actor
+                            .handlers
+                            .iter()
+                            .find(|handler| handler.message_id == *message)
+                    })
+                    .map(|handler| ResolvedTy::Tuple(handler.params.clone())),
+                _ => None,
+            })
+    }));
+    types
         .iter()
-        .flat_map(|actor| {
-            std::iter::once(&actor.state_ty)
-                .chain(actor.fields.iter().map(|field| &field.ty))
-                .chain(actor.handlers.iter().flat_map(|handler| {
-                    handler
-                        .params
-                        .iter()
-                        .chain(std::iter::once(&handler.return_ty))
-                }))
-        })
-        .chain(module.functions.iter().flat_map(|function| {
-            function
-                .blocks
-                .iter()
-                .filter_map(|block| match &block.terminator {
-                    SemTerminator::ActorCall {
-                        operation:
-                            ActorOperation::Submit {
-                                policy, message_ty, ..
-                            },
-                        ..
-                    } if policy.may_suspend() => Some(message_ty),
-                    _ => None,
-                })
-        }))
         .filter(|ty| **ty != ResolvedTy::Unit)
         .map(|ty| physical_value_recipe(module, ids, ty).map(|recipe| (ty.clone(), recipe)))
         .collect::<Result<_, _>>()

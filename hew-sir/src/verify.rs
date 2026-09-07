@@ -447,6 +447,8 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for key in module.type_facts.keys().filter(|key| {
         matches!(key.0, ResolvedTy::Task(_))
             || crate::generator_parts(&key.0).is_some()
+            || key.0.is_builtin(hew_types::BuiltinType::Stream)
+            || key.0.is_builtin(hew_types::BuiltinType::Sink)
             || (hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
                 || hew_types::runtime_call::IoHandleKind::of_ty(&key.0).is_some())
     }) {
@@ -2221,6 +2223,8 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || crate::stream_element(ty).is_some()
+        || crate::sink_element(ty).is_some()
         || module.actors.iter().any(|actor| actor.handle_ty == *ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
@@ -2339,6 +2343,24 @@ fn verify_operation_shape(
             variant_shapes,
             diagnostics,
         );
+        return;
+    }
+    if let SemOpKind::StreamPipe { capacity } = operation.kind {
+        let element = match operation.results.as_slice() {
+            [stream, sink] => crate::pipe_parts(&stream.ty, &sink.ty).filter(|_| {
+                stream.own == crate::OwnKind::Owned && sink.own == crate::OwnKind::Owned
+            }),
+            _ => None,
+        };
+        if element.is_none() || capacity == 0 {
+            invalid_operation(
+                function,
+                operation.id,
+                "stream.pipe produces one owned Stream<T> and one owned Sink<T> of the same element"
+                    .to_string(),
+                diagnostics,
+            );
+        }
         return;
     }
     let expected_results = usize::from(!matches!(
@@ -3097,6 +3119,7 @@ fn verify_operation_shape(
         | SemOpKind::FunctionMake { .. }
         | SemOpKind::ClosureMake { .. }
         | SemOpKind::GeneratorMake { .. }
+        | SemOpKind::StreamPipe { .. }
         | SemOpKind::CallableCoerce { .. } => {}
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
@@ -4393,6 +4416,32 @@ fn verify_terminator_shape(
                         && types.get(&input.operand.value).and_then(crate::generator_parts)
                             .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
+                }
+                crate::SuspendKind::StreamNext => {
+                    resumes.len() == 1
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::BorrowMut
+                        && types.get(&input.operand.value).and_then(crate::stream_element)
+                            .is_some_and(|element| matches!(result, crate::CallResult::Value(value)
+                                if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![element.clone()])
+                                    && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))))
+                }
+                crate::SuspendKind::StreamSend => {
+                    // Only a stream producer body sends: its owned sink is
+                    // lent and the element transfers to the consumer.
+                    let element = callable_context.and_then(|context| {
+                        context.actors.iter().flat_map(|actor| &actor.handlers)
+                            .find(|handler| handler.callable == function.callable)
+                            .and_then(|handler| handler.stream.as_ref())
+                    });
+                    resumes.len() == 2
+                        && matches!(result, crate::CallResult::Unit)
+                        && matches!(inputs.as_slice(), [sink, value]
+                            if sink.decision == crate::BoundaryDecision::Borrow
+                            && value.decision == crate::BoundaryDecision::Move
+                            && element.is_some()
+                            && types.get(&sink.operand.value).and_then(crate::sink_element) == element
+                            && types.get(&value.operand.value) == element)
                 }
                 crate::SuspendKind::ValueClose { place, selection } => {
                     resumes.len() == 1

@@ -9,12 +9,9 @@ fn stream_owner() -> (SemModule, ResolvedTy) {
         is_opaque: false,
     };
     let mut module = encoding_fixture::skeleton(vec![ty.clone()], ResolvedTy::Unit);
-    module.resources.insert(
-        ty.clone(),
-        hew_sir::ResourceRelease::Builtin(
-            hew_types::runtime_call::RuntimeDropDescriptor::StreamClose,
-        ),
-    );
+    module
+        .resources
+        .insert(ty.clone(), hew_sir::ResourceRelease::Stream);
     module.functions[0].blocks = vec![hew_sir::SemBlock {
         id: BlockId(0),
         args: vec![],

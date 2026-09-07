@@ -63,11 +63,9 @@ impl InstanceService<'_> {
         if source
             .receive_handlers
             .iter()
-            .any(|handler| handler.is_generator || handler.every_ns.is_some())
+            .any(|handler| handler.every_ns.is_some())
         {
-            return Err(
-                "generator and periodic receives need their semantic body contracts".into(),
-            );
+            return Err("periodic receives need their scheduling contract".into());
         }
         if let Some(hook) = source.lifecycle_hooks.iter().find(|hook| {
             !matches!(
@@ -143,6 +141,7 @@ impl InstanceService<'_> {
                 &init.body,
                 "init",
                 true,
+                None,
             )?;
             self.actors[id.0 as usize].init = Some(body);
         }
@@ -160,6 +159,7 @@ impl InstanceService<'_> {
                 &hook.body,
                 &format!("hook_{}", hook.name),
                 false,
+                None,
             )?;
             match hook.kind {
                 hew_hir::HirLifecycleHookKind::Start => {
@@ -180,6 +180,7 @@ impl InstanceService<'_> {
                 &method.body,
                 &format!("method_{}", method.name),
                 false,
+                None,
             )?;
             // Bare calls from this actor's bodies resolve through the ordinary
             // direct-call table; the call site supplies the state seat.
@@ -188,6 +189,14 @@ impl InstanceService<'_> {
                 .insert(method.declaration.clone(), body);
             self.actors[id.0 as usize].methods.push(body);
         }
+        self.register_actor_handlers(id, source)
+    }
+
+    fn register_actor_handlers(
+        &mut self,
+        id: crate::ActorId,
+        source: &hew_hir::HirActorDecl,
+    ) -> Result<(), String> {
         for handler in &source.receive_handlers {
             let row = source
                 .protocol_descriptor
@@ -199,25 +208,56 @@ impl InstanceService<'_> {
                         .find(|row| row.name == handler.name)
                 })
                 .ok_or("receive body lacks its checker-selected protocol member")?;
-            let params: Vec<_> = handler
+            let mut params: Vec<_> = handler
                 .params
                 .iter()
                 .map(|param| param.ty.clone())
                 .collect();
-            if params != row.param_tys || handler.return_ty != row.return_ty {
-                return Err("actor protocol signature differs from its checked body".into());
+            // The protocol names a generator receive by its stream type; the
+            // body is checked against the element it yields.
+            let checked_return = if handler.is_generator {
+                ResolvedTy::named_builtin(
+                    "Stream",
+                    hew_types::BuiltinType::Stream,
+                    vec![handler.return_ty.clone()],
+                )
+            } else {
+                handler.return_ty.clone()
+            };
+            if params != row.param_tys || checked_return != row.return_ty {
+                return Err(format!(
+                    "actor protocol member `{}` ({:?} -> {}) differs from its checked body ({:?} -> {})",
+                    handler.name,
+                    row.param_tys,
+                    row.return_ty.user_facing(),
+                    params,
+                    handler.return_ty.user_facing()
+                ));
             }
+            // A stream producer's request carries the consumer's sink and
+            // replies through it, so its body returns unit.
+            let stream = handler.is_generator.then(|| handler.return_ty.clone());
+            let sink = stream.clone().map(|element| {
+                ResolvedTy::named_builtin("Sink", hew_types::BuiltinType::Sink, vec![element])
+            });
+            let return_ty = if stream.is_some() {
+                ResolvedTy::Unit
+            } else {
+                handler.return_ty.clone()
+            };
             let callable = self.register_actor_body(
                 id,
                 source,
                 handler.declaration.clone(),
                 &handler.state_bindings,
                 &handler.params,
-                handler.return_ty.clone(),
+                return_ty.clone(),
                 &handler.body,
                 &row.symbol,
                 true,
+                sink.as_ref(),
             )?;
+            params.extend(sink);
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
@@ -226,7 +266,8 @@ impl InstanceService<'_> {
                     message_id: row.msg_id,
                     callable,
                     params,
-                    return_ty: handler.return_ty.clone(),
+                    return_ty,
+                    stream,
                 });
         }
         Ok(())
@@ -247,6 +288,7 @@ impl InstanceService<'_> {
         body: &HirBlock,
         symbol: &str,
         transfers_arguments: bool,
+        implicit_owned: Option<&ResolvedTy>,
     ) -> Result<CallableId, String> {
         let id = CallableId(
             u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
@@ -289,6 +331,14 @@ impl InstanceService<'_> {
                 } else {
                     SemParamPassing::Borrow
                 },
+            });
+        }
+        if let Some(ty) = implicit_owned {
+            self.require_type_facts(ty)?;
+            signature.params.push(SemAbiParam {
+                ty: ty.clone(),
+                caller_visible_projection: false,
+                passing: SemParamPassing::Consume,
             });
         }
         self.require_signature_shapes(&signature)?;
@@ -573,12 +623,26 @@ impl Builder<'_, '_> {
             if self.ty(&sources[index].ty) != parameter.ty {
                 return Err("actor argument changes its protocol type".into());
             }
-            let value = values[index];
-            args.push(crate::BoundaryOperand {
+            args.push(values[index]);
+        }
+        self.emit_actor_call(operation, signature, args)
+    }
+
+    /// Transfer evaluated operands across one actor boundary and continue
+    /// with its typed result.
+    fn emit_actor_call(
+        &mut self,
+        operation: crate::ActorOperation,
+        signature: SemSignature,
+        args: Vec<ValueId>,
+    ) -> Result<Option<ValueId>, String> {
+        let args: Vec<_> = args
+            .into_iter()
+            .map(|value| crate::BoundaryOperand {
                 operand: Operand { value },
                 decision: crate::BoundaryDecision::Move,
-            });
-        }
+            })
+            .collect();
         for arg in &args {
             self.owned_live.remove(&arg.operand.value);
         }
@@ -876,4 +940,128 @@ impl Builder<'_, '_> {
                 .ok_or_else(|| "submission has no result".into()),
         }
     }
+
+    /// `pid.stream()`: create a bounded pipe, start the producer turn with
+    /// the request and its sink, and continue with the stream half.
+    pub(super) fn lower_actor_stream(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+        let HirExprKind::ActorGenStream {
+            receiver,
+            method,
+            args,
+        } = &expression.kind
+        else {
+            unreachable!()
+        };
+        let (target, target_ty) = self.delivery_target(receiver)?;
+        let actor = self.service.require_actor(&target_ty)?;
+        let handler = self.service.actors[actor.0 as usize]
+            .handlers
+            .iter()
+            .find(|handler| {
+                handler.declaration.full_path() == method.as_str() && handler.stream.is_some()
+            })
+            .ok_or("stream request has no exact producer member")?
+            .clone();
+        let stream_ty = self.ty(&expression.ty);
+        let Some(sink_ty) = handler.params.last() else {
+            return Err("stream producer lacks its sink parameter".into());
+        };
+        if crate::pipe_parts(&stream_ty, sink_ty) != handler.stream.as_ref()
+            || handler.params.len() != args.len() + 1
+            || handler
+                .params
+                .iter()
+                .zip(args)
+                .any(|(expected, arg)| *expected != self.ty(&arg.ty))
+        {
+            return Err("stream request disagrees with its producer protocol".into());
+        }
+        let mut values = Vec::new();
+        for arg in args {
+            values.push(lower_initial_value_transfer(
+                self,
+                arg,
+                "stream request argument",
+                OwnedBindingUse::Copy,
+            )?);
+            if !self.is_open() {
+                return Err("stream request argument diverged".into());
+            }
+        }
+        let provenance = crate::Provenance::Site(expression.site);
+        let (stream, sink) = self.emit_stream_pipe(&stream_ty, sink_ty, provenance.clone())?;
+        values.push(sink);
+        let payload_ty = ResolvedTy::Tuple(handler.params.clone());
+        let shape = self.service.require_aggregate_shape(&payload_ty)?;
+        let payload = self.emit_typed(
+            provenance.clone(),
+            &payload_ty,
+            crate::SemOpKind::AggregateMake {
+                shape,
+                fields: values
+                    .iter()
+                    .map(|value| Operand { value: *value })
+                    .collect(),
+            },
+        )?;
+        for value in values {
+            self.owned_live.remove(&value);
+        }
+        let operation = crate::ActorOperation::StreamStart {
+            actor,
+            message: handler.message_id,
+        };
+        let signature = operation.signature(&self.service.actors, |id| {
+            self.service
+                .callable(id)
+                .map(|callable| callable.signature.clone())
+        })?;
+        if self
+            .emit_actor_call(operation, signature, vec![target, payload])?
+            .is_some()
+        {
+            return Err("stream start has no result".into());
+        }
+        Ok(stream)
+    }
+
+    /// Both pipe halves are owned; the stream stays live for the caller and
+    /// the sink transfers into the producer's request.
+    fn emit_stream_pipe(
+        &mut self,
+        stream_ty: &ResolvedTy,
+        sink_ty: &ResolvedTy,
+        provenance: crate::Provenance,
+    ) -> Result<(ValueId, ValueId), String> {
+        self.service.require_type_facts(stream_ty)?;
+        self.service.require_type_facts(sink_ty)?;
+        let stream = self.fresh_value();
+        let sink = self.fresh_value();
+        let id = OpId(self.ops);
+        self.current_block_mut().append_op(crate::SemOp {
+            id,
+            results: vec![
+                ValueDef {
+                    id: stream,
+                    ty: stream_ty.clone(),
+                    own: OwnKind::Owned,
+                },
+                ValueDef {
+                    id: sink,
+                    ty: sink_ty.clone(),
+                    own: OwnKind::Owned,
+                },
+            ],
+            kind: crate::SemOpKind::StreamPipe {
+                capacity: STREAM_PIPE_CAPACITY,
+            },
+            provenance,
+        })?;
+        self.ops += 1;
+        self.owned_live.insert(stream, stream_ty.clone());
+        Ok((stream, sink))
+    }
 }
+
+/// Elements a producer may run ahead of its consumer before it parks.
+const STREAM_PIPE_CAPACITY: u32 = 16;

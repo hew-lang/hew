@@ -2183,6 +2183,8 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Closure { .. }
         )
         || crate::generator_parts(ty).is_some()
+        || crate::stream_element(ty).is_some()
+        || crate::sink_element(ty).is_some()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
@@ -2553,6 +2555,9 @@ struct Builder<'hir, 'service> {
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,
+    /// A stream producer body: the caller's sink it yields into and the
+    /// element type each yield transfers.
+    stream_sink: Option<(ValueId, ResolvedTy)>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2572,7 +2577,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             source,
             BodySource::Closure(_) | BodySource::Actor { .. }
         ));
-        if source_params.len() + receiver_count != callable.signature.params.len() {
+        // A stream producer owns the caller's sink as an implicit trailing
+        // parameter with no source binding.
+        let stream = match source {
+            BodySource::Actor { actor, .. } => service.actors[actor.0 as usize]
+                .handlers
+                .iter()
+                .find(|handler| handler.callable == callable.id)
+                .and_then(|handler| handler.stream.clone()),
+            BodySource::Function | BodySource::Closure(_) | BodySource::EntryAdapter(_) => None,
+        };
+        if source_params.len() + receiver_count + usize::from(stream.is_some())
+            != callable.signature.params.len()
+        {
             return Err(format!(
                 "SIR callable `{}` has {} parameter ABI facts, but its HIR template has {} parameter(s)",
                 callable.symbol,
@@ -2617,7 +2634,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 ))
             })
             .collect::<Result<Vec<(BlockArg, Binding)>, String>>()?;
-        let (params, source_bindings): (Vec<BlockArg>, Vec<Binding>) = params.into_iter().unzip();
+        let (mut params, source_bindings): (Vec<BlockArg>, Vec<Binding>) =
+            params.into_iter().unzip();
+        let stream_sink = stream.map(|element| {
+            let sink = BlockArg {
+                value: ValueId(values),
+                ty: callable.signature.params[callable.signature.params.len() - 1]
+                    .ty
+                    .clone(),
+                own: OwnKind::Owned,
+            };
+            values += 1;
+            let seat = sink.value;
+            params.push(sink);
+            (seat, element)
+        });
         let owned_live = params
             .iter()
             .filter(|param| param.own == OwnKind::Owned)
@@ -2654,6 +2685,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             task_scopes: Vec::new(),
             cleanup_may_fail: false,
             cleanup_draining: false,
+            stream_sink,
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
@@ -2866,8 +2898,66 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(function)
     }
 
+    /// A stream producer reads a snapshot of every state field it captures
+    /// (§4.12): the copy is a mutable local of this turn, and the actor's own
+    /// seat is untouched.
+    fn snapshot_stream_captures(
+        &mut self,
+        captures: &[hew_hir::HirGenCapture],
+        state_bindings: &[HirBinding],
+    ) -> Result<(), String> {
+        for capture in captures {
+            if capture.source != hew_hir::HirGenCaptureSource::ActorStateField {
+                continue;
+            }
+            let binding = state_bindings
+                .iter()
+                .find(|binding| binding.id == capture.binding)
+                .ok_or("stream producer captures an unknown state field")?;
+            let BindingTarget::Place(place) = self.binding_target(binding.id)? else {
+                return Err("stream producer state capture has no state seat".into());
+            };
+            let ty = self.ty(&capture.ty);
+            self.service.require_type_facts(&ty)?;
+            if self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].clone
+                == hew_types::CloneKind::None
+            {
+                return Err(format!(
+                    "stream producer cannot snapshot state field `{}`: its type has no copy",
+                    binding.name
+                ));
+            }
+            let value =
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::LoadCopy { place })?;
+            self.bind_source_value(binding, value)?;
+        }
+        Ok(())
+    }
+
     fn lower_source_body(&mut self, source: BodySource) -> Result<Option<Operand>, String> {
         match source {
+            BodySource::Actor { state_bindings, .. } if self.stream_sink.is_some() => {
+                // HIR shapes a stream producer as a generator block; the body
+                // runs as this actor turn and yields straight into the sink.
+                let body = self.function.body.clone();
+                let Some(HirExpr {
+                    kind:
+                        HirExprKind::GenBlock {
+                            body: producer,
+                            captures,
+                            ..
+                        },
+                    ..
+                }) = body.tail.as_deref()
+                else {
+                    return Err("stream producer body is not a generator block".into());
+                };
+                if !body.statements.is_empty() {
+                    return Err("stream producer body carries statements outside its block".into());
+                }
+                self.snapshot_stream_captures(captures, &state_bindings)?;
+                self.lower_block(producer, OwnedBindingUse::Return)
+            }
             BodySource::Function | BodySource::Actor { .. } => {
                 let body = self.function.body.clone();
                 self.lower_block(&body, OwnedBindingUse::Return)
@@ -4169,6 +4259,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),
+            HirExprKind::ActorGenStream { .. } => self.lower_actor_stream(expr),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {
@@ -6847,6 +6938,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             return self.lower_native_io(expr, operation, args);
+        }
+        if family == hew_types::RuntimeCallFamily::StreamNextLayout {
+            let [stream] = args else {
+                return Err("stream receive takes exactly one stream".into());
+            };
+            return self.lower_stream_next(expr, stream).map(Some);
         }
 
         let contract = family.semantic_contract().ok_or_else(|| {

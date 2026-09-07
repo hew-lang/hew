@@ -34,6 +34,9 @@
 //! does not exist on `wasm32`.
 
 use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::ptr;
+use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
@@ -45,6 +48,7 @@ use crate::lifetime::live_actors::ActorIncarnation;
 use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
 };
+use crate::wake::{HewWaker, OwnedWaker};
 
 /// Codegen ABI: the await entry parked the continuation; the runtime will wake
 /// it via `enqueue_resume`. The caller MUST `coro.suspend`.
@@ -103,6 +107,10 @@ struct Inner {
     /// `None` for Plain/String/Bytes elements — their envelopes own no heap
     /// beyond the `Vec<u8>` itself.
     elem_layout: Option<HewValueLayout>,
+    /// The checked consumer parked by [`ChannelCore::next_native`].
+    native_consumer: Option<Arc<OwnedWaker>>,
+    /// Checked producers parked on a full ring by [`ChannelCore::send_native`].
+    native_producers: Vec<Arc<OwnedWaker>>,
 }
 
 /// Shared in-memory pipe state, held by `Arc` from BOTH the stream backing and
@@ -152,6 +160,8 @@ impl ChannelCore {
                 consumer: None,
                 producers: VecDeque::new(),
                 elem_layout: None,
+                native_consumer: None,
+                native_producers: Vec::new(),
             }),
             cv: Condvar::new(),
             #[cfg(test)]
@@ -259,6 +269,109 @@ impl ChannelCore {
         // Release the core's in-flight ref (the single authority for it).
         // SAFETY: the core owned this ref; nothing else releases it.
         unsafe { hew_read_slot_free(w.slot) };
+    }
+
+    // ── Checked native peers ─────────────────────────────────────────────────
+    //
+    // A checked coroutine polls with its retained waker instead of a read
+    // slot: the element bytes move straight between the caller's storage and
+    // the queue, and a parked peer is woken through the waker it left here.
+
+    /// Whether `size` matches the element witness stamped on this pipe.
+    fn element_size_matches(inner: &Inner, size: usize) -> bool {
+        inner.elem_layout.is_some_and(|layout| layout.size == size)
+    }
+
+    /// Transfer the next element into `out`. Returns 1 with the element
+    /// written, 2 at end of stream, 3 after a producer fault, or 0 after
+    /// retaining `waker` for the next deposit or close.
+    ///
+    /// # Safety
+    /// `out` is writable for the stamped element size and `waker` obeys the
+    /// [`HewWaker`] contract.
+    pub unsafe fn next_native(&self, waker: &HewWaker, out: *mut c_void, size: usize) -> i32 {
+        let item;
+        let producer_wake;
+        let native_producers;
+        {
+            let mut inner = self.locked();
+            if !Self::element_size_matches(&inner, size) {
+                crate::channel_common::abort_elem_witness(
+                    "ChannelCore::next_native",
+                    "element size differs from the stamped pipe witness",
+                );
+            }
+            match inner.queue.pop_front() {
+                Some(bytes) => {
+                    item = bytes;
+                    producer_wake = Self::drain_one_producer(&mut inner);
+                    native_producers = std::mem::take(&mut inner.native_producers);
+                }
+                None if inner.sink_fault => return 3,
+                None if inner.sink_closed => return 2,
+                None => {
+                    // SAFETY: the caller keeps the descriptor live during retain.
+                    inner.native_consumer = Some(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                    return 0;
+                }
+            }
+        }
+        // SAFETY: `out` receives exactly the stamped element size per contract.
+        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), out.cast::<u8>(), size) };
+        if let Some(w) = producer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        for producer in native_producers {
+            producer.wake();
+        }
+        self.cv.notify_all();
+        1
+    }
+
+    /// Move one element into the ring. Returns 1 after the transfer, 2 when
+    /// either half is closed or faulted, or 0 after retaining `waker` until the
+    /// consumer frees capacity or closes.
+    ///
+    /// # Safety
+    /// `data` points to one live element of the stamped size and `waker` obeys
+    /// the [`HewWaker`] contract.
+    pub unsafe fn send_native(&self, waker: &HewWaker, data: *const c_void, size: usize) -> i32 {
+        let consumer_wake;
+        let native_consumer;
+        {
+            let mut inner = self.locked();
+            if !Self::element_size_matches(&inner, size) {
+                crate::channel_common::abort_elem_witness(
+                    "ChannelCore::send_native",
+                    "element size differs from the stamped pipe witness",
+                );
+            }
+            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                return 2;
+            }
+            if inner.queue.len() >= inner.capacity {
+                // SAFETY: the caller keeps the descriptor live during retain.
+                inner
+                    .native_producers
+                    .push(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                return 0;
+            }
+            // SAFETY: `data` is readable for the stamped element size.
+            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
+            inner.queue.push_back(bytes);
+            consumer_wake = inner.consumer.take();
+            native_consumer = inner.native_consumer.take();
+        }
+        if let Some(w) = consumer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
+        }
+        self.cv.notify_all();
+        1
     }
 
     // ── Consumer side ────────────────────────────────────────────────────────
@@ -655,14 +768,19 @@ impl ChannelCore {
     /// resume binds `None`.
     pub fn close_sink(&self) {
         let consumer_wake;
+        let native_consumer;
         {
             let mut inner = self.locked();
             inner.sink_closed = true;
             consumer_wake = inner.consumer.take();
+            native_consumer = inner.native_consumer.take();
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
         }
         self.cv.notify_all();
     }
@@ -674,16 +792,21 @@ impl ChannelCore {
         let mut wakes: Vec<Waiter> = Vec::new();
         let mut discarded: Vec<Vec<u8>> = Vec::new();
         let layout;
+        let native_producers;
         {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
+            native_producers = std::mem::take(&mut inner.native_producers);
             while let Some(mut w) = inner.producers.pop_front() {
                 if let Some(item) = w.item.take() {
                     discarded.push(item);
                 }
                 wakes.push(w);
             }
+        }
+        for producer in native_producers {
+            producer.wake();
         }
         for w in wakes {
             // SAFETY: removed under the lock; we own each in-flight ref. The
@@ -719,6 +842,7 @@ impl ChannelCore {
         let mut producer_wakes = Vec::new();
         let mut discarded = Vec::new();
         let layout;
+        let native_wakes;
         {
             let mut inner = self.locked();
             if !inner.sink_fault {
@@ -733,6 +857,15 @@ impl ChannelCore {
                 }
                 producer_wakes.push(producer);
             }
+            native_wakes = inner
+                .native_consumer
+                .take()
+                .into_iter()
+                .chain(std::mem::take(&mut inner.native_producers))
+                .collect::<Vec<_>>();
+        }
+        for peer in native_wakes {
+            peer.wake();
         }
         // `sink_fault` is now a stable terminal predicate. Notify foreign
         // condvar waiters before scheduler callbacks or recursive element-drop

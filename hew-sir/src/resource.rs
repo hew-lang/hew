@@ -3,7 +3,7 @@
 use hew_types::ffi_contracts::{
     extern_owned_resource_result, extern_ownership_contract, ExternParamOwnership,
 };
-use hew_types::runtime_call::{FileReadHandleKind, FileReadOp, RuntimeDropDescriptor};
+use hew_types::runtime_call::FileReadOp;
 use hew_types::{
     CloneKind, ResolvedTy, RuntimeCallFamily, RuntimeResultEffect, TypeFacts, ValueClass,
 };
@@ -21,8 +21,11 @@ pub enum ResourceRelease {
         release: ResourceExtern,
         producers: Vec<ResourceExtern>,
     },
-    /// Compiler-owned builtin lifetime, independent of source method spelling.
-    Builtin(RuntimeDropDescriptor),
+    /// `Stream<T>`: closing the read half discards unread elements and wakes
+    /// a parked producer.
+    Stream,
+    /// `Sink<T>`: closing the write half is the consumer's end of stream.
+    Sink,
 }
 
 /// An exact HIR extern declaration retained as part of the release proof.
@@ -88,10 +91,8 @@ impl ResourceRelease {
                         "nominal resource release has no synchronous runtime contract".into()
                     })
             }
-            Self::Builtin(RuntimeDropDescriptor::StreamClose) => Ok(RuntimeCallFamily::StreamClose),
-            Self::Builtin(_) => {
-                Err("builtin resource release is outside the synchronous file slice".into())
-            }
+            Self::Stream => Ok(RuntimeCallFamily::StreamClose),
+            Self::Sink => Ok(RuntimeCallFamily::SinkClose),
         }
     }
 }
@@ -107,8 +108,10 @@ pub(crate) fn resource_release_from_hir(
     if matches!(ty, ResolvedTy::Task(_)) {
         return Some(ResourceRelease::Task);
     }
-    if FileReadHandleKind::Stream.matches(ty) {
-        Some(ResourceRelease::Builtin(RuntimeDropDescriptor::StreamClose))
+    if ty.is_builtin(hew_types::BuiltinType::Stream) {
+        Some(ResourceRelease::Stream)
+    } else if ty.is_builtin(hew_types::BuiltinType::Sink) {
+        Some(ResourceRelease::Sink)
     } else {
         let lifecycle = module
             .type_classes
@@ -169,6 +172,19 @@ pub fn verify_resource_release(
             Err("task release requires an exact Task result type".into())
         };
     }
+    if matches!(release, ResourceRelease::Stream | ResourceRelease::Sink) {
+        let builtin = if *release == ResourceRelease::Stream {
+            hew_types::BuiltinType::Stream
+        } else {
+            hew_types::BuiltinType::Sink
+        };
+        return if matches!(ty, ResolvedTy::Named { builtin: Some(kind), args, .. } if *kind == builtin && args.len() == 1)
+        {
+            Ok(())
+        } else {
+            Err("pipe half release requires its exact Stream or Sink type".into())
+        };
+    }
     let family = release.runtime_family()?;
     let contract = family
         .semantic_contract()
@@ -187,16 +203,11 @@ pub fn verify_resource_release(
         );
     }
     match release {
-        ResourceRelease::Generator | ResourceRelease::Task => {
-            unreachable!("handled exact task release above")
-        }
-        ResourceRelease::Builtin(RuntimeDropDescriptor::StreamClose)
-            if FileReadHandleKind::Stream.matches(ty) =>
-        {
-            Ok(())
-        }
-        ResourceRelease::Builtin(_) => {
-            Err("builtin release does not match the exact resource type".into())
+        ResourceRelease::Generator
+        | ResourceRelease::Task
+        | ResourceRelease::Stream
+        | ResourceRelease::Sink => {
+            unreachable!("handled exact builtin releases above")
         }
         ResourceRelease::Nominal {
             lifecycle,

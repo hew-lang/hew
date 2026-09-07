@@ -21,8 +21,12 @@ pub struct SemActorHandler {
     pub name: String,
     pub message_id: u32,
     pub callable: CallableId,
+    /// Message payload fields. A stream producer's last field is the caller's
+    /// `Sink<T>`, owned by the body until its turn ends.
     pub params: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+    /// `receive gen fn`: the element type each `yield` sends to the sink.
+    pub stream: Option<ResolvedTy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +335,13 @@ pub enum ActorOperation {
     Close(ActorId),
     AwaitClosed(ActorId),
     Spawn(ActorId),
+    /// Start a stream producer turn: the request payload, whose last field is
+    /// the consumer's sink, waits for mailbox capacity. A closed producer is a
+    /// fault, so no consumer waits on a pipe nobody feeds.
+    StreamStart {
+        actor: ActorId,
+        message: u32,
+    },
     Submit {
         actor: ActorId,
         policy: hew_types::actor_delivery::SendPolicy,
@@ -353,6 +364,7 @@ impl ActorOperation {
             Self::Spawn(id)
             | Self::Close(id)
             | Self::AwaitClosed(id)
+            | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
         };
         let actor = actors
@@ -360,6 +372,20 @@ impl ActorOperation {
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
+            Self::StreamStart { message, .. } => {
+                let handler = actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == *message && handler.stream.is_some())
+                    .ok_or("stream start has no exact producer member")?;
+                (
+                    vec![
+                        actor.handle_ty.clone(),
+                        ResolvedTy::Tuple(handler.params.clone()),
+                    ],
+                    ResolvedTy::Unit,
+                )
+            }
             Self::Close(_) => (vec![actor.handle_ty.clone()], actor.handle_ty.clone()),
             Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
             Self::Spawn(_) => (

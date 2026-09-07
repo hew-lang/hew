@@ -107,10 +107,17 @@ impl Builder<'_, '_> {
         value: Option<&HirExpr>,
         ty: &ResolvedTy,
     ) -> Result<(), String> {
+        let ty = self.ty(ty);
+        if let Some((sink, element)) = self.stream_sink.clone() {
+            if ty != element {
+                return Err("yield differs from its stream producer's element type".into());
+            }
+            let value = self.lower_yield_value(expression, value)?;
+            return self.lower_stream_send(sink, value);
+        }
         let CallableInstance::Closure(closure) = self.callable.instance else {
             return Err("yield requires a checked generator body".into());
         };
-        let ty = self.ty(ty);
         if self.service.closures[closure.0 as usize]
             .generator_yield
             .as_ref()
@@ -118,20 +125,7 @@ impl Builder<'_, '_> {
         {
             return Err("yield differs from its generator's checked yield type".into());
         }
-        let value = if let Some(value) = value {
-            let mut transferred = value.clone();
-            transferred.intent = IntentKind::Consume;
-            // A yield resumes the same source body. Ordinary values therefore
-            // preserve their local binding; affine values use the shared move
-            // rule already selected for every binding transfer.
-            lower_initial_value_transfer(self, &transferred, "yield value", OwnedBindingUse::Copy)?
-        } else {
-            self.emit_typed(
-                Provenance::Site(expression.site),
-                &ResolvedTy::Unit,
-                SemOpKind::ConstUnit,
-            )?
-        };
+        let value = self.lower_yield_value(expression, value)?;
         self.owned_live.remove(&value);
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
@@ -156,6 +150,122 @@ impl Builder<'_, '_> {
         self.current = normal;
         self.owned_live = live;
         Ok(())
+    }
+
+    fn lower_yield_value(
+        &mut self,
+        expression: &HirExpr,
+        value: Option<&HirExpr>,
+    ) -> Result<ValueId, String> {
+        let value = if let Some(value) = value {
+            let mut transferred = value.clone();
+            transferred.intent = IntentKind::Consume;
+            // A yield resumes the same source body. Ordinary values therefore
+            // preserve their local binding; affine values use the shared move
+            // rule already selected for every binding transfer.
+            lower_initial_value_transfer(self, &transferred, "yield value", OwnedBindingUse::Copy)?
+        } else {
+            self.emit_typed(
+                Provenance::Site(expression.site),
+                &ResolvedTy::Unit,
+                SemOpKind::ConstUnit,
+            )?
+        };
+        Ok(value)
+    }
+
+    /// A stream producer parks on the consumer's capacity. A consumer that
+    /// closed its half ends this turn normally: the sink and every local
+    /// release through the ordinary return path.
+    fn lower_stream_send(&mut self, sink: ValueId, value: ValueId) -> Result<(), String> {
+        self.owned_live.remove(&value);
+        let live = self.owned_live.clone();
+        let normal = self.new_block(Vec::new());
+        let closed = self.new_block(Vec::new());
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Suspend {
+            kind: SuspendKind::StreamSend,
+            inputs: vec![
+                BoundaryOperand {
+                    operand: Operand { value: sink },
+                    decision: BoundaryDecision::Borrow,
+                },
+                BoundaryOperand {
+                    operand: Operand { value },
+                    decision: BoundaryDecision::Move,
+                },
+            ],
+            result: CallResult::Unit,
+            resumes: vec![edge(normal), edge(closed)],
+            cancel: edge(cancel),
+            unwind: edge(unwind),
+        })?;
+        for cleanup in [cancel, unwind] {
+            self.current = cleanup;
+            self.owned_live = live.clone();
+            self.finish_fault_exit()?;
+        }
+        self.current = closed;
+        self.owned_live = live.clone();
+        self.finish_return_value(None)?;
+        self.current = normal;
+        self.owned_live = live;
+        Ok(())
+    }
+
+    pub(super) fn lower_stream_next(
+        &mut self,
+        expression: &HirExpr,
+        receiver: &HirExpr,
+    ) -> Result<ValueId, String> {
+        let mut loans = Vec::new();
+        let stream = self.lower_borrowed_read(receiver, &mut loans)?;
+        let output = self.ty(&expression.ty);
+        self.service.require_type_facts(&output)?;
+        self.service.require_variant_shape(&output)?;
+        let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
+        let raw = self.fresh_value();
+        let value = self.fresh_value();
+        let resumed = self.new_block(vec![BlockArg {
+            value,
+            ty: output.clone(),
+            own,
+        }]);
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        let live = self.owned_live.clone();
+        self.set_terminator(SemTerminator::Suspend {
+            kind: SuspendKind::StreamNext,
+            inputs: vec![BoundaryOperand {
+                operand: stream,
+                decision: BoundaryDecision::BorrowMut,
+            }],
+            result: CallResult::Value(ValueDef {
+                id: raw,
+                ty: output.clone(),
+                own,
+            }),
+            resumes: vec![Edge {
+                target: resumed,
+                args: vec![Operand { value: raw }],
+            }],
+            cancel: edge(cancel),
+            unwind: edge(unwind),
+        })?;
+        for cleanup in [cancel, unwind] {
+            self.current = cleanup;
+            self.owned_live = live.clone();
+            self.end_call_loans(&loans)?;
+            self.finish_fault_exit()?;
+        }
+        self.current = resumed;
+        self.owned_live = live;
+        self.end_call_loans(&loans)?;
+        if own == OwnKind::Owned {
+            self.owned_live.insert(value, output);
+        }
+        Ok(value)
     }
 
     pub(super) fn lower_generator_next(

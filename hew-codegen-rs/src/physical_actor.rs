@@ -774,6 +774,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::Spawn(id)
             | ActorOperation::Close(id)
             | ActorOperation::AwaitClosed(id)
+            | ActorOperation::StreamStart { actor: id, .. }
             | ActorOperation::Submit { actor: id, .. } => *id,
         };
         let actor =
@@ -825,6 +826,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.ctx.i32_type().const_zero()
             }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
+            ActorOperation::StreamStart { message, .. } => {
+                self.emit_actor_stream_start(actor, message, &sources, unwind)?
+            }
             ActorOperation::Submit {
                 policy,
                 message_ty,
@@ -1073,6 +1077,134 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             Ok(status)
         }
+    }
+
+    /// The request waits for mailbox capacity like a `.Wait` submission. A
+    /// refused request destroys the payload, closing the consumer's sink, and
+    /// faults the caller.
+    fn emit_actor_stream_start(
+        &self,
+        actor: &SemActor,
+        message: u32,
+        sources: &[StorageId],
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let [target, payload] = sources else {
+            return Err(CodegenError::FailClosed(
+                "stream start requires its target and request payload".into(),
+            ));
+        };
+        let handler = actor
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == message)
+            .ok_or_else(|| CodegenError::FailClosed("stream start lacks its producer".into()))?;
+        let wrapper_ty = message_type(self.module, self.ctx, handler)?;
+        let target_data = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let size = target_data.get_abi_size(&wrapper_ty);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let allocate = get_or_declare_external(
+            self.llvm,
+            "hew_actor_payload_try_alloc",
+            ptr.fn_type(&[size_ty.into()], false),
+        )?;
+        let wrapper = call_value(
+            &self.builder,
+            allocate,
+            &[size_ty.const_int(size, false).into()],
+            "stream.start.allocate",
+        )?
+        .into_pointer_value();
+        let allocated = self
+            .ctx
+            .append_basic_block(self.value, "stream.start.allocated");
+        let refused = self
+            .ctx
+            .append_basic_block(self.value, "stream.start.refused");
+        let done = self.ctx.append_basic_block(self.value, "stream.start.done");
+        let missing = self
+            .builder
+            .build_is_null(wrapper, "stream.start.no_memory")
+            .llvm_ctx("check request allocation")?;
+        self.builder
+            .build_conditional_branch(missing, refused, allocated)
+            .llvm_ctx("branch on request allocation")?;
+        self.builder.position_at_end(allocated);
+        self.builder
+            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
+            .llvm_ctx("initialize request ownership")?;
+        let fields = self
+            .load(*payload, "stream.start.payload")?
+            .into_struct_value();
+        for index in 0..handler.params.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::FailClosed("request index exceeds u32".into()))?;
+            let slot = self
+                .builder
+                .build_struct_gep(wrapper_ty, wrapper, index + 1, "stream.start.field")
+                .llvm_ctx("address request field")?;
+            let field = self
+                .builder
+                .build_extract_value(fields, index, "stream.start.value")
+                .llvm_ctx("read request field")?;
+            self.builder
+                .build_store(slot, field)
+                .llvm_ctx("transfer field into unpublished request")?;
+        }
+        let drop = self
+            .llvm
+            .get_function(&message_symbol(actor.id, message))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("stream request lacks its payload destructor".into())
+            })?;
+        let request = [
+            self.load(*target, "stream.start.target")?.into(),
+            self.ctx
+                .i32_type()
+                .const_int(u64::from(message), false)
+                .into(),
+            wrapper.into(),
+            size_ty.const_int(size, false).into(),
+            drop.as_global_value().as_pointer_value().into(),
+        ];
+        let status = self.emit_actor_send_wait(&request, *payload, unwind)?;
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "stream.start.accepted");
+        let admitted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "stream.start.admitted",
+            )
+            .llvm_ctx("check request admission")?;
+        self.builder
+            .build_conditional_branch(admitted, accepted, refused)
+            .llvm_ctx("select request admission")?;
+        self.builder.position_at_end(accepted);
+        self.clear_owned(*payload)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish accepted stream start")?;
+        self.builder.position_at_end(refused);
+        self.discard_pending_message(*payload)?;
+        self.initialize_active_fault(HEW_TRAP_ACTOR_SEND_FAILED)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish refused stream start")?;
+        self.builder.position_at_end(done);
+        let outcome = self
+            .builder
+            .build_phi(self.ctx.i32_type(), "stream.start.status")
+            .llvm_ctx("join stream start outcome")?;
+        outcome.add_incoming(&[
+            (&self.ctx.i32_type().const_zero(), accepted),
+            (&self.ctx.i32_type().const_int(1, false), refused),
+        ]);
+        Ok(outcome.as_basic_value().into_int_value())
     }
 
     #[expect(

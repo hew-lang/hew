@@ -1591,7 +1591,9 @@ impl<'a> Flow<'a> {
                 let scoped_borrow = matches!(
                     terminator,
                     SemTerminator::Suspend {
-                        kind: crate::SuspendKind::GeneratorNext,
+                        kind: crate::SuspendKind::GeneratorNext
+                            | crate::SuspendKind::StreamNext
+                            | crate::SuspendKind::StreamSend,
                         ..
                     } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }

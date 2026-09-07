@@ -251,6 +251,17 @@ impl Builder<'_, '_> {
             .get(&child.site)
             .ok_or("`await_restart` operand names no supervised child")?
             .clone();
+        // The barrier blocks the calling thread. In `main` that thread is the
+        // program; inside an actor it is a scheduler worker the restart needs
+        // in order to finish, so the cooperative form has to suspend instead.
+        if self
+            .service
+            .actors
+            .iter()
+            .any(|actor| actor.bodies().any(|body| body == self.callable.id))
+        {
+            return Err("`await_restart` inside an actor needs its suspend contract".into());
+        }
         self.lower_supervisor_role(expression, object, &slot, true)
     }
 

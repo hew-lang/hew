@@ -1386,9 +1386,13 @@ struct InternalChildSpec {
 }
 
 /// Spawn one incarnation of a declared native child from the supervisor's
-/// config, returning its stable handle or `INVALID` when the spawn faulted.
+/// config. Returns its stable handle, or `INVALID` with the refusal in the
+/// fault slot.
 pub type HewNativeChildSpawnFn =
-    unsafe extern "C-unwind" fn(*const c_void) -> crate::lifetime::local_handles::HewLocalPidId;
+    unsafe extern "C-unwind" fn(
+        *const c_void,
+        *mut *mut crate::fault::HewFault,
+    ) -> crate::lifetime::local_handles::HewLocalPidId;
 
 /// One state-drop descriptor shared by every immutable template generation.
 /// The setter may arrive after the initial generation was constructed; an
@@ -1545,7 +1549,7 @@ struct DeferredFree(*mut HewActor);
 unsafe impl Send for DeferredFree {}
 
 /// Wrapper to stop an exhausted child supervisor off the scheduler thread.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct DeferredSupervisorStop(*mut HewSupervisor);
 // SAFETY: ownership is transferred to the background thread after the parent
 // replaces its slot with a fresh child supervisor.
@@ -2811,9 +2815,16 @@ unsafe fn restart_child_from_spec_expected(
     // path only claims the slot: the supervisor back-edge that routes a crash
     // here, and the exact-generation publish.
     if let Some(spawn) = native_spawn {
-        // SAFETY: the adapter is emitted with this exact ABI and `config` is
-        // the supervisor-owned buffer, alive for the supervisor's lifetime.
-        let token = unsafe { spawn(config.cast_const()) };
+        // A restart has no caller to fault: the refusal is the null slot the
+        // budget already counted, so its diagnostic is released here.
+        let mut refusal: *mut crate::fault::HewFault = ptr::null_mut();
+        // SAFETY: the adapter is emitted with this exact ABI, `config` is the
+        // supervisor-owned buffer, and `refusal` is a writable null slot.
+        let token = unsafe { spawn(config.cast_const(), &raw mut refusal) };
+        if !refusal.is_null() {
+            // SAFETY: the adapter transferred this fault to us.
+            unsafe { crate::fault::hew_fault_drop(refusal) };
+        }
         let child = if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
             ptr::null_mut()
         } else {
@@ -9047,7 +9058,7 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
     child_get_from_supervisor(sup, key, ChildHandleKind::RawPointer)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ChildHandleKind {
     RawPointer,
     StableLocalPid,
@@ -11288,28 +11299,60 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
 // `new` → `add_child` (once per declared child, in declaration order) →
 // `start`, and the slot a child occupies is its position in that sequence.
 
-/// Create a declared supervisor and adopt its config buffer.
+/// One declared child in construction order.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct HewNativeChildSpec {
+    /// [`RESTART_PERMANENT`], [`RESTART_TRANSIENT`] or [`RESTART_TEMPORARY`].
+    pub restart_policy: c_int,
+    /// The adapter that produces one incarnation from the config.
+    pub spawn: HewNativeChildSpawnFn,
+}
+
+/// Construct a declared supervisor: adopt its config, spawn every declared
+/// child in order and start supervising.
 ///
-/// The config is read by every child adapter and freed once, with `config_drop`,
-/// at supervisor teardown. Returns `INVALID` when the supervisor cannot be
-/// published.
+/// A child that cannot be spawned fails the whole construction — a supervisor
+/// with a slot nothing can fill would report every send as "restarting"
+/// forever. On failure the supervisor and every child already spawned are torn
+/// down, the config is released through `config_drop`, and `INVALID` is
+/// returned with `fault` set.
 ///
 /// # Safety
 ///
 /// `config` is a unique allocation `config_drop` can release, or null.
+/// `children` is readable for `child_count` entries and `fault` is a writable,
+/// initially null fault slot.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_native_new(
+pub unsafe extern "C" fn hew_supervisor_native_spawn(
     strategy: c_int,
     max_restarts: c_int,
     window_secs: c_int,
     config: *mut c_void,
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
+    children: *const HewNativeChildSpec,
+    child_count: usize,
+    fault: *mut *mut crate::fault::HewFault,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
+    let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
+    let refuse = |code| {
+        // SAFETY: the generated caller provides a writable empty fault slot.
+        unsafe { *fault = crate::fault::hew_fault_new(code) };
+        invalid
+    };
     // SAFETY: construction has no preconditions.
     let sup = unsafe { hew_supervisor_new(strategy, max_restarts, window_secs) };
     if sup.is_null() {
-        return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+        if let Some(drop_fn) = config_drop {
+            // SAFETY: nothing adopted the config, so this call still owns it.
+            unsafe { drop_fn(config) };
+        }
+        if !config.is_null() {
+            // SAFETY: the buffer came from the generated caller's allocator.
+            unsafe { libc::free(config) }; // ALLOCATOR-PAIRING: libc
+        }
+        return refuse(crate::internal::types::HewError::ErrOom as i32);
     }
     {
         // SAFETY: the fresh allocation is not yet reachable by another thread.
@@ -11317,64 +11360,76 @@ pub unsafe extern "C" fn hew_supervisor_native_new(
         guard.config_buf = config;
         guard.config_drop_fn = config_drop;
     }
+    // SAFETY: the caller supplies `child_count` readable child specs.
+    let children = unsafe { std::slice::from_raw_parts(children, child_count) };
+    for (index, child) in children.iter().enumerate() {
+        {
+            // SAFETY: construction owns the roster until `start` publishes.
+            let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+            let s = &mut *guard;
+            let Some(next_identity) = s.next_child_spec_identity.checked_add(1) else {
+                break;
+            };
+            let mut spec = InternalChildSpec::default();
+            spec.identity = s.next_child_spec_identity;
+            spec.restart_policy = child.restart_policy;
+            spec.native_spawn = Some(child.spawn);
+            spec.config = s.config_buf;
+            s.child_specs.push(spec);
+            s.children.push(ptr::null_mut());
+            s.child_count += 1;
+            s.next_child_spec_identity = next_identity;
+        }
+        // The initial spawn runs the adapter directly so its refusal reaches
+        // this caller instead of the restart path's discard.
+        // SAFETY: the caller supplies a writable, initially null fault slot.
+        let token = unsafe { (child.spawn)(config.cast_const(), fault) };
+        let actor = if token == invalid {
+            ptr::null_mut()
+        } else {
+            crate::lifetime::local_handles::resolve_current_actor(token)
+                .and_then(crate::lifetime::live_actors::get_actor_ptr_by_id)
+                .unwrap_or(ptr::null_mut())
+        };
+        if actor.is_null() {
+            // SAFETY: nothing published this supervisor's handle yet, so this
+            // teardown is unobservable; it releases the config and the
+            // children that did spawn.
+            unsafe { hew_supervisor_stop(sup) };
+            // SAFETY: the adapter already named the refusal unless it never
+            // reached one, in which case the slot is still the caller's null.
+            if unsafe { (*fault).is_null() } {
+                return refuse(crate::internal::types::HewError::ErrOom as i32);
+            }
+            return invalid;
+        }
+        // SAFETY: the adapter returned a live, published actor and this thread
+        // is the only writer of its supervision edge.
+        unsafe {
+            (*actor).supervisor = sup.cast::<c_void>();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "declared child index fits i32 for any declarable supervisor"
+            )]
+            {
+                (*actor).supervisor_child_index = index as i32;
+            }
+        }
+        {
+            // SAFETY: construction still owns the roster.
+            let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+            guard.children[index] = actor;
+        }
+    }
+    // SAFETY: every declared child occupies its slot.
+    if unsafe { hew_supervisor_start(sup) } != 0 {
+        // SAFETY: start failed before publication; teardown owns the rest.
+        unsafe { hew_supervisor_stop(sup) };
+        return refuse(crate::internal::types::HewError::ErrOom as i32);
+    }
     // SAFETY: `hew_supervisor_new` published this allocation's token.
     unsafe { (*sup).local_pid_id }
-}
-
-/// Register one declared child and spawn its first incarnation.
-///
-/// Returns the child's slot, or `-1` when the supervisor is gone or the slot
-/// space is exhausted. A refused first spawn still reserves the slot: the
-/// child is then a dead role, which fails closed at lookup and at send.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_native_add_child(
-    token: crate::lifetime::local_handles::HewLocalPidId,
-    restart_policy: c_int,
-    spawn: HewNativeChildSpawnFn,
-) -> c_int {
-    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
-        return -1;
-    };
-    let sup = pin.supervisor();
-    let index = {
-        // SAFETY: the pin keeps the allocation live; the guard makes the slot
-        // reservation and its spec one transaction.
-        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
-        let s = &mut *guard;
-        let Some(next_identity) = s.next_child_spec_identity.checked_add(1) else {
-            set_last_error("hew_supervisor_native_add_child: child-spec identity exhausted");
-            return -1;
-        };
-        let index = s.child_count;
-        let mut spec = InternalChildSpec::default();
-        spec.identity = s.next_child_spec_identity;
-        spec.restart_policy = restart_policy;
-        spec.native_spawn = Some(spawn);
-        spec.config = s.config_buf;
-        s.child_specs.push(spec);
-        s.next_child_spec_identity = next_identity;
-        s.children.push(ptr::null_mut());
-        s.child_count += 1;
-        index
-    };
-    // SAFETY: the reservation above published the exact slot this spawns into.
-    unsafe { restart_child_from_spec(sup, index) };
-    c_int::try_from(index).unwrap_or(-1)
-}
-
-/// Start supervising. Until this returns, a child crash has no authority to
-/// consult.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_native_start(
-    token: crate::lifetime::local_handles::HewLocalPidId,
-) -> c_int {
-    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
-        return -1;
-    };
-    // SAFETY: the pin keeps the allocation live across construction.
-    unsafe { hew_supervisor_start(pin.supervisor()) }
 }
 
 /// Resolve one declared child's current incarnation, reporting what the role

@@ -1,0 +1,17 @@
+actor Worker {
+    #[on(start)]
+    fn started() { panic("start failed"); }
+    receive fn ping() {}
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child worker: Worker,
+}
+
+fn main() {
+    let app = spawn App;
+    println("unreachable");
+    supervisor_stop(app);
+}

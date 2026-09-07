@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-child-init-fault"
+intent = "A declared child that cannot complete its first spawn refuses the whole supervisor rather than leaving a role nothing can fill; the child's own diagnostic is what the program reports."
+source = "cases/supervisor-child-init-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): start failed\n"
+exit = 1

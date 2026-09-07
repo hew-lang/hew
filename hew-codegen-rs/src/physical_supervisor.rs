@@ -84,7 +84,46 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 actor_role(supervisor, child)?;
                 self.emit_supervisor_child_spawn(supervisor, child)?;
             }
+            self.emit_supervisor_children(supervisor)?;
         }
+        Ok(())
+    }
+
+    /// The declared children in construction order: restart policy and the
+    /// adapter that produces each incarnation.
+    fn emit_supervisor_children(&self, supervisor: &SemSupervisor) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let entry_ty = self
+            .ctx
+            .struct_type(&[self.ctx.i32_type().into(), ptr.into()], false);
+        let mut entries = Vec::new();
+        for (index, child) in supervisor.children.iter().enumerate() {
+            let spawn = self
+                .llvm
+                .get_function(&symbol(supervisor, &format!("child_{index}_spawn")))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("declared child lacks its spawn adapter".into())
+                })?;
+            entries.push(
+                entry_ty.const_named_struct(&[
+                    self.ctx
+                        .i32_type()
+                        .const_int(restart_code(child.restart), false)
+                        .into(),
+                    spawn.as_global_value().as_pointer_value().into(),
+                ]),
+            );
+        }
+        let table = self.llvm.add_global(
+            entry_ty.array_type(u32::try_from(entries.len()).map_err(|_| {
+                CodegenError::FailClosed("supervisor child count exceeds u32".into())
+            })?),
+            None,
+            &symbol(supervisor, "children"),
+        );
+        table.set_linkage(Linkage::Internal);
+        table.set_constant(true);
+        table.set_initializer(&entry_ty.const_array(&entries));
         Ok(())
     }
 
@@ -160,18 +199,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let word = self.ctx.ptr_sized_int_type(&target, None);
         let function = self.llvm.add_function(
             &symbol(supervisor, &format!("child_{child}_spawn")),
-            word.fn_type(&[ptr.into()], false),
+            word.fn_type(&[ptr.into(), ptr.into()], false),
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
         let config = function.get_first_param().unwrap().into_pointer_value();
-        let fault = builder
-            .build_alloca(ptr, "spawn.fault")
-            .llvm_ctx("allocate child spawn fault")?;
-        builder
-            .build_store(fault, ptr.const_null())
-            .llvm_ctx("initialize child spawn fault")?;
+        let fault = function.get_nth_param(1).unwrap().into_pointer_value();
         let handle_layout = spawn.return_layout.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("child spawn callable produces no handle".into())
         })?;
@@ -226,17 +260,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_conditional_branch(ok, spawned, failed)
             .llvm_ctx("publish only a spawned child")?;
         builder.position_at_end(failed);
-        let raised = builder
-            .build_load(ptr, fault, "spawn.raised")
-            .llvm_ctx("load child spawn fault")?;
-        let release = get_or_declare_external(
-            &self.llvm,
-            "hew_fault_drop",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(release, &[raised.into()], "")
-            .llvm_ctx("release the refused spawn's fault")?;
+        // The refusal stays in the caller's slot: construction reports it and
+        // a restart releases it.
         builder
             .build_return(Some(&word.const_zero()))
             .llvm_ctx("report a refused child spawn")?;
@@ -284,8 +309,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| CodegenError::FailClosed("missing native supervisor descriptor".into()))
     }
 
-    /// Build the config from the construction arguments, register every
-    /// declared child in declaration order and start supervising.
+    /// Build the config from the construction arguments and hand the runtime
+    /// the declared children in order. A child that cannot be spawned fails
+    /// the construction, so a supervisor handle always names a complete tree.
     pub(super) fn emit_supervisor_spawn(
         &self,
         id: SupervisorId,
@@ -308,8 +334,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let config = if supervisor.config.is_empty() {
             ptr.const_null()
         } else {
-            let size = TargetData::create(&self.module.target.data_layout)
-                .get_abi_size(&config_ty.as_basic_type_enum());
+            let size = target.get_abi_size(&config_ty.as_basic_type_enum());
             let config =
                 super::actor::allocate(self.module, self.ctx, self.llvm, &self.builder, size)?;
             for (index, source) in sources.iter().enumerate() {
@@ -331,15 +356,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .map_or(ptr.const_null(), |function| {
                 function.as_global_value().as_pointer_value()
             });
-        let new = get_or_declare_external(
+        let children = self
+            .llvm
+            .get_global(&symbol(supervisor, "children"))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("supervisor lacks its declared child table".into())
+            })?
+            .as_pointer_value();
+        let spawn = get_or_declare_external(
             self.llvm,
-            "hew_supervisor_native_new",
+            "hew_supervisor_native_spawn",
             word.fn_type(
                 &[
                     self.ctx.i32_type().into(),
                     self.ctx.i32_type().into(),
                     self.ctx.i32_type().into(),
                     ptr.into(),
+                    ptr.into(),
+                    ptr.into(),
+                    word.into(),
                     ptr.into(),
                 ],
                 false,
@@ -348,7 +383,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let token = self
             .builder
             .build_call(
-                new,
+                spawn,
                 &[
                     self.ctx
                         .i32_type()
@@ -364,86 +399,40 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .into(),
                     config.into(),
                     drop.into(),
+                    children.into(),
+                    word.const_int(supervisor.children.len() as u64, false)
+                        .into(),
+                    self.active_fault.into(),
                 ],
                 "supervisor.token",
             )
-            .llvm_ctx("create the declared supervisor")?
+            .llvm_ctx("construct the declared supervisor")?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| CodegenError::FailClosed("supervisor creation returned void".into()))?
+            .ok_or_else(|| {
+                CodegenError::FailClosed("supervisor construction returned void".into())
+            })?
             .into_int_value();
         self.store(result, token.into())?;
-        let created = self
+        let refused = self
             .builder
             .build_int_compare(
-                IntPredicate::NE,
+                IntPredicate::EQ,
                 token,
                 word.const_zero(),
-                "supervisor.created",
+                "supervisor.refused",
             )
-            .llvm_ctx("check supervisor publication")?;
-        let register = self
-            .ctx
-            .append_basic_block(self.value, "supervisor.register");
-        let done = self.ctx.append_basic_block(self.value, "supervisor.done");
-        let refused = self.builder.get_insert_block().unwrap();
-        self.builder
-            .build_conditional_branch(created, register, done)
-            .llvm_ctx("register children only for a published supervisor")?;
-        self.builder.position_at_end(register);
-        let add = get_or_declare_external(
-            self.llvm,
-            "hew_supervisor_native_add_child",
-            self.ctx.i32_type().fn_type(
-                &[word.into(), self.ctx.i32_type().into(), ptr.into()],
-                false,
-            ),
-        )?;
-        for (index, child) in supervisor.children.iter().enumerate() {
-            actor_role(supervisor, index)?;
-            let spawn = self
-                .llvm
-                .get_function(&symbol(supervisor, &format!("child_{index}_spawn")))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("declared child lacks its spawn adapter".into())
-                })?;
-            self.builder
-                .build_call(
-                    add,
-                    &[
-                        token.into(),
-                        self.ctx
-                            .i32_type()
-                            .const_int(restart_code(child.restart), false)
-                            .into(),
-                        spawn.as_global_value().as_pointer_value().into(),
-                    ],
-                    "supervisor.child",
-                )
-                .llvm_ctx("register one declared child")?;
-        }
-        let start = get_or_declare_external(
-            self.llvm,
-            "hew_supervisor_native_start",
-            self.ctx.i32_type().fn_type(&[word.into()], false),
-        )?;
-        self.builder
-            .build_call(start, &[token.into()], "supervisor.start")
-            .llvm_ctx("start supervising")?;
-        let registered = self.builder.get_insert_block().unwrap();
-        self.builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish supervisor construction")?;
-        self.builder.position_at_end(done);
-        let status = self
+            .llvm_ctx("check supervisor construction")?;
+        Ok(self
             .builder
-            .build_phi(self.ctx.i32_type(), "supervisor.status")
-            .llvm_ctx("join supervisor construction outcome")?;
-        status.add_incoming(&[
-            (&self.ctx.i32_type().const_int(1, false), refused),
-            (&self.ctx.i32_type().const_zero(), registered),
-        ]);
-        Ok(status.as_basic_value().into_int_value())
+            .build_select(
+                refused,
+                self.ctx.i32_type().const_int(1, false),
+                self.ctx.i32_type().const_zero(),
+                "supervisor.status",
+            )
+            .llvm_ctx("select supervisor construction status")?
+            .into_int_value())
     }
 
     /// `sup.child`: the stable role, minted from the supervisor handle and the

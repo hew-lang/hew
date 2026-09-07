@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "person grace\nmachine 7\nperson ada\n"
+stdout = "person grace\nmachine 7\nperson ada\nmachine 12\n"
 exit = 0

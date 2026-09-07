@@ -792,16 +792,7 @@ mod for_loop_iterable_fail_closed {
         );
     }
 
-    #[test]
-    fn builtin_dyn_iterator_item_binding_smoke() {
-        // W3.042 S2-S4: the dyn-trait dispatch gate enforces that
-        // `Iterator::next` (declared `var self` in `std/builtins.hew`)
-        // is called only on a `var`-bound receiver. The parameter is
-        // therefore declared `var iter` so the method dispatch picks the
-        // mutable-receiver path; without `var` here the call is correctly
-        // rejected with a MutabilityError naming `dyn Iterator`.
-        let output = check_source(
-            r"
+    const DYN_ITERATOR_SOURCE: &str = r"
             type Counter {
                 val: i32,
             }
@@ -813,18 +804,41 @@ mod for_loop_iterable_fail_closed {
                 }
             }
 
-            fn use_iter(var iter: dyn Iterator<Item = i32>) -> Option<i32> {
+            fn use_iter(PARAM iter: dyn Iterator<Item = i32>) -> Option<i32> {
                 iter.next()
             }
 
             fn main() {
                 use_iter(Counter { val: 1 });
             }
-            ",
-        );
+            ";
+
+    #[test]
+    fn builtin_dyn_iterator_item_binding_smoke() {
+        // `Iterator::next` is declared `var self` in `std/builtins.hew`, so the
+        // receiver must be mutable. A trait object has no independent clone -
+        // its vtable carries drop, size and align, never a copy - so the
+        // mutation cannot happen behind a borrow and the parameter consumes.
+        let output = check_source(&DYN_ITERATOR_SOURCE.replace("PARAM", "consume var"));
         assert!(
             output.errors.is_empty(),
             "builtin dyn Iterator<Item = i32> should accept Counter: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn mutating_a_borrowed_dyn_iterator_parameter_is_refused() {
+        // The negative control for the case above: without `consume` the
+        // callee would have to copy the erased value to mutate it, and no
+        // such copy exists.
+        let output = check_source(&DYN_ITERATOR_SOURCE.replace("PARAM", "var"));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::OwnMutateBorrowed),
+            "a borrowed `var` trait-object parameter must fail closed: {:?}",
             output.errors
         );
     }

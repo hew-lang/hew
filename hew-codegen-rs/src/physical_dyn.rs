@@ -55,7 +55,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
 
     fn emit_vtable(&self, table: &PhysicalVtable) -> CodegenResult<()> {
         let target = TargetData::create(&self.module.target.data_layout);
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
         let word = self.ctx.ptr_sized_int_type(&target, None);
         let drop = self.emit_vtable_drop(table)?;
         let mut fields: Vec<BasicValueEnum<'ctx>> = vec![
@@ -78,7 +77,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         global.set_linkage(Linkage::Internal);
         global.set_constant(true);
         global.set_initializer(&struct_ty.const_named_struct(&fields));
-        let _ = pointer;
         Ok(())
     }
 

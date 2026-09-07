@@ -14,6 +14,23 @@ use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
+/// The joined element type of a `Vec<Task<T>>` operand, or `None` for anything
+/// else. `await` over a vector of task handles is the only vector form it joins.
+fn vec_task_output(ty: &Ty) -> Option<Ty> {
+    let Ty::Named {
+        builtin: Some(BuiltinType::Vec),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    match args.first() {
+        Some(Ty::Task(output)) => Some((**output).clone()),
+        _ => None,
+    }
+}
+
 type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
 
@@ -585,15 +602,27 @@ impl Checker {
                     .insert(SpanKey::in_module(effective_span, self.current_module_idx));
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
 
-                // Join one Task layer; `await` joins a task and nothing else.
-                if let Ty::Task(output) = inner_ty {
-                    if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
-                        self.mark_expr_moved(&inner.0, &inner.1);
+                // Join one Task layer; `await` joins tasks and nothing else. A
+                // `Vec<Task<T>>` joins every task in order and yields `Vec<T>`;
+                // the vector and each handle in it are consumed by the join.
+                match inner_ty {
+                    Ty::Task(output) => {
+                        if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
+                            self.mark_expr_moved(&inner.0, &inner.1);
+                        }
+                        *output
                     }
-                    *output
-                } else {
-                    self.check_await_operand(effective_expr, effective_span, &inner_ty);
-                    inner_ty
+                    ref vector if vec_task_output(vector).is_some() => {
+                        let output = vec_task_output(vector).expect("matched a vector of tasks");
+                        if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
+                            self.mark_expr_moved(&inner.0, &inner.1);
+                        }
+                        self.make_vec_type(output, span)
+                    }
+                    other => {
+                        self.check_await_operand(effective_expr, effective_span, &other);
+                        other
+                    }
                 }
             }
 
@@ -2825,6 +2854,19 @@ impl Checker {
             });
         } else {
             let mut suggestions = vec!["remove `await`, or fork a call to get a task".to_string()];
+            if matches!(
+                ty,
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    ..
+                }
+            ) {
+                suggestions.push(
+                    "`await` over a vector joins a vector of task handles, so fill it with \
+                     forked calls"
+                        .to_string(),
+                );
+            }
             if ty.as_actor_handle().is_some() {
                 suggestions
                     .push("`closed(actor)` waits for an actor to finish terminating".to_string());

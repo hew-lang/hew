@@ -18817,6 +18817,28 @@ impl LowerCtx {
                             output_ty,
                         )
                     }
+                    ResolvedTy::Named {
+                        name,
+                        builtin: Some(BuiltinType::Vec),
+                        args,
+                        ..
+                    } if matches!(args.first(), Some(ResolvedTy::Task(_))) => {
+                        let ResolvedTy::Task(output_ty) = args[0].clone() else {
+                            unreachable!("matched a vector of task handles")
+                        };
+                        let results_ty = ResolvedTy::named_builtin(
+                            name.clone(),
+                            BuiltinType::Vec,
+                            vec![(*output_ty).clone()],
+                        );
+                        let block = self.lower_vector_await(
+                            inner_hir,
+                            &output_ty,
+                            &results_ty,
+                            span.clone(),
+                        );
+                        (HirExprKind::Block(block), results_ty)
+                    }
                     _ if self
                         .checked_call_effects
                         .contains_key(&self.mk_key(&inner.1)) =>

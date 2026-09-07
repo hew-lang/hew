@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::{Expr, Span, Spanned};
+use hew_parser::ast::{BinaryOp, Expr, Span, Spanned};
 use hew_types::{CallTarget, MethodCallReceiverKind, MethodCallRewrite, ResolvedTy, SpanKey};
 
 use super::LowerCtx;
@@ -250,6 +250,110 @@ impl LowerCtx {
             IntentKind::Consume,
             source.1.clone(),
         )
+    }
+
+    /// `await tasks` over a `Vec<Task<T>>`: join every child and collect the
+    /// results into a `Vec<T>` in the vector's own order.
+    ///
+    /// A vector element cannot be moved out by index, so the source is first
+    /// reversed into a second vector and then drained from its back; the joins
+    /// then run front-to-back. Every child is already running by this point, so
+    /// the order fixes the join and result order, not the concurrency.
+    pub(super) fn lower_vector_await(
+        &mut self,
+        tasks: HirExpr,
+        output_ty: &ResolvedTy,
+        results_ty: &ResolvedTy,
+        span: Span,
+    ) -> HirBlock {
+        let handles_ty = tasks.ty.clone();
+        let task_ty = ResolvedTy::Task(Box::new(output_ty.clone()));
+        let mut statements = Vec::new();
+        let source = self.fork_temporary(tasks, true, &mut statements);
+
+        let empty = self.make_vec_new_expr(handles_ty, span.clone());
+        let pending = self.fork_temporary(empty, true, &mut statements);
+        let receiver = self.fork_binding_ref(&source, IntentKind::Read);
+        let popped = self.make_vec_pop_expr(receiver, &task_ty, span.clone());
+        let target = self.fork_binding_ref(&pending, IntentKind::Read);
+        let push = self.make_vec_push_expr(target, popped, span.clone());
+        let reverse = self.make_drain_loop(&source, &task_ty, push, span.clone());
+        statements.push(reverse);
+
+        let empty = self.make_vec_new_expr(results_ty.clone(), span.clone());
+        let results = self.fork_temporary(empty, true, &mut statements);
+        let receiver = self.fork_binding_ref(&pending, IntentKind::Read);
+        let popped = self.make_vec_pop_expr(receiver, &task_ty, span.clone());
+        let joined = self.make_expr(
+            HirExprKind::AwaitTask {
+                operand: Box::new(popped),
+                output_ty: output_ty.clone(),
+            },
+            output_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let target = self.fork_binding_ref(&results, IntentKind::Read);
+        let push = self.make_vec_push_expr(target, joined, span.clone());
+        let join = self.make_drain_loop(&pending, &task_ty, push, span.clone());
+        statements.push(join);
+
+        let tail = self.fork_binding_ref(&results, IntentKind::Consume);
+        self.fork_result_block(statements, tail, span)
+    }
+
+    /// `while vector.len() > 0 { body }` — one drain step per element.
+    fn make_drain_loop(
+        &mut self,
+        vector: &HirBinding,
+        elem_ty: &ResolvedTy,
+        body: HirExpr,
+        span: Span,
+    ) -> HirStmt {
+        let receiver = self.fork_binding_ref(vector, IntentKind::Read);
+        let len = self.make_vec_len_call(receiver, elem_ty, span.clone());
+        let zero = self.make_i64_literal(0, span.clone());
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: BinaryOp::Greater,
+                left: Box::new(len),
+                right: Box::new(zero),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let step = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(body),
+            span: span.clone(),
+        };
+        let body = self.make_unit_block(vec![step], None, ResolvedTy::Unit, span.clone());
+        let loop_expr = self.make_expr(
+            HirExprKind::While {
+                label: None,
+                condition: Box::new(condition),
+                body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(loop_expr),
+            span,
+        }
+    }
+
+    fn make_vec_pop_expr(&mut self, vector: HirExpr, elem_ty: &ResolvedTy, span: Span) -> HirExpr {
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Pop),
+            vec![vector],
+            elem_ty,
+            &span,
+        );
+        self.make_expr(kind, elem_ty.clone(), IntentKind::Consume, span)
     }
 
     pub(super) fn lower_fork_batch(

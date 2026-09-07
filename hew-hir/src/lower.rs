@@ -11922,6 +11922,7 @@ impl LowerCtx {
             // even though the checker admitted it.
             ResolvedTy::Duration => self.dispatch_display_to_named_impl(
                 "std.builtins.duration",
+                &[],
                 &method_name,
                 value,
                 span,
@@ -11952,7 +11953,7 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::RemotePid),
                 ..
             } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
-            ResolvedTy::Named { name, .. } => {
+            ResolvedTy::Named { name, args, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
                 // dispatch; a concrete user type calls its `impl Display` fmt
@@ -11969,7 +11970,8 @@ impl LowerCtx {
                     );
                 }
                 let name = name.clone();
-                self.dispatch_display_to_named_impl(&name, &method_name, value, span)
+                let type_args = args.clone();
+                self.dispatch_display_to_named_impl(&name, &type_args, &method_name, value, span)
             }
             ResolvedTy::TypeParam { name } => {
                 // Abstract type parameter `T` carrying a `Display` bound — the
@@ -12074,12 +12076,14 @@ impl LowerCtx {
     fn dispatch_display_to_named_impl(
         &mut self,
         type_name: &str,
+        type_args: &[ResolvedTy],
         method_name: &str,
         value: HirExpr,
         span: Span,
     ) -> HirExpr {
         let symbol = crate::node::HirImplBlock::method_symbol(type_name, method_name);
         if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
+            self.register_display_impl_monomorphisation(&symbol, type_args, &span, call.site);
             return call;
         }
         self.diagnostics.push(HirDiagnostic::new(
@@ -12092,6 +12096,71 @@ impl LowerCtx {
              corresponding impl symbol — checker–HIR contract violation",
         ));
         self.unsupported_expr(span, format!("display dispatch: missing {symbol}"))
+    }
+
+    /// Interpolating a value whose `impl Display` block is generic
+    /// (`impl<E, M> Display for ActorError<E, M>`) needs the same
+    /// per-instantiation monomorphisation an ordinary `value.fmt()` call gets.
+    /// The f-string spine synthesises its own call site, so no checker
+    /// `call_type_args` entry exists for it; the concrete type's own arguments
+    /// are the substitution, taken positionally against the impl block's
+    /// declared parameters.
+    fn register_display_impl_monomorphisation(
+        &mut self,
+        symbol: &str,
+        type_args: &[ResolvedTy],
+        span: &Span,
+        call_site: SiteId,
+    ) {
+        let Some(entry) = self.fn_registry.get(symbol) else {
+            return;
+        };
+        if entry.linkage.is_some() || entry.type_params.is_empty() {
+            return;
+        }
+        let origin = entry.id;
+        let builtin_family = entry.builtin_family;
+        if entry.type_params.len() != type_args.len() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.to_string(),
+                    reason: format!(
+                        "generic Display impl declares {} parameters, interpolated type carries {}",
+                        entry.type_params.len(),
+                        type_args.len()
+                    ),
+                },
+                span.clone(),
+                "a generic Display impl must be parameterised by its own self type's arguments",
+            ));
+            return;
+        }
+        let type_args = type_args.to_vec();
+        self.call_site_type_args
+            .insert(call_site, type_args.clone());
+        if builtin_family.is_some() {
+            return;
+        }
+        if type_args
+            .iter()
+            .any(|ty| self.contains_abstract_type_param(ty))
+        {
+            return;
+        }
+        let Some(declaration) = self
+            .impl_method_body_symbols
+            .iter()
+            .chain(self.impl_body_plan.symbols.iter())
+            .find_map(|(declaration, emitted)| (emitted == symbol).then(|| declaration.clone()))
+        else {
+            return;
+        };
+        let _ = self.mono_registry.insert(MonoKey {
+            origin,
+            declaration,
+            linker_symbol: symbol.to_string(),
+            type_args,
+        });
     }
 
     /// #1565: route `println` / `print` / `to_string` of a value whose type
@@ -12418,9 +12487,18 @@ impl LowerCtx {
         for next in iter {
             acc = self.build_catalog_call("string_concat", vec![acc, next], span.clone());
         }
-        // Unwrap the outer HirExpr into (kind, ty) so the caller can re-wrap
-        // with its own site / value-class layer like other arms.
-        (acc.kind, acc.ty)
+        // The caller re-wraps `(kind, ty)` with its own site, so returning the
+        // last segment's kind directly would drop that segment's site along
+        // with every side table keyed on it (a generic `Display` impl records
+        // its per-instantiation type arguments there). Keep the segment whole
+        // inside a transparent subsumed value.
+        let ty = acc.ty.clone();
+        (
+            HirExprKind::SubsumedValue {
+                source: Box::new(acc),
+            },
+            ty,
+        )
     }
 
     /// Lower a module-qualified direct call (`module.fn(args)` /

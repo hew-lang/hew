@@ -17,11 +17,11 @@
 //! import std.fs;
 //!
 //! fn load_config(path: string) -> Result<string, fs.IoError> {
-//!     await fs.read(path)
+//!     fs.read(path)
 //! }
 //!
 //! fn main() {
-//!     match await load_config("config.toml") {
+//!     match load_config("config.toml") {
 //!         .Ok(data) => println(data),
 //!         .Err(e) => {
 //!             match e {
@@ -194,7 +194,7 @@ fn last_io_error() -> IoError {
 /// import std.fs;
 ///
 /// fn main() {
-///     match await fs.read("main.hew") {
+///     match fs.read("main.hew") {
 ///         .Ok(src) => println(src),
 ///         .Err(_) => println("could not read main.hew"),
 ///     }
@@ -279,7 +279,7 @@ pub fn size(path: string) -> i64 {
 /// import std.fs;
 ///
 /// fn main() {
-///     let data = (await fs.read_bytes("image.png")).expect("the call succeeds");
+///     let data = (fs.read_bytes("image.png")).expect("the call succeeds");
 ///     println(data.len());
 /// }
 /// ```

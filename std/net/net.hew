@@ -16,7 +16,7 @@
 //! import std.net;
 //!
 //! fn dial(addr: string) -> Result<net.Connection, net.NetError> {
-//!     await net.connect(addr)
+//!     net.connect(addr)
 //! }
 //!
 //! fn main() {
@@ -40,8 +40,8 @@
 //!
 //! fn main() {
 //!     let listener = match net.listen(":9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-//!     let conn = await listener.accept();
-//!     let data = await conn.read();
+//!     let conn = listener.accept();
+//!     let data = conn.read();
 //!     // write() returns Result<(), WriteError>; an Err signals downstream
 //!     // backpressure. An echo server that does not flow-control can ignore it.
 //!     let _ = conn.write(data);
@@ -611,7 +611,7 @@ trait ConnectionMethods {
 /// }
 ///
 /// fn main() {
-///     let conn = match await net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 ///     let handler: LocalPid<InboundLogger> = spawn InboundLogger;
 ///     match conn.attach(handler) {
 ///         .Ok(()) => {},
@@ -781,7 +781,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 /// import std.net;
 ///
 /// fn main() {
-///     match await net.connect("localhost:9000") {
+///     match net.connect("localhost:9000") {
 ///         .Ok(conn) => { /* use conn */ },
 ///         .Err(net.NetError.ConnectionRefused(_)) => println("nothing listening"),
 ///         .Err(e) => println("connect failed"),

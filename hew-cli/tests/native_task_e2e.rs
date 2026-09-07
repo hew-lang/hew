@@ -6,6 +6,40 @@ use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
 #[test]
+fn discarded_results_close_temporaries_and_preserve_existing_owners() {
+    run_task(
+        r#"
+gen fn held() -> string {
+    defer println("generator closed");
+    yield "first";
+    yield "second";
+}
+fn produce() -> Generator<string, ()> {
+    let values = held();
+    let _first = await values.next();
+    values
+}
+fn main() {
+    { println("block"); };
+    { await produce() };
+    let task = fork produce();
+    await task;
+    let kept = await produce();
+    kept;
+    match await kept.next() {
+        .Some(value) => println(value),
+        .None => panic("discarded binding was closed"),
+    }
+    println("continued");
+}
+"#,
+        "block\ngenerator closed\ngenerator closed\nsecond\ncontinued\ngenerator closed\n",
+        0,
+        "",
+    );
+}
+
+#[test]
 fn never_returning_calls_preserve_cleanup_and_recovery() {
     run_task(
         r#"

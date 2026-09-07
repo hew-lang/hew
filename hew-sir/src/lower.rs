@@ -3709,6 +3709,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_expression: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         match &expr.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(_),
+                ..
+            } => {
+                // Reading an existing binding in effect position needs no
+                // owned copy. Keep the borrow so availability is still checked.
+                let mut loans = Vec::new();
+                self.lower_borrowed_read(expr, &mut loans)?;
+                return self.end_call_loans(&loans);
+            }
             HirExprKind::Block(block) => {
                 if let Some(value) = self.lower_scoped_block(block, OwnedBindingUse::Copy)? {
                     if self.owned_live.contains_key(&value.value)

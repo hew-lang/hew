@@ -35821,25 +35821,26 @@ impl Widget {
 
     // ── Select arm-binding scoping ──────────────────────────────────────────
     //
-    // Source shared by several tests below: two actors both returning `i64`.
-    // Both arm bodies return the bound name so the arm body types agree (the
-    // type checker requires all arm bodies to have the same type).  Distinct
-    // binding names (`reply` vs `verdict`) let us prove each arm has its own
-    // BindingId.
+    // Source shared by several tests below: two asks against the same actor
+    // type. Both arm bodies return the bound name so the arm body types
+    // agree — `ActorError<E, M>` carries the source's `Message<LocalPid<_>,
+    // ..>` in its type, so arms asking different actor types would produce
+    // distinct arm-body types and fail the select's own arm-unification
+    // check; that is a real type distinction, not a scoping one, so both
+    // arms ask the same actor here to isolate binding scoping from it.
+    // Distinct binding names (`reply` vs `verdict`) let us prove each arm
+    // has its own BindingId.
 
     const SELECT_SCOPE_SOURCE: &str = r"
         actor Pinger {
             receive fn ping() -> i64 { 1 }
         }
-        actor Counter {
-            receive fn count() -> i64 { 2 }
-        }
         fn main() {
             let p = spawn Pinger;
-            let c = spawn Counter;
+            let c = spawn Pinger;
             let result = select {
                 reply = await p.ping() => reply,
-                verdict = await c.count() => verdict,
+                verdict = await c.ping() => verdict,
             };
         }
     ";

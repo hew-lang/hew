@@ -1625,6 +1625,30 @@ fn main() {
 }
 ```
 
+A handler that waits on a deadline releases its worker, so sibling actors
+keep running while the timer is armed. Two workers napping for the same
+interval finish in about one interval, not two:
+
+```hew
+actor Sleeper {
+    receive fn nap() -> i64 {
+        sleep_until(instant.now() + 300ms);
+        1
+    }
+}
+
+fn main() {
+    let a = spawn Sleeper();
+    let b = spawn Sleeper();
+    let start = instant.now();
+    let first = fork a.nap();
+    let second = fork b.nap();
+    let _ = await first;
+    let _ = await second;
+    println(start.elapsed().millis() < 500);   // true, not the 600 ms two naps would take
+}
+```
+
 **Duration literals:** `10ms`, `2s`, `500ms`, `1ns`, `1us`. These produce a
 `duration` value. `instant + duration` and `duration + instant` both produce
 a new `instant`.

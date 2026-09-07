@@ -182,6 +182,7 @@ impl Checker {
                 || fn_name.contains("::")
                 || fn_name.starts_with('_')
                 || root_leaf.is_some_and(|leaf| leaf.starts_with('_'))
+                || self.test_fn_names.contains(fn_name)
             {
                 reachable.insert(fn_name.clone());
                 queue.push_back(fn_name.clone());
@@ -212,7 +213,7 @@ impl Checker {
             let Some(leaf) = self.root_owned_fn_leaf(fn_name) else {
                 continue;
             };
-            if leaf == "main" || leaf.starts_with('_') {
+            if leaf == "main" || leaf.starts_with('_') || self.test_fn_names.contains(fn_name) {
                 continue;
             }
             if reachable.contains(fn_name) {

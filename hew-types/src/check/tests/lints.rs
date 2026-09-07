@@ -4295,6 +4295,29 @@ fn must_use_rejects_user_same_leaf_error_names() {
     );
 }
 
+/// A `#[test]` function is entered by the test harness, so it is a dead-code
+/// root exactly as `main` is, and so is everything it calls. Fixtures compile
+/// with warnings as errors, so a warning here fails the build.
+#[test]
+fn dead_code_treats_a_test_fn_as_a_root() {
+    let src = "fn helper() -> i64 { 7 }\n\
+        #[test]\n\
+        fn checks_the_helper() { assert_eq(helper(), 7); }\n\
+        fn stranded() -> i64 { 1 }";
+    let out = check_with_lint_defaults(src);
+    let dead: Vec<_> = out
+        .warnings
+        .iter()
+        .filter(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode))
+        .collect();
+    assert_eq!(dead.len(), 1, "warnings: {:?}", out.warnings);
+    assert!(
+        dead[0].message.contains("stranded"),
+        "only the genuinely unreachable fn is dead: {}",
+        dead[0].message
+    );
+}
+
 // -----------------------------------------------------------------------
 // sleep_loop_blocks_mailbox lint
 // -----------------------------------------------------------------------

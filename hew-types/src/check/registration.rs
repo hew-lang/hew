@@ -5495,6 +5495,9 @@ impl Checker {
                         scoped_name.clone(),
                         (span.clone(), self.current_module.clone()),
                     );
+                    if fd.attributes.iter().any(|a| a.name.as_str() == "test") {
+                        self.test_fn_names.insert(scoped_name.clone());
+                    }
                     self.fn_visibility.insert(scoped_name, fd.visibility);
                 }
                 self.register_fn_sig(fd);

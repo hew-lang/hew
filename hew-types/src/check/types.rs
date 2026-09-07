@@ -2948,6 +2948,9 @@ pub struct Checker {
     /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` (co-minted
     /// with `fn_def_spans` under the canonical declaration key).
     pub(super) fn_visibility: HashMap<String, Visibility>,
+    /// Root free functions declared `#[test]`. The test harness enters them
+    /// directly, so they are dead-code roots exactly as `main` is.
+    pub(super) test_fn_names: HashSet<String>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
     /// Declared visibility for each top-level type/trait/enum/record/alias/const/
@@ -3900,6 +3903,7 @@ impl Checker {
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
             fn_visibility: HashMap::new(),
+            test_fn_names: HashSet::new(),
             type_def_spans: HashMap::new(),
             type_visibility: HashMap::new(),
             type_namespace_owners: HashMap::new(),

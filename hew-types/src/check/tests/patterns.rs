@@ -1365,10 +1365,10 @@ fn machine_transition_contextual_target_rejects_unknown_state() {
         ",
     );
     assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::PathMemberNotFound && error.message.contains("`Nope`")
-        }),
-        "an unknown contextual target must report E_PATH_MEMBER_NOT_FOUND: {:#?}",
+        output.errors.iter().any(|error| error
+            .message
+            .contains("references an undeclared state or input event")),
+        "an unknown contextual target must be refused: {:#?}",
         output.errors
     );
 }
@@ -1518,8 +1518,11 @@ fn machine_transition_self_field_reads_source_payload() {
     );
 }
 
+/// MACHINE-SPEC, "Rule selection and coverage": a fixed target requires that
+/// target variant on every normal path, so a body producing the source state
+/// under a different fixed target is refused.
 #[test]
-fn machine_transition_bare_self_remains_rejected() {
+fn machine_transition_body_must_produce_the_fixed_target() {
     let output = check_source(
         r"
         machine Counter {
@@ -1544,9 +1547,10 @@ fn machine_transition_bare_self_remains_rejected() {
         output
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::UndefinedVariable
-                && error.message.contains("`self` is not a valid identifier")),
-        "bare `self` must remain rejected outside `self.field`; got errors: {:#?}",
+            .any(|error| error
+                .message
+                .contains("transition to `Zero` must produce that state")),
+        "a body that keeps the source state under a fixed target must be refused; got errors: {:#?}",
         output.errors
     );
 }
@@ -1655,10 +1659,10 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
         "machine Counter {\n",
         "    events { Tick, }\n",
         "    state Idle,\n",
-        "    state Busy,\n",
-        "    on Tick: Idle => .Idle {\n",
+        "    state Busy { n: i64, },\n",
+        "    on Tick: Idle => .Busy {\n",
         "        let result = compute();\n",
-        "        result\n",
+        "        .Busy { n: result == 1 }\n",
         "    }\n",
         "    on Tick: Busy => .Idle,\n",
         "}\n",
@@ -1686,16 +1690,33 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
         output.errors
     );
 
+    let published = |offset: usize| {
+        output
+            .expr_types
+            .iter()
+            .find(|(key, _)| key.start == offset)
+            .map(|(_, ty)| ty.clone())
+    };
     let block = source.find("{\n        let result").expect("block present");
-    let block_ty = output
-        .expr_types
-        .iter()
-        .find(|(key, _)| key.start == block)
-        .map(|(_, ty)| ty);
+    let tail = source.find(".Busy { n: result").expect("tail present");
+    let block_ty = published(block);
+    let tail_ty = published(tail);
+    assert!(
+        block_ty.is_some(),
+        "the block must publish a type at its source span"
+    );
+    assert_eq!(
+        block_ty, tail_ty,
+        "the block must recover with its tail's type, not the error placeholder"
+    );
     assert_eq!(
         block_ty,
-        Some(&Ty::I64),
-        "the block must recover with its tail's type, not the error placeholder"
+        Some(Ty::Named {
+            name: "Counter".to_string(),
+            args: vec![],
+            builtin: None,
+        }),
+        "a transition body produces the machine's state type"
     );
 }
 

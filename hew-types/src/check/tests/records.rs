@@ -1482,7 +1482,11 @@ mod assoc_types_slice2 {
     fn unknown_trait_bound_shape_rejected_for_machine_type_param_bound() {
         let output = check_source(
             r"
-            machine M<T: Eq<U>, U> { }
+            machine M<T: Eq<U>, U> {
+                events { Tick, }
+                state Idle,
+                on Tick: Idle => .Idle { .Idle }
+            }
             fn main() {}
             ",
         );
@@ -2077,7 +2081,8 @@ mod assoc_types_slice2 {
 
 
                 on Toggle: Closed => Open {
-                    gen { yield Open; }
+                    let _g = gen { yield 1; };
+                    Open
                 }
                 on Toggle: Open => Closed {
                     Closed
@@ -2087,11 +2092,10 @@ mod assoc_types_slice2 {
             ",
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::GenBlockInMachineTransition),
-            "gen{{}} inside machine transition must emit GenBlockInMachineTransition; got: {:?}",
+            output.errors.iter().any(|e| e
+                .message
+                .contains("not admitted in the pure machine evaluator")),
+            "gen{{}} inside a machine transition must be refused; got: {:?}",
             output.errors
         );
     }
@@ -2121,11 +2125,10 @@ mod assoc_types_slice2 {
             ",
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::AwaitInMachineTransition),
-            "await inside machine transition must emit AwaitInMachineTransition; got: {:?}",
+            output.errors.iter().any(|e| e
+                .message
+                .contains("not admitted in the pure machine evaluator")),
+            "await inside a machine transition must be refused; got: {:?}",
             output.errors
         );
     }

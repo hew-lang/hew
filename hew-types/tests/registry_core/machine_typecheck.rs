@@ -218,8 +218,8 @@ fn missing_transition_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("does not handle event `Dim`")),
-        "expected Dim error, got: {messages:?}"
+            .any(|m| m.contains("needs an unconditional fallback for `Off` / `Dim`")),
+        "expected Dim coverage error, got: {messages:?}"
     );
 }
 
@@ -341,8 +341,8 @@ fn duplicate_transition_error() {
     assert!(
         output.errors.iter().any(|e| e
             .message
-            .contains("duplicate transition for event `Toggle` in state `Off`")),
-        "expected duplicate transition error, got: {:?}",
+            .contains("unreachable rule after the unconditional fallback for `Off` / `Toggle`")),
+        "expected an unreachable-duplicate error, got: {:?}",
         output.errors
     );
 }
@@ -365,7 +365,7 @@ fn unknown_state_name_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("transition references unknown state `Onn`")),
+            .any(|m| m.contains("references an undeclared state or input event")),
         "expected unknown state error, got: {messages:?}"
     );
 }
@@ -388,7 +388,7 @@ fn unknown_event_name_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("transition references unknown event `Toggl`")),
+            .any(|m| m.contains("references an undeclared state or input event")),
         "expected unknown event error, got: {messages:?}"
     );
 }
@@ -411,8 +411,8 @@ fn duplicate_wildcard_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("duplicate wildcard transition for event `Toggle`")),
-        "expected duplicate wildcard error, got: {messages:?}"
+            .any(|m| m.contains("unreachable rule after the unconditional fallback")),
+        "expected an unreachable-duplicate error, got: {messages:?}"
     );
 }
 
@@ -469,8 +469,8 @@ fn zero_events_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("must declare at least 1 event")),
-        "expected min-events error, got: {messages:?}"
+            .any(|m| m.contains("must declare a state and an input event")),
+        "expected missing-event error, got: {messages:?}"
     );
 }
 
@@ -1262,8 +1262,8 @@ fn imported_machine_exhaustiveness_runs() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("does not handle event `Dim`")),
-        "expected missing-Dim exhaustiveness error for imported machine, got: {messages:?}"
+            .any(|m| m.contains("needs an unconditional fallback for `Off` / `Dim`")),
+        "expected the missing-Dim coverage error for the imported machine, got: {messages:?}"
     );
 }
 
@@ -1902,8 +1902,8 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedField),
-        "accessing a nonexistent payload field in entry must be UndefinedField, got: {:?}",
+            .any(|e| e.message.contains("has no field `no_such_field`")),
+        "accessing a nonexistent payload field in entry must be refused, got: {:?}",
         output.errors
     );
 }
@@ -1938,10 +1938,11 @@ fn machine_transition_guard_type_error_reported() {
     );
 }
 
-/// A machine that has both entry/exit blocks and exhaustiveness gaps must
-/// produce both kinds of diagnostics.
+/// A type error inside a state entry block is reported like any other body
+/// diagnostic. Normalization refuses a malformed machine before checking, so a
+/// coverage gap and a hook type error are no longer reported together.
 #[test]
-fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
+fn machine_entry_block_type_error_reported() {
     let output = typecheck_isolated(
         r"
         machine Door {
@@ -1957,7 +1958,9 @@ fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
 
 
             on Push: Closed => .Open,
-            // Missing: Open -> Push and both Pull transitions
+            on Push: Open => .Open,
+            on Pull: Open => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1969,15 +1972,7 @@ fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
                 ref actual
             } if expected == "i64" && actual == "bool"
         )),
-        "entry-block lifecycle type error must be reported alongside exhaustiveness, got: {:?}",
-        output.errors
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
-        "exhaustiveness gap must still be reported alongside entry-block error, got: {:?}",
+        "a type error inside a state entry block must be reported, got: {:?}",
         output.errors
     );
 }

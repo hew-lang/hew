@@ -1086,7 +1086,8 @@ fn machine_exhaustiveness_unknown_event() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("unknown event")),
+                && e.message
+                    .contains("references an undeclared state or input event")),
         "Expected MachineExhaustivenessError for unknown event, got errors: {:?}",
         output.errors
     );
@@ -1116,7 +1117,8 @@ fn machine_exhaustiveness_unknown_state() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("unknown state")),
+                && e.message
+                    .contains("references an undeclared state or input event")),
         "Expected MachineExhaustivenessError for unknown state, got errors: {:?}",
         output.errors
     );
@@ -1146,7 +1148,8 @@ fn machine_exhaustiveness_duplicate_wildcard() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("duplicate wildcard")),
+                && e.message
+                    .contains("unreachable rule after the unconditional fallback")),
         "Expected MachineExhaustivenessError for duplicate wildcard, got errors: {:?}",
         output.errors
     );
@@ -1898,7 +1901,8 @@ fn machine_exhaustiveness_duplicate_explicit() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("duplicate transition")),
+                && e.message
+                    .contains("unreachable rule after the unconditional fallback")),
         "Expected MachineExhaustivenessError for duplicate transition, got errors: {:?}",
         output.errors
     );

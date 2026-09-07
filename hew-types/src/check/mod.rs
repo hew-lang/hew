@@ -2426,9 +2426,50 @@ impl Checker {
                     diagnostic.span = source.clone();
                 }
             }
+            Self::project_machine_expr_types(normalized, &mut output.expr_types);
         }
 
         output
+    }
+
+    /// Republish machine body types at the source spans they came from.
+    ///
+    /// A machine is normalized into ordinary declarations before checking, so
+    /// every expression inside a transition body is checked at a generated
+    /// span. Editors read `expr_types` by source span, so without this
+    /// projection hover and inlay hints go blank inside a machine. Source
+    /// spans that already carry a type keep it, and a source span reached by
+    /// two generated spans that disagree is dropped rather than resolved
+    /// arbitrarily.
+    fn project_machine_expr_types(
+        normalized: &NormalizedMachines,
+        expr_types: &mut HashMap<SpanKey, Ty>,
+    ) {
+        let mut projected: HashMap<SpanKey, Ty> = HashMap::new();
+        let mut ambiguous: HashSet<SpanKey> = HashSet::new();
+        for (key, ty) in expr_types.iter() {
+            let Some(source) = normalized.source_spans.get(&(key.start..key.end)) else {
+                continue;
+            };
+            let source_key = SpanKey::in_module(source, key.module_idx);
+            if expr_types.contains_key(&source_key) {
+                continue;
+            }
+            match projected.entry(source_key.clone()) {
+                Entry::Occupied(existing) => {
+                    if existing.get() != ty {
+                        ambiguous.insert(source_key);
+                    }
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(ty.clone());
+                }
+            }
+        }
+        for key in &ambiguous {
+            projected.remove(key);
+        }
+        expr_types.extend(projected);
     }
 
     /// Restore the checker to the same program-owned state as a fresh instance.

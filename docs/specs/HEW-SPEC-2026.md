@@ -536,7 +536,7 @@ declared in `std/builtins.hew`:
 trait Error: Display {}
 ```
 
-Every public error enum in `std` and in a `hew::` package implements `Display`
+Every public error enum in `std` and in a `hew.` package implements `Display`
 and `Error`. When the enclosing function's error type is `dyn Error`, `?`
 applies the ordinary `dyn Trait` coercion the language already performs in any
 `dyn Trait` value position — the concrete error is erased into the trait
@@ -2897,7 +2897,7 @@ else.
 
 The language supports user-defined traits, associated types, and the three
 receivers of §3.6. The current stdlib does **not** ship a full generic
-iterator-trait hierarchy; modules such as `std::iter` expose concrete helper
+iterator-trait hierarchy; modules such as `std.iter` expose concrete helper
 functions instead.
 
 `Eq`, `Ord`, `PartialOrd`, and `Hash` are derived by default and may be
@@ -2923,7 +2923,7 @@ trait Releasable {
 trait Error: Display {}
 ```
 
-Every public error enum in `std` and in a `hew::` package implements both
+Every public error enum in `std` and in a `hew.` package implements both
 `Display` and `Error`. An error type that cannot print itself is not a
 finished error type: `f"{e}"`, `println(e)`, a log line, and a JSON error body
 all reach the same `Display` text, and `dyn Error` (§2.2.1) is the type that
@@ -2953,7 +2953,7 @@ enum Result<T, E> {
 ```
 
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
-for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std::fs::IoError`:
+for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std.fs::IoError`:
 
 ```hew
 pub enum IoError {
@@ -3152,7 +3152,7 @@ println(io.read_all());
 
 Important current details:
 
-- `std::io` currently provides plain functions (`read_line`, `write`,
+- `std.io` currently provides plain functions (`read_line`, `write`,
   `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
 - Built-in `HashSet<T>` currently lowers the supported surface forms
   `HashSet<i64>` and `HashSet<string>` through the typed-layout runtime;
@@ -3160,16 +3160,16 @@ Important current details:
   checking, including nested annotations, function signatures, and `#[wire] enum`
   payloads; admission follows the HashSet ABI and its independent element,
   `Hash`, and `Eq` requirements
-- `std::iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
+- `std.iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
   any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
   `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
   `Vec<T>` through it via `.iter()` or `.into_iter()`
-- `std::sort` exposes generic helpers — one `sort<T: Ord>` and one
+- `std.sort` exposes generic helpers — one `sort<T: Ord>` and one
   `reverse<T>` over `Vec<T>` — rather than a per-element-type family. Both
   copy their input and leave the original unchanged; integer and string sorts
   use iterative merge passes with O(n log n) comparisons, and float sorting
   retains its total-order runtime implementation
-- `std::testing` is a pure-Hew assertion library layered on top of `panic()`.
+- `std.testing` is a pure-Hew assertion library layered on top of `panic()`.
   Its whole surface is `assert(cond, msg)`, `assert_eq<T: Eq + Display>`, and
   `assert_ne<T: Eq + Display>`; the monomorphic per-type assertion family
   (`assert_true`, `assert_eq_int`, and the rest) is deleted. A generic
@@ -3178,8 +3178,8 @@ Important current details:
   lands at v0.7.0
 
 **One form per operation (normative).** Where a generic form compiles, the
-monomorphic twins beside it do not exist: `std::vec`, `std::option`,
-`std::result`, `std::sort`, and `std::testing` expose the generic function and
+monomorphic twins beside it do not exist: `std.vec`, `std.option`,
+`std.result`, `std.sort`, and `std.testing` expose the generic function and
 nothing per element type. A module exposes an operation once — a method or a
 free function, never both — and a `#[resource]` type's release is its `close`
 method, so there is no `Closable` trait and no per-type `free` function
@@ -3207,8 +3207,8 @@ F-strings are the sole string interpolation syntax in Hew.
 **One string surface (normative).** String operations are methods on `string`.
 The `string_*` builtin family — the `string_*`-prefixed names, `substring`,
 the free `len`, and the four `*_to_string` conversions — is deleted, together
-with the free-function twins in `std::string` that shadowed the same methods
-and the aliases in `std::fmt` that shadowed them again. `s.len()`,
+with the free-function twins in `std.string` that shadowed the same methods
+and the aliases in `std.fmt` that shadowed them again. `s.len()`,
 `s.slice(a, b)`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
 second name for any of them. A type renders itself through `Display`
 (§3.10.2), never through a per-type `to_string` builtin.
@@ -3268,7 +3268,7 @@ socket's own read and write timeouts, not a wrapper around the call.
 
 #### 3.10.8 Regular Expressions
 
-`std::text::regex` is shipped. It compiles patterns and supports matching,
+`std.text.regex` is shipped. It compiles patterns and supports matching,
 replacement, indexed and named captures, and multi-match capture tables.
 `regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
 `close()` releases early, and the implicit scope-exit drop covers the rest.
@@ -4672,7 +4672,7 @@ Then:
 
 The supervisor's `intensity: N within <window>` budget caps restarts; exceeding it escalates failure to the parent supervisor. The runtime tracks restarts in a sliding window.
 
-**Exponential backoff** and **circuit breaker** are policy objects in `std::supervision`, not supervisor keywords — Hew leans on the standard library rather than the grammar for these tunable policies.
+**Exponential backoff** and **circuit breaker** are policy objects in `std.supervision`, not supervisor keywords — Hew leans on the standard library rather than the grammar for these tunable policies.
 
 ### 5.5 Nested Supervisors
 
@@ -5021,7 +5021,7 @@ runtime features.
 
 Both handle types are `Send` (safe to pass to other actors), opaque (backed by a vtable), and not `Clone`.
 
-#### 6.5.1 Current `std::stream` surface
+#### 6.5.1 Current `std.stream` surface
 
 ```hew
 import std.stream;
@@ -5072,7 +5072,7 @@ no `Stream<bytes>` `lines()` surface is promised here.
 
 #### 6.5.4 Bidirectional connections
 
-A bidirectional network connection (such as a TCP socket from `std::net`)
+A bidirectional network connection (such as a TCP socket from `std.net`)
 splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
 
 <!-- doctest: skip -->
@@ -5092,11 +5092,11 @@ may be passed to separate actors. See `std/net/net.hew` for the full API.
 #### 6.5.5 Relation to Actor Streams
 
 `receive gen fn` produces a `Stream<Y>` backed by the actor mailbox protocol.
-First-class `Stream<T>` values from `std::stream` are bounded handles that may
+First-class `Stream<T>` values from `std.stream` are bounded handles that may
 be moved across actor boundaries. Both are consumed with `for await`, but they
 have different implementations:
 
-|                     | Actor stream (`receive gen fn`) | `std::stream::Stream<T>`                   |
+|                     | Actor stream (`receive gen fn`) | `std.stream::Stream<T>`                   |
 | ------------------- | ------------------------------- | ------------------------------------------ |
 | Created by          | `receive gen fn` call           | `bytes_pipe()`, `pipe()`, `from_file()`, etc. |
 | Backed by           | Actor mailbox protocol          | Bounded channel / wrapper-specific handle  |
@@ -5396,7 +5396,7 @@ enum Status { PendingReview, ActiveNow, Completed, }
 
 #### 7.3.2a YAML Encoding
 
-`std::encoding::yaml` is shipped for parsing, constructing, inspecting, and
+`std.encoding.yaml` is shipped for parsing, constructing, inspecting, and
 stringifying YAML values. Wire types can also serialize to and from YAML using
 the helper surface below.
 
@@ -6245,7 +6245,7 @@ prints as `5000000000ns`).
 > `0` rather than a real clock reading, and subtracting two instants fails
 > during lowering with ``E_MIR: unsupported HIR node reached MIR lowering:
 > integer binary result `duration` disagrees with common operand type `i64` ``.
-> Measure elapsed time through `std::time` until the `instant` substrate
+> Measure elapsed time through `std.time` until the `instant` substrate
 > lands.
 
 **Deadlines:**
@@ -6521,6 +6521,6 @@ If you want this to be directly executable as an engineering project, the next m
   generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
   tokens, actor await + read-after-send barrier, and the self-hosting
   roadmap. See HEW-FUTURE.md for the surface and version targets.
-  Channels (`std::channel`) and the rest of the `Iterator`/`IntoIterator`
+  Channels (`std.channel`) and the rest of the `Iterator`/`IntoIterator`
   trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
   communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.

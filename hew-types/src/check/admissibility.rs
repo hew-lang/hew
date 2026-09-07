@@ -1323,7 +1323,7 @@ impl Checker {
             format!(
                 "`Vec<{}>` cannot be range-sliced: a slice copies each element into an \
                  independent `Vec`, but {blocker} has no semantic clone/retain operation; \
-                 use `into_iter()` to consume and move the elements instead",
+                 use an owning removal such as `pop()` to move the elements out instead",
                 resolved.user_facing()
             ),
         );

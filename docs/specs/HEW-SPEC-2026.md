@@ -3235,9 +3235,18 @@ selected element. An index or endpoint outside the value reports
 `IndexOutOfBounds` and releases the live owners on the way out. Because a Vec
 slice copies its elements, a vector whose element type has no clone — a
 `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
-generator — cannot be range-sliced; `into_iter()` moves those elements out
+generator — cannot be range-sliced; an owning removal moves those elements out
 instead. `for c in s` walks a string's codepoints and `for b in raw` walks a
 bytes value's bytes, in each case yielding the same element `s[i]` would.
+
+**Borrowed elements (normative).** When a `Vec<T>` element type has no clone,
+`for x in v` binds each element as a borrow of the slot the vector still owns,
+and `v[i]` reads one the same way. The body may read the element and call its
+borrowing methods; consuming it — moving it into another binding, passing it
+to a consuming parameter, calling a `consume self` method, or returning it —
+is refused, as is mutating or draining the vector while the loop holds it. An
+owning removal moves elements out. An element type with a clone keeps the
+per-iteration independent copy, so existing loops are unchanged.
 
 #### 3.10.6 Prelude (Automatically Imported)
 

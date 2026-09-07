@@ -578,6 +578,12 @@ impl<T> Vec<T> {
 /// `Vec` is a refcounted heap handle, so the cursor carries the underlying
 /// vector storage by handle (no per-step copy).
 ///
+/// The cursor copies each element out, so it serves `Vec<T>` whose element
+/// type has a clone. A `for` loop over a clone-free element type — a
+/// `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
+/// generator — does not build a cursor at all: it walks the vector by index
+/// and binds each element as a borrow of the slot the vector still owns.
+///
 /// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
 /// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
 /// per-stdlib-module receiver-impl harness only handles a fixed set of

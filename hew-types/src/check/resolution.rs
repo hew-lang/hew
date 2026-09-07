@@ -1296,6 +1296,24 @@ impl Checker {
         assoc_bindings.sort_by(|a, b| a.0.cmp(&b.0));
 
         let trait_lookup_key = self.trait_ref_lookup_key(&bound.name);
+        // `dyn X` names a trait; an unknown name has no vtable to build and no
+        // methods to dispatch, so refuse it here rather than letting it reach a
+        // coercion site as an unexplained type mismatch.
+        if !self.trait_defs.contains_key(&trait_lookup_key) {
+            // A type annotation is resolved once per registration pass and
+            // again at use, so report the span once.
+            let dedup_key = (
+                bound.name.clone(),
+                SpanKey::in_module(span, self.current_module_idx),
+            );
+            if self.reported_unknown_dyn_traits.insert(dedup_key) {
+                self.report_error(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown trait `{}` in `dyn` type", bound.name),
+                );
+            }
+        }
         if let Some(associated_type_names) =
             self.trait_defs.get(&trait_lookup_key).map(|trait_info| {
                 trait_info

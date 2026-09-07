@@ -1811,3 +1811,15 @@ timeout_seconds = 15
 [case.expected]
 stdout = "item-x\nreleased\nitem-x\nreleased\nitem-x\nreleased\ndrained\nitem-x\nreleased\nitem-x\nreleased\nstopped\n"
 exit = 0
+
+[[case]]
+id = "error-trait-fallible-main"
+intent = "An `impl Error` type propagates through `?` and ends a fallible `main` with its `Display` rendering on stderr and exit 1."
+source = "cases/error-trait-fallible-main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "width=5\n"
+stderr = "error: parse failed: empty input\n"
+exit = 1

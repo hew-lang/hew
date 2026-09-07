@@ -98,3 +98,63 @@ fn trait_bound_violation_reports_error() {
         output.errors
     );
 }
+
+/// A trait's supertraits are part of what an impl promises: `impl Sub for T`
+/// asserts `T` satisfies every super of `Sub`. Report the gap where the promise
+/// is made rather than at some later call that needs the inherited method.
+#[test]
+fn impl_of_subtrait_requires_its_supertrait_impl() {
+    let source = r"
+        trait Base {
+            fn base(value: Self) -> i64;
+        }
+
+        trait Derived: Base {}
+
+        type Widget { size: i64 }
+
+        impl Derived for Widget {}
+    ";
+
+    let output = typecheck(source);
+    assert!(
+        output.errors.iter().any(|err| {
+            err.kind == TypeErrorKind::BoundsNotSatisfied
+                && err.message.contains("supertrait `Base`")
+                && err.message.contains("Widget")
+        }),
+        "expected the supertrait obligation on `impl Derived for Widget`, got {:?}",
+        output.errors
+    );
+}
+
+/// The same program with the supertrait implemented checks cleanly, so the
+/// obligation above is the missing impl and not the subtrait impl itself.
+#[test]
+fn impl_of_subtrait_with_supertrait_impl_is_accepted() {
+    let source = r"
+        trait Base {
+            fn base(value: Self) -> i64;
+        }
+
+        trait Derived: Base {}
+
+        type Widget { size: i64 }
+
+        impl Base for Widget {
+            fn base(value: Widget) -> i64 { value.size }
+        }
+
+        impl Derived for Widget {}
+    ";
+
+    let output = typecheck(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::BoundsNotSatisfied),
+        "expected no bound violation, got {:?}",
+        output.errors
+    );
+}

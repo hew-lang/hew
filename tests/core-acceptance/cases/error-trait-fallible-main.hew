@@ -1,0 +1,28 @@
+type ParseFailure {
+    detail: string,
+}
+
+impl Display for ParseFailure {
+    fn fmt(value: ParseFailure) -> string {
+        f"parse failed: {value.detail}"
+    }
+}
+
+// `Error` inherits `Display`, so this impl is what obliges `ParseFailure` to
+// render; the failing `main` below prints through that rendering.
+impl Error for ParseFailure {}
+
+fn parse(text: string) -> i64 fails ParseFailure {
+    if text == "" {
+        return error ParseFailure { detail: "empty input" }
+    }
+    return text.len()
+}
+
+fn main() -> Result<(), ParseFailure> {
+    let width = parse("hello")?;
+    println(f"width={width}");
+    let missing = parse("")?;
+    println(f"unreachable={missing}");
+    Ok(())
+}

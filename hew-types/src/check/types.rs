@@ -3026,6 +3026,10 @@ pub struct Checker {
     /// same nominal instantiation, but the reference site should emit one
     /// `BoundsNotSatisfied` diagnostic.
     pub(super) reported_type_def_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
+    /// `(trait_name, span_key)`: a `dyn Trait` annotation is resolved once
+    /// during registration and again at its use, so the unknown-trait refusal
+    /// reports each written spelling once.
+    pub(super) reported_unknown_dyn_traits: HashSet<(String, SpanKey)>,
     /// Trait bounds declared on each actor's generic type parameters, keyed by
     /// actor name. Populated during `register_actor_decl` from
     /// `ActorDecl.type_params`. Consulted at the use site by
@@ -3916,6 +3920,7 @@ impl Checker {
             machine_const_params: HashMap::new(),
             reported_machine_bound_violations: HashSet::new(),
             reported_type_def_bound_violations: HashSet::new(),
+            reported_unknown_dyn_traits: HashSet::new(),
             actor_type_param_bounds: HashMap::new(),
             reported_actor_bound_violations: HashSet::new(),
             actors_with_periodic_handlers: HashMap::new(),

@@ -765,6 +765,13 @@ pub trait Display {
     fn fmt(val: Self) -> string;
 }
 
+/// The marker an error type carries so it can be erased to `dyn Error`.
+///
+/// `Error` adds no methods of its own: an error is a value that can say what
+/// went wrong, so `Display` is the whole obligation. Declaring
+/// `impl Error for MyError {}` therefore requires `impl Display for MyError`.
+pub trait Error: Display {}
+
 // Blanket impls for primitive types.  Each body delegates to the magic
 // `to_string` helper which still routes through `MarkerTrait::Display`
 // for primitives; once the surviving five magic dyn-Display callers

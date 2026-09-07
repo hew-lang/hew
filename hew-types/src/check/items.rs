@@ -2476,6 +2476,48 @@ impl Checker {
         self.record_root_value_binding(&cd.name);
     }
 
+    /// A trait's supertraits are part of its obligation: `trait Error: Display`
+    /// means `impl Error for X` promises `X` renders. Report the missing impl
+    /// where the promise is made, not at some later call that needs it.
+    fn require_supertrait_impls(&mut self, type_name: &str, trait_name: &str, span: &Span) {
+        let declared_key = self.trait_defs_key_for_bound(trait_name);
+        let mut stack = self
+            .trait_super
+            .get(&declared_key)
+            .cloned()
+            .unwrap_or_default();
+        let mut visited = std::collections::HashSet::new();
+        let type_identity = self.trait_impl_type_identity(type_name);
+        while let Some(super_trait) = stack.pop() {
+            let super_key = self.trait_defs_key_for_bound(&super_trait);
+            if !visited.insert(super_key.clone()) {
+                continue;
+            }
+            if let Some(nested) = self.trait_super.get(&super_key) {
+                stack.extend(nested.iter().cloned());
+            }
+            if self
+                .trait_impls_set
+                .contains(&(type_identity.clone(), super_key))
+            {
+                continue;
+            }
+            let super_display = crate::short_name(&super_trait);
+            let trait_display = crate::short_name(trait_name);
+            self.report_error_with_suggestions(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`impl {trait_display} for {type_name}` requires its supertrait \
+                     `{super_display}`, which `{type_name}` does not implement"
+                ),
+                vec![format!(
+                    "write `impl {super_display} for {type_name}` as well"
+                )],
+            );
+        }
+    }
+
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.
@@ -2519,6 +2561,7 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
+                self.require_supertrait_impls(type_name, &tb.name, span);
             }
 
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)

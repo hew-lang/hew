@@ -1709,6 +1709,24 @@ impl Checker {
             .or_insert_with(|| info.clone());
         let canonical = format!("std.builtins.{}", tr.name);
         self.trait_defs.entry(canonical.clone()).or_insert(info);
+        // A builtin trait's supertraits are part of its obligation
+        // (`trait Error: Display`), so record the same owner-qualified edges
+        // the ordinary registration path records. All three trait_defs
+        // spellings carry them, because an impl site keys off whichever
+        // spelling `trait_defs_key_for_bound` resolves.
+        if let Some(supers) = &tr.super_traits {
+            let super_keys: Vec<String> = supers
+                .iter()
+                .map(|s| format!("std.builtins.{}", s.name))
+                .collect();
+            for key in [
+                tr.name.clone(),
+                format!("builtins.{}", tr.name),
+                canonical.clone(),
+            ] {
+                self.trait_super.entry(key).or_insert(super_keys.clone());
+            }
+        }
         self.published_bare_trait_owners
             .entry((
                 self.current_module.clone(),
@@ -8888,7 +8906,7 @@ impl Checker {
     /// `BuiltinType`-tagged form `TimeoutError`/`AskError`/`SendError` get.
     /// Their impl identity must match that qualified spelling, so they take
     /// the qualifying fallback below like any ordinary stdlib nominal.
-    fn trait_impl_type_identity(&self, type_name: &str) -> String {
+    pub(super) fn trait_impl_type_identity(&self, type_name: &str) -> String {
         self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
             .unwrap_or_else(|| {
                 let published_as_qualified_nominal =

@@ -642,7 +642,6 @@ mod for_loop_iterable_fail_closed {
         checker.env.define("it".to_string(), iter_ty, false);
         let for_stmt = Stmt::For {
             label: None,
-            is_await: false,
             pattern: (Pattern::Identifier("x".to_string()), 0..1),
             iterable: (Expr::Identifier("it".to_string()), 7..9),
             body: Block {
@@ -705,7 +704,7 @@ mod for_loop_iterable_fail_closed {
         );
     }
 
-    // ── Stream with empty type args (plain `for`, not `for await`) ────────
+    // ── Stream with empty type args (plain `for`, not `for`) ────────
 
     #[test]
     fn stream_with_empty_type_args_emits_diagnostic_not_fresh_var() {

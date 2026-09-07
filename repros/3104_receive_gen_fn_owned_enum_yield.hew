@@ -22,7 +22,7 @@ actor Maker {
 
 fn main() {
     let m = spawn Maker;
-    for await n in m.notes() {
+    for n in m.notes() {
         match n {
             Note.Text(s) => println(f"text {s}"),
             Note.Number(v) => println(f"number {v}"),

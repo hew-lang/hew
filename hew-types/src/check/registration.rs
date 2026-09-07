@@ -1156,11 +1156,18 @@ impl Checker {
             Ty::Unit,
         );
         self.register_builtin_fn("stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
-        let close_t = TypeVar::fresh();
+        // `close(actor)` requests a cooperative stop and waits for terminal
+        // cleanup; `closed(actor)` waits without requesting. Both are ordinary
+        // calls, so `fork close(actor)` is the non-waiting request.
         self.register_builtin_fn(
             "close",
-            vec![Ty::local_pid(Ty::Var(close_t))],
-            Ty::local_pid(Ty::Var(close_t)),
+            vec![Ty::local_pid(Ty::Var(TypeVar::fresh()))],
+            Ty::Unit,
+        );
+        self.register_builtin_fn(
+            "closed",
+            vec![Ty::local_pid(Ty::Var(TypeVar::fresh()))],
+            Ty::Unit,
         );
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);

@@ -585,38 +585,15 @@ impl Checker {
                     .insert(SpanKey::in_module(effective_span, self.current_module_idx));
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
 
-                // Join one Task layer; calls already own their result contract.
-                match inner_ty {
-                    Ty::Task(output) => {
-                        if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
-                            self.mark_expr_moved(&inner.0, &inner.1);
-                        }
-                        *output
+                // Join one Task layer; `await` joins a task and nothing else.
+                if let Ty::Task(output) = inner_ty {
+                    if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
+                        self.mark_expr_moved(&inner.0, &inner.1);
                     }
-                    // `await close(actor)` or bare actor handle → Unit (actor termination).
-                    // But NOT for method calls that happen to return an actor handle —
-                    // those should pass through the method's declared return type.
-                    _ if inner_ty.as_actor_handle().is_some()
-                        && (!matches!(
-                            effective_expr,
-                            Expr::MethodCall { .. } | Expr::Call { .. }
-                        ) || matches!(
-                            self.actor_delivery_calls
-                                .get(&SpanKey::in_module(effective_span, self.current_module_idx)),
-                            Some(crate::actor_delivery::ActorDeliveryCall::Close)
-                        )) =>
-                    {
-                        self.actor_delivery_calls.insert(
-                            SpanKey::in_module(span, self.current_module_idx),
-                            crate::actor_delivery::ActorDeliveryCall::AwaitClosed,
-                        );
-                        self.record_submission_suspension(span, true);
-                        Ty::Unit
-                    }
-                    _ => {
-                        self.check_await_operand(effective_expr, effective_span, &inner_ty);
-                        inner_ty
-                    }
+                    *output
+                } else {
+                    self.check_await_operand(effective_expr, effective_span, &inner_ty);
+                    inner_ty
                 }
             }
 
@@ -2823,47 +2800,16 @@ impl Checker {
         );
     }
 
-    /// Whether the receiver expression is an actor handle, as the checker
-    /// recorded it. Used to keep `await handle.close()` awaitable.
-    fn actor_handle_receiver(&self, receiver: &Spanned<Expr>) -> bool {
-        let key = SpanKey::in_module(&receiver.1, self.current_module_idx);
-        self.expr_types
-            .get(&key)
-            .map(|ty| self.subst.resolve(ty))
-            .is_some_and(|ty| {
-                matches!(
-                    ty,
-                    Ty::Named {
-                        builtin: Some(builtin),
-                        ..
-                    } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::ActorDispatchLocal)
-                )
-            })
-    }
-
-    /// `await` waits on something with its own life: a task, an actor reply
-    /// or an actor's close. A plain call suspends the caller on its own, so
-    /// `await` adds nothing there; anything else is not awaitable.
+    /// `await` joins a task and nothing else. A plain call suspends the caller
+    /// on its own, so `await` adds nothing there; every other operand is not a
+    /// task and is refused with the move that replaces it.
     fn check_await_operand(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
         if matches!(ty, Ty::Error) {
             return;
         }
-        // An actor ask is an ordinary call: it waits on its own and needs no
-        // `await`, exactly like any other suspending call (U383). `fork` is how
-        // an ask runs concurrently, and `await` then joins that task.
-        let replies = self.submission_suspends(span)
-            || matches!(expr, Expr::Call { function, .. }
-            if matches!(
-                self.callee_value_type(function).map(|ty| self.subst.resolve(&ty)),
-                Some(Ty::Named { builtin: Some(crate::BuiltinType::LambdaPid), .. })
-            ))
-            // `handle.close()` is the method spelling of `close(handle)`:
-            // awaiting it waits for the actor's end, not for a plain call.
-            || matches!(expr, Expr::MethodCall { receiver, method, .. }
-            if method == "close" && self.actor_handle_receiver(receiver));
-        if replies {
-            return;
-        }
+        // Every call waits on its own, an actor call included (U383): `await`
+        // adds nothing there. `fork` is how a call runs concurrently, and
+        // `await` then joins that task.
         if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
             self.errors.push(TypeError {
                 severity: crate::error::Severity::Error,
@@ -2872,18 +2818,22 @@ impl Checker {
                 message: "`await` on a plain call adds nothing: the call suspends on its own"
                     .to_string(),
                 notes: vec![],
-                suggestions: vec!["call it directly, or fork it to run concurrently".to_string()],
+                suggestions: vec![
+                    "remove `await`, or fork the call to run it concurrently".to_string()
+                ],
                 source_module: self.current_module.clone(),
             });
         } else {
+            let mut suggestions = vec!["remove `await`, or fork a call to get a task".to_string()];
+            if ty.as_actor_handle().is_some() {
+                suggestions
+                    .push("`closed(actor)` waits for an actor to finish terminating".to_string());
+            }
             self.report_error_with_suggestions(
                 TypeErrorKind::InvalidOperation,
                 span,
-                format!(
-                    "`await` waits on a task, an actor reply or an actor's close; `{}` is none of these",
-                    ty.user_facing()
-                ),
-                vec!["remove `await`, or fork a call to get a task".to_string()],
+                format!("`await` joins a task; `{}` is not one", ty.user_facing()),
+                suggestions,
             );
         }
     }

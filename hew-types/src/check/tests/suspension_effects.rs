@@ -848,7 +848,7 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
     );
     assert_eq!(
         error.suggestions,
-        vec!["call it directly, or fork it to run concurrently".to_string()]
+        vec!["remove `await`, or fork the call to run it concurrently".to_string()]
     );
     let plain = source.replace("await ", "");
     let output = check_source(&plain);
@@ -864,9 +864,9 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
             .iter()
             .map(|error| error.message.as_str())
             .collect::<Vec<_>>(),
-        vec!["`await` waits on a task, an actor reply or an actor's close; `i64` is none of these"]
+        vec!["`await` joins a task; `i64` is not one"]
     );
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); await close(worker); }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); close(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.warnings.is_empty(), "{:?}", output.warnings);
 }

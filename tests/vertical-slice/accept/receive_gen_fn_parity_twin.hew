@@ -1,7 +1,7 @@
 // An actor's `receive gen fn` handler must feel identical to a standalone
 // `gen fn` at the consumer surface. Both bodies below compute the same
 // sequence (base + i for i in 0..n); one runs as an actor stream drained via
-// `for await`, the other as a plain generator drained via `for`. Rendering
+// `for`, the other as a plain generator drained via `for`. Rendering
 // both into comma-joined strings and comparing them is the "feels
 // identical" proof.
 actor Ticker {
@@ -29,7 +29,7 @@ gen fn stream_twin(base: i64, n: i64) -> i64 {
 fn render_actor_seq(t: LocalPid<Ticker>, n: i64) -> string {
     var out: string = "";
     var first = true;
-    for await v in t.stream(n) {
+    for v in t.stream(n) {
         if first {
             first = false;
         } else {

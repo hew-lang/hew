@@ -3,7 +3,7 @@
 // (LayoutManaged: envelope deep-clone in, ownership move out) with every
 // field intact, and BOTH per-yield copies are released — the pump frees its
 // producer copy on the send's resume edge through the record in-place drop
-// thunk, and the consuming `for await` body frees its fresh decode copy at
+// thunk, and the consuming `for` body frees its fresh decode copy at
 // body end through the same thunk. Exact output pins the field values; the
 // per-yield leak slope is pinned by the composite-yield leak oracle.
 type Item {
@@ -20,7 +20,7 @@ actor Maker {
 
 fn main() {
     let m = spawn Maker;
-    for await it in m.items() {
+    for it in m.items() {
         println(f"{it.name},{it.value}");
     }
 }

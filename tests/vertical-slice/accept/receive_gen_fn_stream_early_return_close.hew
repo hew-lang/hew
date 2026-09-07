@@ -24,7 +24,7 @@ actor Ticker {
 }
 
 fn first(t: LocalPid<Ticker>) -> i64 {
-    for await v in t.stream() {
+    for v in t.stream() {
         return v;
     }
     0 - 1

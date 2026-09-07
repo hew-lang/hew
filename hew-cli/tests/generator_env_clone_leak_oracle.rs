@@ -415,7 +415,7 @@ fn main() {
     var seen: i64 = 0;
     var i: i64 = 0;
     while i < __FRAMES__ {
-        for await value in reader.stream() {
+        for value in reader.stream() {
             if value <= 0 { panic("actor state value"); }
             seen = seen + 1;
         }
@@ -443,7 +443,7 @@ fn main() {
     var total: i64 = 0;
     var frame: i64 = 0;
     while frame < __FRAMES__ {
-        for await value in streamer.emit("streamlabel".to_upper(), 3) {
+        for value in streamer.emit("streamlabel".to_upper(), 3) {
             total = total + value;
         }
         frame = frame + 1;
@@ -513,7 +513,7 @@ fn main() {
             pair: ("tuple-param".to_upper(), frame),
         };
         let tree = Node(Leaf(frame), Leaf(frame + 1));
-        for await value in streamer.emit(payload, tree, 3) {
+        for value in streamer.emit(payload, tree, 3) {
             total = total + value;
         }
         let cancelled = Payload {
@@ -522,7 +522,7 @@ fn main() {
             pair: ("tuple-param".to_upper(), frame),
         };
         let cancelled_tree = Node(Leaf(frame), Leaf(frame + 1));
-        for await value in streamer.endless(cancelled, cancelled_tree) {
+        for value in streamer.endless(cancelled, cancelled_tree) {
             total = total + value;
             break;
         }

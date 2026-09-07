@@ -9,8 +9,17 @@
 // ---------------------------------------------------------------------------
 /// A process-local actor pid returned by `spawn`.
 ///
-/// `LocalPid<T>` is accepted by all built-in actor functions (`close`, `link`,
-/// `monitor`, etc.) and by any function that takes `dyn Pid<Msg = M>`.
+/// `LocalPid<T>` is accepted by all built-in actor functions (`close`, `closed`,
+/// `link`, `monitor`, etc.) and by any function that takes `dyn Pid<Msg = M>`.
+///
+/// Termination has three spellings:
+///
+/// - `close(actor)` requests a cooperative stop and returns once the actor's
+///   terminal cleanup has run.
+/// - `fork close(actor)` makes the same request without waiting; `await` on the
+///   task it yields waits for the same point.
+/// - `closed(actor)` waits for an actor another party is stopping, and requests
+///   nothing itself.
 pub type LocalPid<T> {
 }
 

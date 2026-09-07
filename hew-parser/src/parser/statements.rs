@@ -575,14 +575,12 @@ impl Parser<'_> {
             }
             Some(Token::For) => {
                 self.advance();
-                let is_await = self.eat(&Token::Await);
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Stmt::For {
                     label: None,
-                    is_await,
                     pattern,
                     iterable,
                     body,
@@ -712,14 +710,12 @@ impl Parser<'_> {
             }
             Some(Token::For) => {
                 self.advance();
-                let is_await = self.eat(&Token::Await);
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Stmt::For {
                     label: Some(label),
-                    is_await,
                     pattern,
                     iterable,
                     body,

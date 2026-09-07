@@ -516,19 +516,6 @@ impl Builder<'_, '_> {
                     operation,
                     hew_types::actor_delivery::ActorDeliveryCall::Close
                 );
-                if super::supervisor::declaration(self.service.module, &target_ty).is_some() {
-                    if !closing {
-                        return Err(
-                            "awaiting a supervisor's stop needs its terminal contract".into()
-                        );
-                    }
-                    let supervisor = self.service.require_supervisor(&target_ty)?;
-                    return Ok((
-                        crate::ActorOperation::SupervisorStop(supervisor),
-                        vec![(**receiver).clone()],
-                        vec![0],
-                    ));
-                }
                 let actor = self.service.require_actor(&target_ty)?;
                 let boundary = if closing {
                     crate::ActorOperation::Close(actor)

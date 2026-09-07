@@ -65,14 +65,13 @@ fn find_in_block(ctx: &LintCtx, levels: &LintLevels, block: &Block, out: &mut Ve
 fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<TypeError>) {
     match stmt {
         Stmt::For {
-            is_await,
             pattern,
             iterable,
             body,
             ..
         } => {
             // Test this loop, then descend so nested range loops are found too.
-            try_flag(ctx, levels, *is_await, pattern, iterable, body, out);
+            try_flag(ctx, levels, pattern, iterable, body, out);
             find_in_expr(ctx, levels, &iterable.0, out);
             find_in_block(ctx, levels, body, out);
         }
@@ -245,15 +244,11 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
 fn try_flag(
     ctx: &LintCtx,
     levels: &LintLevels,
-    is_await: bool,
     pattern: &Spanned<Pattern>,
     iterable: &Spanned<Expr>,
     body: &Block,
     out: &mut Vec<TypeError>,
 ) {
-    if is_await {
-        return;
-    }
     // pattern must be a plain `i` binding.
     let Pattern::Identifier(idx) = &pattern.0 else {
         return;

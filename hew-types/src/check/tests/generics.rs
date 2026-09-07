@@ -1216,7 +1216,7 @@ fn recursive_value_type_allows_pointer_self_reference() {
 }
 
 #[test]
-fn typecheck_await_local_pid_returns_unit() {
+fn typecheck_closed_local_pid_waits_for_termination() {
     let output = check_source(
         r#"
         actor Greeter {
@@ -1227,14 +1227,45 @@ fn typecheck_await_local_pid_returns_unit() {
         fn main() {
             let g = spawn Greeter;
             let _ = g.greet("hi");
-            close(g);
-            await g;
+            fork close(g);
+            closed(g);
         }
         "#,
     );
     assert!(
         output.errors.is_empty(),
         "expected no errors, got: {:?}",
+        output.errors
+    );
+}
+
+/// `await` joins a task; an actor handle is not one, and the diagnostic names
+/// `closed(actor)` as the wait that replaces the old `await actor` spelling.
+#[test]
+fn await_on_an_actor_handle_names_closed() {
+    let output = check_source(
+        r"
+        actor Greeter {
+            receive fn greet(name: string) {
+                println(name);
+            }
+        }
+        fn main() {
+            let g = spawn Greeter;
+            await g;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("`await` joins a task")
+                && error
+                    .suggestions
+                    .iter()
+                    .any(|hint| hint.contains("closed(actor)"))),
+        "expected the actor-handle await diagnostic, got: {:?}",
         output.errors
     );
 }
@@ -1274,79 +1305,48 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
     );
 }
 
+/// `close(actor)` is a plain call that waits for terminal cleanup: it has type
+/// `()`, and `await` on it is refused as it is on any other call (U383).
 #[test]
-fn typecheck_await_close_local_pid() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.register_builtins();
-
-    checker.env.define(
-        "g".to_string(),
-        Ty::local_pid(Ty::Named {
-            builtin: None,
-            name: "Greeter".to_string(),
-            args: vec![],
-        }),
-        false,
+fn close_local_pid_is_a_unit_call_and_await_on_it_is_refused() {
+    let output = check_source(
+        r"
+        actor Greeter {
+            receive fn greet(name: string) {
+                println(name);
+            }
+        }
+        fn main() {
+            let g = spawn Greeter;
+            close(g);
+        }
+        ",
     );
-
-    let span = 0..0;
-    let expr = Expr::Await(Box::new((
-        Expr::Call {
-            function: Box::new((Expr::Identifier("close".to_string()), span.clone())),
-            type_args: None,
-            args: vec![CallArg::Positional((
-                Expr::Identifier("g".to_string()),
-                span.clone(),
-            ))],
-            is_tail_call: false,
-        },
-        span.clone(),
-    )));
-
-    let ty = checker.synthesize(&expr, &span);
-    assert_eq!(ty, Ty::Unit);
     assert!(
-        checker.errors.is_empty(),
+        output.errors.is_empty(),
         "expected no errors, got: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn typecheck_await_close_local_pid_worker() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.register_builtins();
-
-    checker.env.define(
-        "worker".to_string(),
-        Ty::local_pid(Ty::Named {
-            builtin: None,
-            name: "Worker".to_string(),
-            args: vec![],
-        }),
-        false,
+        output.errors
     );
 
-    let span = 0..0;
-    let expr = Expr::Await(Box::new((
-        Expr::Call {
-            function: Box::new((Expr::Identifier("close".to_string()), span.clone())),
-            type_args: None,
-            args: vec![CallArg::Positional((
-                Expr::Identifier("worker".to_string()),
-                span.clone(),
-            ))],
-            is_tail_call: false,
-        },
-        span.clone(),
-    )));
-
-    let ty = checker.synthesize(&expr, &span);
-    assert_eq!(ty, Ty::Unit);
+    let awaited = check_source(
+        r"
+        actor Greeter {
+            receive fn greet(name: string) {
+                println(name);
+            }
+        }
+        fn main() {
+            let g = spawn Greeter;
+            await close(g);
+        }
+        ",
+    );
     assert!(
-        checker.errors.is_empty(),
-        "expected no errors, got: {:?}",
-        checker.errors
+        awaited.errors.iter().any(|error| error
+            .message
+            .contains("`await` on a plain call adds nothing")),
+        "expected the plain-call await diagnostic, got: {:?}",
+        awaited.errors
     );
 }
 

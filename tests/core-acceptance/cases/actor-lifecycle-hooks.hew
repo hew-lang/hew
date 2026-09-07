@@ -25,6 +25,6 @@ fn main() {
         .Ok(count) => println(count),
         .Err(_) => panic("bump failed"),
     }
-    await close(keeper);
+    close(keeper);
     println("closed");
 }

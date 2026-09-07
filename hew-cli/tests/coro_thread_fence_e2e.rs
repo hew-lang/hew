@@ -164,11 +164,11 @@ fn main() {
     println("iters-genblock");
     println(iters_genblock);
 
-    // async gen fn + for await
+    // async gen fn + for
     let pre_asyncgen = threads();
     var peak_asyncgen = pre_asyncgen;
     var iters_asyncgen = 0;
-    for await v in aticks(50) {
+    for v in aticks(50) {
         let t = threads();
         if t > peak_asyncgen { peak_asyncgen = t; }
         iters_asyncgen = iters_asyncgen + 1;
@@ -181,12 +181,12 @@ fn main() {
     println("iters-asyncgen");
     println(iters_asyncgen);
 
-    // receive gen fn + for await (cross-actor stream producer)
+    // receive gen fn + for (cross-actor stream producer)
     let e = spawn Emitter;
     let pre_recvgen = threads();
     var peak_recvgen = pre_recvgen;
     var iters_recvgen = 0;
-    for await v in e.ticks(200) {
+    for v in e.ticks(200) {
         let t = threads();
         if t > peak_recvgen { peak_recvgen = t; }
         iters_recvgen = iters_recvgen + 1;

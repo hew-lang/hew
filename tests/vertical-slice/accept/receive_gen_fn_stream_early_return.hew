@@ -1,4 +1,4 @@
-// Early `return` out of a `for await` drain: the consuming body's
+// Early `return` out of a `for` drain: the consuming body's
 // per-iteration release survives a return-carrying path (iterations before
 // the hit release at body end), the returning iteration's received string is
 // released on the return edge itself, and the caller-facing result is
@@ -16,7 +16,7 @@ actor Namer {
 
 fn find_len(n: LocalPid<Namer>, want: i64) -> i64 {
     var seen: i64 = 0;
-    for await v in n.names() {
+    for v in n.names() {
         seen = seen + 1;
         if v.len() >= want {
             return seen;

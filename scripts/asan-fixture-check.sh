@@ -81,7 +81,7 @@
 #       closes the paired Receiver. An under-retained clone or duplicate close
 #       is an ASan failure; a missing sender-slot release is an LSan failure.
 #   actor-state stream for-await ownership (#3218, KNOWN v0.6.0 limit)
-#       A `for await` loop over an actor-state `Stream<T>` field. Loop
+#       A `for` loop over an actor-state `Stream<T>` field. Loop
 #       exhaustion mints a second close authority for the cursor while the
 #       field's own state-drop close authority stays intact, so the runtime
 #       stream pointer is closed twice at teardown. Registered through
@@ -429,7 +429,7 @@ CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fre
 ENUM_RESOURCE_MATCH_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
 ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
 # Actor-state stream for-await ownership (#3218, KNOWN v0.6.0 limit): a
-# `for await` loop draining an actor-state `Stream<T>` field double-closes the
+# `for` loop draining an actor-state `Stream<T>` field double-closes the
 # stream at teardown on the current lowerer, so this is registered below as an
 # EXPECTED ASan finding via `run_asan_fixture_expect_leak`. Flip it to
 # `compile_asan_fixture` + `run_asan_fixture ... 0` once #3218 is fixed.
@@ -669,7 +669,7 @@ else
     fail=$((fail + 1))
 fi
 
-# KNOWN (#3218, v0.6.0 documented limit): `for await` over an actor-state
+# KNOWN (#3218, v0.6.0 documented limit): `for` over an actor-state
 # `Stream<T>` field mints a second close authority for the loop cursor while
 # the field's own state-drop close authority stays intact, so the runtime
 # stream pointer is closed twice at teardown. Registered as an EXPECTED

@@ -1,5 +1,5 @@
 //! Status: runnable (v0.5 for-await over Receiver<string>)
-//! Description: Drains a channel receiver with `for await`.
+//! Description: Drains a channel receiver with `for`.
 
 import std.channel.channel;
 
@@ -13,7 +13,7 @@ actor DrainStrings {
         tx.send("b");
         tx.send("c");
         tx.close();
-        for await item in rx {
+        for item in rx {
             println(item);
         }
     }

@@ -519,7 +519,6 @@ pub enum Stmt {
     },
     For {
         label: Option<String>,
-        is_await: bool,
         pattern: Spanned<Pattern>,
         iterable: Spanned<Expr>,
         body: Block,

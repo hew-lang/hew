@@ -677,7 +677,7 @@ actor Closer {
             match failure { .Deadline { message } => "waiter-deadline", .Fault { message } => "unexpected fault", }
         };
         println(result);
-        await close(holder);
+        close(holder);
         println("closed");
     }
 }

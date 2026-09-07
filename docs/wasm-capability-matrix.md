@@ -93,7 +93,7 @@ The **Checker disposition** column documents what the type checker emits when
 | `structured-concurrency` | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join | WASM-TODO(scope): |
 | `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | WASM-TODO(scope): |
 | `channel-non-blocking` | `channel.new`, `Sender<T>.send/clone/close`, `Receiver<T>.try_recv/close` | `channel.new`, `Sender<T>.send/clone/close`, `Receiver<T>.try_recv/close` | Pass | — | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
-| `channel-blocking-recv` | `Receiver<T>.recv`, `for await item in rx` over `Receiver<T>` | Blocking channel receive operations | Reject (`BlockingChannelRecv`) | Receiver<T>.recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead | `unreachable!()` trap | WASM-TODO(channels): |
+| `channel-blocking-recv` | `Receiver<T>.recv`, `for item in rx` over `Receiver<T>` | Blocking channel receive operations | Reject (`BlockingChannelRecv`) | Receiver<T>.recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead | `unreachable!()` trap | WASM-TODO(channels): |
 | `semaphore-non-blocking` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | Pass | — | Non-blocking semaphore subset only | — |
 | `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Blocking semaphore acquire operations | Reject (`BlockingSemaphoreAcquire`) | Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead | No cooperative blocking wait implementation | WASM-TODO(semaphore): |
 | `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue | Cooperative park at message boundary | Implemented |
@@ -167,7 +167,7 @@ would otherwise end in a trap or linker failure:
   closed), while `send` fails closed by trapping with an explicit message when
   the bounded queue is full rather than silently dropping or spin-polling.
 
-- **Blocking channel recv**: `Receiver<T>::recv`, `recv_int`, and `for await`
+- **Blocking channel recv**: `Receiver<T>::recv`, `recv_int`, and `for`
   over `Receiver<T>` still trap on wasm32 because the cooperative scheduler
   does not yet yield and resume when a channel is empty but still live. The
   checker rejects these operations at compile time with `BlockingChannelRecv`.

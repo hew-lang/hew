@@ -47,7 +47,7 @@ use support::{describe_output, require_codegen};
 
 // -- fixtures ----------------------------------------------------------------
 
-/// Owned-record yields drained by a `for await` body that reads only the
+/// Owned-record yields drained by a `for` body that reads only the
 /// `BitCopy` field, so the frame binding keeps ownership of the heap `name`
 /// field for its whole iteration and the body-end release is the sole
 /// consumer-side dropper. The heap field is deliberately NOT read in the
@@ -74,7 +74,7 @@ fn record_yield_loop_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await it in m.items() {{\n\
+         \x20   for it in m.items() {{\n\
          \x20       total = total + it.value;\n\
          \x20   }}\n\
          \x20   if total != {expected_total} {{ return 91; }}\n\
@@ -105,7 +105,7 @@ fn record_yield_field_read_loop_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await it in m.items() {{\n\
+         \x20   for it in m.items() {{\n\
          \x20       if it.name.len() < 6 {{ return 93; }}\n\
          \x20       total = total + it.value;\n\
          \x20   }}\n\
@@ -134,7 +134,7 @@ fn enum_yield_drain_loop_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var count: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await n in m.notes() {{\n\
+         \x20   for n in m.notes() {{\n\
          \x20       count = count + 1;\n\
          \x20   }}\n\
          \x20   if count != {frames} {{ return 92; }}\n\
@@ -166,7 +166,7 @@ fn enum_yield_destructure_loop_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await n in m.notes() {{\n\
+         \x20   for n in m.notes() {{\n\
          \x20       match n {{\n\
          \x20           Note.Text(s) => {{ total = total + s.len(); }},\n\
          \x20           Note.Number(v) => {{ total = total + v; }},\n\
@@ -202,7 +202,7 @@ fn record_yield_break_loop_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await it in m.items() {{\n\
+         \x20   for it in m.items() {{\n\
          \x20       total = total + it.value;\n\
          \x20       if it.value >= {frames} {{\n\
          \x20           break;\n\

@@ -14,7 +14,7 @@ actor Consumer {
     var drained: i64 = 0,
     receive fn drain(source: LocalPid<Source>, count: i64, limit: i64) -> i64 {
         var seen = 0;
-        for await item in source.items(count) {
+        for item in source.items(count) {
             println(item);
             seen = seen + 1;
             if seen >= limit { break; }
@@ -39,7 +39,7 @@ fn main() {
         .Ok(base) => println(base),
         .Err(_) => panic("base failed"),
     }
-    await close(source);
-    await close(consumer);
+    close(source);
+    close(consumer);
     println("closed");
 }

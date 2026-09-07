@@ -11,7 +11,7 @@ actor Emitter {
 
 fn main() {
     let e = spawn Emitter;
-    for await v in e.ticks() {
+    for v in e.ticks() {
         println(f"{v}");
     }
 }

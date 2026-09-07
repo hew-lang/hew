@@ -1,5 +1,5 @@
 //! Status: runnable (v0.5 for-await over Stream<bytes>)
-//! Description: Drains a byte stream with `for await`.
+//! Description: Drains a byte stream with `for`.
 
 import std.encoding.utf8;
 
@@ -18,7 +18,7 @@ actor DrainBytes {
             sink.send(frame);
         }
         sink.close();
-        for await frame in input {
+        for frame in input {
             let decoded_frame = utf8.decode(frame) handle error {
                 println(f"invalid UTF-8: {error}");
                 return;

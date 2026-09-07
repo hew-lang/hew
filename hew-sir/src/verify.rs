@@ -4866,6 +4866,7 @@ mod defer_close_suffix_tests {
         let close = |resume, cancel, unwind| SemTerminator::Suspend {
             kind: crate::SuspendKind::ValueClose {
                 place: Some(crate::PlaceId(0)),
+                selection: crate::ValueCloseSelection::Whole,
             },
             inputs: Vec::new(),
             result: crate::CallResult::Unit,

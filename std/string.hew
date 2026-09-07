@@ -102,9 +102,6 @@ pub fn to_int(s: string) -> Result<i64, string> {
     for i in start .. slen {
         let digit = s.slice(i, i + 1);
         let d = digit_value(digit);
-        unsafe {
-            hew_string_drop(digit)
-        };
         if d < 0 {
             return Err("string.to_int: invalid integer literal");
         }

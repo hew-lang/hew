@@ -156,6 +156,7 @@ fn main() {
 fn endpoint_text_operations_preserve_unicode_offsets_and_independent_values() {
     run_tcp(
         r#"
+import std.string;
 fn main() {
     let text = "雪ÉLAN:Ω";
     match text.find(":") { .Some(index) => println(index), .None => panic("missing colon"), }
@@ -167,8 +168,11 @@ fn main() {
     println(text.contains("Ω"));
     println(text.contains("no"));
     println(text);
+    match string.to_int("-9223372036854775808") { .Ok(value) => println(value), .Err(_) => panic("minimum rejected"), }
+    match string.to_int("9223372036854775808") { .Ok(_) => panic("overflow accepted"), .Err(_) => println("overflow"), }
+    match string.to_int("1雪") { .Ok(_) => panic("nondigit accepted"), .Err(_) => println("nondigit"), }
 }
 "#,
-        "5\nabsent\n0\nélan\n雪\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n",
+        "5\nabsent\n0\nélan\n雪\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n-9223372036854775808\noverflow\nnondigit\n",
     );
 }

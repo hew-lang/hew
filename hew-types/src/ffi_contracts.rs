@@ -296,7 +296,8 @@ mod tests {
             "RuntimeCallFamily::consumes_receiver reads this row for TcpAttachLocal"
         );
         assert!(
-            extern_owned_resource_result("hew_file_read_stream_open").is_some(),
+            extern_owned_resource_result(crate::runtime_call::FileReadOp::Open.c_symbol())
+                .is_some(),
             "FileReadHandleKind::matches reads this row for FileReadOp::Open"
         );
     }

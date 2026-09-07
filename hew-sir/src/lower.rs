@@ -2279,8 +2279,26 @@ fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
     concrete_variant_shape(module, ty).is_ok()
 }
 
+/// An `#[opaque]` declaration with no ownership marker: an FFI pass-through
+/// id whose lifecycle a `#[resource]` wrapper owns. It is a value of
+/// pointer width with no obligation of its own.
+fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: None,
+            is_opaque: true,
+            ..
+        }
+    ) && facts
+        .rows()
+        .get(&hew_types::TypeInstanceKey(ty.clone()))
+        .is_some_and(|row| row.class == hew_types::ValueClass::BitCopy)
+}
+
 fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || is_opaque_handle(facts, ty)
         || actor::declaration(module, ty).is_some()
         || is_concrete_aggregate_type(module, facts, ty)
         || is_concrete_variant_type(module, ty)

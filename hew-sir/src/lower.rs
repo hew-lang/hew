@@ -3052,6 +3052,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                                 }
                             }
                         }
+                        if take && self.state_field_leaves_as_copy(place, expr)? {
+                            take = false;
+                        }
                         return self.emit(
                             expr,
                             if take {
@@ -6429,6 +6432,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Err("E_OWN_PARTIAL_CONSUME: a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into())
     }
 
+    /// The state seat keeps every field for the actor's lifetime, so a field
+    /// consumed by value leaves as a copy. A field without a copy cannot leave.
+    fn state_field_leaves_as_copy(
+        &mut self,
+        place: PlaceId,
+        expression: &HirExpr,
+    ) -> Result<bool, String> {
+        if !matches!(
+            self.places[place.0 as usize].origin,
+            crate::PlaceOrigin::ActorState { .. }
+        ) {
+            return Ok(false);
+        }
+        let ty = self.ty(&expression.ty);
+        self.service.require_type_facts(&ty)?;
+        if self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
+            == hew_types::CloneKind::None
+        {
+            return Err("an actor state field without a copy cannot leave the state seat".into());
+        }
+        Ok(true)
+    }
+
     /// Taking a field from an owned temporary transfers its siblings into the
     /// existing cleanup relation. No temporary container remains to own them.
     fn lower_consuming_projection(
@@ -6436,9 +6462,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
         if let Some(place) = self.expression_projection(expression)? {
-            return self
-                .emit(expression, SemOpKind::LoadTake { place })
-                .map(Some);
+            let kind = if self.state_field_leaves_as_copy(place, expression)? {
+                SemOpKind::LoadCopy { place }
+            } else {
+                SemOpKind::LoadTake { place }
+            };
+            return self.emit(expression, kind).map(Some);
         }
         let mut root = expression;
         let mut projections = Vec::new();

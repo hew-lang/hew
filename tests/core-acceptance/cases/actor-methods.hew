@@ -5,10 +5,12 @@ actor Counter {
     var label: string = "count",
     var journal: Stream<string>,
     fn describe(prefix: string) -> string { prefix + " " + label }
+    fn tag() -> string { label }
     fn bump(by: i64) -> i64 { count = count + by; count }
     receive fn increment(by: i64) -> i64 {
         let total = bump(by);
         println(describe("total"));
+        println(tag());
         total
     }
 }

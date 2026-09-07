@@ -103,6 +103,47 @@ fn methods_and_hooks_are_private_bodies_of_their_actor() {
 }
 
 #[test]
+fn a_body_returning_an_owned_state_field_copies_it_out_of_the_seat() {
+    const SOURCE: &str = r#"
+actor Ledger {
+    var label: string = "ledger",
+    fn describe() -> string { label }
+    receive fn show() -> string { describe() }
+    receive fn raw() -> string { label }
+}
+fn main() {
+    let ledger = spawn Ledger();
+    match await ledger.show() {
+        .Ok(label) => println(label),
+        .Err(_) => panic("show failed"),
+    }
+    await close(ledger);
+}
+"#;
+    let module = lower_source(SOURCE);
+    for suffix in ["method_describe", "Ledger__raw"] {
+        let id = body_named(&module, suffix);
+        let body = module
+            .functions
+            .iter()
+            .find(|function| function.callable == id)
+            .unwrap();
+        let mut copies = 0;
+        let mut takes = 0;
+        for block in &body.blocks {
+            for op in &block.ops {
+                match op.kind {
+                    hew_sir::SemOpKind::LoadCopy { .. } => copies += 1,
+                    hew_sir::SemOpKind::LoadTake { .. } => takes += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((copies, takes), (1, 0), "{suffix} must copy the field out");
+    }
+}
+
+#[test]
 fn verifier_refuses_a_method_call_that_consumes_the_state_seat() {
     let mut module = lower_source(COUNTER);
     let actor = module.actors[0].clone();

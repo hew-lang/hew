@@ -246,15 +246,15 @@ pub struct HirConst {
 ///
 /// This is a POSITIVE, per-item record of WHICH module the `extern` block was
 /// declared in, captured from the HIR lowering context (`current_module_name`)
-/// at construction time. It exists so downstream ownership classification of a
-/// C-ABI string return (see [`crate::node::HirExternFn`] →
-/// `hew_mir::ExternDecl::malloc_string_return`) is driven by a proven fact and
-/// is NEVER inferred by ABSENCE from a side table
-/// (`HirModule::diagnostic_source_modules`). That map conflates a root user
-/// extern (never recorded) with a std extern whose attribution was lost, and a
-/// wrong classification corrupts memory in either direction: adopting a
-/// header-aware Hew string frees `base + 16`, while treating a foreign C string
-/// as a Hew string reads a phantom header.
+/// at construction time. It is diagnostic and attribution provenance, NEVER
+/// inferred by ABSENCE from a side table (`HirModule::diagnostic_source_modules`),
+/// which conflates a root user extern (never recorded) with a std extern whose
+/// attribution was lost.
+///
+/// It does not classify C-ABI string-return ownership. On the final path a
+/// `string`, `bytes` or `Vec<T>` crosses an `extern` boundary as the runtime's
+/// own carrier in both directions, produced on the C side through `hew-cabi`;
+/// there is no raw C-string adoption, so provenance decides no release recipe.
 ///
 /// `Root` and `Module(_)` are the ONLY two ways an `extern` enters the HIR item
 /// list — the root compilation unit (module index 0) or a named imported module
@@ -265,15 +265,12 @@ pub struct HirConst {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternProvenance {
     /// The `extern` block was declared in the root compilation unit (the file
-    /// the user is compiling, HIR module index 0). Its symbols are foreign to
-    /// the standard library — a C-ABI string return is a raw malloc-owned C
-    /// string that codegen must adopt.
+    /// the user is compiling, HIR module index 0).
     Root,
     /// The `extern` block was declared in a named module, carried as that
     /// module's dotted path (`std.io`, `std.crypto.jwt`, `hew.testffi`,
     /// `subpkg.helper`). The standard library is recognised by the `std` path
-    /// prefix (see [`ExternProvenance::is_stdlib`]); every other path is a
-    /// user/package module whose C-ABI string returns are adopted.
+    /// prefix (see [`ExternProvenance::is_stdlib`]).
     Module(String),
 }
 
@@ -283,9 +280,7 @@ impl ExternProvenance {
     /// The standard library is recognised by the `std` dotted/`::`-scoped path
     /// prefix — the same spelling `hew-compile` resolves `std::…` imports under
     /// and `record_source_modules_for_items` stamps into
-    /// `diagnostic_source_modules` (`mod_id.path.join(".")`). Standard-library
-    /// C-ABI string producers return header-aware Hew strings, so they are the
-    /// header-aware (non-adopting) side of the ownership split.
+    /// `diagnostic_source_modules` (`mod_id.path.join(".")`).
     #[must_use]
     pub fn is_stdlib(&self) -> bool {
         match self {

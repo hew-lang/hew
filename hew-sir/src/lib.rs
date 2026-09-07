@@ -65,7 +65,9 @@ pub use ownership::{
     TaskScopeJoinMode, TrapKind, ValueCloseSelection,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
-pub use resource::{verify_resource_release, ResourceCarrier, ResourceExtern, ResourceRelease};
+pub use resource::{
+    verify_resource_release, ExternSignature, ResourceCarrier, ResourceExtern, ResourceRelease,
+};
 pub use supervisor::{
     SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor, SemSupervisorChild,
     SupervisorId,

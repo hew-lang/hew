@@ -94,4 +94,48 @@ impl FunctionEmitter<'_, '_> {
         }
         Ok(())
     }
+
+    /// Realize one declared C-ABI call as a direct call to its linker symbol.
+    ///
+    /// The C signature comes from the physical storage of the arguments and
+    /// the result: scalars and pointer-width handles pass by value, and
+    /// `string`/`bytes` pass as the runtime's existing pointer carriers.
+    /// Moved arguments discharge their obligation at the call.
+    pub(super) fn emit_extern_call(
+        &self,
+        symbol: &str,
+        transfers: &[ArgumentTransfer],
+        result: Option<StorageId>,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let values = transfers
+            .iter()
+            .map(|transfer| self.load(argument_source(transfer), "extern.argument"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let parameters = values
+            .iter()
+            .map(|value| value.get_type().into())
+            .collect::<Vec<_>>();
+        let return_type = result
+            .map(|id| llvm_type(self.ctx, &self.storage(id)?.layout.repr))
+            .transpose()?;
+        let signature = return_type.map_or_else(
+            || self.ctx.void_type().fn_type(&parameters, false),
+            |ty| ty.fn_type(&parameters, false),
+        );
+        let function = get_or_declare_external(self.llvm, symbol, signature)?;
+        for transfer in transfers {
+            if let ArgumentTransfer::Move(source) = transfer {
+                self.clear_owned(*source)?;
+            }
+        }
+        let arguments = values.iter().copied().map(Into::into).collect::<Vec<_>>();
+        if let Some(result) = result {
+            let value = self.runtime_call_value(function, &arguments, "extern.result")?;
+            self.store(result, value)?;
+        } else {
+            self.runtime_call_void(function, &arguments, "extern.call")?;
+        }
+        self.emit_result_edge(result, normal)
+    }
 }

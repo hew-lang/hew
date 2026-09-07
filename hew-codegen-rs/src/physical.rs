@@ -633,6 +633,13 @@ fn primitive_repr(
             integer_layout(ctx, target, 32)?,
         ]),
         ResolvedTy::Unit => PhysicalRepr::Unit,
+        // An `#[opaque]` nominal with no resource descriptor is a bit-copied
+        // FFI id of pointer width; its lifecycle belongs to whatever owns it.
+        ResolvedTy::Named {
+            builtin: None,
+            is_opaque: true,
+            ..
+        } => PhysicalRepr::Pointer,
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "physical target resolver does not support `{}`",
@@ -3266,6 +3273,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 failure,
             } => self.emit_runtime_call(*action, args, *result, normal, failure.as_ref()),
+            PhysicalTerminator::ExternCall {
+                symbol,
+                args,
+                result,
+                normal,
+            } => self.emit_extern_call(symbol, args, *result, normal),
             PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
             PhysicalTerminator::Trap(kind) => {
                 let code = trap_code(*kind);

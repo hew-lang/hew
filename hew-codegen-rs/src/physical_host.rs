@@ -87,6 +87,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::ActorAsk { .. }
                     | PhysicalTerminator::TaskScopeJoin { .. }
                     | PhysicalTerminator::ValueCall { .. }
+                    | PhysicalTerminator::ExternCall { .. }
                     | PhysicalTerminator::SwitchVariant { .. } => {
                         return Err(fail(
                             "C host export does not yet admit indirect calls or callbacks",

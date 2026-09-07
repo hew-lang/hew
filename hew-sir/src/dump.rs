@@ -489,7 +489,8 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         | SemTerminator::IndirectCall { .. }
         | SemTerminator::DynCall { .. }
         | SemTerminator::ActorCall { .. }
-        | SemTerminator::RtCall { .. } => {
+        | SemTerminator::RtCall { .. }
+        | SemTerminator::ExternCall { .. } => {
             dump_call_terminator(out, module, term);
         }
         SemTerminator::Panic { message, cleanup } => {
@@ -527,6 +528,10 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the closed call-terminator formatting match together"
+)]
 fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminator) {
     let (target, args, result, normal, unwind) = match term {
         SemTerminator::Call {
@@ -616,6 +621,20 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             ..
         } => (
             format!("rt.call{{{family:?}}}"),
+            args,
+            result,
+            Some(normal),
+            unwind,
+        ),
+        SemTerminator::ExternCall {
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("extern.call{{{}}}", signature.symbol),
             args,
             result,
             Some(normal),

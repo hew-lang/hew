@@ -37,15 +37,22 @@ pub enum ResourceRelease {
     },
 }
 
-/// An exact HIR extern declaration retained as part of the release proof.
+/// One exact `extern` declaration: the C endpoint plus the ownership the
+/// source declaration pins on each parameter and on the result.
+///
+/// This is the single argument-mode authority for an extern call. Downstream
+/// stages read it; none of them re-derive a mode from the symbol spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceExtern {
+pub struct ExternSignature {
     pub declaration: hew_types::DefId,
     pub symbol: String,
     pub params: Vec<ResolvedTy>,
     pub consumes: Vec<bool>,
     pub result: ResolvedTy,
 }
+
+/// An exact HIR extern declaration retained as part of the release proof.
+pub type ResourceExtern = ExternSignature;
 
 /// Scalar ABI carrier selected by the checked release protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

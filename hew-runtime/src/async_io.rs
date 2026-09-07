@@ -19,7 +19,7 @@ use crate::wake::{HewWaker, OwnedWaker};
 mod file;
 mod net;
 pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
-pub use net::{hew_async_tcp_accept, hew_async_tcp_read};
+pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 
 #[cfg(test)]
 mod tests;

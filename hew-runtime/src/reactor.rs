@@ -58,7 +58,7 @@ use crate::actor::{hew_actor_send_guaranteed, hew_actor_try_send, HewActor};
 use crate::bytes::{hew_bytes_from_static, BytesTriple};
 use crate::io_time::{
     hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
-    hew_io_poller_unregister, HewIoPoller, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ,
+    hew_io_poller_unregister, HewIoPoller, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE,
 };
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::poison_safe::PoisonSafe;
@@ -69,7 +69,7 @@ use crate::transport::{
 };
 
 mod async_io;
-pub(crate) use async_io::{reactor_await_async_io, reactor_detach_async_io};
+pub(crate) use async_io::{reactor_await_async_io, reactor_detach_async_io, AsyncIoAction};
 
 /// How long each readiness wait blocks before the reactor wakes to drain the
 /// pending add/remove queue and re-check the stop flag. Bounded so a fresh
@@ -117,7 +117,7 @@ enum RegMode {
     /// or frame address is needed for this one-shot registration.
     AsyncIo {
         operation: crate::async_io::IoProducer,
-        accept: bool,
+        action: AsyncIoAction,
     },
     /// Active-mode auto-send to the actor's `on_data` / `on_close` handlers.
     AutoSend {
@@ -636,7 +636,12 @@ fn apply_add(poller: *mut HewIoPoller, fd: c_int, reg: Registration) {
     // registered actor pointer is never dereferenced by the poller in the
     // readiness-reporting path (we pass a null actor + dummy msg_type because
     // the reactor does the lookup/read/send itself).
-    let rc = unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ) };
+    let interest = match &reg.mode {
+        RegMode::AsyncIo { action, .. } => action.interest(),
+        _ => HEW_IO_READ,
+    };
+    // SAFETY: the live poller owns this fd registration; delivery uses the reactor lookup.
+    let rc = unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, interest) };
     if rc < 0 {
         // OS poller registration failed (bad fd / already closed). Fail closed:
         // deliver on_close so the actor is not left waiting; do not insert.
@@ -707,7 +712,7 @@ fn unregister_fd(poller: *mut HewIoPoller, fd: c_int) {
 enum ReadyMode {
     AsyncIo {
         operation: crate::async_io::IoProducer,
-        accept: bool,
+        action: AsyncIoAction,
         _flight: async_io::Flight,
     },
     AutoSend {
@@ -892,9 +897,9 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
             actor_local: actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>(),
             actor: reg.actor,
             mode: match &reg.mode {
-                RegMode::AsyncIo { operation, accept } => ReadyMode::AsyncIo {
+                RegMode::AsyncIo { operation, action } => ReadyMode::AsyncIo {
                     operation: operation.clone(),
-                    accept: *accept,
+                    action: action.clone(),
                     _flight: async_io::Flight::new(),
                 },
                 RegMode::AutoSend {
@@ -943,10 +948,10 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     crate::observe::record_reactor_ready_event();
 
     if let ReadyMode::AsyncIo {
-        operation, accept, ..
+        operation, action, ..
     } = &snap.mode
     {
-        async_io::handle_ready(poller, fd, snap.conn, events, *accept, operation);
+        async_io::handle_ready(poller, fd, snap.conn, events, action, operation);
         return;
     }
 

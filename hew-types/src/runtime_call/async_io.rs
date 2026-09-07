@@ -41,6 +41,8 @@ pub enum AsyncIoResume {
     Bytes,
     /// Discard the successful byte count and return 0; return -1 on failure.
     WriteStatus,
+    /// Return the successful byte count; return -1 on failure.
+    WriteCount,
     /// Transfer an accepted connection; return the invalid handle on failure.
     Connection,
 }
@@ -74,6 +76,7 @@ pub enum AsyncIoOp {
     FileWriteString,
     FileWriteBytes,
     TcpRead,
+    TcpWrite,
     TcpAccept,
 }
 
@@ -84,7 +87,7 @@ impl AsyncIoOp {
             Self::FileReadBytes | Self::FileWriteString | Self::FileWriteBytes => {
                 AsyncIoLoan::UntilSubmitReturns
             }
-            Self::TcpRead | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
+            Self::TcpRead | Self::TcpWrite | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
         }
     }
     #[must_use]
@@ -94,6 +97,7 @@ impl AsyncIoOp {
             Self::FileWriteString => "hew_file_write",
             Self::FileWriteBytes => "hew_file_write_bytes",
             Self::TcpRead => "hew_tcp_read",
+            Self::TcpWrite => "hew_tcp_write",
             Self::TcpAccept => "hew_tcp_accept",
         }
     }
@@ -107,6 +111,7 @@ impl AsyncIoOp {
             Self::FileWriteString => "hew_async_file_write_string",
             Self::FileWriteBytes => "hew_async_file_write",
             Self::TcpRead => "hew_async_tcp_read",
+            Self::TcpWrite => "hew_async_tcp_write",
             Self::TcpAccept => "hew_async_tcp_accept",
         }
     }
@@ -117,6 +122,7 @@ impl AsyncIoOp {
             Self::FileReadBytes | Self::TcpRead => AsyncIoResume::Bytes,
             Self::FileWriteString | Self::FileWriteBytes => AsyncIoResume::WriteStatus,
             Self::TcpAccept => AsyncIoResume::Connection,
+            Self::TcpWrite => AsyncIoResume::WriteCount,
         }
     }
 
@@ -152,6 +158,7 @@ impl AsyncIoOp {
             Self::FileWriteString => runtime_semantic_contract(&[PATH, PATH], BitCopy(I32), &[]),
             Self::FileWriteBytes => runtime_semantic_contract(&[PATH, DATA], BitCopy(I32), &[]),
             Self::TcpRead => runtime_semantic_contract(&[CONNECTION], FreshOwned(Bytes), &[]),
+            Self::TcpWrite => runtime_semantic_contract(&[CONNECTION, DATA], BitCopy(I32), &[]),
             Self::TcpAccept => runtime_semantic_contract(
                 &[LISTENER],
                 FreshOwned(IoHandle(IoHandleKind::Connection)),
@@ -180,7 +187,7 @@ impl RuntimeCallFamily {
             AsyncIoOp::FileReadBytes | AsyncIoOp::FileWriteString | AsyncIoOp::FileWriteBytes => {
                 "std.fs"
             }
-            AsyncIoOp::TcpRead | AsyncIoOp::TcpAccept => "std.net",
+            AsyncIoOp::TcpRead | AsyncIoOp::TcpWrite | AsyncIoOp::TcpAccept => "std.net",
         };
         module == owner
             && symbol == op.c_symbol()
@@ -232,6 +239,12 @@ mod tests {
                 "std.net",
                 vec![connection.clone()],
                 ResolvedTy::Bytes,
+            ),
+            (
+                AsyncIoOp::TcpWrite,
+                "std.net",
+                vec![connection.clone(), ResolvedTy::Bytes],
+                ResolvedTy::I32,
             ),
             (AsyncIoOp::TcpAccept, "std.net", vec![listener], connection),
         ] {

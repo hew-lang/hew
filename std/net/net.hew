@@ -668,13 +668,13 @@ impl ConnectionMethods for Connection {
     /// Write raw bytes to the connection.
     fn write(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, data)
+            await hew_tcp_write(conn, data)
         })
     }
     /// Write a UTF-8 string to the connection.
     fn write_string(conn: Connection, data: string) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, unsafe {
+            await hew_tcp_write(conn, unsafe {
                 hew_string_to_bytes(data)
             })
         })
@@ -696,13 +696,13 @@ impl ConnectionMethods for Connection {
     /// Send raw bytes to the connection (alias for `write`).
     fn send(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, data)
+            await hew_tcp_write(conn, data)
         })
     }
     /// Send a UTF-8 string to the connection (alias for `write_string`).
     fn send_string(conn: Connection, data: string) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, unsafe {
+            await hew_tcp_write(conn, unsafe {
                 hew_string_to_bytes(data)
             })
         })

@@ -18,7 +18,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "native I/O input must be borrowed".into(),
                 ));
             };
-            if operation == AsyncIoOp::FileWriteBytes && index == 1 {
+            if matches!(operation, AsyncIoOp::FileWriteBytes | AsyncIoOp::TcpWrite) && index == 1 {
                 arguments.push(self.slots[source.0 as usize].into());
             } else {
                 arguments.push(self.load(*source, "io.input")?.into());
@@ -115,6 +115,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 // Freeing the request discards its successful count.
                 return self.store(result, self.ctx.i32_type().const_zero().into());
             }
+            AsyncIoResume::WriteCount => {
+                let output = self
+                    .builder
+                    .build_alloca(self.ctx.i64_type(), "io.write.count")
+                    .llvm_ctx("allocate write count output")?;
+                ("hew_async_io_take_count", output)
+            }
             AsyncIoResume::Connection => {
                 let output = self
                     .builder
@@ -152,7 +159,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(invalid);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(valid);
-        if operation.resume() == AsyncIoResume::Connection {
+        if matches!(
+            operation.resume(),
+            AsyncIoResume::Connection | AsyncIoResume::WriteCount
+        ) {
             let handle = self
                 .builder
                 .build_load(self.ctx.i64_type(), output, "io.accepted")
@@ -277,7 +287,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let result_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;
         let failed = match operation.resume() {
             AsyncIoResume::Bytes => result_ty.const_zero(),
-            AsyncIoResume::WriteStatus | AsyncIoResume::Connection => {
+            AsyncIoResume::WriteStatus | AsyncIoResume::WriteCount | AsyncIoResume::Connection => {
                 result_ty.into_int_type().const_all_ones().into()
             }
         };

@@ -1,0 +1,11 @@
+[[case]]
+id = "string-codepoint-iteration"
+intent = "`for` over a string yields codepoints and over bytes yields bytes, through early return, continue and break, leaving the source usable."
+source = "cases/string-codepoint-iteration.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "A\né\n中\n🙂\nnul\n3\n294\n3\n2\n2\nH\nO\nL\nD\nHOLD\n"
+exit = 0
+stderr = ""

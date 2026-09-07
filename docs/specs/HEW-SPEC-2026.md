@@ -3224,7 +3224,8 @@ selected element. An index or endpoint outside the value reports
 slice copies its elements, a vector whose element type has no clone — a
 `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
 generator — cannot be range-sliced; `into_iter()` moves those elements out
-instead.
+instead. `for c in s` walks a string's codepoints and `for b in raw` walks a
+bytes value's bytes, in each case yielding the same element `s[i]` would.
 
 #### 3.10.6 Prelude (Automatically Imported)
 

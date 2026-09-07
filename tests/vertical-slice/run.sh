@@ -1153,8 +1153,13 @@ run_accept_expect_status "impl_trait_concrete_specialisation" 0
 # in its HIR symbol; MIR must not append the receiver args a second time.
 run_accept_expect_status_and_stdout "var_self_concrete_specialised_trait_impl" 0
 
-run_accept_expect_status "assert_eq_fail" 134
-grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
+# A failed assertion is a recoverable logical fault, not an abort: HIR lowers
+# `assert_eq` to a comparison and `panic`, so it exits 212 (UserPanic) and
+# reports both rendered operands.
+run_accept_expect_status "assert_eq_fail" 212
+grep -q 'assertion failed: left != right' "${stderr_output}"
+grep -q '  left: 4' "${stderr_output}"
+grep -q '  right: 5' "${stderr_output}"
 
 run_accept_expect_status "exit_42" 42
 run_accept_expect_status "for_vec_sum_42" 42
@@ -1244,8 +1249,7 @@ run_accept_expect_trap "hashmap_enum_index_absent_traps"
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
 # (the `get` half returns `Option<u8>`). bytes routes `b[i]` through the
 # `hew_bytes_index` runtime getter, which routes through the runtime bounds trap.
-# In main context the trap helper aborts: exit 134 (SIGABRT+128), the same
-# fail-closed termination as `assert_eq_fail`.
+# In main context the trap helper aborts: exit 134 (SIGABRT+128).
 run_accept_expect_status "bytes_index_oob_traps" 134
 
 # Indexed-accessor trap negative for string: `s[i]` on an out-of-bounds index
@@ -1895,8 +1899,8 @@ run_accept_expect_status "join_two_actors" 42
 
 # join{} error propagation (HEW-SPEC-2026 §4.11.2): one branch traps
 # (assert_eq false in Bad.compute). The trap propagates out of the join
-# site instead of binding a tuple; the assertion-failure abort exits 134
-# (SIGABRT), matching `assert_eq_fail`. Deterministic — independent of
+# site instead of binding a tuple; the trap exits 134 (SIGABRT).
+# Deterministic — independent of
 # which branch replies first.
 run_accept_expect_status "join_branch_trap" 134
 

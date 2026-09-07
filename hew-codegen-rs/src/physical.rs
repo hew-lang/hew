@@ -3995,6 +3995,38 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "string.to.bytes",
                 )?;
             }
+            PhysicalRuntimeAction::StringRepeat => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_repeat",
+                    ptr.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[
+                        self.load(source(0)?, "repeat.text")?.into(),
+                        self.load(source(1)?, "repeat.count")?.into(),
+                    ],
+                    "string.repeat",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::StringSplit => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_split",
+                    ptr.fn_type(&[ptr.into(), ptr.into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[
+                        self.load(source(0)?, "split.text")?.into(),
+                        self.load(source(1)?, "split.separator")?.into(),
+                    ],
+                    "string.split",
+                )?;
+                self.store(required_result()?, value)?;
+            }
             PhysicalRuntimeAction::StringSlice => {
                 let function = get_or_declare_external(
                     self.llvm,

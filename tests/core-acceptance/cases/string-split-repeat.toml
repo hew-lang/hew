@@ -1,0 +1,10 @@
+[[case]]
+id = "string-split-repeat"
+intent = "`string.split` and `string.repeat` lower through their runtime families: each call yields a fresh owned value the caller releases once, including inside a loop."
+source = "cases/string-split-repeat.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3\nalpha\ngamma\nababab\n-----\n5\ntwo\n"
+exit = 0

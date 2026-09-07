@@ -871,6 +871,12 @@ pub enum PhysicalRuntimeAction {
     StringTrim,
     StringLen,
     StringByteLen,
+    /// One `duration`/`instant` scalar accessor. Both receivers are i64-backed,
+    /// so every one of these is the same physical shape - i64 arguments in, one
+    /// scalar out, no ownership - and the family is the only thing that varies.
+    /// `physical_runtime_action` is the sole constructor and admits only the
+    /// eleven time families.
+    TimeScalar(RuntimeCallFamily),
     BytesDecodeUtf8 {
         result: PhysicalVariantId,
         error: PhysicalAggregateId,
@@ -937,6 +943,7 @@ impl PhysicalRuntimeAction {
             Self::StringTrim => RuntimeCallFamily::StringTrim,
             Self::StringLen => RuntimeCallFamily::StringLen,
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
+            Self::TimeScalar(family) => family,
             Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
             Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
@@ -2325,6 +2332,17 @@ fn physical_runtime_action(
         RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
         RuntimeCallFamily::BytesSlice => PhysicalRuntimeAction::BytesSlice,
         RuntimeCallFamily::BytesSliceFrom => PhysicalRuntimeAction::BytesSliceFrom,
+        family @ (RuntimeCallFamily::InstantNow
+        | RuntimeCallFamily::InstantElapsed
+        | RuntimeCallFamily::InstantDurationSince
+        | RuntimeCallFamily::DurationNanos
+        | RuntimeCallFamily::DurationMicros
+        | RuntimeCallFamily::DurationMillis
+        | RuntimeCallFamily::DurationSecs
+        | RuntimeCallFamily::DurationMins
+        | RuntimeCallFamily::DurationHours
+        | RuntimeCallFamily::DurationAbs
+        | RuntimeCallFamily::DurationIsZero) => PhysicalRuntimeAction::TimeScalar(family),
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
         _ => {
             return Err(PhysicalError::new(format!(

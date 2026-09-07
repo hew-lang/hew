@@ -1,0 +1,10 @@
+[[case]]
+id = "std-time-instants"
+intent = "`duration` accessors and arithmetic and the `instant` monotonic clock lower through their runtime families: every value is a bit-copied scalar with no ownership, and elapsed time is measured against a real sleep."
+source = "cases/std-time-instants.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "250000000\n250000\n250\n1\n0\n0\ntrue\nfalse\n1250\n750\n750\ntrue\ntrue\ntrue\ntrue\n"
+exit = 0

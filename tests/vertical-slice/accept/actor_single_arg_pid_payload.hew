@@ -14,10 +14,12 @@
 
 actor Echo {
     // Sole parameter is the sender's pid. Print on receipt, then use the pid
-    // to send an `ack` back — a dead or garbled pid would not route.
+    // to send an `ack` back — a dead or garbled pid would not route. The
+    // callback is a mailbox submission: the sender is parked on this call, so
+    // waiting for it to handle `ack` would close a wait cycle.
     receive fn hear(p: LocalPid<Pinger>) {
         println("echo: heard pinger");
-        let _ = p.ack();
+        let _ = mailbox(p, on_full: .Wait).ack();
     }
 }
 

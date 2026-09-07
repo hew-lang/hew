@@ -17,7 +17,7 @@ actor Counter {
     receive fn go() {
         if n < 3 {
             n = n + 1;
-            self.go();
+            let _ = mailbox(self, on_full: .Wait).go();
         }
     }
     receive fn total() -> i64 {
@@ -30,7 +30,7 @@ actor Pump {
     receive fn go() {
         if n < 7 {
             n = n + 1;
-            self.go();
+            let _ = mailbox(self, on_full: .Wait).go();
         }
     }
     receive fn total() -> i64 {

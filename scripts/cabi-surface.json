@@ -16206,6 +16206,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_slice_codepoints_from( *const HewString, i64, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_slice_codepoints_from( *const HewString, i64, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_slice_codepoints_from"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

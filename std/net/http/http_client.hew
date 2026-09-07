@@ -112,9 +112,9 @@ impl ResponseMethods for Response {
 
 impl Response {
     /// Release this response early.
-    fn close(resp: Response) {
+    fn close(consume self) {
         unsafe {
-            hew_http_response_free(resp.handle)
+            hew_http_response_free(self.handle)
         };
     }
 }

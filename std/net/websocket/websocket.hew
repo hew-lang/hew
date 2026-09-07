@@ -200,9 +200,9 @@ impl MessageMethods for Message {
 
 impl Message {
     /// Release this message early.
-    fn close(msg: Message) {
+    fn close(consume self) {
         unsafe {
-            hew_ws_message_free(msg.handle)
+            hew_ws_message_free(self.handle)
         };
     }
 }

@@ -126,9 +126,9 @@ impl MonitorRef {
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
     /// so actor-free close paths are safe at scope exit.
-    fn close(monitor_ref: MonitorRef) {
+    fn close(consume self) {
         unsafe {
-            hew_actor_demonitor(monitor_ref.ref_id)
+            hew_actor_demonitor(self.ref_id)
         };
     }
 }

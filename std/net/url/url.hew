@@ -133,9 +133,9 @@ impl UrlMethods for Url {
 
 impl Url {
     /// Release this parsed URL early.
-    fn close(u: Url) {
+    fn close(consume self) {
         unsafe {
-            hew_url_free(u.handle)
+            hew_url_free(self.handle)
         };
     }
 }

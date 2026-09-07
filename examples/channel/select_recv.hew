@@ -1,4 +1,4 @@
-//! `select { pat from rx.recv() }` — a channel-receive arm in select (NEW-4).
+//! `select { pat = rx.recv() }` — a channel-receive arm in select (NEW-4).
 //!
 //! Two channels race plus an `after` safety net; the ready channel's arm wins,
 //! the loser arm's poll is cancelled at the dispatch site, and the after-timer
@@ -18,13 +18,13 @@ actor Worker {
         };
         txb.send(7);
         select {
-            a from rxa.recv() => {
+            a = rxa.recv() => {
                 match a {
                     .Some(s) => println(f"a:{s}"),
                     .None => println("a:none"),
                 }
             },
-            b from rxb.recv() => {
+            b = rxb.recv() => {
                 match b {
                     .Some(n) => println(f"b:{n}"),
                     .None => println("b:none"),

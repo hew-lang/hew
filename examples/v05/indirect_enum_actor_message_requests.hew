@@ -28,7 +28,7 @@ actor Coordinator {
 
     receive fn select_score(tag: i64, tree: Tree) -> i64 {
         select {
-            reply from scorer.score(tag, tree) => reply,
+            reply = scorer.score(tag, tree) => reply,
             after 5s => -2,
         }
     }
@@ -42,7 +42,7 @@ fn main() -> i64 {
         .Err(_) => -3,
     };
     let selected = select {
-        reply from scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => reply,
+        reply = scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => reply,
         after 5s => -4,
     };
     let (joined_a, joined_b) = join {

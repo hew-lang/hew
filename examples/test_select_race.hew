@@ -18,8 +18,8 @@ fn main() {
     let slow = spawn SlowWorker;
     // Test select - fast should win
     let result = select {
-        r from fast.compute(5) => r,
-        r from slow.compute(5) => r,
+        r = fast.compute(5) => r,
+        r = slow.compute(5) => r,
         after 2s => -1 as i32,
     };
     println("select result:");

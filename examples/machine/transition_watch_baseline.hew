@@ -2,7 +2,7 @@
 //
 // A machine is a value type: the owner steps it in place and publishes
 // each observed transition into a std/channel `Sender`. The observer
-// waits with the sealed `from ... recv()` select arm composed with
+// waits with a channel receive select arm composed with
 // `after`, so a stalled owner can never wedge the watcher.
 //
 // This baseline keeps owner and observer in one actor; the cross-actor
@@ -27,7 +27,7 @@ actor Combined {
         }
         tx.close();
         select {
-            t from rx.recv() => {
+            t = rx.recv() => {
                 match t {
                     .Some(tr) => println(tr),
                     .None => println("watch closed"),

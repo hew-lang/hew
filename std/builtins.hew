@@ -81,10 +81,17 @@ pub enum OnFull {
 }
 
 // Compiler-selected immutable policy witnesses. They contain no runtime state.
-pub type RejectSend {}
-pub type WaitSend {}
-pub type DropNewestSend {}
-pub type ReplaceLatestSend {}
+pub type RejectSend {
+}
+
+pub type WaitSend {
+}
+
+pub type DropNewestSend {
+}
+
+pub type ReplaceLatestSend {
+}
 
 /// Error returned when a pid send cannot be completed.
 pub enum SendError {

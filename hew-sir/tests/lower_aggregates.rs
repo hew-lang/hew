@@ -725,3 +725,136 @@ fn runtime_read_keeps_bindings_replaced_by_index_evaluation() {
         "the receiver must be captured before the index expression replaces it"
     );
 }
+
+fn function<'a>(lowered: &'a hew_sir::LoweredModule, name: &str) -> &'a hew_sir::SemFunction {
+    lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == name)
+        .unwrap_or_else(|| panic!("`{name}` must have a body"))
+}
+
+fn count_ops(function: &hew_sir::SemFunction, matches: impl Fn(&SemOpKind) -> bool) -> usize {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|op| matches(&op.kind))
+        .count()
+}
+
+#[test]
+fn functional_update_copies_carried_fields_from_a_live_base() {
+    let lowered = lower_source(
+        r#"
+        type Holder { items: Vec<i64>, tag: string, count: i64 }
+
+        fn keep(value: Holder) {}
+
+        fn main() {
+            var seed: Vec<i64> = Vec.new();
+            let base = Holder { items: seed, tag: "base", count: 1 };
+            let retagged = Holder { tag: "retagged", ..base };
+            let refilled = Holder { count: 2, ..base };
+            keep(retagged);
+            keep(refilled);
+            keep(base);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+    let main = function(&lowered, "main");
+    assert_eq!(
+        count_ops(main, |kind| matches!(
+            kind,
+            SemOpKind::AggregateProjectCopy { .. }
+        )),
+        4,
+        "each carried field is one independent copy"
+    );
+    assert_eq!(
+        count_ops(main, |kind| matches!(kind, SemOpKind::Destructure { .. })),
+        0,
+        "a live base is read, never consumed"
+    );
+}
+
+#[test]
+fn functional_update_consumes_a_temporary_and_a_non_copyable_base() {
+    let lowered = lower_source(
+        r#"
+        type Job { name: string, run: fn() -> string }
+
+        fn make() -> Job {
+            Job { name: "made", run: || -> string { "answer" } }
+        }
+
+        fn keep(value: Job) {}
+
+        fn main() {
+            let first = Job { name: "first", ..make() };
+            let seed = make();
+            let second = Job { name: "second", ..seed };
+            keep(first);
+            keep(second);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+    let main = function(&lowered, "main");
+    assert_eq!(
+        count_ops(main, |kind| matches!(kind, SemOpKind::Destructure { .. })),
+        2,
+        "the temporary and the non-copyable binding are both destructured"
+    );
+    assert_eq!(
+        count_ops(main, |kind| matches!(
+            kind,
+            SemOpKind::AggregateProjectCopy { .. }
+        )),
+        0,
+        "a consumed base transfers its carried fields"
+    );
+    assert!(
+        count_ops(main, |kind| matches!(kind, SemOpKind::DestroyValue { .. })) >= 2,
+        "each overridden owned field is destroyed at the construction site"
+    );
+}
+
+#[test]
+fn functional_update_refuses_to_transfer_a_non_copyable_field_from_a_borrowed_base() {
+    let lowered = lower_source(
+        r#"
+        type Job { name: string, run: fn() -> string }
+
+        fn make() -> Job {
+            Job { name: "made", run: || -> string { "answer" } }
+        }
+
+        fn renamed(job: Job) -> Job {
+            Job { name: "renamed", ..job }
+        }
+
+        fn keep(value: Job) {}
+
+        fn main() {
+            let job = make();
+            keep(renamed(job));
+        }
+        "#,
+    );
+    let status = lowered
+        .statuses
+        .iter()
+        .find(|status| status.name == "renamed")
+        .expect("renamed has a lowering status");
+    assert!(
+        matches!(
+            &status.status,
+            SirLoweringStatus::Unsupported { reason } if reason.contains("E_OWN_CONSUME_BORROWED")
+        ),
+        "a borrowed base cannot give up its closure field: {:#?}",
+        status.status
+    );
+}

@@ -1629,3 +1629,37 @@ timeout_seconds = 15
 stdout = "CALLER OWNER\n"
 stderr = "hew: failure: UserPanic (212): assertion failed: left == right\n  left: SAME\n  right: SAME\n"
 exit = 212
+
+[[case]]
+id = "record-update-copy"
+intent = "A functional update over a live binding copies every carried field, so the base stays usable and each result owns independent values."
+source = "cases/record-update-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "retagged:retagged:1:1\nrefilled:base:2:2\naliased:base:1:1\nbase:base:1:1\n"
+exit = 0
+
+[[case]]
+id = "record-update-consume"
+intent = "A functional update consumes a temporary or a base with a non-copyable field, transferring carried fields and releasing overridden owned fields at the construction site."
+source = "cases/record-update-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first:3:one\nrenamed:0:two\nthird:7:three\n"
+exit = 0
+
+[[case]]
+id = "record-update-fault"
+intent = "A fault after a functional update releases the updated record, its copied fields and the caller's originals exactly once."
+source = "cases/record-update-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "orig:body:1\norig:again:2\n"
+stderr = "hew: failure: UserPanic (212): sequence exhausted\n"
+exit = 212

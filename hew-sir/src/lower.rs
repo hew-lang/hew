@@ -2101,6 +2101,16 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
             if elements.iter().all(is_initial_value_type))
 }
 
+/// The variant name of one HIR expression kind, for refusal diagnostics.
+fn hir_expr_kind_name(kind: &HirExprKind) -> String {
+    let rendered = format!("{kind:?}");
+    rendered
+        .split([' ', '{', '('])
+        .next()
+        .unwrap_or(&rendered)
+        .to_string()
+}
+
 fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
     match intent {
         IntentKind::Read => Ok(()),
@@ -2839,6 +2849,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     BindingTarget::Value(source) => {
                         if movable {
                             self.require_selected_binding(*binding, source)?;
+                            if self.value_own_kind(source) != Some(OwnKind::Owned) {
+                                let name =
+                                    &self.source_bindings[self.binding_declarations[binding]].name;
+                                return Err(format!(
+                                    "E_OWN_CONSUME_BORROWED: `{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
+                                ));
+                            }
                         }
                         return self.emit(
                             expr,
@@ -4275,7 +4292,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } => Err(
                 "one-armed if expressions are deferred until unit values are modeled".to_string(),
             ),
-            _ => Err("unsupported HIR expression kind in the initial SIR subset".to_string()),
+            _ => Err(format!(
+                "unsupported HIR expression kind `{}` in the initial SIR subset",
+                hir_expr_kind_name(&expr.kind)
+            )),
         }
     }
 
@@ -5668,18 +5688,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     /// Lower one named aggregate construction in source evaluation order,
     /// then present its operands in the declaration's exact field order.
+    ///
+    /// A functional update `R { x: v, ..base }` evaluates its named fields
+    /// first and fills the rest from the base afterwards. A base that is
+    /// consumed - a temporary, or a value with a non-copyable carried field -
+    /// is destructured so the carried fields transfer and the overridden ones
+    /// are destroyed here. Any other base is only read: every carried field
+    /// is an independent copy and the base stays live for its owner.
     fn lower_aggregate_make(
         &mut self,
         expr: &HirExpr,
         fields: &[(String, HirExpr)],
         base: Option<&HirExpr>,
     ) -> Result<ValueId, String> {
-        if base.is_some() {
-            return Err(
-                "functional record update needs explicit per-field copy operations before aggregate construction"
-                    .to_string(),
-            );
-        }
         let aggregate_ty = self.ty(&expr.ty);
         let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
         let AggregateShapeRef::Record(id) = shape else {
@@ -5720,6 +5741,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )?,
             });
         }
+        if let Some(base) = base {
+            self.lower_aggregate_update_base(base, &aggregate_ty, shape, &mut ordered)?;
+        }
         let fields = ordered
             .into_iter()
             .zip(&declared_fields)
@@ -5739,6 +5763,92 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.remove(&field);
         }
         Ok(aggregate)
+    }
+
+    /// Fill every field the update leaves unnamed from its base.
+    fn lower_aggregate_update_base(
+        &mut self,
+        base: &HirExpr,
+        aggregate_ty: &ResolvedTy,
+        shape: AggregateShapeRef,
+        ordered: &mut [Option<Operand>],
+    ) -> Result<(), String> {
+        if self.ty(&base.ty) != *aggregate_ty {
+            return Err(format!(
+                "functional update base `{}` differs from the constructed `{}`",
+                self.ty(&base.ty).user_facing(),
+                aggregate_ty.user_facing()
+            ));
+        }
+        let recipes = crate::aggregate_field_recipes(
+            shape,
+            aggregate_ty,
+            &self.service.aggregate_shapes,
+            self.service.checked_facts.rows(),
+        )?;
+        let carried = ordered.iter().map(Option::is_none).collect::<Vec<_>>();
+        let mut transfer_only = false;
+        for (index, recipe) in recipes.iter().enumerate() {
+            if !carried[index] {
+                continue;
+            }
+            self.service.require_type_facts(&recipe.ty)?;
+            if recipe.own == OwnKind::Owned
+                && self.service.checked_facts.rows()[&TypeInstanceKey(recipe.ty.clone())].clone
+                    == hew_types::CloneKind::None
+            {
+                transfer_only = true;
+            }
+        }
+        let provenance = Provenance::Site(base.site);
+        let live_before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let source = if transfer_only {
+            let value = lower_initial_value_transfer(
+                self,
+                base,
+                "functional update base",
+                OwnedBindingUse::Move,
+            )?;
+            if self.value_own_kind(value) != Some(OwnKind::Owned) {
+                return Err(
+                    "E_OWN_CONSUME_BORROWED: functional update of a borrowed base cannot transfer its non-copyable fields"
+                        .into(),
+                );
+            }
+            value
+        } else {
+            self.lower_borrowed_read(base, &mut loans)?.value
+        };
+        let consumed = self.owned_live.contains_key(&source) && !live_before.contains(&source);
+        if consumed {
+            let results = self.emit_destructure_value(source, aggregate_ty, shape, provenance)?;
+            for (index, result) in results.into_iter().enumerate() {
+                if carried[index] {
+                    ordered[index] = Some(Operand { value: result.id });
+                } else if result.own == OwnKind::Owned {
+                    self.emit_destroy(result.id)?;
+                }
+            }
+        } else {
+            for (index, recipe) in recipes.iter().enumerate() {
+                if !carried[index] {
+                    continue;
+                }
+                let field = u32::try_from(index).map_err(|_| "aggregate field exceeds u32")?;
+                let value = self.emit_typed(
+                    provenance.clone(),
+                    &recipe.ty,
+                    SemOpKind::AggregateProjectCopy {
+                        shape,
+                        aggregate: Operand { value: source },
+                        field,
+                    },
+                )?;
+                ordered[index] = Some(Operand { value });
+            }
+        }
+        self.end_call_loans(&loans)
     }
 
     /// Resolve a named projection once for both owned and borrowed reads.

@@ -1491,6 +1491,7 @@ pub enum RuntimeCallFamily {
     StringConcat,
     StringEquals,
     StringStartsWith,
+    StringContains,
     StringIsEmpty,
     StructuralFormat,
     StringFind,
@@ -1498,6 +1499,8 @@ pub enum RuntimeCallFamily {
     StringIndex,
     StringLen,
     StringSliceCodepoints,
+    StringSlice,
+    StringToLowercase,
     StringToBytes,
     StringToUppercase,
     StringTrim,
@@ -1784,6 +1787,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
+        signature_key: "string::contains",
+        symbol: "hew_string_contains",
+        family: Some(RuntimeCallFamily::StringContains),
+        params: STRING,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
         signature_key: "string::starts_with",
         symbol: "hew_string_starts_with",
         family: Some(RuntimeCallFamily::StringStartsWith),
@@ -1851,6 +1862,22 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         signature_key: "string::to_upper",
         symbol: "hew_string_to_uppercase",
         family: Some(RuntimeCallFamily::StringToUppercase),
+        params: EMPTY,
+        result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::slice",
+        symbol: "hew_string_slice",
+        family: Some(RuntimeCallFamily::StringSlice),
+        params: &[CanonicalExternTy::I64, CanonicalExternTy::I64],
+        result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::to_lower",
+        symbol: "hew_string_to_lowercase",
+        family: Some(RuntimeCallFamily::StringToLowercase),
         params: EMPTY,
         result: CanonicalExternTy::String,
     },
@@ -1972,7 +1999,7 @@ impl RuntimeCallFamily {
     }
 
     const fn text_variant_semantic_contract(self) -> Option<RuntimeSemanticContract> {
-        use RuntimeArgumentEffect::Borrow;
+        use RuntimeArgumentEffect::{Borrow, Copy};
         use RuntimeResultEffect::{BitCopy, FreshOwned, FreshOwnedVariant};
         use RuntimeValueKind::{Bytes, String, I64};
 
@@ -1980,6 +2007,8 @@ impl RuntimeCallFamily {
             ty: String,
             effect: Borrow,
         }];
+        const STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
+            &[STRING_BORROW[0], STRING_BORROW[0]];
         const BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
             ty: Bytes,
             effect: Borrow,
@@ -1987,11 +2016,40 @@ impl RuntimeCallFamily {
         const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
 
         Some(match self {
-            Self::StringToUppercase | Self::StringTrim => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(String),
-                failures: NO_FAILURES,
-            },
+            Self::StringFind => runtime_semantic_contract(
+                STRING_PAIR_BORROW,
+                RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Option,
+                    &[I64],
+                )),
+                NO_FAILURES,
+            ),
+            Self::StringSlice => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: String,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                FreshOwned(String),
+                NO_FAILURES,
+            ),
+
+            Self::StringToUppercase | Self::StringToLowercase | Self::StringTrim => {
+                RuntimeSemanticContract {
+                    arguments: STRING_BORROW,
+                    result: FreshOwned(String),
+                    failures: NO_FAILURES,
+                }
+            }
             Self::StringToBytes => RuntimeSemanticContract {
                 arguments: STRING_BORROW,
                 result: FreshOwned(Bytes),
@@ -2299,6 +2357,7 @@ impl RuntimeCallFamily {
             Self::StringConcat => "hew_string_concat",
             Self::StringEquals => "hew_string_equals",
             Self::StringStartsWith => "hew_string_starts_with",
+            Self::StringContains => "hew_string_contains",
             Self::StringIsEmpty => "hew_string_is_empty",
             Self::StructuralFormat => "hew_structural_format",
             Self::StringFind => "hew_string_find",
@@ -2306,6 +2365,8 @@ impl RuntimeCallFamily {
             Self::StringIndex => "hew_string_index",
             Self::StringLen => "hew_string_length",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
+            Self::StringSlice => "hew_string_slice",
+            Self::StringToLowercase => "hew_string_to_lowercase",
             Self::StringToBytes => "hew_string_to_bytes",
             Self::StringToUppercase => "hew_string_to_uppercase",
             Self::StringTrim => "hew_string_trim",
@@ -2691,6 +2752,7 @@ impl RuntimeCallFamily {
             "hew_string_concat" => Self::StringConcat,
             "hew_string_equals" => Self::StringEquals,
             "hew_string_starts_with" => Self::StringStartsWith,
+            "hew_string_contains" => Self::StringContains,
             "hew_string_is_empty" => Self::StringIsEmpty,
             "hew_structural_format" => Self::StructuralFormat,
             "hew_string_find" => Self::StringFind,
@@ -2698,6 +2760,8 @@ impl RuntimeCallFamily {
             "hew_string_index" => Self::StringIndex,
             "hew_string_length" => Self::StringLen,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
+            "hew_string_slice" => Self::StringSlice,
+            "hew_string_to_lowercase" => Self::StringToLowercase,
             "hew_string_to_bytes" => Self::StringToBytes,
             "hew_string_to_uppercase" => Self::StringToUppercase,
             "hew_string_trim" => Self::StringTrim,
@@ -3354,7 +3418,7 @@ impl RuntimeCallFamily {
                 FreshOwned(RuntimeValueKind::Receiver(BuiltinType::JsonValue)),
                 NO_FAILURES,
             ),
-            Self::StringEquals | Self::StringStartsWith => {
+            Self::StringEquals | Self::StringStartsWith | Self::StringContains => {
                 runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
             }
             Self::StringIsEmpty => {
@@ -3746,6 +3810,7 @@ impl RuntimeCallFamily {
             | F::StringByteLen
             | F::StringConcat
             | F::StringEquals
+            | F::StringContains
             | F::StringStartsWith
             | F::StringIsEmpty
             | F::StructuralFormat
@@ -3753,6 +3818,8 @@ impl RuntimeCallFamily {
             | F::StringGet
             | F::StringIndex
             | F::StringLen
+            | F::StringSlice
+            | F::StringToLowercase
             | F::StringSliceCodepoints
             | F::StringToBytes
             | F::StringToUppercase

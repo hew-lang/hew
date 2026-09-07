@@ -766,9 +766,15 @@ pub enum PhysicalRuntimeAction {
     StringConcat,
     StringEquals,
     StringStartsWith,
+    StringContains,
+    StringFind {
+        result: PhysicalVariantId,
+    },
     StringIsEmpty,
     StringToBytesOwned,
     StringToUppercase,
+    StringToLowercase,
+    StringSlice,
     StringTrim,
     StringLen,
     StringByteLen,
@@ -811,9 +817,13 @@ impl PhysicalRuntimeAction {
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
             Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
+            Self::StringContains => RuntimeCallFamily::StringContains,
+            Self::StringFind { .. } => RuntimeCallFamily::StringFind,
             Self::StringIsEmpty => RuntimeCallFamily::StringIsEmpty,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
+            Self::StringToLowercase => RuntimeCallFamily::StringToLowercase,
+            Self::StringSlice => RuntimeCallFamily::StringSlice,
             Self::StringTrim => RuntimeCallFamily::StringTrim,
             Self::StringLen => RuntimeCallFamily::StringLen,
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
@@ -2007,9 +2017,12 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
         RuntimeCallFamily::StringStartsWith => PhysicalRuntimeAction::StringStartsWith,
+        RuntimeCallFamily::StringContains => PhysicalRuntimeAction::StringContains,
         RuntimeCallFamily::StringIsEmpty => PhysicalRuntimeAction::StringIsEmpty,
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
+        RuntimeCallFamily::StringToLowercase => PhysicalRuntimeAction::StringToLowercase,
+        RuntimeCallFamily::StringSlice => PhysicalRuntimeAction::StringSlice,
         RuntimeCallFamily::StringTrim => PhysicalRuntimeAction::StringTrim,
         RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
         RuntimeCallFamily::StringByteLen => PhysicalRuntimeAction::StringByteLen,
@@ -3039,6 +3052,14 @@ impl FunctionLowerer<'_> {
                 VecValueOp::Clear => PhysicalVectorOp::Clear,
             };
             return Ok(PhysicalRuntimeAction::Vector { operation, glue });
+        }
+        if family == RuntimeCallFamily::StringFind {
+            let CallResult::Value(value) = result else {
+                return Err(PhysicalError::new("string find has no optional result"));
+            };
+            return Ok(PhysicalRuntimeAction::StringFind {
+                result: self.variant_id(&value.ty)?,
+            });
         }
         if family != RuntimeCallFamily::BytesDecodeUtf8 {
             return physical_runtime_action(family);
@@ -6171,6 +6192,23 @@ fn verify_terminator(
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} argument disagrees with its semantic contract"
                     )));
+                }
+            }
+            if let PhysicalRuntimeAction::StringFind { result: descriptor } = action {
+                let Some(output) = result else {
+                    return Err(PhysicalError::new("string find has no result storage"));
+                };
+                let descriptor = variant_glue(module, *descriptor)?;
+                if descriptor.ty != slot(*output)?.ty
+                    || descriptor.is_indirect
+                    || descriptor.variants.len() != 2
+                    || descriptor.variants[0].fields.len() != 1
+                    || descriptor.variants[0].fields[0].ty != ResolvedTy::I64
+                    || !descriptor.variants[1].fields.is_empty()
+                {
+                    return Err(PhysicalError::new(
+                        "string find optional descriptor disagrees with result",
+                    ));
                 }
             }
             match (contract.result, result) {

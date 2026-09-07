@@ -98,3 +98,77 @@ fn main() {
         "recovered\ntrue\ninvalid address\n",
     );
 }
+
+#[test]
+fn connections_resume_with_owned_handles_and_ordinary_error_results() {
+    run_tcp(
+        r#"
+import std.net;
+fn main() {
+    match net.listen("127.0.0.1:0") {
+        .Ok(listener) => {
+            let address = f"127.0.0.1:{listener.local_port()}";
+            match await net.connect(address) {
+                .Ok(connection) => { connection.close(); println("connected"); }
+                .Err(_) => panic("connect failed"),
+            }
+            listener.close();
+            match await net.connect(address) {
+                .Ok(_) => panic("closed listener accepted a connection"),
+                .Err(_) => println("refused"),
+            }
+        }
+        .Err(_) => panic("listen failed"),
+    }
+    match await net.connect("127.0.0.1:0\0ignored") {
+        .Ok(_) => panic("invalid address accepted"),
+        .Err(_) => println("invalid"),
+    }
+}
+"#,
+        "connected\nrefused\ninvalid\n",
+    );
+}
+
+#[test]
+fn timed_connections_execute_the_public_endpoint_parser() {
+    run_tcp(
+        r#"
+import std.net;
+fn main() {
+    match net.listen("127.0.0.1:0") {
+        .Ok(listener) => {
+            let address = f"127.0.0.1:{listener.local_port()}";
+            match await net.connect_timeout(address, 1, 0) {
+                .Ok(connection) => { connection.close(); println("timed connect"); }
+                .Err(_) => panic("timed connect failed"),
+            }
+        }
+        .Err(_) => panic("listen failed"),
+    }
+}
+"#,
+        "timed connect\n",
+    );
+}
+
+#[test]
+fn endpoint_text_operations_preserve_unicode_offsets_and_independent_values() {
+    run_tcp(
+        r#"
+fn main() {
+    let text = "雪ÉLAN:Ω";
+    match text.find(":") { .Some(index) => println(index), .None => panic("missing colon"), }
+    match text.find("missing") { .Some(_) => panic("false hit"), .None => println("absent"), }
+    match text.find("") { .Some(index) => println(index), .None => panic("missing empty needle"), }
+    println(text.slice(1, 5).to_lower());
+    println(text.slice(-10, 1));
+    println(text.slice(99, 100).is_empty());
+    println(text.contains("Ω"));
+    println(text.contains("no"));
+    println(text);
+}
+"#,
+        "5\nabsent\n0\nélan\n雪\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n",
+    );
+}

@@ -170,8 +170,11 @@ fn host_runtime(action: PhysicalRuntimeAction) -> bool {
         action,
         PhysicalRuntimeAction::StringConcat
             | PhysicalRuntimeAction::StringEquals
+            | PhysicalRuntimeAction::StringContains
             | PhysicalRuntimeAction::StringStartsWith
             | PhysicalRuntimeAction::StringIsEmpty
+            | PhysicalRuntimeAction::StringSlice
+            | PhysicalRuntimeAction::StringToLowercase
             | PhysicalRuntimeAction::StringToUppercase
             | PhysicalRuntimeAction::StringTrim
             | PhysicalRuntimeAction::StringLen

@@ -38,8 +38,6 @@ impl FunctionEmitter<'_, '_> {
         );
         let symbol = match operation {
             TcpOp::Listen => "hew_checked_tcp_listen",
-            TcpOp::Connect => "hew_checked_tcp_connect",
-            TcpOp::ConnectTimeout => "hew_checked_tcp_connect_timeout",
             _ => operation.c_symbol(),
         };
         let function = get_or_declare_external(self.llvm, symbol, signature)?;

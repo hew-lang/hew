@@ -398,6 +398,92 @@ unsafe extern "C" fn block_worker(context: *mut c_void) {
 }
 
 #[test]
+fn queued_connection_deadline_wakes_before_producer_admission() {
+    let _runtime = crate::runtime_test_guard();
+    let pool = crate::blocking_pool::shared_blocking_pool_opt().unwrap();
+    let gate: WorkerGate = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_workers = ReleaseWorkers(Arc::clone(&gate));
+    let (entered, workers) = std::sync::mpsc::channel::<()>();
+    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_SIZE {
+        let job = Box::into_raw(Box::new((Arc::clone(&gate), entered.clone())));
+        // SAFETY: each admitted callback owns its gate box; runtime owns pool.
+        let status = unsafe {
+            crate::blocking_pool::hew_blocking_pool_submit(pool, block_worker, job.cast())
+        };
+        assert_eq!(status, 0);
+    }
+    for _ in 0..crate::blocking_pool::HEW_BLOCKING_POOL_SIZE {
+        workers.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let signal = Arc::new(ReadySignal::default());
+    let host = string_from_str("127.0.0.1");
+    // SAFETY: the operation copies host and retains the descriptor before return.
+    let operation = unsafe {
+        let operation = hew_async_tcp_connect_timeout(
+            host,
+            i32::from(listener.local_addr().unwrap().port()),
+            20,
+            &descriptor(&signal),
+        );
+        string_release(host);
+        operation
+    };
+    await_ready(&signal);
+    let cleanup = Arc::new(ReadySignal::default());
+    // SAFETY: operation is live through result inspection and cleanup polling.
+    unsafe {
+        assert_eq!(
+            hew_async_io_restore_error(operation),
+            AsyncIoStatus::Error as i32
+        );
+        assert_eq!(
+            crate::stream_error::hew_stream_last_errno(),
+            libc::ETIMEDOUT
+        );
+        assert_eq!(
+            hew_async_io_cleanup_status(operation, &descriptor(&cleanup)),
+            0
+        );
+    }
+    drop(release_workers);
+    await_ready(&cleanup);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    // SAFETY: release the sole creator reference after the queued job drained.
+    unsafe { hew_async_io_free(operation) };
+}
+
+#[test]
+fn unobserved_connected_socket_closes_when_operation_is_abandoned() {
+    let _runtime = crate::runtime_test_guard();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = string_from_str(&listener.local_addr().unwrap().to_string());
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: submission copies address and retains the descriptor.
+    let operation = unsafe {
+        let operation = hew_async_tcp_connect(address, &descriptor(&signal));
+        string_release(address);
+        operation
+    };
+    await_ready(&signal);
+    // SAFETY: the operation remains live until free; its untaken result owns socket.
+    unsafe {
+        assert_eq!(
+            hew_async_io_status(operation),
+            AsyncIoStatus::Success as i32
+        );
+        hew_async_io_free(operation);
+    }
+    let (mut peer, _) = listener.accept().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert_eq!(peer.read(&mut [0_u8]).unwrap(), 0);
+}
+
+#[test]
 fn queued_file_cancellation_never_blocks_submission_or_writes_after_abandonment() {
     let _runtime = crate::runtime_test_guard();
     let directory = tempfile::tempdir().unwrap();

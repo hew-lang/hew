@@ -75,15 +75,19 @@ pub enum AsyncIoOp {
     FileWriteBytes,
     TcpRead,
     TcpAccept,
+    TcpConnect,
+    TcpConnectTimeout,
 }
 
 impl AsyncIoOp {
     #[must_use]
     pub const fn argument_loan(self) -> AsyncIoLoan {
         match self {
-            Self::FileReadBytes | Self::FileWriteString | Self::FileWriteBytes => {
-                AsyncIoLoan::UntilSubmitReturns
-            }
+            Self::FileReadBytes
+            | Self::FileWriteString
+            | Self::FileWriteBytes
+            | Self::TcpConnect
+            | Self::TcpConnectTimeout => AsyncIoLoan::UntilSubmitReturns,
             Self::TcpRead | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
         }
     }
@@ -95,6 +99,8 @@ impl AsyncIoOp {
             Self::FileWriteBytes => "hew_file_write_bytes",
             Self::TcpRead => "hew_tcp_read",
             Self::TcpAccept => "hew_tcp_accept",
+            Self::TcpConnect => "hew_tcp_connect",
+            Self::TcpConnectTimeout => "hew_tcp_connect_timeout",
         }
     }
 
@@ -108,6 +114,8 @@ impl AsyncIoOp {
             Self::FileWriteBytes => "hew_async_file_write",
             Self::TcpRead => "hew_async_tcp_read",
             Self::TcpAccept => "hew_async_tcp_accept",
+            Self::TcpConnect => "hew_async_tcp_connect",
+            Self::TcpConnectTimeout => "hew_async_tcp_connect_timeout",
         }
     }
 
@@ -116,7 +124,9 @@ impl AsyncIoOp {
         match self {
             Self::FileReadBytes | Self::TcpRead => AsyncIoResume::Bytes,
             Self::FileWriteString | Self::FileWriteBytes => AsyncIoResume::WriteStatus,
-            Self::TcpAccept => AsyncIoResume::Connection,
+            Self::TcpAccept | Self::TcpConnect | Self::TcpConnectTimeout => {
+                AsyncIoResume::Connection
+            }
         }
     }
 
@@ -129,6 +139,10 @@ impl AsyncIoOp {
     pub const fn contract(self) -> RuntimeSemanticContract {
         use RuntimeResultEffect::{BitCopy, FreshOwned};
         use RuntimeValueKind::{Bytes, IoHandle, String, I32};
+        const INTEGER: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: I32,
+            effect: RuntimeArgumentEffect::Borrow,
+        };
         const PATH: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: String,
             effect: RuntimeArgumentEffect::Borrow,
@@ -152,6 +166,16 @@ impl AsyncIoOp {
             Self::FileWriteString => runtime_semantic_contract(&[PATH, PATH], BitCopy(I32), &[]),
             Self::FileWriteBytes => runtime_semantic_contract(&[PATH, DATA], BitCopy(I32), &[]),
             Self::TcpRead => runtime_semantic_contract(&[CONNECTION], FreshOwned(Bytes), &[]),
+            Self::TcpConnect => runtime_semantic_contract(
+                &[PATH],
+                FreshOwned(IoHandle(IoHandleKind::Connection)),
+                &[],
+            ),
+            Self::TcpConnectTimeout => runtime_semantic_contract(
+                &[PATH, INTEGER, INTEGER],
+                FreshOwned(IoHandle(IoHandleKind::Connection)),
+                &[],
+            ),
             Self::TcpAccept => runtime_semantic_contract(
                 &[LISTENER],
                 FreshOwned(IoHandle(IoHandleKind::Connection)),
@@ -180,7 +204,10 @@ impl RuntimeCallFamily {
             AsyncIoOp::FileReadBytes | AsyncIoOp::FileWriteString | AsyncIoOp::FileWriteBytes => {
                 "std.fs"
             }
-            AsyncIoOp::TcpRead | AsyncIoOp::TcpAccept => "std.net",
+            AsyncIoOp::TcpRead
+            | AsyncIoOp::TcpAccept
+            | AsyncIoOp::TcpConnect
+            | AsyncIoOp::TcpConnectTimeout => "std.net",
         };
         module == owner
             && symbol == op.c_symbol()

@@ -10,8 +10,6 @@ use super::{
 pub enum TcpOp {
     #[default]
     Listen,
-    Connect,
-    ConnectTimeout,
     ListenerValid,
     ConnectionValid,
     ListenerPort,
@@ -29,8 +27,6 @@ impl TcpOp {
     pub const fn c_symbol(self) -> &'static str {
         match self {
             Self::Listen => "hew_tcp_listen",
-            Self::Connect => "hew_tcp_connect",
-            Self::ConnectTimeout => "hew_tcp_connect_timeout",
             Self::ListenerValid => "hew_listener_is_valid",
             Self::ConnectionValid => "hew_connection_is_valid",
             Self::ListenerPort => "hew_tcp_listener_local_port",
@@ -91,16 +87,6 @@ impl TcpOp {
             Self::Listen => runtime_semantic_contract(
                 &[ADDRESS],
                 FreshOwned(IoHandle(IoHandleKind::Listener)),
-                &[],
-            ),
-            Self::Connect => runtime_semantic_contract(
-                &[ADDRESS],
-                FreshOwned(IoHandle(IoHandleKind::Connection)),
-                &[],
-            ),
-            Self::ConnectTimeout => runtime_semantic_contract(
-                &[ADDRESS, INTEGER, INTEGER],
-                FreshOwned(IoHandle(IoHandleKind::Connection)),
                 &[],
             ),
             Self::ListenerValid => runtime_semantic_contract(&[LISTENER], BitCopy(Bool), &[]),

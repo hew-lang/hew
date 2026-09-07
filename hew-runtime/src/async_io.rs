@@ -16,8 +16,11 @@ use crate::bytes::BytesTriple;
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 
+mod connect;
+mod connect_deadline;
 mod file;
 mod net;
+pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read};
 
@@ -107,6 +110,7 @@ pub struct HewAsyncIo {
     state: Mutex<State>,
     reactor: bool,
     cleanup: Mutex<Cleanup>,
+    connect_deadline: Mutex<Option<connect_deadline::ConnectDeadline>>,
 }
 
 #[derive(Default)]
@@ -180,6 +184,7 @@ impl HewAsyncIo {
             state: Mutex::new(State::Pending(owned)),
             reactor,
             cleanup: Mutex::new(Cleanup::default()),
+            connect_deadline: Mutex::new(None),
         })
     }
 
@@ -209,6 +214,7 @@ impl HewAsyncIo {
             };
             waker
         };
+        self.clear_connect_deadline();
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -234,6 +240,7 @@ impl HewAsyncIo {
                 (false, None)
             }
         };
+        self.clear_connect_deadline();
         if self.reactor {
             crate::reactor::reactor_detach_async_io(self);
         }

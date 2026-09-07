@@ -973,6 +973,18 @@ impl TcpApiState {
 static TCP_API_STATE: LazyLock<PoisonSafe<TcpApiState>> =
     LazyLock::new(|| PoisonSafe::new(TcpApiState::new()));
 
+/// Transfer a newly connected socket to the native handle table. The caller
+/// owns the returned handle and must close it if result delivery loses a race.
+pub(crate) fn tcp_adopt_connection(stream: TcpStream) -> c_int {
+    let _ = stream.set_nodelay(true);
+    tcp_counters().connect_count.fetch_add(1, Ordering::Relaxed);
+    TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, stream);
+        handle
+    })
+}
+
 fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
     tcp_clone_listener_result(handle).ok()
 }

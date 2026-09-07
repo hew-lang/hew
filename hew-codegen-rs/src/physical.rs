@@ -3353,8 +3353,55 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
+            PhysicalRuntimeAction::StringFind { result: option } => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_find",
+                    self.ctx
+                        .i64_type()
+                        .fn_type(&[ptr.into(), ptr.into()], false),
+                )?;
+                let index = self
+                    .runtime_call_value(
+                        function,
+                        &[
+                            self.load(source(0)?, "find.text")?.into(),
+                            self.load(source(1)?, "find.needle")?.into(),
+                        ],
+                        "find.index",
+                    )?
+                    .into_int_value();
+                let found = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SGE,
+                        index,
+                        self.ctx.i64_type().const_zero(),
+                        "find.found",
+                    )
+                    .llvm_ctx("check string find sentinel")?;
+                let present = self.ctx.append_basic_block(self.value, "find.present");
+                let absent = self.ctx.append_basic_block(self.value, "find.absent");
+                let complete = self.ctx.append_basic_block(self.value, "find.complete");
+                let destination = self.slots[required_result()?.0 as usize];
+                self.builder
+                    .build_conditional_branch(found, present, absent)
+                    .llvm_ctx("select string find result")?;
+                self.builder.position_at_end(present);
+                self.write_variant_value(destination, 0, &[index.into()], option)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish string find hit")?;
+                self.builder.position_at_end(absent);
+                self.write_variant_value(destination, 1, &[], option)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish string find miss")?;
+                self.builder.position_at_end(complete);
+            }
             PhysicalRuntimeAction::StringEquals
             | PhysicalRuntimeAction::StringStartsWith
+            | PhysicalRuntimeAction::StringContains
             | PhysicalRuntimeAction::StringIsEmpty => {
                 let (symbol, return_type) = match action {
                     PhysicalRuntimeAction::StringEquals => {
@@ -3362,6 +3409,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                     PhysicalRuntimeAction::StringStartsWith => {
                         ("hew_string_starts_with", self.ctx.bool_type())
+                    }
+                    PhysicalRuntimeAction::StringContains => {
+                        ("hew_string_contains", self.ctx.bool_type())
                     }
                     PhysicalRuntimeAction::StringIsEmpty => {
                         ("hew_string_is_empty", self.ctx.bool_type())
@@ -3414,11 +3464,37 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "string.to.bytes",
                 )?;
             }
-            PhysicalRuntimeAction::StringToUppercase | PhysicalRuntimeAction::StringTrim => {
-                let symbol = if action == PhysicalRuntimeAction::StringTrim {
-                    "hew_string_trim"
-                } else {
-                    "hew_string_to_uppercase"
+            PhysicalRuntimeAction::StringSlice => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_slice",
+                    ptr.fn_type(
+                        &[
+                            ptr.into(),
+                            self.ctx.i64_type().into(),
+                            self.ctx.i64_type().into(),
+                        ],
+                        false,
+                    ),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[
+                        self.load(source(0)?, "slice.text")?.into(),
+                        self.load(source(1)?, "slice.start")?.into(),
+                        self.load(source(2)?, "slice.end")?.into(),
+                    ],
+                    "string.slice",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::StringToUppercase
+            | PhysicalRuntimeAction::StringToLowercase
+            | PhysicalRuntimeAction::StringTrim => {
+                let symbol = match action {
+                    PhysicalRuntimeAction::StringTrim => "hew_string_trim",
+                    PhysicalRuntimeAction::StringToLowercase => "hew_string_to_lowercase",
+                    _ => "hew_string_to_uppercase",
                 };
                 let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
                 let value = self.runtime_call_value(

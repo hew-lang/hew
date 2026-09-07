@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-consume-later-argument-fault"
+intent = "Moving the first callback argument retains its cleanup obligation until a later argument succeeds; a later fault releases captured heap owners without entering the callee or callback."
+source = "cases/callable-consume-later-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

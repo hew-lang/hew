@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-callee-loan-argument-fault"
+intent = "A fault during argument evaluation ends the captured callee loan without invoking it, then releases both closure environments and live argument/caller owners."
+source = "cases/callable-callee-loan-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

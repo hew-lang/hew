@@ -1,0 +1,10 @@
+[[case]]
+id = "set-value-copy"
+intent = "Set insertion and removal report membership while preserving the input element and an independent set copy."
+source = "cases/set-value-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\ntrue\nfalse\ntrue\nMEMBER\n0\n"
+exit = 0

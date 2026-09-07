@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-nested"
+intent = "Nested vector items remain independently mutable after their source is cleared."
+source = "cases/vector-iteration-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\nthird\nfirst\n1\n"
+exit = 0
+stderr = ""

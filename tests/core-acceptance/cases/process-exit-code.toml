@@ -1,0 +1,10 @@
+[[case]]
+id = "process-exit-code"
+intent = "exit(code) flushes and ends the process from a nested call with the requested status; nothing after it runs and no scope cleanup precedes it, so leak detection does not apply to this exit path."
+source = "cases/process-exit-code.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first:owned\nkept running\nsecond:owned\n"
+exit = 7

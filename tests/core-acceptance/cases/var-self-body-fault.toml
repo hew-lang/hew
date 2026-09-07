@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-body-fault"
+intent = "A method fault after replacement releases its transferred receiver and child while the caller cleans siblings without writing back an absent result."
+source = "cases/var-self-body-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER\nREPLACEMENT\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-generic-values"
+intent = "A generic machine instantiated at two type arguments in one program keeps its own state, event and output layouts and copies its payloads independently."
+source = "cases/machine-generic-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "stored\nnumber 7\ncleared\nstored\nword hew\ncleared\n"
+exit = 0

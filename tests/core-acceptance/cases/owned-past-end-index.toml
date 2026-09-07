@@ -1,0 +1,11 @@
+[[case]]
+id = "owned-past-end-index"
+intent = "An index equal to the bytes length reports a logical fault and releases live owners without continuing."
+source = "cases/owned-past-end-index.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205

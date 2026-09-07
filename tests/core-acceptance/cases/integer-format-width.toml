@@ -1,0 +1,10 @@
+[[case]]
+id = "integer-format-width"
+intent = "Integer interpolation preserves signed i64 values beyond the 32-bit range and cleans its temporary strings."
+source = "cases/integer-format-width.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "-4294967297:4294967297\n"
+exit = 0

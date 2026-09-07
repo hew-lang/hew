@@ -1,0 +1,10 @@
+[[case]]
+id = "while-let-drain"
+intent = "`while let` re-evaluates its scrutinee each iteration, runs per-iteration deferred cleanup and ends through both break and the fallthrough arm."
+source = "cases/while-let-drain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "item-x\nreleased\nitem-x\nreleased\nitem-x\nreleased\ndrained\nitem-x\nreleased\nitem-x\nreleased\nstopped\n"
+exit = 0

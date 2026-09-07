@@ -1,0 +1,11 @@
+[[case]]
+id = "map-eq-callback-fault"
+intent = "A selected Eq callback fault during collision probing releases callback locals and both existing and staged owning map payloads."
+source = "cases/map-eq-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

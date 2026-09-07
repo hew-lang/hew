@@ -1,0 +1,11 @@
+[[case]]
+id = "map-index-callback-fault"
+intent = "Indexing through a borrowed map field preserves the callback's original fault instead of replacing it with missing-key failure."
+source = "cases/map-index-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

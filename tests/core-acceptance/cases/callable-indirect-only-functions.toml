@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-indirect-only-functions"
+intent = "Functions referenced only as values are emitted and independently copied, including zero-argument items."
+source = "cases/callable-indirect-only-functions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\n7\n9\n"
+exit = 0

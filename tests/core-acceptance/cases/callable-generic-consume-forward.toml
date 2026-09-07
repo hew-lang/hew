@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-generic-consume-forward"
+intent = "Generic consuming forwarding preserves owning strings and callable capabilities; private counter copies remain independent and a forwarded once callable returns its owned capture."
+source = "cases/callable-generic-consume-forward.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "11\n12\n13\n12\nGENERIC OWNER\n42\n"
+exit = 0

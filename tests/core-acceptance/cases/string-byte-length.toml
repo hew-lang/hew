@@ -1,0 +1,10 @@
+[[case]]
+id = "string-byte-length"
+intent = "Borrowed string length counts Unicode scalars; explicitly named byte length counts the UTF-8 encoding, including empty strings."
+source = "cases/string-byte-length.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Aé中🙂:4:10:0:0\n"
+exit = 0

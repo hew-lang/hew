@@ -1,0 +1,11 @@
+[[case]]
+id = "defer-owned-return-fault"
+intent = "A cleanup fault destroys an already evaluated owned Unicode and NUL return without publishing a successful result."
+source = "cases/defer-owned-return-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): cleanup\n"
+exit = 212

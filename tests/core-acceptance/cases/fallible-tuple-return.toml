@@ -1,0 +1,10 @@
+[[case]]
+id = "fallible-tuple-return"
+intent = "Fallible declarations return ordinary tuples on success and typed owning errors through local recovery."
+source = "cases/fallible-tuple-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "10:HELLO\nMISSING\n"
+exit = 0

@@ -1,0 +1,11 @@
+[[case]]
+id = "defer-resources"
+intent = "Deferred close owns the sole release across normal and early return, per-iteration cleanup, and disjoint aggregate fields."
+source = "cases/defer-resources.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "closed\n7\nclosed\n8\nRECORD\nreleased\n"
+exit = 0

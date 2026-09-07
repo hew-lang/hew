@@ -1,0 +1,11 @@
+[[case]]
+id = "entry-result-err"
+intent = "A Result entry returning Err renders the error through its Display, writes one `error:` line to stderr and exits 1 without leaking the error, the rendered text or the entry's locals."
+source = "cases/entry-result-err.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "held:err\n"
+stderr = "error: failed: too large\n"
+exit = 1

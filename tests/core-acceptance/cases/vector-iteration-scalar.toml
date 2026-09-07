@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-scalar"
+intent = "Vector iteration visits each scalar once through the common cursor contract."
+source = "cases/vector-iteration-scalar.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "6\n"
+exit = 0
+stderr = ""

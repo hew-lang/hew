@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-early-return"
+intent = "An early owned return and a fallback return produce valid independent values."
+source = "cases/owned-early-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "early=EARLY;fallback=FALLBACK\n"
+exit = 0

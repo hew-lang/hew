@@ -1,0 +1,11 @@
+[[case]]
+id = "partial-job-callback-body-fault"
+intent = "A once callback taken from a job can fail after entry; callback captures and locals plus the job sibling strings and bytes are each cleaned automatically."
+source = "cases/partial-job-callback-body-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "callback entered\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

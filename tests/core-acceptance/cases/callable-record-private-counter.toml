@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-record-private-counter"
+intent = "Direct calls through a stored callable mutate the same record environment; copying the record and explicitly cloning its callable field create independent counters."
+source = "cases/callable-record-private-counter.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\n2\n3\n2\n2\n3\n4\n3\n0\n"
+exit = 0

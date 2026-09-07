@@ -1,0 +1,10 @@
+[[case]]
+id = "scalar-option-call"
+intent = "Scalar records and optional payloads retain values across repeated calls without owning-value glue."
+source = "cases/scalar-option-call.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "5:5:0:5\n"
+exit = 0

@@ -1,0 +1,17 @@
+[[case]]
+id = "error-trait-fallible-main"
+intent = "An `impl Error` type propagates through `?` and ends a fallible `main` with its `Display` rendering on stderr and exit 1."
+source = "cases/error-trait-fallible-main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "width=5\n"
+stderr = "error: parse failed: empty input\n"
+exit = 1
+
+# The three `dyn Error` cases below are the erased half of the same story and
+# do not pass yet: SIR has no value contract for a trait object. The entry case
+# additionally needs a `Display::fmt` target an erased value can supply, which
+# the process-entry exit plan resolves as a concrete declaration. They are held
+# for the lane that gives dyn objects a value contract.

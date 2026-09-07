@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-mutable-parameter-state"
+intent = "An ordinary mutable callable parameter advances a private copy, while a consuming mutable parameter advances the original environment transferred by its caller."
+source = "cases/callable-mutable-parameter-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "12\n11\n13\n"
+exit = 0

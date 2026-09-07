@@ -1,0 +1,10 @@
+[[case]]
+id = "partial-job-dispatch"
+intent = "Taking once callbacks from owned jobs, nested records and tuples preserves heap-owning siblings; a temporary job releases its remaining fields after its callback is taken."
+source = "cases/partial-job-dispatch.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RUN:LOCAL\nLOCAL\n5\nRUN:NESTED\nNESTED\n6\nRUN:TUPLE\nTUPLE\n5\nENVELOPE\nRUN:TEMPORARY\n"
+exit = 0

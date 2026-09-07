@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-once-callback-fault"
+intent = "A consuming indirect invocation releases its captured owner on fault while a separately cloned uncalled environment is cleaned by the caller."
+source = "cases/callable-once-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

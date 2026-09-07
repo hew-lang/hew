@@ -1,0 +1,10 @@
+[[case]]
+id = "local-callback-loop-exits"
+intent = "Owned lexical callbacks survive skipped loops or become empty after consuming exits; replacement, continue, nested loops, early return, consumed parameters and captured callbacks retain their lexical cleanup."
+source = "cases/local-callback-loop-exits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "after immutable\nIMMUTABLE:9\nafter immutable\nafter mutable\nRESTORED:8\nMUTABLE:7\nafter mutable\nRESTORED:8\nINITIAL:7\nROUND 0:7\nROUND 1:7\nafter replacements\nFINAL:5\nafter nested 0\nafter nested 1\nNESTED 0:8\nafter nested 0\nNESTED 1:8\nafter nested 1\nafter return loop\n7\nRETURN:6\n9\nafter parameter\nPARAMETER:9\nafter parameter\nafter captured\nCAPTURED:8\nafter captured\n"
+exit = 0

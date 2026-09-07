@@ -1,0 +1,10 @@
+[[case]]
+id = "partial-job-reuse"
+intent = "Conditional dispatch cleans either a complete or partially consumed job; replacing a taken callback restores whole-job transfer, including repeated take-and-reinitialize cycles."
+source = "cases/partial-job-reuse.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RUN:ACTIVE\nACTIVE\n6\nIDLE\n4\nRUN:REUSED\nRUN:REPLACEMENT\nREUSED\n6\nRUN:CYCLE\nRUN:CYCLE 0\nRUN:CYCLE 1\nRUN:CYCLE 2\nCYCLE\n5\n"
+exit = 0

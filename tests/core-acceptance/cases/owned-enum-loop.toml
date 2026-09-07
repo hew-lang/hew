@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-enum-loop"
+intent = "Repeated enum copies and matches release each iteration's owners without accumulating dynamic stack scratch space."
+source = "cases/owned-enum-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "500000\n"
+exit = 0

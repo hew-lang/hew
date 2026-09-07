@@ -213,10 +213,41 @@ fn workspace_root() -> Result<PathBuf> {
 }
 
 fn load_manifest(root: &Path) -> Result<Manifest> {
-    let path = root.join("tests/core-acceptance/manifest.toml");
-    let contents = fs::read_to_string(&path)
-        .map_err(|err| format!("read core acceptance manifest {}: {err}", path.display()))?;
-    toml::from_str(&contents).map_err(|err| format!("parse core acceptance manifest: {err}"))
+    let cases_dir = root.join("tests/core-acceptance/cases");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&cases_dir)
+        .map_err(|err| format!("read core acceptance cases {}: {err}", cases_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|err| format!("read core acceptance case entry: {err}"))?;
+    paths.retain(|path| path.extension().is_some_and(|ext| ext == "toml"));
+    paths.sort();
+
+    let mut cases = Vec::with_capacity(paths.len());
+    for path in paths {
+        let contents = fs::read_to_string(&path)
+            .map_err(|err| format!("read core acceptance case {}: {err}", path.display()))?;
+        let mut parsed: Manifest = toml::from_str(&contents)
+            .map_err(|err| format!("parse core acceptance case {}: {err}", path.display()))?;
+        if parsed.cases.len() != 1 {
+            return Err(format!(
+                "core acceptance case file must contain exactly one [[case]]: {}",
+                path.display()
+            ));
+        }
+        let case = parsed.cases.remove(0);
+        let file_stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned());
+        if file_stem.as_deref() != Some(case.id.as_str()) {
+            return Err(format!(
+                "core acceptance case id {:?} does not match its file name {}",
+                case.id,
+                path.display()
+            ));
+        }
+        cases.push(case);
+    }
+    Ok(Manifest { cases })
 }
 
 fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
@@ -833,6 +864,46 @@ mod tests {
     fn unicode_output_summary_never_slices_a_character() {
         let text = format!("{}étail", "x".repeat(1_999));
         assert_eq!(summarise(&text), format!(" output={:?}", "x".repeat(1_999)));
+    }
+
+    fn write_case(dir: &Path, file_name: &str, id: &str) {
+        let cases_dir = dir.join("tests/core-acceptance/cases");
+        fs::create_dir_all(&cases_dir).unwrap();
+        fs::write(
+            cases_dir.join(file_name),
+            format!(
+                r#"[[case]]
+                id = "{id}"
+                intent = "selection test"
+                source = "cases/{id}.hew"
+                suites = ["acceptance"]
+                timeout_seconds = 1
+                [case.expected]
+                stdout = ""
+                exit = 0
+                "#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn case_id_must_match_its_file_name() {
+        let directory = tempfile::tempdir().unwrap();
+        write_case(directory.path(), "wrong-name.toml", "actual-id");
+        let error =
+            load_manifest(directory.path()).expect_err("mismatched id and file name must fail");
+        assert!(error.contains("does not match its file name"));
+    }
+
+    #[test]
+    fn cases_load_in_sorted_file_order() {
+        let directory = tempfile::tempdir().unwrap();
+        write_case(directory.path(), "b-case.toml", "b-case");
+        write_case(directory.path(), "a-case.toml", "a-case");
+        let manifest = load_manifest(directory.path()).expect("both cases load");
+        let ids: Vec<&str> = manifest.cases.iter().map(|case| case.id.as_str()).collect();
+        assert_eq!(ids, ["a-case", "b-case"]);
     }
 
     #[test]

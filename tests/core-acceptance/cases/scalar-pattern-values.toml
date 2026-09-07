@@ -1,0 +1,10 @@
+[[case]]
+id = "scalar-pattern-values"
+intent = "Scalar matches preserve integer width boundaries, character values, ordered guards and binding fallbacks while returning enums and independent owned strings."
+source = "../../hew-sir/tests/fixtures/scalar_match.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

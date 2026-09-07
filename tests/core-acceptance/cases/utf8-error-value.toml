@@ -1,0 +1,10 @@
+[[case]]
+id = "utf8-error-value"
+intent = "The canonical UTF-8 error is an ordinary reusable record whose Display distinguishes invalid from incomplete byte sequences."
+source = "cases/utf8-error-value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "invalid UTF-8 at byte 2 (1-byte sequence)\nincomplete UTF-8 sequence at byte 4\ninvalid UTF-8 at byte 2 (1-byte sequence)\n"
+exit = 0

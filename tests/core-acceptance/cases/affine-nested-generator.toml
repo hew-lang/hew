@@ -1,0 +1,11 @@
+[[case]]
+id = "affine-nested-generator"
+intent = "Nested enum candidates holding a started generator are probed without consuming it: a failed literal and a failed guard leave the owner for the next arm, the selected arm drives it, and every path releases it once."
+source = "cases/affine-nested-generator.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first\nfirst cleaned\nlater,7\nzero\nzero cleaned\nzero\nheavy\nheavy cleaned\nheavy\nempty\nnone\ndone\n"
+stderr = ""
+exit = 0

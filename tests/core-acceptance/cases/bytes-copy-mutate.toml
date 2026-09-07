@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-copy-mutate"
+intent = "Assignment copies bytes values, so mutating the copy does not change the source."
+source = "cases/bytes-copy-mutate.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "original=65;copy=65,66\n"
+exit = 0

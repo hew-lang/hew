@@ -1,0 +1,11 @@
+[[case]]
+id = "map-zero-sized-keys"
+intent = "Empty record keys preserve map replacement, copy independence and owning projections, including empty entry pairs and set snapshots."
+source = "cases/map-zero-sized-keys.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nREPLACEMENT\nFIRST\n1\ntrue\nfalse\ntrue\ntrue\n1\n"
+stderr = ""
+exit = 0

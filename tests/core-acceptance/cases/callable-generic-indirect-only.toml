@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-generic-indirect-only"
+intent = "Generic functions referenced only as values receive independent concrete signatures from expected types, explicit arguments and later calls; copied owned-string adapters preserve caller values."
+source = "cases/callable-generic-indirect-only.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "7\n11\n13\nGENERIC OWNED\nGENERIC OWNED\nGENERIC OWNED\n"
+exit = 0

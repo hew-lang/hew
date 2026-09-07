@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-result-call"
+intent = "Both Result variants return their owning payload while repeated ordinary calls preserve the original value."
+source = "cases/owned-result-call.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ACCEPTED:ACCEPTED:REJECTED\n"
+exit = 0

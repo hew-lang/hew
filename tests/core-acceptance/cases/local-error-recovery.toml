@@ -1,0 +1,10 @@
+[[case]]
+id = "local-error-recovery"
+intent = "Local recovery binds only errors, preserves caller values and supports a divergent return from the handler."
+source = "cases/local-error-recovery.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "KEPT\nKEPT\nBROKEN\nFALLBACK\nBROKEN\nSUCCESS\n"
+exit = 0

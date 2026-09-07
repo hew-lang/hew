@@ -1,0 +1,11 @@
+[[case]]
+id = "record-update-fault"
+intent = "A fault after a functional update releases the updated record, its copied fields and the caller's originals exactly once."
+source = "cases/record-update-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "orig:body:1\norig:again:2\n"
+stderr = "hew: failure: UserPanic (212): sequence exhausted\n"
+exit = 212

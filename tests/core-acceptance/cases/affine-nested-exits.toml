@@ -1,0 +1,11 @@
+[[case]]
+id = "affine-nested-exits"
+intent = "An early return from inside a selected nested arm and a guarded selection each release the transferred generator exactly once."
+source = "cases/affine-nested-exits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "early\nearly cleaned\nreturned:7\ndriven\ndriven cleaned\nlater\nheavy\nheavy cleaned\nheavy\ndone\n"
+stderr = ""
+exit = 0

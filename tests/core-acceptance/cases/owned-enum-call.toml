@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-enum-call"
+intent = "Returning and repeatedly matching an owning enum preserves the caller payload and selects its empty variant correctly."
+source = "cases/owned-enum-call.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "PAYLOAD:PAYLOAD:empty\n"
+exit = 0

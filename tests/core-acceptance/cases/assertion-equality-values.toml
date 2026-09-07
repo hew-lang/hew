@@ -1,0 +1,10 @@
+[[case]]
+id = "assertion-equality-values"
+intent = "assert_eq and assert_ne compare scalars, strings and owned records through the language's selected equality, evaluate each argument once and leave both operands usable afterwards."
+source = "cases/assertion-equality-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "evaluated\nHERE\n3\n"
+exit = 0

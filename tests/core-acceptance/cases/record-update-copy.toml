@@ -1,0 +1,10 @@
+[[case]]
+id = "record-update-copy"
+intent = "A functional update over a live binding copies every carried field, so the base stays usable and each result owns independent values."
+source = "cases/record-update-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "retagged:retagged:1:1\nrefilled:base:2:2\naliased:base:1:1\nbase:base:1:1\n"
+exit = 0

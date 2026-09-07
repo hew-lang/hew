@@ -1,0 +1,10 @@
+[[case]]
+id = "string-empty-values"
+intent = "Emptiness borrows managed strings, distinguishes a zero-length value from embedded NUL and Unicode, and preserves all inputs for subsequent reads."
+source = "cases/string-empty-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\nfalse\n0\n1\n2\n"
+exit = 0

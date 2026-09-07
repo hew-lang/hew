@@ -1,0 +1,10 @@
+[[case]]
+id = "if-let-owned-payload"
+intent = "`if let` over an owned payload takes the else branch on the fallthrough arm in both statement and expression position."
+source = "cases/if-let-owned-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "value-x\nmissing-statement\nvalue-x\nmissing-expression\n"
+exit = 0

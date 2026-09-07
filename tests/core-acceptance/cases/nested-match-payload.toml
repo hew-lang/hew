@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-match-payload"
+intent = "Nested variant mismatches and failed string guards preserve owning payloads for later arms and repeated calls."
+source = "cases/nested-match-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "KEPT:KEPT:none:BROKEN:skipped\n"
+exit = 0

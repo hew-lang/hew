@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-branch-reassign"
+intent = "A mutable owned binding remains valid after taken and untaken reassignment branches join."
+source = "cases/owned-branch-reassign.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "HOT\n"
+exit = 0

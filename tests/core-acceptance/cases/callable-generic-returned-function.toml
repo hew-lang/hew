@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-generic-returned-function"
+intent = "Generic factories substitute their type arguments into returned function values; scalar and owned-string adapters remain callable after the factory returns and after copying."
+source = "cases/callable-generic-returned-function.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\nRETURNED FIRST\nRETURNED COPY\nRETURNED AGAIN\n"
+exit = 0

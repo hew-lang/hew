@@ -1,0 +1,11 @@
+[[case]]
+id = "defer-secondary-faults"
+intent = "An original body fault stays primary while failed newer cleanup skips later statements and older cleanup sees committed mutation."
+source = "cases/defer-secondary-faults.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "5\n"
+stderr = "hew: failure: UserPanic (212): body\nhew: secondary failure: UserPanic (212): D2\nhew: secondary failure: UserPanic (212): D1\nhew: secondary failure: UserPanic (212): nested\n"
+exit = 212

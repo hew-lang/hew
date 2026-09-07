@@ -1,0 +1,10 @@
+[[case]]
+id = "vector-copy-values"
+intent = "Vector copies mutate independently, and extracted Unicode/NUL strings survive releasing their containing vector."
+source = "cases/vector-copy-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2:3:4\n"
+exit = 0

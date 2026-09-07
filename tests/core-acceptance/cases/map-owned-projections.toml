@@ -1,0 +1,10 @@
+[[case]]
+id = "map-owned-projections"
+intent = "Keys, values and entry pairs preserve owning payloads after their source map is cleared."
+source = "cases/map-owned-projections.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "LABEL\nPAYLOAD\nLABEL\nPAYLOAD\n"
+exit = 0

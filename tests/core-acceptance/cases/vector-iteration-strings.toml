@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-strings"
+intent = "Iteration snapshots survive source clear and release loop temporaries on continue and break."
+source = "cases/vector-iteration-strings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "LAST\n0\n"
+exit = 0
+stderr = ""

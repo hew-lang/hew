@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-conditional-result-option"
+intent = "If expressions and guarded boolean matches construct nested Result/Option callable payloads; extracted private counters retain state across repeated invocation and empty/error alternatives remain distinct."
+source = "cases/callable-conditional-result-option.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "11\n12\nnone\n12\n14\n13\n16\nUNAVAILABLE\nnone\n"
+exit = 0

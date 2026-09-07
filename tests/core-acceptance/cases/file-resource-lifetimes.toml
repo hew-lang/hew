@@ -1,0 +1,11 @@
+[[case]]
+id = "file-resource-lifetimes"
+intent = "File owners transfer into records and call-once closures, release on scope and early return, and consume exactly once through close and collection."
+source = "cases/file-resource-lifetimes.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "known file: héllo 🌲\nknown file: héllo 🌲\n7\nknown file: héllo 🌲\nreleased\n"
+exit = 0

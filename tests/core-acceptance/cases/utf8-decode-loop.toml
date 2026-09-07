@@ -1,0 +1,10 @@
+[[case]]
+id = "utf8-decode-loop"
+intent = "Alternating valid and malformed UTF-8 decoding reuses bounded scratch storage and cleans every result while retaining the source bytes across iterations."
+source = "cases/utf8-decode-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1152:2:1\n"
+exit = 0

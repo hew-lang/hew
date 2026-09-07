@@ -1,0 +1,10 @@
+[[case]]
+id = "entry-return"
+intent = "The native entry function's i64 result becomes the process exit status."
+source = "cases/entry-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 23

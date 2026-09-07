@@ -1,0 +1,10 @@
+[[case]]
+id = "managed-string-nul"
+intent = "An escaped string owner survives its source scope, retains embedded NUL through copy, transformation and output, and remains independent of mutated derived bytes."
+source = "cases/managed-string-nul.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "a\u0000b\nA\u0000B\n3:4:3\n"
+exit = 0

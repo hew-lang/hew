@@ -1,0 +1,12 @@
+[[case]]
+id = "actor-stop-hook-fault"
+intent = "A faulting stop hook ends the hook sequence, reaches the closing observer as a fault with the lifecycle diagnostic retained, and still releases the resource field once."
+source = "cases/actor-stop-hook-fault.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nstop\n"
+stderr = "hew: failure: UserPanic (212): goodbye failed\nhew: failure: UserPanic (212)\n"
+exit = 212

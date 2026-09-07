@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-once-and-uncalled-cleanup"
+intent = "Repeated consuming calls and scope exits release independent cloned capture environments, including closures that are never invoked."
+source = "cases/callable-once-and-uncalled-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3072\n"
+exit = 0

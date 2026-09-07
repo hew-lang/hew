@@ -1,0 +1,11 @@
+[[case]]
+id = "selected-composite-equality"
+intent = "Ordinary equality composes through owning values and exact generic user methods while preserving the documented scalar and structural float distinction."
+source = "cases/selected-composite-equality.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\ntrue\ntrue\n"
+stderr = ""
+exit = 0

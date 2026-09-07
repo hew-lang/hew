@@ -1,0 +1,11 @@
+[[case]]
+id = "panic-owned-message"
+intent = "A projected dynamic panic message survives callback and caller ownership cleanup with its full Unicode and embedded NUL contents."
+source = "cases/panic-owned-message.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\nINVOKE OWNER\nCALLBACK OWNER\n"
+stderr = "hew: failure: UserPanic (212): ÉCHEC\u0000APRÈS\n"
+exit = 212

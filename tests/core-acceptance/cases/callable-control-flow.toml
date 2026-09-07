@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-control-flow"
+intent = "Both branches preserve a consumed mutable once callback as dead across a unit join and move a non-Clone once callback through a value join, releasing allocated captures after invocation."
+source = "cases/callable-control-flow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CONSUMED:8\nyes\n0\nCONSUMED:8\nno\n0\nSELECTED:8\n8\nSELECTED:8\n8\n"
+exit = 0

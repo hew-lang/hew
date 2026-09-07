@@ -1,0 +1,11 @@
+[[case]]
+id = "local-callback-loop-body-fault"
+intent = "A consuming callback fault cleans its captured strings and bytes, callback-local vector and caller siblings, while skipped loops retain ownership until lexical exit."
+source = "cases/local-callback-loop-body-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "after body:CALLER:2\nentered:BODY:4\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

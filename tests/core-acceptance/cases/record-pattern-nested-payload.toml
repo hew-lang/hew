@@ -1,0 +1,10 @@
+[[case]]
+id = "record-pattern-nested-payload"
+intent = "A record pattern nested in an enum payload moves one owned field out while the arm releases its wildcarded owned sibling, and a record scrutinee stays readable after a field moves out."
+source = "cases/record-pattern-nested-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "label-a unit-a\nlabel-b\nlabel-c\nunit-c\n"
+exit = 0

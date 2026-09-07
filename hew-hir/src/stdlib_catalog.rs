@@ -12,17 +12,7 @@ pub enum BuiltinClass {
     ClassB,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrintKind {
-    I32,
-    I64,
-    U8,
-    U32,
-    U64,
-    F64,
-    Bool,
-    Str,
-}
+pub use hew_types::runtime_call::PrintKind;
 
 #[must_use]
 pub fn generic_math_intrinsic_callee(

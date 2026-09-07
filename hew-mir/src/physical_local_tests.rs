@@ -172,7 +172,10 @@ fn physical_trap_certificate_cannot_survive_an_ordinary_exit_or_later_effect() {
         } else {
             let trap = function.blocks[0].terminator.clone();
             function.blocks[0].terminator = PhysicalTerminator::RuntimeCall {
-                action: PhysicalRuntimeAction::PrintlnBool,
+                action: PhysicalRuntimeAction::Print {
+                    kind: hew_types::runtime_call::PrintKind::Bool,
+                    newline: true,
+                },
                 args: vec![ArgumentTransfer::Clone {
                     source: function.parameters[1],
                     action: CloneAction::Bitwise,

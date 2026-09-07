@@ -138,6 +138,7 @@ pub enum RuntimeValueKind {
     IoHandle(IoHandleKind),
     Bool,
     U8,
+    U32,
     I32,
     I64,
     U64,
@@ -161,6 +162,7 @@ impl RuntimeValueKind {
             (self, ty),
             (Self::Bool, ResolvedTy::Bool)
                 | (Self::U8, ResolvedTy::U8)
+                | (Self::U32, ResolvedTy::U32)
                 | (Self::I32, ResolvedTy::I32)
                 | (Self::I64, ResolvedTy::I64)
                 | (Self::U64, ResolvedTy::U64)
@@ -190,6 +192,7 @@ impl RuntimeValueKind {
             }
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
+            Self::U32 => ResolvedTy::U32,
             Self::I32 => ResolvedTy::I32,
             Self::I64 => ResolvedTy::I64,
             Self::U64 => ResolvedTy::U64,
@@ -1120,12 +1123,64 @@ pub enum MathIntrinsic {
 // RuntimeCallFamily — closed-set typed catalog
 // =============================================================================
 
+/// Selected primitive print representation. Physical lowering carries this
+/// choice and the newline flag to the runtime's tagged print ABI.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+pub enum PrintKind {
+    I32,
+    #[default]
+    I64,
+    U8,
+    U32,
+    U64,
+    F64,
+    Bool,
+    Str,
+}
+
+impl PrintKind {
+    const fn arguments(self) -> &'static [RuntimeArgumentContract] {
+        use RuntimeArgumentEffect::{Borrow, Copy};
+        use RuntimeValueKind::{Bool, String, F64, I32, U32, U64, U8};
+        match self {
+            Self::I64 => SIR_I64_COPY,
+            Self::I32 => &[RuntimeArgumentContract {
+                ty: I32,
+                effect: Copy,
+            }],
+            Self::U8 => &[RuntimeArgumentContract {
+                ty: U8,
+                effect: Copy,
+            }],
+            Self::U32 => &[RuntimeArgumentContract {
+                ty: U32,
+                effect: Copy,
+            }],
+            Self::U64 => &[RuntimeArgumentContract {
+                ty: U64,
+                effect: Copy,
+            }],
+            Self::F64 => &[RuntimeArgumentContract {
+                ty: F64,
+                effect: Copy,
+            }],
+            Self::Bool => &[RuntimeArgumentContract {
+                ty: Bool,
+                effect: Copy,
+            }],
+            Self::Str => &[RuntimeArgumentContract {
+                ty: String,
+                effect: Borrow,
+            }],
+        }
+    }
+}
+
 /// Closed-set discriminator for every compiler-known runtime / builtin
 /// call. One variant per `(method, generic-arity)` tuple. Adding a new
-/// runtime symbol that MIR producers can emit means adding a variant
-/// here, adding the round-trip arm in [`RuntimeCallFamily::c_symbol`],
-/// and classifying its MIR-emitter route. The bijection and fingerprint
-/// tests catch every drift.
+/// runtime operation means adding a variant here and classifying its emitter
+/// route. Symbol-derived operations round-trip through `from_c_symbol`;
+/// print operations also require their selected type and newline flag.
 ///
 /// Variants are grouped by surface family; ordering within a group is
 /// alphabetical by C-symbol leaf to ease diffing against the allowlist.
@@ -1506,11 +1561,12 @@ pub enum RuntimeCallFamily {
     StringTrim,
     U8ToString,
     I64ToString,
-    /// Compiler catalogue `println_i64` intercept. Physical lowering expands
-    /// this semantic unary operation to the audited `hew_print_value` ABI.
-    PrintlnI64,
-    PrintlnBool,
-    PrintlnString,
+    /// The selected type and newline choice are required in addition to the
+    /// shared C symbol; they cannot be reconstructed from that symbol alone.
+    Print {
+        kind: PrintKind,
+        newline: bool,
+    },
 
     // --- Supervisor --------------------------------------------------------
     /// Capture the stable direct identity for a live supervisor binding.
@@ -2111,9 +2167,70 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
-            "println_i64" => Some(Self::PrintlnI64),
-            "println_bool" => Some(Self::PrintlnBool),
-            "println_str" => Some(Self::PrintlnString),
+            "println_i32" => Some(Self::Print {
+                kind: PrintKind::I32,
+                newline: true,
+            }),
+            "println_i64" => Some(Self::Print {
+                kind: PrintKind::I64,
+                newline: true,
+            }),
+            "println_u8" => Some(Self::Print {
+                kind: PrintKind::U8,
+                newline: true,
+            }),
+            "println_u32" => Some(Self::Print {
+                kind: PrintKind::U32,
+                newline: true,
+            }),
+            "println_u64" => Some(Self::Print {
+                kind: PrintKind::U64,
+                newline: true,
+            }),
+            "println_f64" => Some(Self::Print {
+                kind: PrintKind::F64,
+                newline: true,
+            }),
+            "println_bool" => Some(Self::Print {
+                kind: PrintKind::Bool,
+                newline: true,
+            }),
+            "println_str" => Some(Self::Print {
+                kind: PrintKind::Str,
+                newline: true,
+            }),
+            "print_i32" => Some(Self::Print {
+                kind: PrintKind::I32,
+                newline: false,
+            }),
+            "print_i64" => Some(Self::Print {
+                kind: PrintKind::I64,
+                newline: false,
+            }),
+            "print_u8" => Some(Self::Print {
+                kind: PrintKind::U8,
+                newline: false,
+            }),
+            "print_u32" => Some(Self::Print {
+                kind: PrintKind::U32,
+                newline: false,
+            }),
+            "print_u64" => Some(Self::Print {
+                kind: PrintKind::U64,
+                newline: false,
+            }),
+            "print_f64" => Some(Self::Print {
+                kind: PrintKind::F64,
+                newline: false,
+            }),
+            "print_bool" => Some(Self::Print {
+                kind: PrintKind::Bool,
+                newline: false,
+            }),
+            "print_str" => Some(Self::Print {
+                kind: PrintKind::Str,
+                newline: false,
+            }),
             "to_string_u8" => Some(Self::U8ToString),
             "to_string_i64" => Some(Self::I64ToString),
             "utf8.decode" => Some(Self::BytesDecodeUtf8),
@@ -2372,9 +2489,7 @@ impl RuntimeCallFamily {
             Self::StringTrim => "hew_string_trim",
             Self::U8ToString => "hew_u8_to_string",
             Self::I64ToString => "hew_i64_to_string",
-            Self::PrintlnI64 => "hew_print_value",
-            Self::PrintlnBool => "hew_println_bool",
-            Self::PrintlnString => "hew_println_str",
+            Self::Print { .. } => "hew_print_value",
             // Supervisor
             Self::SupervisorDirectId => "hew_supervisor_direct_id",
             Self::SupervisorChildGet => "hew_supervisor_child_get",
@@ -2767,9 +2882,22 @@ impl RuntimeCallFamily {
             "hew_string_trim" => Self::StringTrim,
             "hew_u8_to_string" => Self::U8ToString,
             "hew_i64_to_string" => Self::I64ToString,
-            "hew_print_value" => Self::PrintlnI64,
-            "hew_println_bool" => Self::PrintlnBool,
-            "hew_println_str" => Self::PrintlnString,
+            "hew_println_int" => Self::Print {
+                kind: PrintKind::I64,
+                newline: true,
+            },
+            "hew_println_bool" => Self::Print {
+                kind: PrintKind::Bool,
+                newline: true,
+            },
+            "hew_println_str" => Self::Print {
+                kind: PrintKind::Str,
+                newline: true,
+            },
+            "hew_println_f64" => Self::Print {
+                kind: PrintKind::F64,
+                newline: true,
+            },
             // Supervisor
             "hew_supervisor_direct_id" => Self::SupervisorDirectId,
             "hew_supervisor_child_get" => Self::SupervisorChildGet,
@@ -3432,16 +3560,9 @@ impl RuntimeCallFamily {
             Self::I64ToString => {
                 runtime_semantic_contract(SIR_I64_COPY, FreshOwned(String), NO_FAILURES)
             }
-            Self::PrintlnI64 => runtime_semantic_contract(SIR_I64_COPY, Unit, NO_FAILURES),
-            Self::PrintlnBool => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: Bool,
-                    effect: RuntimeArgumentEffect::Copy,
-                }],
-                Unit,
-                NO_FAILURES,
-            ),
-            Self::PrintlnString => runtime_semantic_contract(STRING_BORROW, Unit, NO_FAILURES),
+            Self::Print { kind, .. } => {
+                runtime_semantic_contract(kind.arguments(), Unit, NO_FAILURES)
+            }
             Self::BytesLen => runtime_semantic_contract(BYTES_BORROW, BitCopy(I64), NO_FAILURES),
             Self::BytesIndex => runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), INDEX_FAILURES),
             Self::BytesPush => {
@@ -3471,6 +3592,7 @@ impl RuntimeCallFamily {
                 | RuntimeResultEffect::FreshOwned(
                     RuntimeValueKind::Bool
                     | RuntimeValueKind::U8
+                    | RuntimeValueKind::U32
                     | RuntimeValueKind::I32
                     | RuntimeValueKind::I64
                     | RuntimeValueKind::U64
@@ -3826,9 +3948,7 @@ impl RuntimeCallFamily {
             | F::StringTrim
             | F::U8ToString
             | F::I64ToString
-            | F::PrintlnI64
-            | F::PrintlnBool
-            | F::PrintlnString
+            | F::Print { .. }
             | F::SupervisorDirectId
             | F::SupervisorChildGet
             | F::LocalPidSupervisorChildGet
@@ -4421,6 +4541,11 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     let mut out = Vec::new();
     for repr in F::iter() {
         match repr {
+            F::Print { .. } => {
+                for kind in PrintKind::iter() {
+                    out.extend([false, true].map(|newline| F::Print { kind, newline }));
+                }
+            }
             F::AsyncIo(_) => out.extend(AsyncIoOp::iter().map(F::AsyncIo)),
             F::Encoding { .. } => {
                 for format in EncodingFormat::iter() {
@@ -4834,6 +4959,9 @@ mod tests {
     fn runtime_call_family_c_symbol_is_unique() {
         let mut seen: HashMap<&'static str, RuntimeCallFamily> = HashMap::new();
         for family in all_runtime_call_families() {
+            if matches!(family, RuntimeCallFamily::Print { .. }) {
+                continue; // These operations carry attributes beyond the shared ABI symbol.
+            }
             let sym = family.c_symbol();
             if let Some(prev) = seen.insert(sym, family) {
                 panic!(
@@ -4866,6 +4994,13 @@ mod tests {
         for family in all_runtime_call_families() {
             let sym = family.c_symbol();
             let back = RuntimeCallFamily::from_c_symbol(sym);
+            if matches!(family, RuntimeCallFamily::Print { .. }) {
+                assert_eq!(
+                    back, None,
+                    "a print ABI symbol cannot infer its type or newline flag"
+                );
+                continue;
+            }
             assert_eq!(
                 back,
                 Some(family),
@@ -4905,7 +5040,7 @@ mod tests {
     }
 
     #[test]
-    fn codegen_partition_only_set_pins_mir_carrier_boundary() {
+    fn symbol_lifting_respects_codegen_partitions_and_required_attributes() {
         use RuntimeCallFamily as F;
 
         let mut expected: HashSet<RuntimeCallFamily> = [
@@ -4948,8 +5083,6 @@ mod tests {
                 .flat_map(|op| VecScalarElem::iter().map(move |elem| F::VecScalar { op, elem })),
         );
         expected.extend(VecContainsScalarElem::iter().map(F::VecContainsScalar));
-        assert_eq!(expected.len(), 75);
-
         let actual: HashSet<RuntimeCallFamily> = all_runtime_call_families()
             .into_iter()
             .filter(|family| family.is_codegen_partition_only())
@@ -4963,7 +5096,7 @@ mod tests {
         for family in all_runtime_call_families() {
             assert_eq!(
                 RuntimeCallFamily::from_mir_builtin_symbol(family.c_symbol()).is_none(),
-                expected.contains(&family),
+                expected.contains(&family) || matches!(family, F::Print { .. }),
                 "MIR carrier classification drifted for {family:?}"
             );
         }

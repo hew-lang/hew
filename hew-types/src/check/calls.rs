@@ -1357,6 +1357,11 @@ impl Checker {
         if let Some(endpoint) =
             crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
         {
+            if let Some(family) =
+                crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(endpoint)
+            {
+                return CallTarget::Runtime(family);
+            }
             return CallTarget::Builtin {
                 endpoint: endpoint.to_string(),
             };
@@ -2816,15 +2821,17 @@ mod channel_layout_target_tests {
     }
 
     #[test]
-    fn executable_catalog_identities_publish_builtin_targets() {
+    fn executable_catalog_identities_publish_their_semantic_targets() {
         let checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
 
         for endpoint in crate::stdlib_catalog_identity::MONOMORPHIC_CALLABLE_IDENTITIES {
             assert_eq!(
                 checker.call_target_for_signature(endpoint),
-                CallTarget::Builtin {
-                    endpoint: (*endpoint).to_string(),
-                },
+                crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(endpoint)
+                    .map_or_else(
+                        || CallTarget::Builtin { endpoint: (*endpoint).to_string() },
+                        CallTarget::Runtime,
+                    ),
                 "catalog builtin `{endpoint}` must cross the checker boundary with its exact catalog identity"
             );
         }
@@ -2845,7 +2852,9 @@ mod channel_layout_target_tests {
                 .is_some()
             {
                 assert!(
-                    matches!(target, CallTarget::Builtin { .. }),
+                    matches!(target, CallTarget::Builtin { .. })
+                        || crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(signature_key)
+                            .is_some_and(|family| target == CallTarget::Runtime(family)),
                     "catalog builtin `{signature_key}` must retain its catalog target, got {target:?}"
                 );
             } else {

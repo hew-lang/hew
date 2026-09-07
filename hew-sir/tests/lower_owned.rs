@@ -140,7 +140,10 @@ fn scalar_eval_print_uses_a_typed_runtime_operation() {
     assert!(main.blocks.iter().any(|block| matches!(
         block.terminator,
         SemTerminator::RtCall {
-            family: hew_types::RuntimeCallFamily::PrintlnI64,
+            family: hew_types::RuntimeCallFamily::Print {
+                kind: hew_types::runtime_call::PrintKind::I64,
+                newline: true
+            },
             ..
         }
     )));

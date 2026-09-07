@@ -789,9 +789,10 @@ pub enum PhysicalRuntimeAction {
     BytesDecodeUtf8Lossy,
     U8ToString,
     I64ToString,
-    PrintlnI64,
-    PrintlnBool,
-    PrintlnString,
+    Print {
+        kind: hew_types::runtime_call::PrintKind,
+        newline: bool,
+    },
     BytesLen,
     BytesIndex,
     BytesPushOwned,
@@ -834,9 +835,7 @@ impl PhysicalRuntimeAction {
             Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
             Self::I64ToString => RuntimeCallFamily::I64ToString,
-            Self::PrintlnI64 => RuntimeCallFamily::PrintlnI64,
-            Self::PrintlnBool => RuntimeCallFamily::PrintlnBool,
-            Self::PrintlnString => RuntimeCallFamily::PrintlnString,
+            Self::Print { kind, newline } => RuntimeCallFamily::Print { kind, newline },
             Self::BytesLen => RuntimeCallFamily::BytesLen,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
@@ -2033,9 +2032,9 @@ fn physical_runtime_action(
         RuntimeCallFamily::BytesDecodeUtf8Lossy => PhysicalRuntimeAction::BytesDecodeUtf8Lossy,
         RuntimeCallFamily::U8ToString => PhysicalRuntimeAction::U8ToString,
         RuntimeCallFamily::I64ToString => PhysicalRuntimeAction::I64ToString,
-        RuntimeCallFamily::PrintlnI64 => PhysicalRuntimeAction::PrintlnI64,
-        RuntimeCallFamily::PrintlnBool => PhysicalRuntimeAction::PrintlnBool,
-        RuntimeCallFamily::PrintlnString => PhysicalRuntimeAction::PrintlnString,
+        RuntimeCallFamily::Print { kind, newline } => {
+            PhysicalRuntimeAction::Print { kind, newline }
+        }
         RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
         RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
@@ -7765,7 +7764,10 @@ mod tests {
                 PhysicalRuntimeAction::StringStartsWith,
                 PhysicalRuntimeAction::StringIsEmpty,
                 PhysicalRuntimeAction::StringToUppercase,
-                PhysicalRuntimeAction::PrintlnString,
+                PhysicalRuntimeAction::Print {
+                    kind: hew_types::runtime_call::PrintKind::Str,
+                    newline: true
+                },
             ])
         );
     }
@@ -7782,7 +7784,10 @@ mod tests {
             .any(|block| matches!(
                 block.terminator,
                 PhysicalTerminator::RuntimeCall {
-                    action: PhysicalRuntimeAction::PrintlnI64,
+                    action: PhysicalRuntimeAction::Print {
+                        kind: hew_types::runtime_call::PrintKind::I64,
+                        newline: true
+                    },
                     ..
                 }
             )));

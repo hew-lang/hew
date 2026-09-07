@@ -82,9 +82,6 @@ use crate::llvm::{
     EmitArtefacts, LlvmResultExt, OptLevel,
 };
 
-/// `hew_print_value`'s audited ABI tag for a signed 64-bit integer.
-const HEW_PRINT_KIND_I64: u64 = 1;
-
 /// Native object emission options for the physical pipeline.
 #[derive(Debug, Clone)]
 pub struct PhysicalEmitOptions<'a> {
@@ -3549,7 +3546,50 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::PrintlnI64 => {
+            PhysicalRuntimeAction::Print { kind, newline } => {
+                use hew_types::runtime_call::PrintKind;
+                let value = self.load(source(0)?, "print.value")?;
+                // Tags and bit packing implement hew-runtime/src/print.rs's
+                // stable C ABI. The source type was selected before MIR.
+                let tag = match kind {
+                    PrintKind::I32 => 0,
+                    PrintKind::I64 => 1,
+                    PrintKind::F64 => 2,
+                    PrintKind::Bool => 3,
+                    PrintKind::Str => 4,
+                    PrintKind::U32 => 5,
+                    PrintKind::U64 => 6,
+                    PrintKind::U8 => 7,
+                };
+                let bits = match kind {
+                    PrintKind::Str => self
+                        .builder
+                        .build_ptr_to_int(
+                            value.into_pointer_value(),
+                            self.ctx.i64_type(),
+                            "print.string.bits",
+                        )
+                        .llvm_ctx("pack managed string print handle")?,
+                    PrintKind::F64 => self
+                        .builder
+                        .build_bit_cast(value, self.ctx.i64_type(), "print.float.bits")
+                        .llvm_ctx("pack floating-point print bits")?
+                        .into_int_value(),
+                    PrintKind::I32
+                    | PrintKind::I64
+                    | PrintKind::U8
+                    | PrintKind::U32
+                    | PrintKind::U64
+                    | PrintKind::Bool => self
+                        .builder
+                        .build_int_cast_sign_flag(
+                            value.into_int_value(),
+                            self.ctx.i64_type(),
+                            matches!(kind, PrintKind::I32 | PrintKind::I64),
+                            "print.integer.bits",
+                        )
+                        .llvm_ctx("pack scalar print bits")?,
+                };
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_print_value",
@@ -3565,48 +3605,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.runtime_call_void(
                     function,
                     &[
+                        self.ctx.i8_type().const_int(tag, false).into(),
+                        bits.into(),
                         self.ctx
-                            .i8_type()
-                            .const_int(HEW_PRINT_KIND_I64, false)
+                            .bool_type()
+                            .const_int(u64::from(newline), false)
                             .into(),
-                        self.load(source(0)?, "println.i64.bits")?.into(),
-                        self.ctx.bool_type().const_int(1, false).into(),
                     ],
-                    "println.i64",
-                )?;
-            }
-            PhysicalRuntimeAction::PrintlnBool => {
-                let value = self
-                    .load(source(0)?, "println.bool.value")?
-                    .into_int_value();
-                let truth = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::NE,
-                        value,
-                        value.get_type().const_zero(),
-                        "println.bool.truth",
-                    )
-                    .llvm_ctx("normalize Boolean print argument")?;
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_println_bool",
-                    self.ctx
-                        .void_type()
-                        .fn_type(&[self.ctx.bool_type().into()], false),
-                )?;
-                self.runtime_call_void(function, &[truth.into()], "println.bool")?;
-            }
-            PhysicalRuntimeAction::PrintlnString => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_println_str",
-                    self.ctx.void_type().fn_type(&[ptr.into()], false),
-                )?;
-                self.runtime_call_void(
-                    function,
-                    &[self.load(source(0)?, "println.input")?.into()],
-                    "println.string",
+                    "print.value",
                 )?;
             }
             PhysicalRuntimeAction::BytesLen => {

@@ -253,7 +253,10 @@ pub fn module(failing: bool) -> SemModule {
             vec![integer(SemOpKind::LoadCopy { place: PlaceId(0) }, 17)],
             SemTerminator::RtCall {
                 id: OpId(0),
-                family: hew_types::RuntimeCallFamily::PrintlnI64,
+                family: hew_types::RuntimeCallFamily::Print {
+                    kind: hew_types::runtime_call::PrintKind::I64,
+                    newline: true,
+                },
                 args: vec![boundary(ValueId(17), BoundaryDecision::Copy)],
                 result: CallResult::Unit,
                 normal: edge(10),

@@ -21,12 +21,10 @@
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 const DIVERGENT_TUPLE_TEMPLATE: &str = r#"
 import std.stream;
@@ -219,161 +217,15 @@ fn expected_lines(frames: usize) -> usize {
     frames
 }
 
-fn dump_mir(stage: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("divergent-return-resource-mir-")
-        .tempdir()
-        .expect("tempdir");
-    let source_path = dir.path().join("divergent_return_resource.hew");
-    std::fs::write(&source_path, with_frames(COMBINED_TEMPLATE, 1)).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", stage])
-        .arg(&source_path)
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|error| panic!("invoke hew compile --dump-mir {stage}: {error}"));
-    assert!(
-        output.status.success(),
-        "{stage} MIR dump failed:\n{}",
-        describe_output(&output)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("ObligationUnderReleased"),
-        "{stage} MIR still reports a live returned-resource member with no discharge:\n{stderr}"
-    );
-    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
-}
-
-fn function_section<'a>(dump: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
-    let start = dump
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing `{marker}` in MIR dump:\n{dump}"));
-    let tail = &dump[start..];
-    tail.find("\nfn ").map_or(tail, |next| &tail[..next])
-}
-
-fn count(section: &str, needle: &str) -> usize {
-    section.match_indices(needle).count()
-}
-
-fn drop_plan_bodies<'a>(section: &'a str, header_fragment: &str) -> Vec<Vec<&'a str>> {
-    let plans = section
-        .split("  drop_plans:\n")
-        .nth(1)
-        .unwrap_or_else(|| panic!("missing drop plans:\n{section}"));
-    let mut matched = Vec::new();
-    let mut current = None;
-    for line in plans.lines() {
-        let is_header =
-            line.starts_with("    ") && !line.starts_with("      ") && line.ends_with(" ->");
-        if is_header {
-            if let Some(body) = current.take() {
-                matched.push(body);
-            }
-            current = line.contains(header_fragment).then(Vec::new);
-        } else if let Some(body) = &mut current {
-            body.push(line);
-        }
-    }
-    if let Some(body) = current {
-        matched.push(body);
-    }
-    matched
-}
-
-#[test]
-fn raw_and_elaborated_mir_attribute_only_unselected_resource_members() {
-    let raw = dump_mir("raw");
-    let tuple_raw = function_section(&raw, "divergent_tuple");
-    let record_raw = function_section(&raw, "divergent_record");
-    assert_eq!(
-        count(tuple_raw, " = tuple ("),
-        2,
-        "tuple return must keep two distinct arm-local constructors:\n{tuple_raw}"
-    );
-    assert_eq!(
-        count(record_raw, " = record_init Pipe"),
-        2,
-        "record return must keep two distinct arm-local constructors:\n{record_raw}"
-    );
-
-    let elaborated = dump_mir("elab");
-    for name in ["divergent_tuple", "divergent_record"] {
-        let section = function_section(&elaborated, name);
-        assert_eq!(
-            count(section, "fn=rt(SinkClose)"),
-            2,
-            "{name} must close exactly one unselected Sink on each arm:\n{section}"
-        );
-        assert_eq!(
-            count(section, "fn=rt(StreamClose)"),
-            2,
-            "{name} must close exactly one unselected Stream on each arm:\n{section}"
-        );
-        let return_plans = drop_plan_bodies(section, "return[");
-        assert!(
-            return_plans.len() == 1 && return_plans[0] == ["      (none)"],
-            "{name} must not close the selected resources after handing them to the caller:\n\
-             {section}"
-        );
-    }
-
-    let same = function_section(&elaborated, "same_tuple");
-    assert_eq!(
-        (
-            count(same, "fn=rt(SinkClose)"),
-            count(same, "fn=rt(StreamClose)")
-        ),
-        (1, 1),
-        "same-member control must retain only the untouched pair's ordinary teardown:\n{same}"
-    );
-
-    let error = function_section(&elaborated, "error_before_transfer");
-    let early_returns = drop_plan_bodies(error, "return[bb3]");
-    let early_return = early_returns
-        .first()
-        .unwrap_or_else(|| panic!("missing early error return plan:\n{error}"));
-    assert_eq!(
-        (
-            early_return
-                .iter()
-                .filter(|line| line.contains("fn=rt(SinkClose)"))
-                .count(),
-            early_return
-                .iter()
-                .filter(|line| line.contains("fn=rt(StreamClose)"))
-                .count()
-        ),
-        (2, 2),
-        "early error return must close both still-local resource pairs:\n{error}"
-    );
-
-    let cancel = function_section(&elaborated, "cancel_before_transfer");
-    let live_cancel = drop_plan_bodies(cancel, "cancel[")
-        .into_iter()
-        .find(|plan| {
-            plan.iter()
-                .filter(|line| line.contains("fn=rt(SinkClose)"))
-                .count()
-                == 2
-                && plan
-                    .iter()
-                    .filter(|line| line.contains("fn=rt(StreamClose)"))
-                    .count()
-                    == 2
-        })
-        .unwrap_or_else(|| panic!("missing live pre-transfer cancellation cleanup:\n{cancel}"));
-    assert!(
-        live_cancel
-            .iter()
-            .all(|line| line.contains("SinkClose") || line.contains("StreamClose")),
-        "cancellation before transfer must close both still-local resource pairs:\n{cancel}"
-    );
-}
-
+// Lost coverage: `raw_and_elaborated_mir_attribute_only_unselected_resource_members`
+// used `--dump-mir raw`/`elab` (both retired) to count constructor and
+// `SinkClose`/`StreamClose` release-authority occurrences per function
+// section across divergent-return, same-member, early-error and
+// pre-transfer-cancellation shapes. Physical MIR's structured (Debug) dump
+// has no equivalent single-line text to grep or count per function, so this
+// MIR-emission coverage has no direct replacement. The same
+// leak/double-free behaviour for the same shapes is still proven end to end
+// below by the leak-slope and malloc-scribble oracles in this file.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)`; a host without it must record a skip"

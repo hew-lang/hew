@@ -6,11 +6,10 @@
 
 mod support;
 
-use std::path::Path;
 use std::process::Command;
 
 use support::leak_slope::{compile_to_native, measure_leaks_exact, require_leaks_tool};
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 const SOURCE: &str = r#"
 #[resource]
@@ -56,54 +55,15 @@ fn main() {
 }
 "#;
 
-fn dump_raw_mir(dir: &Path) -> String {
-    let path = dir.join("structural_rendering_ownership.hew");
-    std::fs::write(&path, SOURCE).expect("write structural rendering source");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--dump-mir",
-            "raw",
-            path.to_str().expect("Hew source path is UTF-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("dump raw MIR");
-    assert!(
-        output.status.success(),
-        "raw MIR dump failed:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8(output.stdout).expect("raw MIR is UTF-8")
-}
-
-fn function_section<'a>(dump: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
-    let start = dump
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing `{marker}`:\n{dump}"));
-    let tail = &dump[start..];
-    tail.find("\nfn ").map_or(tail, |next| &tail[..next])
-}
-
-#[test]
-fn structural_rendering_reads_without_clone_move_or_consume() {
-    require_codegen();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let raw = dump_raw_mir(dir.path());
-    let cycle = function_section(&raw, "cycle");
-    assert_eq!(
-        cycle.match_indices("hew_structural_format").count(),
-        2,
-        "each rendering site must lower to one structural borrow:\n{cycle}"
-    );
-    for forbidden in ["clone", "consume(holder)", "Move { src: _holder"] {
-        assert!(
-            !cycle.contains(forbidden),
-            "printing must not introduce ownership operation `{forbidden}`:\n{cycle}"
-        );
-    }
-}
+// Lost coverage: `structural_rendering_reads_without_clone_move_or_consume`
+// used `--dump-mir raw` (retired) to pin that each `{holder:?}` render site
+// lowers to exactly one `hew_structural_format` call and introduces no
+// `clone`/`consume`/`Move` ownership operation. Physical MIR's structured
+// (Debug) dump has no equivalent single-line text to grep, so this
+// MIR-emission coverage has no direct replacement. The externally observable
+// half of the same invariant -- rendering twice adds neither a clone leak nor
+// a lost resource owner -- is still proven end to end below by the exact
+// leak-count oracle.
 
 #[cfg_attr(
     not(target_os = "macos"),

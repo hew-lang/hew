@@ -8,20 +8,13 @@
 
 #![cfg(unix)]
 
-#[path = "support/payload_handoff_mir.rs"]
-mod payload_handoff_mir;
 mod support;
 
-use std::process::Command;
-
-use payload_handoff_mir::{
-    drop_plan_counts, function_section, retained_payload_locals, unique_drop_locals,
-};
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
     HIGH_FRAMES, LOW_FRAMES,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Box {
@@ -88,104 +81,16 @@ fn source(frames: usize) -> String {
     SOURCE_TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
-fn dump_mir(stage: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("string-payload-handoff-mir-")
-        .tempdir()
-        .expect("tempdir");
-    let path = dir.path().join("string_payload_handoff.hew");
-    std::fs::write(&path, source(1)).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--dump-mir",
-            stage,
-            path.to_str().expect("Hew source path is UTF-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|error| panic!("invoke hew compile --dump-mir {stage}: {error}"));
-    assert!(
-        output.status.success(),
-        "{stage} MIR dump failed:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
-}
-
-fn assert_payload_drop_authority(
-    name: &str,
-    raw_section: &str,
-    elaborated_section: &str,
-    expected_payload_owners: usize,
-) {
-    assert_eq!(
-        unique_drop_locals(elaborated_section, "ty=Box kind=enum_in_place").len(),
-        1,
-        "{name} must preserve exactly one parent composite authority:\n{elaborated_section}"
-    );
-    let payload_locals = retained_payload_locals(raw_section, "string.retain_fresh_share ");
-    assert_eq!(
-        payload_locals.len(),
-        expected_payload_owners,
-        "{name} must track exactly {expected_payload_owners} payload owner(s):\n{raw_section}"
-    );
-    for local in payload_locals {
-        let raw_normal = raw_section
-            .matches(&format!(
-                "drop {local} ty=string fn=release(hew_string_drop)"
-            ))
-            .count();
-        let marker = format!("drop {local} ty=string kind=cow_heap(hew_string_drop)");
-        let (planned_normal, exceptional, max_per_plan) =
-            drop_plan_counts(elaborated_section, &marker);
-        assert_eq!(
-            raw_normal + planned_normal,
-            1,
-            "{name} must release {local} exactly once on successful normal flow:\n\
-             raw:\n{raw_section}\nelaborated:\n{elaborated_section}"
-        );
-        assert!(
-            exceptional > 0 && max_per_plan == 1,
-            "{name} must clean {local} on each applicable exceptional exit without duplicating \
-             it within one plan:\n{elaborated_section}"
-        );
-    }
-}
-
-#[test]
-fn mir_pins_retains_and_noncompeting_drop_authorities() {
-    let raw = dump_mir("raw");
-    for name in ["same_scope", "nested_scope"] {
-        let section = function_section(&raw, name);
-        assert_eq!(
-            section.match_indices("string.retain").count(),
-            1,
-            "{name} must mint exactly one independent local owner:\n{section}"
-        );
-    }
-    let chained_raw = function_section(&raw, "chained");
-    assert_eq!(
-        chained_raw.match_indices("string.retain").count(),
-        2,
-        "each link in a live retained handoff chain must mint one owner:\n{chained_raw}"
-    );
-
-    let elaborated = dump_mir("elab");
-    for name in ["same_scope", "nested_scope"] {
-        let raw_section = function_section(&raw, name);
-        let section = function_section(&elaborated, name);
-        assert_payload_drop_authority(name, raw_section, section, 2);
-    }
-
-    let chained = function_section(&elaborated, "chained");
-    assert_payload_drop_authority("chained", chained_raw, chained, 3);
-
-    let direct_raw = function_section(&raw, "direct");
-    let direct = function_section(&elaborated, "direct");
-    assert_payload_drop_authority("direct", direct_raw, direct, 1);
-}
+// Lost coverage: `mir_pins_retains_and_noncompeting_drop_authorities` used
+// `--dump-mir raw`/`elab` (both retired) to count `string.retain_fresh_share`
+// and `hew_string_drop` release-authority occurrences per function section,
+// pinning the payload-owner count and exactly-once release on every normal
+// and exceptional exit plan for same-scope, nested-scope, chained and direct
+// handoff shapes. Physical MIR's structured (Debug) dump has no equivalent
+// single-line text to grep or count per function, so this MIR-emission
+// coverage has no direct replacement. The same leak/double-free behaviour for
+// the same shapes is still proven end to end below by the leak-slope and
+// malloc-scribble oracles in this file.
 
 #[cfg_attr(
     not(target_os = "macos"),

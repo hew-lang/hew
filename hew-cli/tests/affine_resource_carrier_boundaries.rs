@@ -303,32 +303,6 @@ fn assert_exact_runtime(name: &str, body: &str, expected_stdout: &str) {
     );
 }
 
-fn raw_mir(name: &str, body: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("affine-resource-mir-{name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let input = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&input, source(body)).expect("write MIR fixture");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--dump-mir",
-            "raw",
-            input.to_str().expect("fixture path utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew MIR dump");
-    assert!(
-        output.status.success(),
-        "{name} raw MIR must compile:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
 fn compile_rejected(name: &str, body: &str) -> String {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -349,39 +323,6 @@ fn compile_rejected(name: &str, body: &str) -> String {
         describe_output(&output)
     );
     strip_ansi(&String::from_utf8_lossy(&output.stderr))
-}
-
-fn function<'a>(dump: &'a str, header: &str) -> &'a str {
-    let start = dump
-        .find(header)
-        .unwrap_or_else(|| panic!("missing `{header}` in MIR:\n{dump}"));
-    let tail = &dump[start..];
-    let end = tail[header.len()..]
-        .find("\nfn ")
-        .map_or(tail.len(), |offset| header.len() + offset);
-    &tail[..end]
-}
-
-fn assert_channel_affine_guards(mir: &str) {
-    for symbol in ["fn std$channel$new", "fn std.channel.ChannelPair::close"] {
-        let guarded_function = function(mir, symbol);
-        assert!(
-            guarded_function.lines().any(|line| {
-                line.contains("ownership Guard") && line.contains("kind: AffineRelease")
-            }),
-            "{symbol} must publish its physical close flag as an explicit OwnerId/generation Guard event:\n{guarded_function}"
-        );
-    }
-}
-
-fn assert_ordered(haystack: &str, needles: &[&str]) {
-    let mut cursor = 0;
-    for needle in needles {
-        let offset = haystack[cursor..]
-            .find(needle)
-            .unwrap_or_else(|| panic!("missing ordered `{needle}` in:\n{haystack}"));
-        cursor += offset + needle.len();
-    }
 }
 
 #[test]
@@ -430,81 +371,14 @@ fn resource_parameter_reuse_after_collection_transfer_is_rejected() {
     );
 }
 
-#[test]
-fn raw_mir_carries_guards_and_preserves_the_parameter_prefix() {
-    let identity = raw_mir("identity_guard", IDENTITY_BODY);
-    let identity_fn = function(&identity, "fn identity$$Token(Token) -> Token");
-    assert_ordered(
-        identity_fn,
-        &[
-            "_1 = const.i64 0",
-            "_2 = move _0",
-            "neutralize_payload _0 -> _2 [WholeCarrierConsume]",
-            "_1 = const.i64 1",
-            "snapshot_drop _0 ty=Token plan=UserRecord { name: \"Token\" } boundary=LocalCall guard=_1",
-        ],
-    );
-
-    let nested = raw_mir("nested_identity_guard", NESTED_IDENTITY_BODY);
-    let nested_fn = function(&nested, "fn identity$$Wrap(Wrap) -> Wrap");
-    assert!(
-        nested_fn.contains(
-            "snapshot_drop _0 ty=Wrap plan=UserRecord { name: \"Wrap\" } boundary=LocalCall guard=_1"
-        ),
-        "a resource nested below an unmarked record must retain the whole-carrier guard:\n{nested_fn}"
-    );
-
-    let arena = raw_mir("arena_guard", ARENA_BODY);
-    let insert_fn = function(
-        &arena,
-        "fn std.arena.Arena::insert$$Token(std.arena.Arena<Token>, Token) -> std.arena.Key<Token>",
-    );
-    assert!(
-        insert_fn.contains(
-            "snapshot_drop _1 ty=Token plan=UserRecord { name: \"Token\" } boundary=LocalCall guard=_2"
-        ),
-        "Arena::insert's generic Token carrier must have a guarded terminal drop:\n{insert_fn}"
-    );
-    assert!(
-        insert_fn.contains("call hew_vec_push_owned_move("),
-        "Arena::insert's fresh Slot carrier must move into Vec storage:\n{insert_fn}"
-    );
-    assert_ordered(
-        insert_fn,
-        &[
-            "neutralize_payload _1",
-            "[WholeCarrierConsume]",
-            "_2 = const.i64 1",
-        ],
-    );
-
-    let actor = raw_mir("actor_guard", ACTOR_BODY);
-    let actor_main = function(&actor, "fn main() -> i64");
-    assert_ordered(
-        actor_main,
-        &[
-            "token site=",
-            "intent=Consume",
-            "= const.i64 1",
-            "[SendTransferLastUse]",
-            "send actor0",
-        ],
-    );
-
-    let order = raw_mir("parameter_prefix", PARAMETER_ORDER_BODY);
-    let helper = function(
-        &order,
-        "fn store_or_drop(Vec<Token>, Token, bool) -> Vec<Token>",
-    );
-    assert_ordered(
-        helper,
-        &["_0: Vec<Token>", "_1: Token", "_2: bool", "_3: i64"],
-    );
-    assert!(
-        helper.contains("branch _2 ?"),
-        "the trailing bool argument must remain parameter local _2:\n{helper}"
-    );
-}
+// Lost coverage: `raw_mir_carries_guards_and_preserves_the_parameter_prefix`
+// used `--dump-mir raw` (retired) to pin exact guard/neutralize/snapshot_drop
+// opcode text and parameter-local ordering across the identity, nested,
+// arena-insert, actor-send and parameter-order fixtures. Physical MIR's
+// structured (Debug) dump has no equivalent single-line text to grep, so
+// this MIR-emission coverage has no direct replacement. The same fixtures'
+// end-to-end behaviour (single close, correct ordering of side effects) is
+// still proven by the exact-runtime tests above.
 
 #[test]
 fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
@@ -547,32 +421,13 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
 #[test]
 fn channel_handle_clone_terminals_match_runtime_semantics() {
     assert_exact_runtime("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY, "1\n");
-    let sender_mir = raw_mir("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY);
-    let channel_ctor = function(
-        &sender_mir,
-        "fn std$channel$new(i64) -> Result<(Sender, Receiver), string>",
-    );
-    let (_, after_pair_free) = channel_ctor
-        .split_once("call hew_channel_pair_free")
-        .expect("channel construction must discharge its transient pair through the extern ABI");
-    assert!(
-        after_pair_free.contains("neutralize_payload _13 [CallDischargeConsume]")
-            && !after_pair_free.contains("drop _13 ty=std.channel.ChannelPair"),
-        "a consuming extern must neutralize the pair on its normal successor; \
-         its source slot cannot remain armed for ChannelPair::close:\n{channel_ctor}"
-    );
-    assert!(
-        sender_mir.contains("call hew_vec_clone_owned(")
-            && sender_mir.contains("call hew_vec_push_owned_move(")
-            && sender_mir.lines().any(|line| {
-                line.contains(" tx ")
-                    && line.contains("ty=Sender<Token>")
-                    && line.contains("intent=Consume")
-            })
-            && !sender_mir.contains("call hew_vec_clone_layout(")
-            && !sender_mir.contains("call hew_vec_push_ptr("),
-        "Vec<Sender<AffineT>> must consume its source into, and clone through, the thunk-bearing owned descriptor lane:\n{sender_mir}"
-    );
+    // Lost coverage: this test used to also dump `--dump-mir raw` (retired)
+    // here to pin the channel constructor's neutralize-on-discharge text and
+    // the Vec<Sender<AffineT>> clone/push-owned-move opcode shape directly.
+    // Physical MIR's structured (Debug) dump has no equivalent single-line
+    // text to grep, so that MIR-emission split has no direct replacement;
+    // the exact-runtime assertion above still proves the externally
+    // observable half (one close, correct output).
 
     let dir = tempfile::Builder::new()
         .prefix("affine-resource-channel-receiver-")
@@ -621,18 +476,12 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
 
-    let mir = raw_mir("receiver_move", CHANNEL_RECEIVER_MOVE_BODY);
-    assert_channel_affine_guards(&mir);
-    assert!(
-        mir.contains("call hew_vec_push_owned_move(")
-            && mir.lines().any(|line| {
-                line.contains(" rx ")
-                    && line.contains("ty=Receiver<Token>")
-                    && line.contains("intent=Consume")
-            })
-            && !mir.contains("call hew_vec_push_ptr("),
-        "array construction must consume Receiver into the owned move lane:\n{mir}"
-    );
+    // Lost coverage: this test used to also dump `--dump-mir raw` (retired)
+    // here to pin the channel affine close guards and the exact
+    // push-owned-move/consume opcode shape directly. Physical MIR's
+    // structured (Debug) dump has no equivalent single-line text to grep,
+    // so that MIR-emission detail has no direct replacement; the LLVM-IR
+    // assertion below still proves the externally observable half.
 
     let ir = std::fs::read_to_string(dir.path().join("receiver_move.ll"))
         .expect("read drop-only Receiver Vec LLVM IR");
@@ -647,19 +496,13 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         "Receiver Vec must emit clone-null descriptor, move ingress, and one close-on-free wrapper:\n{ir}"
     );
 
-    for (name, body, symbol, consumed) in [
-        (
-            "receiver_bound_push",
-            CHANNEL_RECEIVER_COPY_PUSH_BODY,
-            "hew_vec_push_owned_move",
-            " rx ",
-        ),
-        (
-            "receiver_bound_set",
-            CHANNEL_RECEIVER_COPY_SET_BODY,
-            "hew_vec_set_owned_move",
-            " rx2 ",
-        ),
+    // Lost coverage: `--dump-mir raw` (retired) used to also confirm each of
+    // these two fixtures carried an explicit move-in consume event through
+    // its owned-move symbol; physical MIR has no equivalent single-line
+    // text to grep, so that MIR-emission detail has no direct replacement.
+    for (name, body) in [
+        ("receiver_bound_push", CHANNEL_RECEIVER_COPY_PUSH_BODY),
+        ("receiver_bound_set", CHANNEL_RECEIVER_COPY_SET_BODY),
     ] {
         let accepted = compile_to_native(&source(body), dir.path(), name);
         let output = Command::new(&accepted)
@@ -670,16 +513,6 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
             output.status.success() && output.stdout == b"1\n",
             "{name} must move the source endpoint into the descriptor and close once:\n{}",
             describe_output(&output)
-        );
-        let mir = raw_mir(name, body);
-        assert!(
-            mir.contains(&format!("call {symbol}("))
-                && mir.lines().any(|line| {
-                    line.contains(consumed)
-                        && line.contains("ty=Receiver<Token>")
-                        && line.contains("intent=Consume")
-                }),
-            "{name} must carry an explicit move-in consume event:\n{mir}"
         );
     }
 

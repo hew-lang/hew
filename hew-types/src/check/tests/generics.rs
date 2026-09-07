@@ -5161,3 +5161,37 @@ fn selected_eq_bound_waits_for_forward_user_impl_registration() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
+
+#[test]
+fn impl_target_type_arguments_read_the_impl_bounds() {
+    let output = check_source(
+        r"
+        enum Slot<T: Clone> { Empty, Full { item: T }, }
+        impl<T: Clone> Slot<T> {
+            fn tag(self) -> i64 { 0 }
+        }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn impl_target_type_arguments_still_need_the_declared_bound() {
+    let output = check_source(
+        r"
+        enum Slot<T: Display> { Empty, Full { item: T }, }
+        impl<T: Clone> Slot<T> {
+            fn tag(self) -> i64 { 0 }
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("`Display`")),
+        "{:?}",
+        output.errors
+    );
+}

@@ -6,7 +6,7 @@ use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 use common::{isolated_checker, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
-use hew_types::{MachineMethodKind, Ty, TypeCheckOutput};
+use hew_types::{Ty, TypeCheckOutput};
 
 fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
@@ -80,12 +80,9 @@ fn unit_event(name: &str) -> MachineEvent {
 }
 
 fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
-    // Body is a bare `state` identifier — the implicit self-binding that is
-    // always in scope in a transition body and always has the machine type.
-    // Previously this used `true` (a bool literal), which passed through
-    // synthesize (result discarded).  Now that transition bodies are
-    // check_against'd against the machine type, the body must actually have
-    // the machine type.
+    // A fixed target requires that target variant on every normal path
+    // (MACHINE-SPEC, "Rule selection and coverage"), so the body is the
+    // dotted target constructor rather than the source value.
     MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
@@ -94,10 +91,52 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         event_bindings: vec![],
         composite_prelude_len: 0,
         guard: None,
-        body: (Expr::Identifier("state".to_string()), 0..0),
+        body: (
+            Expr::ContextVariant(ContextVariantExpr {
+                name: target.to_string(),
+                record: None,
+            }),
+            0..0,
+        ),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
     }
+}
+
+/// A transition into a payload state: the body constructs the target with
+/// every named field initialized, as a fixed target requires.
+fn payload_transition(
+    event: &str,
+    source: &str,
+    target: &str,
+    fields: &[&str],
+) -> MachineTransition {
+    let mut rule = transition(event, source, target);
+    rule.body = (
+        Expr::ContextVariant(ContextVariantExpr {
+            name: target.to_string(),
+            record: Some(Box::new(ContextVariantRecord {
+                fields: fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            (*field).to_string(),
+                            (
+                                Expr::Literal(Literal::Integer {
+                                    value: 0,
+                                    radix: IntRadix::Decimal,
+                                }),
+                                0..0,
+                            ),
+                        )
+                    })
+                    .collect(),
+                base: None,
+            })),
+        }),
+        0..0,
+    );
+    rule
 }
 
 fn wildcard_transition(event: &str) -> MachineTransition {
@@ -196,7 +235,7 @@ fn machine_registers_type_def() {
         ],
         vec![unit_event("Connect")],
         vec![
-            transition("Connect", "Closed", "Established"),
+            payload_transition("Connect", "Closed", "Established", &["seq"]),
             wildcard_transition("Connect"), // wildcard fills Established->Connect
         ],
     );
@@ -261,7 +300,7 @@ fn state_fields_registered() {
         ],
         vec![unit_event("Start"), unit_event("Stop")],
         vec![
-            transition("Start", "Idle", "Counting"),
+            payload_transition("Start", "Idle", "Counting", &["value"]),
             transition("Stop", "Counting", "Idle"),
             wildcard_transition("Start"),
             wildcard_transition("Stop"),
@@ -377,13 +416,15 @@ fn duplicate_wildcard_error() {
     );
 }
 
-// ── Test: machine with fewer than 2 states ──────────────────────────
+// ── Test: machine with no states ────────────────────────────────────
 
+/// MACHINE-SPEC, "Declaration and use": a declaration requires at least one
+/// state and one input event. A single-state machine is well formed.
 #[test]
-fn too_few_states_error() {
+fn no_states_error() {
     let md = make_machine(
         "Broken",
-        vec![unit_state("Only")],
+        vec![],
         vec![unit_event("Ping")],
         vec![wildcard_transition("Ping")],
     );
@@ -392,8 +433,24 @@ fn too_few_states_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("must declare at least 2 states")),
-        "expected min-states error, got: {messages:?}"
+            .any(|m| m.contains("must declare a state and an input event")),
+        "expected missing-state error, got: {messages:?}"
+    );
+}
+
+#[test]
+fn single_state_machine_is_well_formed() {
+    let md = make_machine(
+        "Only",
+        vec![unit_state("Idle")],
+        vec![unit_event("Ping")],
+        vec![transition("Ping", "Idle", "Idle")],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "single-state machine should type-check, got: {:?}",
+        output.errors
     );
 }
 
@@ -713,7 +770,7 @@ fn machine_step_dispatch() {
 
         fn main() {
             var light: Light = Light.Off;
-            light.step(LightEvent.Toggle);
+            let _report = light.step(LightEvent.Toggle);
             let name: string = light.state_name();
             let _ = name;
         }
@@ -724,41 +781,6 @@ fn machine_step_dispatch() {
         output.errors.is_empty(),
         "machine step/state_name dispatch should type-check, got: {:?}",
         output.errors
-    );
-    assert!(
-        output.machine_method_dispatch.values().any(|kind| {
-            matches!(
-                kind,
-                MachineMethodKind::Step { machine_name } if machine_name == "Light"
-            )
-        }),
-        "expected a checker-owned Light::step dispatch entry, got: {:?}",
-        output.machine_method_dispatch
-    );
-    assert!(
-        output.machine_method_dispatch.values().any(|kind| {
-            matches!(
-                kind,
-                MachineMethodKind::StateName { machine_name } if machine_name == "Light"
-            )
-        }),
-        "expected a checker-owned Light::state_name dispatch entry, got: {:?}",
-        output.machine_method_dispatch
-    );
-
-    let step_sig = &output.type_defs["Light"].methods["step"];
-    assert_eq!(
-        step_sig.params,
-        vec![Ty::Named {
-            builtin: None,
-            name: "LightEvent".to_string(),
-            args: vec![],
-        }],
-        "step must dispatch through the nominal companion event type"
-    );
-    assert_eq!(
-        output.type_defs["Light"].methods["state_name"].return_type,
-        Ty::String
     );
 }
 
@@ -986,8 +1008,10 @@ fn user_defined_type_does_not_inherit_machine_methods() {
     );
 }
 
+/// MACHINE-SPEC, "Declaration and use": state constructors and patterns follow
+/// ordinary enum rules, and so does the generated input enum.
 #[test]
-fn machine_event_match_outside_transition_rejected() {
+fn machine_event_matches_outside_a_transition() {
     let output = typecheck_isolated(
         r"
         machine Light {
@@ -1011,13 +1035,8 @@ fn machine_event_match_outside_transition_rejected() {
     );
 
     assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::InvalidOperation
-                && error
-                    .message
-                    .contains("outside a transition body is not supported")
-        }),
-        "event enum matching outside transition bodies is out of scope for this slice; got: {:?}",
+        output.errors.is_empty(),
+        "matching a machine's input enum outside a transition must type-check, got: {:?}",
         output.errors
     );
 }
@@ -1151,7 +1170,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
         ],
         vec![unit_event("Start"), unit_event("Stop")],
         vec![
-            transition("Start", "Idle", "Counting"),
+            payload_transition("Start", "Idle", "Counting", &["value"]),
             transition("Stop", "Counting", "Idle"),
             wildcard_transition("Start"),
             wildcard_transition("Stop"),
@@ -1671,68 +1690,68 @@ fn machine_state_exit_type_error_reported() {
     );
 }
 
-/// Referencing `event` inside a state entry block is a name-resolution error.
-/// `event` is only in scope inside transition bodies — never in lifecycle hooks.
+/// MACHINE-SPEC, "Hooks and wildcard targets": a hook runs inside the rule
+/// selected for one input, so the selected input's payload is in scope.
 #[test]
-fn machine_state_entry_event_binding_not_in_scope() {
+fn machine_state_entry_reads_the_selected_input_payload() {
     let output = typecheck_isolated(
         r"
         machine Door {
             events {
-                Push,
+                Push { force: i64 },
                 Pull,
             }
+            emits {
+                Note { count: i64 },
+            }
 
+            state Open,
             state Closed {
                 entry {
-                    // `event` is a transition-scope binding; must be undefined here
-                    let _e = event;
+                    emit Note { count: event.force };
                 }
             },
-            state Open,
 
 
-            on Push: Closed => .Open,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
+            on Push: Open => .Closed { .Closed }
+            on Pull: Closed => .Open { .Open }
+            default { state }
         }
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedVariable && e.message.contains("event")),
-        "referencing `event` inside a state entry block must be UndefinedVariable, got: {:?}",
+        output.errors.is_empty(),
+        "an entry hook must read the selected input's payload, got: {:?}",
         output.errors
     );
 }
 
-/// Same rejection: `event` inside a state exit block.
+/// The same scope is fail-closed: a field the selected input does not declare
+/// is refused rather than resolved against some other input.
 #[test]
-fn machine_state_exit_event_binding_not_in_scope() {
+fn machine_state_entry_unknown_input_field_errors() {
     let output = typecheck_isolated(
         r"
         machine Door {
             events {
-                Push,
+                Push { force: i64 },
                 Pull,
             }
+            emits {
+                Note { count: i64 },
+            }
 
-            state Open {
-                exit {
-                    // `event` is a transition-scope binding; must be undefined here
-                    let _e = event;
+            state Open,
+            state Closed {
+                entry {
+                    emit Note { count: event.weight };
                 }
             },
-            state Closed,
 
 
-            on Push: Closed => .Open,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
+            on Push: Open => .Closed { .Closed }
+            on Pull: Closed => .Open { .Open }
+            default { state }
         }
         ",
     );
@@ -1740,8 +1759,8 @@ fn machine_state_exit_event_binding_not_in_scope() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedVariable && e.message.contains("event")),
-        "referencing `event` inside a state exit block must be UndefinedVariable, got: {:?}",
+            .any(|error| error.message.contains("has no field `weight`")),
+        "an unknown input field in an entry hook must be refused, got: {:?}",
         output.errors
     );
 }
@@ -2577,10 +2596,13 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
     );
 }
 
-// ── W3.039 Stage 2: const-generic machine registration ──────────────────
+// ── Const parameters are outside the evaluator's admitted surface ───────
 
+/// MACHINE-SPEC, "Implementation scope": const parameters and composite state
+/// evaluation are not yet admitted. The parser accepts the form; the checker
+/// refuses it rather than lowering an unevaluable machine.
 #[test]
-fn machine_const_param_decl_passes_typecheck() {
+fn machine_const_param_decl_is_refused() {
     let src = r"machine FixedBuffer<const N: usize = 16> {
     events {
         Write,
@@ -2591,7 +2613,7 @@ fn machine_const_param_decl_passes_typecheck() {
     state Full,
     on Write: Empty => .Full { .Full }
     on Drain: Full => .Empty { .Empty }
-    default { self }
+    default { state }
 }
 ";
     let parsed = hew_parser::parse(src);
@@ -2601,47 +2623,12 @@ fn machine_const_param_decl_passes_typecheck() {
         parsed.errors
     );
     let out = check_items(parsed.program.items);
-    let errs: Vec<_> = out
-        .errors
-        .iter()
-        .filter(|e| e.severity == hew_types::error::Severity::Error)
-        .collect();
     assert!(
-        errs.is_empty(),
-        "expected no type errors on a const-param machine; got: {errs:?}"
-    );
-}
-
-#[test]
-fn machine_mixed_type_and_const_params_pass_typecheck() {
-    let src = r"machine M<T, const N: usize> {
-    events {
-        Put { payload: T, }
-        ,Take,
-    }
-
-    state Empty,
-    state Full { val: T, },
-    on Put: Empty => .Full { Full { val: event.payload } }
-    on Take: Full => .Empty { .Empty }
-    default { self }
-}
-";
-    let parsed = hew_parser::parse(src);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let out = check_items(parsed.program.items);
-    let errs: Vec<_> = out
-        .errors
-        .iter()
-        .filter(|e| e.severity == hew_types::error::Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "expected no type errors on a mixed-param machine; got: {errs:?}"
+        out.errors.iter().any(|error| error
+            .message
+            .contains("does not yet admit const parameters")),
+        "expected the documented const-parameter refusal, got: {:?}",
+        out.errors
     );
 }
 

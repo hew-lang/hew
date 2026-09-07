@@ -231,13 +231,37 @@ impl Builder {
             self.span(),
         )
     }
-    fn state_value(&mut self, state: &MachineState) -> Spanned<Expr> {
-        let fields = state
+    /// The staged machine value for `state`, spelled through the machine's own
+    /// name. A contextual `.Variant` needs an expected type, and reading
+    /// `state` or `self` in an unannotated `let` supplies none.
+    fn state_value(&mut self, machine: &MachineDecl, state: &MachineState) -> Spanned<Expr> {
+        let fields: Vec<_> = state
             .fields
             .iter()
             .map(|(name, _)| (name.clone(), self.ident(format!("_$machine_state_{name}"))))
             .collect();
-        self.variant(&state.name, fields)
+        self.qualified_variant(machine, &state.name, fields)
+    }
+
+    fn qualified_variant(
+        &mut self,
+        machine: &MachineDecl,
+        name: &str,
+        fields: Vec<(String, Spanned<Expr>)>,
+    ) -> Spanned<Expr> {
+        if fields.is_empty() {
+            let object = self.ident(&machine.name);
+            return self.expr(Expr::FieldAccess {
+                object: Box::new(object),
+                field: name.to_string(),
+            });
+        }
+        self.expr(Expr::StructInit {
+            name: format!("{}.{name}", machine.name),
+            fields,
+            type_args: None,
+            base: None,
+        })
     }
     fn state_locals(&mut self, state: &MachineState) -> Vec<Spanned<Stmt>> {
         state
@@ -570,7 +594,7 @@ impl Builder {
             for event in &machine.events {
                 let event_pattern = self.pattern(&event.name, &event.fields, "_$machine_event_");
                 let rules = rules_for(machine, state, event);
-                let current = self.state_value(state);
+                let current = self.state_value(machine, state);
                 let ignored = self.variant("Ignored", Vec::new());
                 let target = self.ident(DISPOSITION);
                 let set_ignored = self.stmt(Stmt::Assign {
@@ -675,12 +699,16 @@ impl Builder {
         for next in &machine.states {
             let pattern = self.pattern(&next.name, &next.fields, "_$machine_in_");
             let mut locals = self.state_locals(next);
-            if let Some(entry) = &next.entry {
+            // A fixed target reaches exactly one arm, so only that arm runs its
+            // entry hook. Rewriting the others would check a hook against an
+            // input it can never observe.
+            let reachable = rule.target_state == "_" || rule.target_state == next.name;
+            if let (true, Some(entry)) = (reachable, &next.entry) {
                 let entry = self.rewrite_block(entry, machine, next, event)?;
                 let entry = self.expr(Expr::Block(entry));
                 locals.push(self.stmt(Stmt::Expression(entry)));
             }
-            let result = self.state_value(next);
+            let result = self.state_value(machine, next);
             let body = self.block(locals, result);
             arms.push(MatchArm {
                 pattern,
@@ -825,10 +853,11 @@ impl Builder {
     ) -> Result<(), TypeError> {
         match expr {
             Expr::Identifier(name) if name == "self" || name == "state" => {
-                *expr = self.state_value(state).0;
+                *expr = self.state_value(machine, state).0;
             }
             Expr::Identifier(name) if machine.states.iter().any(|state| state.name == *name) => {
-                *expr = self.variant(name, Vec::new()).0;
+                let name = name.clone();
+                *expr = self.qualified_variant(machine, &name, Vec::new()).0;
             }
             Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Identifier(name) if name == "self" || name == "state") =>
             {

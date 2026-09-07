@@ -18,7 +18,7 @@ const TCP_CONNECTION_SOURCE: &str = r#"
 pub type Connection {}
 
 impl Connection {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe { hew_tcp_close(self) };
     }
 }
@@ -38,7 +38,7 @@ fn resource_close_discharges_and_moves_the_receiver() {
         type Socket { fd: i64 }
 
         impl Socket {
-            fn close(consuming self) {}
+            fn close(consume self) {}
             fn status(self) -> i64 { self.fd }
         }
 
@@ -67,8 +67,8 @@ fn non_close_consuming_method_moves_the_receiver() {
         type Socket { fd: i64 }
 
         impl Socket {
-            fn close(consuming self) {}
-            fn detach(consuming self) -> i64 { self.fd }
+            fn close(consume self) {}
+            fn detach(consume self) -> i64 { self.fd }
             fn status(self) -> i64 { self.fd }
         }
 
@@ -101,7 +101,7 @@ fn resource_close_discharge_rejects_a_second_close() {
         type Socket { fd: i64 }
 
         impl Socket {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         fn bad(socket: Socket) {
@@ -535,7 +535,7 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
         #[opaque]
         type Unknown {}
         impl Unknown {
-            fn close(consuming self) { unsafe { unknown_free(self) }; }
+            fn close(consume self) { unsafe { unknown_free(self) }; }
         }
         extern "C" {
             fn unknown_new() -> Unknown;
@@ -825,7 +825,7 @@ const SYNTHETIC_OWNER: &str = r#"
 #[opaque]
 pub type Socket {}
 impl Socket {
-    fn close(consuming self) { unsafe { example_socket_close(self) }; }
+    fn close(consume self) { unsafe { example_socket_close(self) }; }
 }
 extern "C" {
     fn example_socket_close(consume socket: Socket) -> i32;
@@ -840,7 +840,7 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
         #[opaque]
         pub type Socket {}
         impl Socket {
-            fn close(consuming self) { unsafe { example_socket_close(self) }; }
+            fn close(consume self) { unsafe { example_socket_close(self) }; }
         }
         extern "C" {
             fn example_socket_close(consume socket: Socket) -> i32;
@@ -1109,7 +1109,7 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
         #[opaque]
         pub type Socket {}
         impl Socket {
-            fn close(consuming self) {
+            fn close(consume self) {
                 unsafe { example_socket_close(self) };
             }
         }
@@ -1165,7 +1165,7 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
         #[opaque]
         pub type Socket {}
         impl Socket {
-            fn close(consuming self) {
+            fn close(consume self) {
                 unsafe { example_socket_close(self) };
             }
         }

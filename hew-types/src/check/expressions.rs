@@ -816,20 +816,6 @@ impl Checker {
                 Ty::Never
             }
 
-            // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
-            Expr::This => {
-                if let Some(actor_ty) = &self.current_actor_type {
-                    Ty::local_pid(actor_ty.clone())
-                } else {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "`this` can only be used inside an actor".to_string(),
-                    );
-                    Ty::Error
-                }
-            }
-
             // Index
             Expr::Index { object, index } => {
                 self.synthesize_index(object, index, span, IndexContext::Read)
@@ -2461,17 +2447,20 @@ impl Checker {
                 return Ty::Error;
             }
             if name == "self" {
-                let message = if self.current_actor_type.is_some() {
-                    "`self` names actor state only through a field, as `self.count` or bare \
-                     `count`; use `this` when you need the actor handle"
-                        .to_string()
-                } else {
+                // Inside an actor, bare `self` is the actor's own handle
+                // (`LocalPid<Self>`); actor state is still reached through a
+                // field, as `self.count` or bare `count`.
+                if let Some(actor_ty) = &self.current_actor_type {
+                    return Ty::local_pid(actor_ty.clone());
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedVariable,
+                    span,
                     "`self` is not a valid identifier in Hew; \
                      use a named receiver parameter instead: \
                      `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
-                        .to_string()
-                };
-                self.report_error(TypeErrorKind::UndefinedVariable, span, message);
+                        .to_string(),
+                );
             } else {
                 let similar = crate::error::find_similar(
                     name,
@@ -6925,7 +6914,6 @@ impl Checker {
             | Expr::Yield(_)
             | Expr::Return(_)
             | Expr::ReturnError(_)
-            | Expr::This
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }
             | Expr::Cast { .. }
@@ -7069,30 +7057,6 @@ impl Checker {
             );
             return Ty::Error;
         }
-        if matches!(&object.0, Expr::This) && self.current_actor_type.is_some() {
-            if self.current_actor_fields.iter().any(|f| f.name == field) {
-                self.report_error_with_suggestions(
-                    TypeErrorKind::UndefinedField,
-                    span,
-                    format!(
-                        "`this` is the actor handle, not actor state; access actor field \
-                         `{field}` as `self.{field}` or bare `{field}`, not `this.{field}`"
-                    ),
-                    vec![format!("self.{field}"), field.to_string()],
-                );
-            } else {
-                self.report_error(
-                    TypeErrorKind::UndefinedField,
-                    span,
-                    format!(
-                        "`this` is the actor handle, not actor state; actor body has no \
-                         field `{field}`"
-                    ),
-                );
-            }
-            return Ty::Error;
-        }
-
         if let Some(head) = self.resolve_dotted_type_head(object, field) {
             if let Some(result) = self.dispatch_dotted_type_member(
                 &head,

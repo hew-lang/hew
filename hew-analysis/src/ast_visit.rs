@@ -925,7 +925,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             }
             Expr::Literal(_)
             | Expr::QualifiedAssoc(_)
-            | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None)
             | Expr::RegexLiteral(_)

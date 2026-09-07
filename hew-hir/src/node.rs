@@ -878,7 +878,7 @@ pub struct HirTypeDecl {
     /// dereference. Construction emits `hew_alloc` + write + ptr-store;
     /// drop emits `hew_dealloc` after recursively freeing sub-trees.
     pub is_indirect: bool,
-    /// Names of methods declared with a `consuming self` receiver in the
+    /// Names of methods declared with a `consume self` receiver in the
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
     /// Source-declared generic type-parameter names, in order. Empty for
@@ -1377,14 +1377,14 @@ pub enum HirExprKind {
         timeout_ms: Box<HirExpr>,
         reply_ty: ResolvedTy,
     },
-    /// `this` inside an actor `receive fn` — the actor's own handle.
+    /// Bare `self` inside an actor `receive fn` — the actor's own handle.
     ///
     /// A zero-payload leaf: the `LocalPid<Self>` type recorded by the checker
-    /// at the `this` span (`Expr::This` synthesis) rides on the wrapping
+    /// at the `self` span rides on the wrapping
     /// `HirExpr.ty`, so this variant carries no fields. MIR lowers it via the
     /// `hew_actor_self()` runtime primitive — the same self-handle synthesis
     /// `link`/`monitor`/`unlink` already use implicitly — yielding the borrowed
-    /// `*mut HewActor` the current actor runs on. A self-send (`this.go()`)
+    /// `*mut HewActor` the current actor runs on. A self-send (`self.go()`)
     /// flows through the existing `ActorSend` machinery once the receiver
     /// lowers to this handle.
     ActorSelf,

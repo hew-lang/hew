@@ -160,7 +160,7 @@ fn zero_argument_function_item_remains_a_callable_value() {
 
 #[test]
 fn resource_capture_requires_move_and_body_consumption_requires_once() {
-    let declarations = "#[resource] type Socket { fd: i64 } impl Socket { fn close(consuming self) {} fn take(consuming self) -> i64 { self.fd } }";
+    let declarations = "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} fn take(consume self) -> i64 { self.fd } }";
     let output = check_source(&format!(
         "{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = || socket.fd; }}"
     ));
@@ -196,7 +196,7 @@ fn resource_capture_requires_move_and_body_consumption_requires_once() {
 
 #[test]
 fn consumption_in_a_diverging_arm_still_requires_once() {
-    let output = check_source("#[resource] type Socket { fd: i64 } impl Socket { fn close(consuming self) {} } fn main() { let socket = Socket { fd: 7 }; let f = move |finish: bool| { if finish { socket.close(); return; } }; }");
+    let output = check_source("#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } fn main() { let socket = Socket { fd: 7 }; let f = move |finish: bool| { if finish { socket.close(); return; } }; }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
         capture(&output, "socket").consumption,
@@ -500,7 +500,7 @@ fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
     for prefix in ["#[resource]", "#[linear]"] {
         let declarations = format!(
             "{prefix} type Bundle {{ done: fn[once]() -> i64 }}
-            impl Bundle {{ fn close(consuming self) {{ }} }}
+            impl Bundle {{ fn close(consume self) {{ }} }}
             type Outer {{ inner: (Bundle, string) }}"
         );
         for body in [
@@ -538,7 +538,7 @@ fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
 
 #[test]
 fn callable_erasure_cannot_discard_linear_capture_obligations() {
-    let output = check_source("#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consuming self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }");
+    let output = check_source("#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consume self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }");
     assert!(
         output
             .errors
@@ -552,7 +552,7 @@ fn callable_erasure_cannot_discard_linear_capture_obligations() {
 #[test]
 fn transferring_a_captured_owner_requires_once() {
     let declarations =
-        "#[resource] type Socket { fd: i64 } impl Socket { fn close(consuming self) {} } type Holder { socket: Socket } enum Envelope { Owned(Socket) }";
+        "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } type Holder { socket: Socket } enum Envelope { Owned(Socket) }";
     for body in [
         "{ Holder { socket: socket } }",
         "Envelope.Owned(socket)",

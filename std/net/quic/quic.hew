@@ -221,7 +221,7 @@ impl QUICEndpointMethods for QUICEndpoint {
 
 impl QUICEndpoint {
     /// Release this endpoint early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_quic_endpoint_close(self)
         };
@@ -244,7 +244,7 @@ trait QUICConnectionMethods {
     /// Gracefully close this connection and release its resources.
     ///
     /// Returns `Ok(())` on success or `Err(net.NetError)` on failure.
-    fn disconnect(consuming self) -> Result<(), net.NetError>;
+    fn disconnect(consume self) -> Result<(), net.NetError>;
 
     /// Block until the next queued QUIC event on this connection.
     ///
@@ -267,7 +267,7 @@ impl QUICConnectionMethods for QUICConnection {
             hew_quic_conn_accept_stream(conn)
         }
     }
-    fn disconnect(consuming self) -> Result<(), net.NetError> {
+    fn disconnect(consume self) -> Result<(), net.NetError> {
         connection_disconnect(self)
     }
     fn on_event(conn: QUICConnection) -> QUICEvent {
@@ -284,7 +284,7 @@ impl QUICConnection {
     /// Release this connection without reporting shutdown status.
     /// `disconnect()` remains the consuming compatibility API when callers
     /// need the result.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_quic_conn_disconnect(self)
         };
@@ -382,7 +382,7 @@ impl QUICStreamMethods for QUICStream {
 
 impl QUICStream {
     /// Release this stream early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_quic_stream_close(self)
         };

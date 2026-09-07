@@ -80,7 +80,7 @@ impl ServerMethods for Server {
 
 impl Server {
     /// Release this server early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_http_server_close(self)
         };
@@ -284,7 +284,7 @@ fn valid_response_status(status: i64) -> bool {
 
 impl Request {
     /// Release this request early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_http_request_free(self.handle)
         };

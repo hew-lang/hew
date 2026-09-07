@@ -390,7 +390,6 @@ pub enum Expr {
     Return(Option<Box<Spanned<Expr>>>),
     /// Explicit failure return from the current `fails` function.
     ReturnError(Box<Spanned<Expr>>),
-    This,
     FieldAccess {
         object: Box<Spanned<Expr>>,
         field: String,
@@ -1050,13 +1049,13 @@ pub struct FnDecl {
     /// remove the corresponding catalog rows in the migration slices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intrinsic: Option<String>,
-    /// `true` when this method declares a `consuming self` receiver — the
-    /// terminal single-consume surface (`fn build(consuming self) -> T`, a
+    /// `true` when this method declares a `consume self` receiver — the
+    /// terminal single-consume surface (`fn build(consume self) -> T`, a
     /// `#[linear]` type's consuming method). The receiver is moved into the call
     /// and a later use of the binding surfaces `UseAfterMove`; the checker
     /// registers the method into its consume-receiver set so the move-checker
     /// marks the receiver consumed. Only meaningful on inherent-impl methods —
-    /// type-body `consuming self` methods carry the same fact through
+    /// type-body `consume self` methods carry the same fact through
     /// `TypeDecl.consuming_methods` instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consumes_self: bool,
@@ -1114,7 +1113,7 @@ pub struct ConstDecl {
 /// Ownership discipline marker placed on a type via `#[resource]` or `#[linear]`.
 ///
 /// - `Resource`: type holds an external resource; the runtime implicitly calls
-///   `fn close(consuming self) -> Result<(), E>` on scope exit.
+///   `fn close(consume self) -> Result<(), E>` on scope exit.
 /// - `Linear`: single-owner type with no implicit drop; every consuming method
 ///   declared on the type exhausts it; all live bindings must be consumed on
 ///   every exit path.
@@ -1154,7 +1153,7 @@ pub struct TypeDecl {
     /// `*mut T`. Orthogonal to `resource_marker` (representation vs ownership).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_opaque: bool,
-    /// Names of methods declared with a `consuming self` receiver in this type body.
+    /// Names of methods declared with a `consume self` receiver in this type body.
     /// Populated by the parser; used by the type checker to validate ownership rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consuming_methods: Vec<String>,

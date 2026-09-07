@@ -136,7 +136,7 @@ pub enum HirDiagnosticKind {
         actual: usize,
     },
     /// `#[resource]` type body has no method named `close` declared with
-    /// `consuming self`. The implicit-drop contract for `@resource` types
+    /// `consume self`. The implicit-drop contract for `@resource` types
     /// requires this method; missing it is a fail-closed compile error.
     ResourceMissingClose {
         name: String,
@@ -157,7 +157,7 @@ pub enum HirDiagnosticKind {
     ///
     /// A receiver (`self`, or a `Self`-typed receiver) is never flagged: it is
     /// not a concrete resource nominal, and its disposition rides the method
-    /// dispatch surface (`consuming self`), not borrow-pass.
+    /// dispatch surface (`consume self`), not borrow-pass.
     ResourceBoundaryParamMustConsume {
         /// Enclosing extern fn / trait method name.
         func: String,
@@ -168,7 +168,7 @@ pub enum HirDiagnosticKind {
         /// Boundary kind: `"extern fn"` or `"trait method signature"`.
         boundary: String,
     },
-    /// `#[linear]` type body declares zero `consuming self` methods. A
+    /// `#[linear]` type body declares zero `consume self` methods. A
     /// linear type with no consuming methods cannot be exhausted on an
     /// exit path, which would make `MirCheck::MustConsume` unable to fire
     /// — caught here as a structural error.
@@ -196,10 +196,10 @@ pub enum HirDiagnosticKind {
         /// Type name carrying the inline `close` method.
         name: String,
     },
-    /// `#[linear]` type declares its `consuming self` method inline in the
-    /// type body (`type T { fn m(consuming self) { … } }`). The supported
+    /// `#[linear]` type declares its `consume self` method inline in the
+    /// type body (`type T { fn m(consume self) { … } }`). The supported
     /// surface that lowers to a callable consume target is a sibling inherent
-    /// impl block (`impl T { fn m(consuming self) { … } }`). The inline form
+    /// impl block (`impl T { fn m(consume self) { … } }`). The inline form
     /// is not lowered to HIR/MIR, so a call to it raises
     /// `IndirectCallUnsupported` at the call site — making the `#[linear]`
     /// type unusable. Fail-close here at the declaration with a directive to

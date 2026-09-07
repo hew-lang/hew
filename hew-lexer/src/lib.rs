@@ -260,8 +260,6 @@ pub enum Token<'src> {
     Init,
     #[token("type")]
     Type,
-    #[token("this")]
-    This,
     #[token("dyn")]
     Dyn,
     #[token("move")]
@@ -693,7 +691,6 @@ define_keywords! {
     Receive    => "receive",
     Init       => "init",
     Type       => "type",
-    This       => "this",
     Dyn        => "dyn",
     Move       => "move",
     Try        => "try",

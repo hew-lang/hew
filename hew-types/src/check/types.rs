@@ -2490,8 +2490,8 @@ pub struct FnSig {
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
     pub receiver_update: ReceiverUpdate,
-    /// `true` iff this signature was declared with a `consuming self` receiver
-    /// (the terminal single-consume surface: `fn build(consuming self) -> T`, a
+    /// `true` iff this signature was declared with a `consume self` receiver
+    /// (the terminal single-consume surface: `fn build(consume self) -> T`, a
     /// `#[linear]` type's consuming method).
     ///
     /// Populated by the registration pass from [`hew_parser::ast::FnDecl`]'s

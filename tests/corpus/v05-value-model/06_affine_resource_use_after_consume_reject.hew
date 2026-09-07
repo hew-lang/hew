@@ -20,7 +20,7 @@ struct FileHandle {
     fd: i64,
 }
 
-fn close_file(consuming self: FileHandle) {
+fn close_file(consume self: FileHandle) {
     let _ = self.fd;
 }
 

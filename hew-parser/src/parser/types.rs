@@ -723,9 +723,12 @@ impl Parser<'_> {
                 // make the surface unreachable from valid programs.
                 if allow_implicit_self && params.is_empty() && self.peek() != Some(&Token::Colon) {
                     if is_consume {
+                        // A first-position `consume self` is eaten by
+                        // `eat_consume_self_receiver` wherever a receiver is
+                        // allowed; reaching here means the surrounding item
+                        // has no receiver to consume.
                         self.errors.push(ParseError {
-                            message: "`consume self` is not valid; a by-move receiver is \
-                                      written `consuming self`"
+                            message: "`consume self` is only valid as the receiver of a method"
                                 .to_string(),
                             span: span.clone(),
                             hint: None,
@@ -796,49 +799,49 @@ impl Parser<'_> {
         params
     }
 
-    /// Parse a parameter list, optionally accepting a `consuming self` receiver.
+    /// Parse a parameter list, optionally accepting a `consume self` receiver.
     ///
-    /// When `allow_consuming_self` is true (type-body method context), the first
-    /// token pair `consuming self` is recognised as a consuming-self receiver.
-    /// The receiver does not appear in the returned `Vec<Param>`; instead the
-    /// boolean return indicates its presence so the caller can record it in
+    /// When `allow_consume_self` is true (type-body method context), a leading
+    /// `consume self` is recognised as a consuming-self receiver. The receiver
+    /// does not appear in the returned `Vec<Param>`; instead the boolean return
+    /// indicates its presence so the caller can record it in
     /// `TypeDecl.consuming_methods`.
     ///
-    /// `consuming self` is only valid at the first-parameter position. If it
-    /// appears elsewhere (or `allow_consuming_self` is false), it falls through
+    /// `consume self` is only valid at the first-parameter position. If it
+    /// appears elsewhere (or `allow_consume_self` is false), it falls through
     /// to the regular error path.
     pub(crate) fn parse_params_with_receiver(
         &mut self,
-        allow_consuming_self: bool,
+        allow_consume_self: bool,
     ) -> (Vec<Param>, bool) {
-        // Check for `consuming self` at the first-parameter position.
-        let has_consuming_self = allow_consuming_self && self.eat_consuming_self_receiver();
+        // Check for `consume self` at the first-parameter position.
+        let has_consume_self = allow_consume_self && self.eat_consume_self_receiver();
 
         // Parse remaining ordinary parameters.
         let params = self.parse_params();
-        (params, has_consuming_self)
+        (params, has_consume_self)
     }
 
-    /// Recognise and consume a `consuming self` receiver at the current
+    /// Recognise and consume a `consume self` receiver at the current
     /// (first-parameter) position, returning `true` when one was eaten.
     ///
-    /// `consuming` lexes as `Token::Identifier("consuming")`, so the receiver is
-    /// the two-token sequence `consuming self`. The optional trailing comma is
-    /// also consumed so the following ordinary parameters parse cleanly. When the
-    /// current position is not a `consuming self` receiver, no tokens are
-    /// consumed and `false` is returned — the caller proceeds to parse ordinary
-    /// parameters (which rejects a stray `consuming` elsewhere in the list).
+    /// One receiver token carries every mode: `self` borrows, `var self`
+    /// mutates and `consume self` consumes. The retired `consuming self`
+    /// spelling is recognised here only to refuse it with the fix-it, then
+    /// treated as the consuming receiver so the rest of the item still parses.
+    /// The optional trailing comma is also consumed so the following ordinary
+    /// parameters parse cleanly.
     ///
     /// Shared by `parse_params_with_receiver` (type-body methods) and
     /// `parse_function` (inherent-impl methods) so both surfaces recognise the
     /// receiver identically.
-    pub(crate) fn eat_consuming_self_receiver(&mut self) -> bool {
+    pub(crate) fn eat_consume_self_receiver(&mut self) -> bool {
         if self.at_end() || self.peek() == Some(&Token::RightParen) {
             return false;
         }
-        let is_consuming_kw =
+        let retired_spelling =
             matches!(self.peek(), Some(Token::Identifier(s)) if *s == "consuming");
-        if !is_consuming_kw {
+        if !retired_spelling && !self.peek_is_consume_param_modifier() {
             return false;
         }
         let next_is_self = matches!(
@@ -848,7 +851,15 @@ impl Parser<'_> {
         if !next_is_self {
             return false;
         }
-        self.advance(); // consuming
+        if retired_spelling {
+            let span = self.peek_span();
+            self.error_at_with_hint(
+                "`consuming self` is not valid".to_string(),
+                span,
+                "write `consume self`",
+            );
+        }
+        self.advance(); // consume
         self.advance(); // self
         self.eat(&Token::Comma); // optional trailing comma before further params
         true

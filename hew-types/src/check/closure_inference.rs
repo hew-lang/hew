@@ -264,7 +264,6 @@ fn esc_visit_expr(
         Expr::ReturnError(value) => esc_visit_arg(&value.0, name, in_fork, acc),
         Expr::Literal(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

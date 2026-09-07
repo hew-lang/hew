@@ -502,7 +502,7 @@ impl ListenerMethods for Listener {
 // authority; the trait above remains intentionally borrowing-only.
 impl Listener {
     /// Close the listener and release the listening socket.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_tcp_listener_close(self)
         };
@@ -713,7 +713,7 @@ impl ConnectionMethods for Connection {
 // cancellation, and suspended-frame exits.
 impl Connection {
     /// Close the connection and release resources.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_tcp_close(self)
         };
@@ -725,11 +725,11 @@ impl Connection {
     /// refusal the runtime closes the consumed connection before returning
     /// `Err(AttachError.Refused)`. Every call site is rewritten to
     /// `hew_tcp_attach_local` by the checker/codegen.
-    fn attach(consuming self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
+    fn attach(consume self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
         Err(AttachError.Refused)
     }
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
-    fn into_stream_sink(consuming self) -> (Stream<bytes>, stream.Sink<bytes>) {
+    fn into_stream_sink(consume self) -> (Stream<bytes>, stream.Sink<bytes>) {
         unsafe {
             let pair = hew_tcp_stream_from_conn(self);
             let s = hew_stream_pair_stream_bytes(pair);

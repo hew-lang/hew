@@ -623,17 +623,17 @@ impl Parser<'_> {
 
         self.expect(&Token::LeftParen)?;
         // Inherent-impl methods (where `self` receivers are allowed) may declare
-        // a `consuming self` receiver — the terminal single-consume surface
-        // (`fn build(consuming self) -> T`, a `#[linear]` type's consuming
+        // a `consume self` receiver — the terminal single-consume surface
+        // (`fn build(consume self) -> T`, a `#[linear]` type's consuming
         // method). The receiver is lowered as the by-value `self` parameter; the
         // `consumes_self` fact drives the checker's consume-receiver marking. A
-        // `consuming self` outside the first position, or in a context that does
+        // `consume self` outside the first position, or in a context that does
         // not allow `self` receivers (a free function), falls through to the
         // regular param path and is rejected there.
         let consuming_self_span = self.peek_span();
-        let consumes_self = self.allow_implicit_self_params && self.eat_consuming_self_receiver();
+        let consumes_self = self.allow_implicit_self_params && self.eat_consume_self_receiver();
         let mut params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
-        // A `consuming self` receiver is materialised as a leading by-value
+        // A `consume self` receiver is materialised as a leading by-value
         // `self: Self` parameter so the checker's receiver binding and HIR's
         // method-symbol minting treat it identically to a bare `self` receiver;
         // the move (consume) semantics ride on `consumes_self`, not on the
@@ -705,7 +705,7 @@ impl Parser<'_> {
 
     /// Parse a method inside a type body, returning `(FnDecl, has_consuming_self)`.
     ///
-    /// Unlike `parse_function`, this variant accepts `consuming self` as the first
+    /// Unlike `parse_function`, this variant accepts `consume self` as the first
     /// parameter. The boolean return indicates whether the method declared such a
     /// receiver; callers record this in `TypeDecl.consuming_methods`.
     pub(crate) fn parse_type_method(
@@ -1129,7 +1129,7 @@ impl Parser<'_> {
     /// Parse one item in a type body, returning `(item, has_consuming_self)`.
     ///
     /// `has_consuming_self` is `true` only when the item is a method whose
-    /// first parameter is a `consuming self` receiver.  The caller records
+    /// first parameter is a `consume self` receiver.  The caller records
     /// consuming method names in `TypeDecl.consuming_methods`.
     pub(crate) fn parse_type_body_item(
         &mut self,
@@ -1157,7 +1157,7 @@ impl Parser<'_> {
                     self.validate_attributes_for(&attributes, AttrPosition::Unsupported);
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    // Use parse_type_method so `consuming self` receivers are accepted.
+                    // Use parse_type_method so `consume self` receivers are accepted.
                     let (mut method, has_consuming_self) =
                         self.parse_type_method(fn_start, attributes)?;
                     method.doc_comment = doc_comment;
@@ -1296,7 +1296,7 @@ impl Parser<'_> {
 
                 self.expect(&Token::LeftParen)?;
                 let consuming_self_span = self.peek_span();
-                let consumes_self = self.eat_consuming_self_receiver();
+                let consumes_self = self.eat_consume_self_receiver();
                 let mut params = self.parse_params_with_implicit_self(true);
                 if consumes_self {
                     params.insert(

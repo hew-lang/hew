@@ -20,7 +20,7 @@ type Ticket {
 }
 
 impl Ticket {
-    fn consume(consuming self) {
+    fn consume(consume self) {
     }
 }
 
@@ -48,12 +48,12 @@ actor Worker {
 
 trait Ordered {
     #[returns_receiver]
-    fn bump(consuming self) -> Self;
+    fn bump(consume self) -> Self;
 }
 
 impl Ordered for Ticket {
     #[returns_receiver]
-    fn bump(consuming self) -> Ticket {
+    fn bump(consume self) -> Ticket {
         self
     }
 }

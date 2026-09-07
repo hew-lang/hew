@@ -3566,7 +3566,7 @@ fn trait_method_preserves_receiver_identity_and_consuming_self() {
     let source = r"
 trait Fluent {
     #[returns_receiver]
-    fn with(consuming self, consume child: Child) -> Self;
+    fn with(consume self, consume child: Child) -> Self;
 }
 ";
     let result = parse(source);
@@ -3953,7 +3953,7 @@ fn parses_resource_marker_and_consuming_method() {
             #[resource]
             type File {
                 fd: int,
-                fn close(consuming self) -> int { 0 }
+                fn close(consume self) -> int { 0 }
             }
         ";
     let result = parse(source);
@@ -3978,8 +3978,8 @@ fn parses_linear_marker_and_multiple_consuming_methods() {
             #[linear]
             type Txn {
                 id: int,
-                fn commit(consuming self) -> int { 0 }
-                fn rollback(consuming self) -> int { 1 }
+                fn commit(consume self) -> int { 0 }
+                fn rollback(consume self) -> int { 1 }
                 fn id(t: Txn) -> int { 0 }
             }
         ";
@@ -3998,6 +3998,26 @@ fn parses_linear_marker_and_multiple_consuming_methods() {
         td.consuming_methods,
         vec!["commit".to_string(), "rollback".to_string()],
     );
+}
+
+#[test]
+fn retired_consuming_self_receiver_is_refused_with_fix_it() {
+    // One receiver token: `consume self` consumes. The retired `consuming
+    // self` spelling is refused and points at the replacement.
+    let source = r"
+            #[resource]
+            type File {
+                fd: int,
+                fn close(consuming self) -> int { 0 }
+            }
+        ";
+    let result = parse(source);
+    let refusal = result
+        .errors
+        .iter()
+        .find(|e| e.message.contains("`consuming self` is not valid"))
+        .expect("expected a refusal for the retired spelling");
+    assert_eq!(refusal.hint.as_deref(), Some("write `consume self`"));
 }
 
 #[test]

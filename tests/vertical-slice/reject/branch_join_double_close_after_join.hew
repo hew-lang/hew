@@ -10,7 +10,7 @@ type Conn {
 }
 
 impl Conn {
-    fn close(consuming self) {}
+    fn close(consume self) {}
 }
 
 fn close_after_conditional_close(flag: bool) {

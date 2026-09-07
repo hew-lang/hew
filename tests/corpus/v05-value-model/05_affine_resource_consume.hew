@@ -28,7 +28,7 @@ fn file_size(f: FileHandle) -> i64 {
     f.fd   // placeholder: real impl would call fstat
 }
 
-fn close_file(consuming self: FileHandle) {
+fn close_file(consume self: FileHandle) {
     // Consuming receiver — f is consumed (transferred) here.
     let _ = self.fd;
     // Deterministic drop: OS-level close would happen via the resource drop.

@@ -408,7 +408,7 @@ pub type FileReadStream {
 }
 
 impl FileReadStream {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_file_read_stream_close(self)
         };

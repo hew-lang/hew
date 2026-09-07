@@ -36,7 +36,7 @@ impl ResourceToken {
 #[linear]
 type LinearTicket { id: i64 }
 impl LinearTicket {
-    fn redeem(consuming self) -> i64 { self.id }
+    fn redeem(consume self) -> i64 { self.id }
 }
 
 fn main() -> i64 {

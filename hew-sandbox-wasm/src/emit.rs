@@ -2298,7 +2298,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::ReturnError(_)
             | Expr::Coalesce { .. }
             | Expr::Handle { .. }
-            | Expr::This
             | Expr::QualifiedAssoc(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)

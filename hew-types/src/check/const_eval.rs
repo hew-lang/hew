@@ -278,7 +278,6 @@ fn eval_inner(
         | Expr::Yield(_)
         | Expr::Return(_)
         | Expr::ReturnError(_)
-        | Expr::This
         | Expr::FieldAccess { .. }
         | Expr::Index { .. }
         | Expr::Cast { .. }

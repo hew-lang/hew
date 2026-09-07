@@ -15,7 +15,7 @@ const INVALID_RESOURCE_MODULE: &str = r#"
 pub type Value {}
 
 impl Value {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe { hew_json_free(self) };
         println("closed");
     }

@@ -6317,7 +6317,7 @@ impl Checker {
                 &method.span,
                 format!(
                     "`#[returns_receiver]` on trait method `{trait_name}.{}` requires \
-                     one zero-argument attribute, a `consuming self` receiver, the exact \
+                     one zero-argument attribute, a `consume self` receiver, the exact \
                      `Self` return type, and any default body to have one direct trailing \
                      `self` with no alternate `return` path",
                     method.name
@@ -6954,7 +6954,7 @@ impl Checker {
                 &method.decl_span,
                 format!(
                     "`#[returns_receiver]` on `{type_name}.{}` requires a zero-argument \
-                     attribute appearing exactly once, a `consuming self` receiver, the same \
+                     attribute appearing exactly once, a `consume self` receiver, the same \
                      receiver return type, one direct trailing `self`, and no alternate \
                      `return` path",
                     method.name
@@ -7345,7 +7345,7 @@ impl Checker {
             self.extern_method_origins.insert(registered_key, origin);
         }
         self.publish_impl_method_sig(type_name, &method.name, &sig);
-        // A `consuming self` inherent method moves its receiver at every call
+        // A `consume self` inherent method moves its receiver at every call
         // site. Register the qualified `Type::method` name into the
         // consume-receiver set so the dispatch site marks the receiver moved
         // (a later use surfaces `UseAfterMove`) and records the per-call-site
@@ -8637,7 +8637,7 @@ impl Checker {
                 &report_span,
                 format!(
                     "impl method `{type_name}.{}` has a different receiver ownership \
-                     contract than trait `{trait_name}`; `consuming self` must match exactly",
+                     contract than trait `{trait_name}`; `consume self` must match exactly",
                     method.name
                 ),
                 &trait_method.span,

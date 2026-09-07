@@ -1,11 +1,11 @@
-// A `#[linear]` type that declares its `consuming self` method inline in the
+// A `#[linear]` type that declares its `consume self` method inline in the
 // type body is rejected (`LinearConsumingMethodSourceUnsupported`): the inline
 // form is not lowered to a callable consume target. The supported surface is a
 // sibling inherent-impl block.
 #[linear]
 type Tx {
     id: i64,
-    fn commit(consuming self) { println(f"commit {self.id}"); }
+    fn commit(consume self) { println(f"commit {self.id}"); }
 }
 
 fn main() {

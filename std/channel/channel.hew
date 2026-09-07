@@ -184,7 +184,7 @@ pub type ChannelPair {
 }
 
 impl ChannelPair {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_channel_pair_free(self)
         };

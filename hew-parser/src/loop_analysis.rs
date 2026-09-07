@@ -474,7 +474,6 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,

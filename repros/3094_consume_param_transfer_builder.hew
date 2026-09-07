@@ -23,10 +23,10 @@ type Value {
 }
 
 trait ValueMethods {
-    fn free(consuming self);
+    fn free(consume self);
 
     #[returns_receiver]
-    fn push(consuming self, consume child: Value) -> Self;
+    fn push(consume self, consume child: Value) -> Self;
 }
 
 pub enum BuildError {
@@ -34,11 +34,11 @@ pub enum BuildError {
 }
 
 impl ValueMethods for Value {
-    fn free(consuming self) {
+    fn free(consume self) {
         self.close();
     }
     #[returns_receiver]
-    fn push(consuming self, consume child: Value) -> Value {
+    fn push(consume self, consume child: Value) -> Value {
         unsafe {
             hew_json_array_push(self.handle, child.release())
         };
@@ -47,12 +47,12 @@ impl ValueMethods for Value {
 }
 
 impl Value {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_json_free(self.handle)
         };
     }
-    fn release(consuming self) -> Handle {
+    fn release(consume self) -> Handle {
         self.handle
     }
 }

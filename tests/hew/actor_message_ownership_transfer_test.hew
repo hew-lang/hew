@@ -20,8 +20,8 @@ type Socket {
 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
         self.fd
     }
 }
@@ -32,7 +32,7 @@ type Ticket {
 }
 
 impl Ticket {
-    fn redeem(consuming self) -> i64 {
+    fn redeem(consume self) -> i64 {
         self.id
     }
 }

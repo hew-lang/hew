@@ -15,8 +15,8 @@ type Conn {
 }
 
 impl Conn {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
         self.fd
     }
 }

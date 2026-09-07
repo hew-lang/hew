@@ -53,17 +53,17 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         trait Fluent {
             #[returns_receiver]
-            fn touch(consuming self) -> Self;
+            fn touch(consume self) -> Self;
         }
 
         impl Fluent for Builder {
             #[returns_receiver]
-            fn touch(consuming self) -> Builder {
+            fn touch(consume self) -> Builder {
                 self
             }
         }
@@ -115,10 +115,10 @@ fn captured_receiver_identity_result_moves_original_binding() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
 
             #[returns_receiver]
-            fn touch(consuming self) -> Builder {
+            fn touch(consume self) -> Builder {
                 self
             }
         }
@@ -153,11 +153,11 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
             fn inspect(self) -> i64 { self.value }
 
             #[returns_receiver]
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
 
         fn main() {
@@ -179,10 +179,10 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
 
             #[returns_receiver]
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
 
         fn main() {
@@ -209,7 +209,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         type Builder { value: i64 }
         impl Builder {
             #[returns_receiver]
-            fn bad(consuming self) -> Builder {
+            fn bad(consume self) -> Builder {
                 Builder { value: 2 }
             }
         }
@@ -218,7 +218,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         type Builder { value: i64 }
         impl Builder {
             #[returns_receiver]
-            fn bad(consuming self) -> Builder {
+            fn bad(consume self) -> Builder {
                 if self.value == 0 {
                     return self;
                 }
@@ -231,7 +231,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         impl Builder {
             #[returns_receiver]
             #[returns_receiver]
-            fn bad(consuming self) -> Builder {
+            fn bad(consume self) -> Builder {
                 self
             }
         }
@@ -240,7 +240,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         type Builder { value: i64 }
         impl Builder {
             #[returns_receiver]
-            fn bad(consuming self, consume other: Builder) -> Builder {
+            fn bad(consume self, consume other: Builder) -> Builder {
                 other
             }
         }
@@ -266,17 +266,17 @@ fn receiver_identity_allows_nonreceiver_arguments() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         trait Fluent {
             #[returns_receiver]
-            fn with(consuming self, value: i64) -> Self;
+            fn with(consume self, value: i64) -> Self;
         }
 
         impl Fluent for Builder {
             #[returns_receiver]
-            fn with(consuming self, value: i64) -> Builder {
+            fn with(consume self, value: i64) -> Builder {
                 self
             }
         }
@@ -314,12 +314,12 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
 
         trait Fluent<T> {
             #[returns_receiver]
-            fn with(consuming self, value: T) -> Self;
+            fn with(consume self, value: T) -> Self;
         }
 
         impl<T> Fluent<T> for Box<T> {
             #[returns_receiver]
-            fn with(consuming self, value: T) -> Box<T> {
+            fn with(consume self, value: T) -> Box<T> {
                 self
             }
         }
@@ -387,7 +387,7 @@ fn generic_receiver_identity_rejects_changed_type_arguments() {
 
         impl<T, U> Pair<T, U> {
             #[returns_receiver]
-            fn swap_identity(consuming self) -> Pair<U, T> {
+            fn swap_identity(consume self) -> Pair<U, T> {
                 Pair { first: self.second, second: self.first }
             }
         }
@@ -416,7 +416,7 @@ fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
         r"
         trait Fluent {
             #[returns_receiver]
-            fn bad(consuming self) -> Self {
+            fn bad(consume self) -> Self {
                 return self;
             }
         }
@@ -460,10 +460,10 @@ fn trait_impl_must_match_receiver_identity_and_consume_axes() {
         type Builder { value: i64 }
         trait Fluent {
             #[returns_receiver]
-            fn touch(consuming self) -> Self;
+            fn touch(consume self) -> Self;
         }
         impl Fluent for Builder {
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
         ",
         r"
@@ -472,7 +472,7 @@ fn trait_impl_must_match_receiver_identity_and_consume_axes() {
             fn inspect(self) -> Self;
         }
         impl Fluent for Builder {
-            fn inspect(consuming self) -> Builder { self }
+            fn inspect(consume self) -> Builder { self }
         }
         ",
     ] {
@@ -494,19 +494,19 @@ fn receiver_identity_trait_method_is_not_dyn_object_safe() {
         r"
         trait Fluent {
             #[returns_receiver]
-            fn touch(consuming self) -> Self;
+            fn touch(consume self) -> Self;
         }
 
         #[resource]
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         impl Fluent for Builder {
             #[returns_receiver]
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
 
         fn use_dyn(value: dyn Fluent) {

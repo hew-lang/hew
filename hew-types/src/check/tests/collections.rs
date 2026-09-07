@@ -733,7 +733,7 @@ fn explicit_record_clone_rejects_resource_and_linear_in_both_syntaxes() {
         #[linear]
         type LinearTicket { id: i64 }
         impl LinearTicket {
-            fn redeem(consuming self) -> i64 { self.id }
+            fn redeem(consume self) -> i64 { self.id }
         }
 
         fn main() {
@@ -791,7 +791,7 @@ fn generic_record_clone_rejects_substituted_affine_fields() {
         #[linear]
         type LinearTicket { id: i64 }
         impl LinearTicket {
-            fn redeem(consuming self) -> i64 { self.id }
+            fn redeem(consume self) -> i64 { self.id }
         }
 
         type Wrapper<T> { value: T }
@@ -846,7 +846,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
         #[linear]
         type LinearTicket { id: i64 }
         impl LinearTicket {
-            fn redeem(consuming self) -> i64 { self.id }
+            fn redeem(consume self) -> i64 { self.id }
         }
 
         fn main() {

@@ -558,8 +558,7 @@ impl BodyScan<'_> {
                     self.ok = false;
                 }
             }
-            Expr::This
-            | Expr::QualifiedAssoc(_)
+            Expr::QualifiedAssoc(_)
             | Expr::Literal(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -869,7 +868,6 @@ fn expr_mentions(idx: &str, coll: &str, expr: &Expr) -> bool {
             expr_mentions(idx, coll, &object.0) || expr_mentions(idx, coll, &index.0)
         }
         Expr::FieldAccess { object, .. } => expr_mentions(idx, coll, &object.0),
-        Expr::This => false,
         _ => true,
     }
 }

@@ -752,7 +752,6 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

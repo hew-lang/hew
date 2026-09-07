@@ -71,7 +71,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Receive
         | Token::Init
         | Token::Type
-        | Token::This
         | Token::Dyn
         | Token::Move
         | Token::Try

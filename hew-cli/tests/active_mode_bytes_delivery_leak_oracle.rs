@@ -43,7 +43,7 @@ fn allocate_loopback_port() -> u16 {
         .port()
 }
 
-/// The handler does NOT hold the connection: `attach(consuming self, ..)`
+/// The handler does NOT hold the connection: `attach(consume self, ..)`
 /// transfers it to the reactor, which is then its sole owner and closes it.
 /// Giving `ProbeSink` a `Connection` field as well would spawn-transfer the same
 /// connection into actor state and close it a second time on `on_close` — the

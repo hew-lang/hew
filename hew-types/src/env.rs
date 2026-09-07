@@ -722,7 +722,7 @@ impl TypeEnv {
 
     /// Restore a binding after a validated receiver-identity method result is
     /// discarded in place. The method temporarily transfers the one owner
-    /// through `consuming self` and returns that exact owner to this binding.
+    /// through `consume self` and returns that exact owner to this binding.
     pub fn unmark_moved(&mut self, name: &str) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {

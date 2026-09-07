@@ -21,7 +21,7 @@ impl Ticket {
     fn value(self) -> i64 {
         self.id
     }
-    fn close(consuming self) {
+    fn close(consume self) {
         // A real resource close; the composite drop must run this exactly once
         // on both the Ok and the diverging-Err exit paths.
         let _ = self.id;

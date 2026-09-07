@@ -10,7 +10,7 @@ use hew_types::{module_registry::ModuleRegistry, Checker, CloneKind, DefId};
 fn resource_module() -> hew_sir::SemModule {
     let source = r#"
         #[resource] #[opaque] pub type FileReadStream {}
-        impl FileReadStream { fn close(consuming self) { unsafe { hew_file_read_stream_close(self) }; } }
+        impl FileReadStream { fn close(consume self) { unsafe { hew_file_read_stream_close(self) }; } }
         extern "C" {
             fn hew_file_read_stream_open(path: string) -> FileReadStream;
             fn hew_file_read_stream_is_valid(file: FileReadStream) -> bool;

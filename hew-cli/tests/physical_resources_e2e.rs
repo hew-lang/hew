@@ -92,7 +92,7 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
     ] {
         let extra_declaration = match name {
             "borrowed" => "fn read_borrowed(input: Stream<string>) { input.close(); }",
-            "declared" => "#[resource] type Custom { value: i64 } impl Custom { fn close(consuming self) { println(self.value); } }",
+            "declared" => "#[resource] type Custom { value: i64 } impl Custom { fn close(consume self) { println(self.value); } }",
             _ => "",
         };
         let source = format!(r#"import std.stream;

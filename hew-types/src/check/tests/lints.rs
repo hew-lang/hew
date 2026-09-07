@@ -36,7 +36,7 @@ impl Guard { fn close(g: Guard) { } }\n\
 fn open() -> Guard { Guard { id: 1 } }\n\
 #[linear]\n\
 type Txn { id: i64, }\n\
-impl Txn { fn commit(consuming self) -> i64 { 0 } }\n\
+impl Txn { fn commit(consume self) -> i64 { 0 } }\n\
 fn mk() -> Txn { Txn { id: 0 } }\n\
 fn main() { let g = open(); let t = mk(); let plain = 42; }\n";
     let result = hew_parser::parse(source);
@@ -2711,7 +2711,9 @@ fn unused_free_fn_param_is_not_warned() {
 }
 
 #[test]
-fn actor_this_field_points_to_bare_state_field() {
+fn this_is_not_a_word_in_hew() {
+    // `this` carries no actor meaning: inside an actor the handle is `self`,
+    // so `this` is an ordinary (undefined) identifier.
     let source = r"
         actor Counter {
             let count: i64,
@@ -2722,16 +2724,11 @@ fn actor_this_field_points_to_bare_state_field() {
     ";
     let (errors, _) = parse_and_check(source);
     assert!(
-        errors.iter().any(|error| {
-            error.kind == TypeErrorKind::UndefinedField
-                && error.message.contains("`this` is the actor handle")
-                && error.message.contains("not `this.count`")
-                && error
-                    .suggestions
-                    .iter()
-                    .any(|suggestion| suggestion == "count")
-        }),
-        "`this.field` in actor body should suggest bare field access; got: {errors:?}",
+        errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedVariable
+                && error.message.contains("undefined variable `this`")),
+        "`this` must not resolve to an actor handle; got: {errors:?}",
     );
 }
 

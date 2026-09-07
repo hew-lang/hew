@@ -346,7 +346,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -410,7 +409,6 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::Yield(_)
             | Expr::Return(_)
             | Expr::ReturnError(_)
-            | Expr::This
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }
             | Expr::Cast { .. }
@@ -463,7 +461,6 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::Yield(_)
         | Expr::Return(_)
         | Expr::ReturnError(_)
-        | Expr::This
         | Expr::FieldAccess { .. }
         | Expr::Index { .. }
         | Expr::Cast { .. }
@@ -610,7 +607,6 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,
@@ -1011,7 +1007,6 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,

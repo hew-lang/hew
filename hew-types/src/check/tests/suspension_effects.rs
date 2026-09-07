@@ -246,7 +246,7 @@ fn fork_task_boundary_moves_nominal_resources_and_rejects_borrowed_views() {
 fn actor_ask_task_boundary_transfers_resources_once() {
     let source = r"
 #[resource] type Socket { fd: i64 }
-impl Socket { fn detach(consuming self) -> i64 { self.fd } }
+impl Socket { fn detach(consume self) -> i64 { self.fd } }
 actor Worker { receive fn read(socket: Socket) -> i64 { socket.detach() } }
 fn main() {
     let worker = spawn Worker();
@@ -457,7 +457,7 @@ fn fork_promotes_borrowed_value_parameters_into_owning_captures() {
 
 #[test]
 fn fork_cannot_promote_an_affine_borrow() {
-    let output = check_source("#[resource] type Socket {} impl Socket { fn close(consuming self) {} } fn launch(socket: Socket) { let task = fork { socket.close(); }; } fn main() {}");
+    let output = check_source("#[resource] type Socket {} impl Socket { fn close(consume self) {} } fn launch(socket: Socket) { let task = fork { socket.close(); }; } fn main() {}");
     assert!(
         output.errors.iter().any(|error| matches!(
             error.kind,

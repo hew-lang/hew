@@ -83,7 +83,7 @@ fn consume_var(consume var value: Handle) {
 }
 
 trait HandleOps {
-    fn push(consuming self, consume child: Handle) -> Self;
+    fn push(consume self, consume child: Handle) -> Self;
 }
 
 extern "C" {

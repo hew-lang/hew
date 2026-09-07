@@ -205,7 +205,7 @@ fn callee_scope_resource_string_sibling_source(frames: usize) -> String {
         "import std.string;\n\
          #[resource]\n\
          type Handle {{ fd: i64 }}\n\
-         impl Handle {{ fn close(consuming self) {{}} }}\n\
+         impl Handle {{ fn close(consume self) {{}} }}\n\
          type Carrier {{ handle: Handle, note: string }}\n\
          fn consume_it(seed: string) -> i64 {{\n\
          \x20   var c = Carrier {{ handle: Handle {{ fd: 1 }}, note: seed }};\n\

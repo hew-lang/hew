@@ -550,7 +550,6 @@ fn collect_inlay_hints_from_expr(
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

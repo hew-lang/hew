@@ -166,7 +166,6 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Yield(_) => {}
         Expr::Return(_) => {}
         Expr::ReturnError(_) => {}
-        Expr::This => {}
         Expr::FieldAccess { .. } => {}
         Expr::Index { .. } => {}
         Expr::Cast { .. } => {}
@@ -553,10 +552,10 @@ fn fmt_totality_expr_return() {
     assert_roundtrip("fn f(x: i64) -> i64 {\n    if x < 0 { return 0; }\n    x\n}\n");
 }
 
-/// `Expr::This`
+/// Bare `self` — the actor's own handle.
 #[test]
-fn fmt_totality_expr_this() {
-    assert_roundtrip("actor Counter {\n    receive fn me() {\n        let me = this;\n    }\n}\n");
+fn fmt_totality_expr_actor_self() {
+    assert_roundtrip("actor Counter {\n    receive fn me() {\n        let me = self;\n    }\n}\n");
 }
 
 /// `Expr::FieldAccess`

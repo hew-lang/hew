@@ -8,8 +8,8 @@ type Ticket {
 }
 
 impl Ticket {
-    fn close(consuming self) {}
-    fn redeem(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn redeem(consume self) -> i64 {
         self.id
     }
 }

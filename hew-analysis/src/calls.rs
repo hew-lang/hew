@@ -382,7 +382,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

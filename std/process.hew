@@ -39,7 +39,7 @@ pub type ProcessResultHandle {
 }
 
 impl ProcessResultHandle {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_process_result_free(self)
         };

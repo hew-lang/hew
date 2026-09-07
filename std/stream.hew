@@ -195,7 +195,7 @@ pub type StreamPair {
 }
 
 impl StreamPair {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_stream_pair_free(self)
         };

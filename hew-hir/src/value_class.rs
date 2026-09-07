@@ -355,7 +355,7 @@ pub enum ValueClass {
     CowValue,
     PersistentShare,
     /// `@resource` types — external-resource values with an implicit drop side
-    /// effect (`close(consuming self)`). Drop elaboration emits an explicit
+    /// effect (`close(consume self)`). Drop elaboration emits an explicit
     /// `ElabMir::Drop { drop_fn: Some(close) }` on every reachable exit.
     AffineResource,
     /// `@linear` types — single-owner values with **no implicit drop**.

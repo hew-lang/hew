@@ -1309,15 +1309,15 @@ mod actor_message_argument_transfer {
 type Socket { fd: i64 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 { self.fd }
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 { self.fd }
 }
 
 #[linear]
 type Ticket { id: i64 }
 
 impl Ticket {
-    fn redeem(consuming self) -> i64 { self.id }
+    fn redeem(consume self) -> i64 { self.id }
 }
 
 type Holder { socket: Socket }

@@ -1674,9 +1674,7 @@ def discover_opaque_resource_facts(
     declarations = run_hew_query(ast_grep, root, pattern="type $NAME { }")
     attributes = run_hew_query(ast_grep, root, kind="attribute")
     impls = run_hew_query(ast_grep, root, pattern="impl $TYPE { $$$BODY }")
-    closes = run_hew_query(
-        ast_grep, root, pattern="fn close(consuming self) { $$$BODY }"
-    )
+    closes = run_hew_query(ast_grep, root, pattern="fn close(consume self) { $$$BODY }")
     calls = run_hew_query(ast_grep, root, pattern="$F($$$ARGS)")
     extern_blocks = run_hew_query(ast_grep, root, pattern='extern "C" { $$$BODY }')
     parser_error_nodes = run_hew_query(ast_grep, root, kind="ERROR")

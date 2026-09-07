@@ -1617,7 +1617,7 @@ fn collect_inherent_impl_close_methods_from_items(
 }
 
 /// Walk the program and its module graph collecting the self-type names that
-/// declare at least one `consuming self` method in a sibling inherent-impl
+/// declare at least one `consume self` method in a sibling inherent-impl
 /// block. Trait impls (`impl T for U`) are skipped — the consume surface this
 /// records is the inherent `<T>::method` dispatch, the form that lowers to a
 /// callable symbol.
@@ -2892,7 +2892,7 @@ pub fn lower_program_with_mono_cap(
     // See [`collect_inherent_impl_close_methods`] for the precise contract
     // (W3.030 Q-α-B + Q-β-C ratifications).
     ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
-    // Harvest the self-type names that declare a `consuming self` inherent
+    // Harvest the self-type names that declare a `consume self` inherent
     // method so the `#[linear]` validation accepts a sibling-inherent consuming
     // method as satisfying the must-declare-a-consumer contract — the inherent
     // form is the surface that lowers to a callable symbol.
@@ -7544,8 +7544,8 @@ struct LowerCtx {
     /// carry no `#[resource]` marker so the absence of their inherent
     /// impls in this map is harmless).
     impl_close_methods: HashMap<String, ImplCloseSignature>,
-    /// Self-type names that declare at least one `consuming self` method in a
-    /// sibling inherent-impl block (`impl T { fn m(consuming self) { … } }`).
+    /// Self-type names that declare at least one `consume self` method in a
+    /// sibling inherent-impl block (`impl T { fn m(consume self) { … } }`).
     ///
     /// A `#[linear]` type's required consuming method may live here instead of
     /// in the type body — the inherent-impl form is the one that actually lowers
@@ -14148,7 +14148,7 @@ impl LowerCtx {
                 span.clone(),
                 "`#[resource]` types must declare `close` in a sibling \
                  inherent-impl block (`impl T { fn close(self) { ... } }`); \
-                 the inline `type T { fn close(consuming self) ... }` \
+                 the inline `type T { fn close(consume self) ... }` \
                  surface is not lowered in v0.5 and would silently fail \
                  link-time drop dispatch",
             ));
@@ -14190,13 +14190,13 @@ impl LowerCtx {
 
     /// Enforce the `#[linear]` consuming-method discipline.
     ///
-    /// A `#[linear]` type must declare at least one `consuming self` method so
+    /// A `#[linear]` type must declare at least one `consume self` method so
     /// that some exit path can exhaust a binding of the type (the
     /// `MirCheck::MustConsume` enforcement target). The supported surface is a
-    /// sibling inherent-impl block (`impl T { fn commit(consuming self) { … } }`)
+    /// sibling inherent-impl block (`impl T { fn commit(consume self) { … } }`)
     /// — the form that lowers to a callable consume target.
     ///
-    ///   1. A type-body `consuming self` method (`type T { fn m(consuming self)
+    ///   1. A type-body `consume self` method (`type T { fn m(consume self)
     ///      … }`) is rejected: it is not lowered to a callable symbol, so a call
     ///      raises `IndirectCallUnsupported` at the call site, leaving the type
     ///      unusable. Fail-close here at the declaration with a directive to the
@@ -14216,9 +14216,9 @@ impl LowerCtx {
                     name: decl.name.clone(),
                 },
                 span.clone(),
-                "`#[linear]` types must declare their `consuming self` method in a \
-                 sibling inherent-impl block (`impl T { fn commit(consuming self) \
-                 { ... } }`); the inline `type T { fn commit(consuming self) ... }` \
+                "`#[linear]` types must declare their `consume self` method in a \
+                 sibling inherent-impl block (`impl T { fn commit(consume self) \
+                 { ... } }`); the inline `type T { fn commit(consume self) ... }` \
                  surface is not lowered to a callable consume target",
             ));
         } else if !self.impl_consuming_methods.contains(&decl.name) {
@@ -14227,7 +14227,7 @@ impl LowerCtx {
                     name: decl.name.clone(),
                 },
                 span.clone(),
-                "`#[linear]` type must declare at least one `consuming self` method \
+                "`#[linear]` type must declare at least one `consume self` method \
                  in a sibling inherent-impl block; without one no exit path could \
                  exhaust a binding of this type",
             ));
@@ -17753,6 +17753,67 @@ impl LowerCtx {
                     resolved_ty,
                 )
             }
+            Expr::Identifier(name) if name == "self" && self.lookup(name).is_none() => {
+                // Bare `self` inside an actor `receive fn` — the actor's own
+                // handle. The checker records its type as `LocalPid<Self>` in
+                // `expr_types`, but ONLY inside an actor; elsewhere it reports
+                // an undefined variable and records nothing usable. HIR is
+                // checker-authoritative here: it READS that recorded type, it
+                // does NOT re-derive the actor identity from the AST. A
+                // `self.field` access is intercepted earlier and never reaches
+                // here, and an impl/trait method's `self` receiver is a real
+                // binding, so `lookup` resolves it before this arm applies.
+                let checker_key = self.mk_key(&span);
+                match self.expr_types.get(&checker_key).cloned() {
+                    Some(ty) => match ResolvedTy::from_ty(&ty) {
+                        Ok(
+                            resolved @ ResolvedTy::Named {
+                                builtin: Some(BuiltinType::LocalPid),
+                                ..
+                            },
+                        ) => (HirExprKind::ActorSelf, resolved),
+                        // The checker recorded a type for `self` that is not a
+                        // `LocalPid<_>`. The only authoritative producer is the
+                        // actor-handler synthesis (`LocalPid<Self>`); anything
+                        // else is a boundary violation — fail closed, never
+                        // fabricate a self-handle.
+                        Ok(other) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "self".to_string(),
+                                    reason: format!(
+                                        "expected `LocalPid<Self>` recorded by the checker, \
+                                         got `{}`",
+                                        other.user_facing()
+                                    ),
+                                },
+                                span.clone(),
+                                "`self` is the actor self-handle; its checker type must be \
+                                 `LocalPid<Self>`",
+                            ));
+                            return self.unsupported_expr(span, "`self` with non-LocalPid type");
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "self".to_string(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "`self` self-handle type failed the checker boundary conversion",
+                            ));
+                            return self.unsupported_expr(span, "`self` type boundary conversion");
+                        }
+                    },
+                    // No recorded type means the checker did not synthesize a
+                    // handle here; its diagnostic already fired. Fail closed
+                    // without papering over it.
+                    None => {
+                        return self
+                            .unsupported_expr(span, "`self` outside an actor receive handler");
+                    }
+                }
+            }
             Expr::Identifier(name) => {
                 // Inside a machine body, check if the identifier names one of the
                 // enclosing machine's states (unit state ctor, e.g. `Green`).
@@ -18880,18 +18941,6 @@ impl LowerCtx {
                 }
             }
             Expr::FieldAccess { object, field } => {
-                // Inside a machine transition body, `self.field` accesses are
-                // `Expr::FieldAccess { object: Expr::This, field }`. Resolve to
-                // `MachineFieldAccess` using the source state's declared payload fields.
-                //
-                // HIR-side authority: the checker does not produce `expr_types` entries
-                // for `self.field` inside machine bodies. The result type and field_idx
-                // are derived from `current_machine_states[source_state_idx].fields`.
-                // The parser emits `Expr::This` for the dedicated `this`
-                // keyword and `Expr::Identifier("self")` for the bare `self`
-                // identifier (the conventional machine-body receiver). Both
-                // forms route to the same machine-self-field resolver inside
-                // a machine transition body.
                 // Dotted module-qualified unit constructor:
                 // `module.Type.Variant`. The checker has already resolved
                 // this nested field-access surface to the exact tagged-union
@@ -19239,72 +19288,6 @@ impl LowerCtx {
                 HirExprKind::Literal(HirLiteral::Bytes(elems.clone())),
                 ResolvedTy::Bytes,
             ),
-            // `this` as a value inside an actor `receive fn` — the actor's own
-            // handle. The checker (`Expr::This` synthesis) records its type as
-            // `LocalPid<Self>` in `expr_types`, but ONLY when `this` is used
-            // inside an actor; outside an actor it reports
-            // "`this` can only be used inside an actor" and records `Ty::Error`.
-            // HIR is checker-authoritative here: it READS that recorded type, it
-            // does NOT re-derive the actor identity from the AST. A `this.field`
-            // access in a machine transition body is intercepted earlier by the
-            // `Expr::FieldAccess { object: Expr::This, .. }` arm and never
-            // reaches here. A bare machine-body `this` is suppressed downstream
-            // by `MachineBodyAllowlist`; it has no `LocalPid<Actor>` entry, so
-            // this arm fails closed for it rather than fabricating a handle.
-            Expr::This => {
-                let checker_key = self.mk_key(&span);
-                match self.expr_types.get(&checker_key).cloned() {
-                    Some(ty) => match ResolvedTy::from_ty(&ty) {
-                        Ok(
-                            resolved @ ResolvedTy::Named {
-                                builtin: Some(BuiltinType::LocalPid),
-                                ..
-                            },
-                        ) => (HirExprKind::ActorSelf, resolved),
-                        // The checker recorded a type for `this` that is not a
-                        // `LocalPid<_>`. The only authoritative producer is the
-                        // actor-handler synthesis (`LocalPid<Self>`); anything
-                        // else is a boundary violation — fail closed, never
-                        // fabricate a self-handle.
-                        Ok(other) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "this".to_string(),
-                                    reason: format!(
-                                        "expected `LocalPid<Self>` recorded by the checker, \
-                                         got `{}`",
-                                        other.user_facing()
-                                    ),
-                                },
-                                span.clone(),
-                                "`this` is the actor self-handle; its checker type must be \
-                                 `LocalPid<Self>`",
-                            ));
-                            return self.unsupported_expr(span, "`this` with non-LocalPid type");
-                        }
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "this".to_string(),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "`this` self-handle type failed the checker boundary conversion",
-                            ));
-                            return self.unsupported_expr(span, "`this` type boundary conversion");
-                        }
-                    },
-                    // No recorded type means the checker did not synthesize
-                    // `this` here — it errored ("`this` can only be used inside
-                    // an actor") and recorded nothing usable. The checker
-                    // diagnostic already fired; fail closed without papering
-                    // over it.
-                    None => {
-                        return self
-                            .unsupported_expr(span, "`this` outside an actor receive handler");
-                    }
-                }
-            }
             Expr::Range { .. } => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -34412,7 +34395,7 @@ impl Widget {
             pub type FileReadStream {}
 
             impl FileReadStream {
-                fn close(consuming self) {
+                fn close(consume self) {
                     unsafe { hew_file_read_stream_close(self) };
                 }
             }
@@ -34484,7 +34467,7 @@ impl Widget {
             type Connection { label: string }
 
             impl Connection {
-                fn close(consuming self) {}
+                fn close(consume self) {}
             }
 
             fn main() {}
@@ -34553,7 +34536,7 @@ impl Widget {
             pub type FileReadStream {}
 
             impl FileReadStream {
-                fn close(consuming self) {
+                fn close(consume self) {
                     unsafe { hew_file_read_stream_close(self) };
                     if true { unsafe { hew_file_read_stream_close(self) }; }
                 }
@@ -34628,25 +34611,25 @@ impl Widget {
             type Builder { value: i64 }
 
             impl Builder {
-                fn close(consuming self) {}
+                fn close(consume self) {}
             }
 
             trait Fluent {
                 #[returns_receiver]
-                fn touch(consuming self) -> Self;
+                fn touch(consume self) -> Self;
             }
 
             impl Fluent for Builder {
                 #[returns_receiver]
-                fn touch(consuming self) -> Builder { self }
+                fn touch(consume self) -> Builder { self }
             }
 
             trait Finish {
-                fn finish(consuming self) -> i64;
+                fn finish(consume self) -> i64;
             }
 
             impl Finish for Builder {
-                fn finish(consuming self) -> i64 { self.value }
+                fn finish(consume self) -> i64 { self.value }
             }
 
             fn touch_twice<T: Fluent>(value: T) {

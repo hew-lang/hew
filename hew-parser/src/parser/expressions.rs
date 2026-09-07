@@ -1565,10 +1565,6 @@ impl Parser<'_> {
                 );
                 return None;
             }
-            Token::This => {
-                self.advance();
-                Expr::This
-            }
             Token::Emit => {
                 self.advance();
                 let event_name = self.expect_ident()?;

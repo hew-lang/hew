@@ -1455,7 +1455,7 @@ is refused with "requires a mutable binding receiver" and the `let`→`var`
 fix-it (§3.2). A `consume self` method takes the value: any later use of the
 binding is a use-after-consume diagnostic.
 
-The consuming receiver's keyword is one word. `consuming self` is refused with
+The consuming receiver's keyword is one word. `consume self` is refused with
 a fix-it that rewrites it to `consume self`, so the receiver position and the
 consuming-parameter position (`consume x: T`, §3.9) read the same.
 

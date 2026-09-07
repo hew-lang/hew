@@ -51,8 +51,7 @@
       "after",
       "from",
       "await",
-      "await_restart",
-      "this"
+      "await_restart"
     ],
     "wire": [
       "reserved",
@@ -149,7 +148,6 @@
     "receive",
     "init",
     "type",
-    "this",
     "dyn",
     "move",
     "try",

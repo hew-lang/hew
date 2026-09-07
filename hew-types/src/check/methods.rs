@@ -9666,9 +9666,9 @@ impl Checker {
                     //      explicitly also moves the receiver so the scope-exit
                     //      implicit drop is suppressed on the consumed path (no
                     //      double-close).
-                    //   3. any `fn m(consuming self)` inherent method — the
+                    //   3. any `fn m(consume self)` inherent method — the
                     //      terminal single-consume surface (a builder's
-                    //      `build(consuming self)`, a `#[linear]` type's consuming
+                    //      `build(consume self)`, a `#[linear]` type's consuming
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
                         || self.named_type_method_consumes_receiver(name, method)

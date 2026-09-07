@@ -160,7 +160,7 @@ impl TlsStreamMethods for TlsStream {
 
 impl TlsStream {
     /// Release this TLS stream early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_tls_close(self)
         };

@@ -2476,12 +2476,6 @@ impl Checker {
         self.record_root_value_binding(&cd.name);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one body-check pass over an impl block: drop-impl gate, orphan-rule check, \
-                  generic-param binding, then per-method receiver-mutability/signature checks — \
-                  each step is a few lines and splitting them would only add indirection"
-    )]
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.
@@ -2494,9 +2488,6 @@ impl Checker {
             type_args: _,
         } = &id.target_type.0
         {
-            let target_is_struct = self
-                .lookup_type_def(type_name)
-                .is_some_and(|td| td.kind == TypeDefKind::Struct);
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
@@ -2587,55 +2578,6 @@ impl Checker {
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 
             for method in &id.methods {
-                // Inherent (non-trait) struct impl methods still reject a
-                // mutable receiver: there is no trait contract that a `var
-                // self` receiver could satisfy, so mutations on a by-value
-                // receiver in an inherent method would be local to the
-                // callee's stack frame with no path to the caller.
-                //
-                // Trait impl methods (the `trait_bound.is_some()` arm) lift
-                // this gate: the trait declaration is the authoritative
-                // contract for receiver mutability, and the impl-vs-trait
-                // signature equivalence check (Q004, see
-                // `check_impl_method_against_trait`) enforces that the
-                // impl's receiver mutability matches what the trait
-                // declared. Callers receive a separate "receiver requires
-                // mutable binding" diagnostic at the call site when they
-                // try to dispatch through a non-`var` binding.
-                //
-                // LESSONS row `diagnostic-trust`: keep the diagnostic
-                // surface alive on the inherent-impl path; do not silently
-                // accept what was previously rejected on the trait-impl
-                // path — the trait-impl arm now relies on the trait
-                // declaration + the equivalence check + the call-site
-                // gate to cover the cases this diagnostic used to flag.
-                if target_is_struct && id.trait_bound.is_none() {
-                    // Only the first parameter can be the receiver; checking all
-                    // params would false-positive on a non-receiver whose type
-                    // happens to match the impl target.
-                    if let Some(self_param) = method
-                        .params
-                        .first()
-                        .filter(|param| self.is_receiver_param(param) && param.is_mutable)
-                    {
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::MutabilityError,
-                            &self_param.ty.1,
-                            "`var self` on an inherent impl method has no effect — \
-                             inherent methods receive self by value with no trait contract \
-                             to make the mutation observable to the caller"
-                                .to_string(),
-                            vec![
-                                "return a modified copy of the receiver instead".to_string(),
-                                "declare the method on a trait whose receiver is `var self`, \
-                                 then implement that trait for this type"
-                                    .to_string(),
-                                "convert this type to an actor if you need mutable shared state"
-                                    .to_string(),
-                            ],
-                        );
-                    }
-                }
                 self.env.push_scope();
                 // Use qualified name (e.g. Connection::close) so the fn_sigs
                 // lookup finds the impl method, not a same-named builtin or

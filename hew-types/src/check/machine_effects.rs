@@ -348,7 +348,6 @@ impl NodeVisitor for EffectVisitor<'_> {
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
-            | Expr::This
             | Expr::Await(_)
             | Expr::AwaitRestart(_)
             | Expr::GenBlock { .. }

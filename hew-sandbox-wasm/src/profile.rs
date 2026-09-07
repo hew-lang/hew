@@ -575,7 +575,7 @@ impl<'a> ProfileChecker<'a> {
     fn check_expr(&mut self, expr: &Spanned<Expr>) {
         let (expr, span) = expr;
         match expr {
-            Expr::Literal(_) | Expr::Identifier(_) | Expr::This | Expr::RegexLiteral(_) => {}
+            Expr::Literal(_) | Expr::Identifier(_) | Expr::RegexLiteral(_) => {}
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
                     for (_, value) in &record.fields {

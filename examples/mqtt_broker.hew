@@ -210,7 +210,7 @@ actor ClientHandler {
     var buf: bytes,
     var registered: bool,
     receive fn register(reader: LocalPid<ClientReader>) {
-        let accepted = match await router.register_client(session_id.clone(), this) {
+        let accepted = match await router.register_client(session_id.clone(), self) {
             .Ok(value) => value,
             .Err(_) => false,
         };

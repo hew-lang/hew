@@ -161,7 +161,7 @@ impl ConnMethods for Conn {
 
 impl Conn {
     /// Release this connection early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_ws_close(self)
         };
@@ -243,7 +243,7 @@ impl ServerMethods for Server {
 
 impl Server {
     /// Stop listening and release this server early.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_ws_server_close(self)
         };

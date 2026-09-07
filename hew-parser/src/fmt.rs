@@ -650,7 +650,7 @@ impl<'a> Formatter<'a> {
         self.format_opt_type_params(decl.type_params.as_ref());
         self.write("(");
         if has_consuming_self {
-            self.write("consuming self");
+            self.write("consume self");
             if !decl.params.is_empty() {
                 self.write(", ");
             }
@@ -914,7 +914,7 @@ impl<'a> Formatter<'a> {
         self.write(&m.name);
         if m.consumes_self {
             self.format_opt_type_params(m.type_params.as_ref());
-            self.write("(consuming self");
+            self.write("(consume self");
             let rest = m.params.get(1..).unwrap_or(&[]);
             if !rest.is_empty() {
                 self.write(", ");
@@ -1889,12 +1889,12 @@ impl<'a> Formatter<'a> {
         }
         self.write("fn ");
         self.write(&decl.name);
-        // An inherent-impl `consuming self` receiver is materialised as the
-        // leading `self: Self` parameter; emit the `consuming self` spelling and
+        // An inherent-impl `consume self` receiver is materialised as the
+        // leading `self: Self` parameter; emit the `consume self` spelling and
         // skip that synthetic first parameter, mirroring the type-body formatter.
         if decl.consumes_self {
             self.format_opt_type_params(decl.type_params.as_ref());
-            self.write("(consuming self");
+            self.write("(consume self");
             let rest = decl.params.get(1..).unwrap_or(&[]);
             if !rest.is_empty() {
                 self.write(", ");
@@ -2298,7 +2298,6 @@ impl<'a> Formatter<'a> {
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
-            | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None) => true,
             Expr::ContextVariant(context) => context.record.as_ref().is_none_or(|record| {
@@ -3421,7 +3420,6 @@ impl<'a> Formatter<'a> {
                 self.write("return error ");
                 self.format_expr(&value.0);
             }
-            Expr::This => self.write("this"),
             Expr::FieldAccess { object, field } => {
                 self.format_receiver(&object.0);
                 self.write(".");
@@ -4490,7 +4488,7 @@ fn drain(consume var c: Conn) -> i32 {
         let src = "\
 trait Fluent {
     #[returns_receiver]
-    fn with(consuming self, consume child: Child) -> Self;
+    fn with(consume self, consume child: Child) -> Self;
 }
 ";
         let formatted = roundtrip(src);

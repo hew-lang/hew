@@ -1200,7 +1200,6 @@ mod ast_surface {
             | Expr::ReturnError(_)
             | Expr::Coalesce { .. }
             | Expr::Handle { .. } => None,
-            Expr::This => None, // `self` — only meaningful inside actor/impl context.
             Expr::FieldAccess { .. } => Some("record StructInit + field access"),
             Expr::Index { .. } => Some("array literal + index + len"),
             Expr::Cast { .. } => Some("numeric cast (`as`)"),
@@ -1818,7 +1817,6 @@ fn walk_expr(
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

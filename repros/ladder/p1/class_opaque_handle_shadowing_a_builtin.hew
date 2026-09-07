@@ -32,7 +32,7 @@ type ClosableResource {
 }
 
 impl ClosableResource {
-    fn close(consuming self) {}
+    fn close(consume self) {}
 }
 
 fn observe(here: Location, handle: Handle, id: NodeId, closable: ClosableResource) -> i64 {

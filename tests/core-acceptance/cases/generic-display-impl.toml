@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-display-impl"
+intent = "A generic `impl Display` renders every instantiation through f-string interpolation, so the interpolated call carries the type arguments its monomorphisation needs."
+source = "cases/generic-display-impl.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "done\nfailed and pending\n"
+exit = 0

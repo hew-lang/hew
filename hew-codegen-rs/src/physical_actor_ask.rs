@@ -375,6 +375,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let error_ty = &glue.variants[1].fields[0].ty;
         let error = self.ctx.append_basic_block(self.value, "ask.error");
         let done = self.ctx.append_basic_block(self.value, "ask.result");
+        // A completion call on a void handler carries no reply payload: the
+        // handler's return is the unit reply, so success writes `Ok(())`.
+        let completion = reply.is_none() && handler.return_ty == ResolvedTy::Unit;
         if let Some(reply) = reply {
             let success = self.ctx.append_basic_block(self.value, "ask.success");
             let ok = self
@@ -403,6 +406,41 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("finish successful reply")?;
+        } else if completion {
+            let success = self.ctx.append_basic_block(self.value, "ask.success");
+            let ok = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "ask.ok",
+                )
+                .llvm_ctx("classify completion")?;
+            self.builder
+                .build_conditional_branch(ok, success, error)
+                .llvm_ctx("materialize completion outcome")?;
+            self.builder.position_at_end(success);
+            // `Ok(())` still carries the unit payload seat the recipe declares.
+            let unit = glue
+                .variants
+                .first()
+                .is_some_and(|case| !case.fields.is_empty())
+                .then(|| {
+                    let layout = self
+                        .module
+                        .target
+                        .layout(&ResolvedTy::Unit)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("unit reply lacks its target layout".into())
+                        })?;
+                    Ok::<_, CodegenError>(llvm_type(self.ctx, &layout.repr)?.const_zero())
+                })
+                .transpose()?;
+            self.write_variant_value(self.slots[result.0 as usize], 0, unit.as_slice(), glue.id)?;
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish completed call")?;
         } else {
             self.builder
                 .build_unconditional_branch(error)

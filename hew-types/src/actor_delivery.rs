@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::Ty;
 
 pub const MESSAGE_TYPE: &str = "std.builtins.Message";
-pub const SENDER_TYPE: &str = "std.builtins.ActorSender";
+pub const SENDER_TYPE: &str = "std.builtins.ActorMailbox";
 pub const FAILURE_TYPE: &str = "std.builtins.SendFailure";
 pub const DELIVERY_TYPE: &str = "std.builtins.Delivery";
 pub const ON_FULL_TYPE: &str = "std.builtins.OnFull";
 
 /// These declarations have one source owner in `std/builtins.hew`.
 pub const DECLARATIONS: &[&str] = &[
-    "ActorSender",
+    "ActorMailbox",
     "Message",
     "SendFailure",
     "Delivery",

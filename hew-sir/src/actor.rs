@@ -118,9 +118,6 @@ impl SemActor {
             .iter()
             .find(|handler| handler.message_id == message)
             .ok_or("ask has no exact receive protocol member")?;
-        if handler.return_ty == ResolvedTy::Unit {
-            return Err("a unit receive handler produces a message description, not an ask".into());
-        }
         if !self.admits_target(target) {
             return Err("ask target is neither this actor's handle nor its role".into());
         }

@@ -7,29 +7,29 @@ use super::{
 use crate::actor_delivery::{self as delivery, ActorDeliveryCall, SendPolicy};
 
 impl Checker {
-    pub(super) fn is_actor_policy_builtin(&self, expr: &Expr) -> bool {
+    pub(super) fn is_actor_mailbox_builtin(&self, expr: &Expr) -> bool {
         let Expr::Identifier(name) = expr else {
             return false;
         };
-        name == "policy"
+        name == "mailbox"
             && self.env.lookup_ref(name).is_none()
             && !self.fn_def_spans.contains_key(name)
             && !scoped_module_item_name(self.canonical_fn_owner(), name)
                 .is_some_and(|owner| self.fn_def_spans.contains_key(&owner))
-            && matches!(self.builtin_call_targets.get(name), Some(CallTarget::Builtin { endpoint }) if endpoint == "policy")
+            && matches!(self.builtin_call_targets.get(name), Some(CallTarget::Builtin { endpoint }) if endpoint == "mailbox")
     }
 
-    pub(super) fn check_actor_policy(&mut self, args: &[CallArg], span: &Span) -> Ty {
+    pub(super) fn check_actor_mailbox(&mut self, args: &[CallArg], span: &Span) -> Ty {
         let [CallArg::Positional(target), CallArg::Named { name, value }] = args else {
             self.report_error(TypeErrorKind::InvalidOperation, span,
-                "sender policy requires `policy(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)`".to_string());
+                "a mailbox view requires `mailbox(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)`".to_string());
             return Ty::Error;
         };
         if name != "on_full" {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "sender policy option is named `on_full`".to_string(),
+                "the mailbox view option is named `on_full`".to_string(),
             );
             return Ty::Error;
         }
@@ -42,7 +42,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &target.1,
-                "sender policy requires a local actor reference".to_string(),
+                "a mailbox view requires a local actor reference".to_string(),
             );
             return Ty::Error;
         };
@@ -64,7 +64,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &value.1,
-                "sender policy must be a constant `OnFull` variant".to_string(),
+                "a mailbox view's `on_full` must be a constant `OnFull` variant".to_string(),
             );
             return Ty::Error;
         };
@@ -152,6 +152,45 @@ impl Checker {
         )))
     }
 
+    /// Pair each call argument with its receive parameter position, so every
+    /// downstream stage consumes declaration order rather than call order.
+    fn receive_argument_order(
+        &mut self,
+        method_id: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Vec<usize>> {
+        let signature = self.fn_sigs.get(method_id)?;
+        let mut argument_order = vec![None; signature.params.len()];
+        for (index, arg) in args.iter().enumerate() {
+            let position = match arg.name() {
+                Some(name) => signature
+                    .param_names
+                    .iter()
+                    .position(|parameter| parameter == name),
+                None => Some(index),
+            };
+            let slot = position.and_then(|index| argument_order.get_mut(index))?;
+            if slot.replace(index).is_some() {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "message arguments must supply each receive parameter exactly once".to_string(),
+                );
+                return None;
+            }
+        }
+        let order = argument_order.into_iter().collect::<Option<Vec<_>>>();
+        if order.is_none() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "message arguments must supply every receive parameter".to_string(),
+            );
+        }
+        order
+    }
+
     pub(super) fn finish_actor_receive_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -178,39 +217,26 @@ impl Checker {
         let receiver_ty = self.subst.resolve(receiver_ty);
         let (target, policy) =
             delivery::sender_parts(&receiver_ty).unwrap_or((&receiver_ty, SendPolicy::Reject));
-        let Some(signature) = self.fn_sigs.get(&method_id) else {
+        let Some(argument_order) = self.receive_argument_order(&method_id, args, span) else {
             return Ty::Error;
         };
-        let mut argument_order = vec![None; signature.params.len()];
-        for (index, arg) in args.iter().enumerate() {
-            let position = match arg.name() {
-                Some(name) => signature
-                    .param_names
-                    .iter()
-                    .position(|parameter| parameter == name),
-                None => Some(index),
-            };
-            let Some(slot) = position.and_then(|index| argument_order.get_mut(index)) else {
-                return Ty::Error;
-            };
-            if slot.replace(index).is_some() {
+        let through_view = delivery::sender_parts(&receiver_ty).is_some();
+        if let Some(reply_ty) = reply_ty {
+            if through_view {
+                let handler = method_id
+                    .rsplit_once("::")
+                    .map_or("this handler", |(_, name)| name);
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    "message arguments must supply each receive parameter exactly once".to_string(),
+                    format!(
+                        "`{handler}` returns a value, so it cannot be called through a mailbox \
+                         view, which only submits; call it on the actor handle to wait for the \
+                         reply, or `fork target.{handler}(..)` to run it concurrently"
+                    ),
                 );
                 return Ty::Error;
             }
-        }
-        let Some(argument_order) = argument_order.into_iter().collect::<Option<Vec<_>>>() else {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                "message arguments must supply every receive parameter".to_string(),
-            );
-            return Ty::Error;
-        };
-        if let Some(reply_ty) = reply_ty {
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -220,6 +246,21 @@ impl Checker {
                 },
             );
             return result;
+        }
+        if !through_view {
+            // The call on an actor handle is a completion call: it waits for
+            // the handler to finish and yields its unit reply, exactly as a
+            // value-returning handler yields its own.
+            self.actor_method_dispatch.insert(
+                key,
+                ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty: Ty::Unit,
+                    argument_order,
+                },
+            );
+            self.record_submission_suspension(span, true);
+            return Ty::result(Ty::Unit, Ty::ask_error());
         }
         let payload = argument_order
             .iter()

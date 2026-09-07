@@ -54,10 +54,12 @@ pub type Location {
 pub type RemotePid<T> {
 }
 
-/// An immutable sender view. Construct one with `policy(target, on_full: ...)`.
-/// A receive call through the view submits under that policy, and the policy
-/// type records whether that submission can suspend.
-pub type ActorSender<Target, Policy> {
+/// An immutable one-way view. Construct one with `mailbox(target, on_full: ...)`.
+/// A receive call through the view submits under that policy and returns as
+/// soon as the message is accepted, and the policy type records whether that
+/// submission can suspend. A call on the actor handle itself waits for the
+/// handler to finish instead.
+pub type ActorMailbox<Target, Policy> {
     target: Target,
 }
 

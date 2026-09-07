@@ -302,7 +302,7 @@ actor EchoServer {{
 fn main() {{
     let listener = match net.listen("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
     let client = spawn EchoServer;
-    client.connect_send_and_read(0);
+    let _ = client.connect_send_and_read(0);
 
     let conn = listener.accept();
     let request = conn.read_string();
@@ -435,7 +435,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
             Node.start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
             Node.register("counter", counter);
-            counter.increment(5);
+            let _ = counter.increment(5);
             Node.shutdown();
             println(f"peer-auth ok id={me}");
         }
@@ -4169,7 +4169,7 @@ fn suspending_remote_ask_flip_in_execution_context() {
          \x20       }\n\
          \x20   }\n\
          }\n\
-         fn main() { let c = spawn Client(); c.go(0); }\n",
+         fn main() { let c = spawn Client(); let _ = c.go(0); }\n",
     );
     // After the SuspendKind side-table collapse `SuspendingRemoteAsk` no longer
     // exists as a Terminator variant; it lowers to the bare `Terminator::Suspend`
@@ -4710,7 +4710,7 @@ fn clone_string_survives_consuming_send() {
          \x20   let s: string = \"hello\";\n\
          \x20   let dup = clone s;\n\
          \x20   let sink = spawn ProbeSink(id: 0);\n\
-         \x20   let n = await sink.take(dup);\n\
+         \x20   let n = sink.take(dup);\n\
          \x20   match n { .Ok(len) => println(f\"len={len}\"), .Err(_) => println(\"ask failed\") }\n\
          \x20   println(f\"original still usable: {s}\");\n\
          }\n",
@@ -4930,7 +4930,7 @@ fn run_file_imported_actor_spawns_and_calls() {
         "import \"counter.hew\";\n\
          fn main() {\n\
          \x20   let c = spawn Counter();\n\
-         \x20   match await c.bump() {\n\
+         \x20   match c.bump() {\n\
          \x20       .Ok(v) => println(f\"bumped: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5092,7 +5092,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
         "import \"summer.hew\";\n\
          fn main() {\n\
          \x20   let s = spawn Summer();\n\
-         \x20   match await s.add_doubled(4) {\n\
+         \x20   match s.add_doubled(4) {\n\
          \x20       .Ok(v) => println(f\"sum: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5180,11 +5180,11 @@ fn run_package_module_actor_spawns_and_calls() {
          \n\
          fn main() {\n\
          \x20   let acct = spawn bank.Account(opening: 100);\n\
-         \x20   report(\"after_open\", await acct.peek());\n\
-         \x20   report(\"after_deposit\", await acct.deposit(50));\n\
-         \x20   report(\"after_overdraw\", await acct.withdraw(1000));\n\
-         \x20   report(\"after_withdraw\", await acct.withdraw(30));\n\
-         \x20   report(\"final\", await acct.peek());\n\
+         \x20   report(\"after_open\", acct.peek());\n\
+         \x20   report(\"after_deposit\", acct.deposit(50));\n\
+         \x20   report(\"after_overdraw\", acct.withdraw(1000));\n\
+         \x20   report(\"after_withdraw\", acct.withdraw(30));\n\
+         \x20   report(\"final\", acct.peek());\n\
          }\n",
     )
     .unwrap();
@@ -5228,7 +5228,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
          pub actor Outer {\n\
          \x20   let inner: Inner,\n\
          \x20   receive fn go() -> i64 {\n\
-         \x20       match await inner.ping() {\n\
+         \x20       match inner.ping() {\n\
          \x20           .Ok(v) => v + 1,\n\
          \x20           .Err(_) => -1,\n\
          \x20       }\n\
@@ -5243,7 +5243,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
          fn main() {\n\
          \x20   let i = spawn Inner();\n\
          \x20   let o = spawn Outer(inner: i);\n\
-         \x20   match await o.go() {\n\
+         \x20   match o.go() {\n\
          \x20       .Ok(v) => println(f\"v={v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5301,7 +5301,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
          \n\
          fn main() {\n\
          \x20   let h = spawn Holder(inner: Inner { x: 7 });\n\
-         \x20   match await h.get() {\n\
+         \x20   match h.get() {\n\
          \x20       .Ok(v) => println(f\"v={v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5350,7 +5350,7 @@ fn run_non_pub_imported_actor_fails_closed() {
         "import hew.secret;\n\
          fn main() {\n\
          \x20   let c = spawn secret.Hidden();\n\
-         \x20   match await c.bump() {\n\
+         \x20   match c.bump() {\n\
          \x20       .Ok(v) => println(f\"bumped: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5410,11 +5410,11 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
          \x20   let s = spawn store.Account();\n\
-         \x20   match await a.who() {\n\
+         \x20   match a.who() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   match await s.who() {\n\
+         \x20   match s.who() {\n\
          \x20       .Ok(v) => println(f\"s={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -5467,11 +5467,11 @@ fn run_root_and_package_same_actor_name_route_independently() {
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
          \x20   let l = spawn Account();\n\
-         \x20   match await a.who() {\n\
+         \x20   match a.who() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   match await l.who() {\n\
+         \x20   match l.who() {\n\
          \x20       .Ok(v) => println(f\"l={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -5537,23 +5537,23 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
          \x20   sleep(50ms);\n\
          \x20   let b = p.b;\n\
          \x20   let s = p.s;\n\
-         \x20   match await b.who() {\n\
+         \x20   match b.who() {\n\
          \x20       .Ok(v) => println(f\"b={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   match await s.who() {\n\
+         \x20   match s.who() {\n\
          \x20       .Ok(v) => println(f\"s={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   b.boom();\n\
+         \x20   let _ = b.boom();\n\
          \x20   sleep(200ms);\n\
          \x20   let b2 = p.b;\n\
-         \x20   match await b2.who() {\n\
+         \x20   match b2.who() {\n\
          \x20       .Ok(v) => println(f\"b2={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
          \x20   let s2 = p.s;\n\
-         \x20   match await s2.who() {\n\
+         \x20   match s2.who() {\n\
          \x20       .Ok(v) => println(f\"s2={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -5756,7 +5756,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
          }\n\
          fn main() {\n\
          \x20   let a = spawn secret.Account();\n\
-         \x20   match await a.id() {\n\
+         \x20   match a.id() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -5821,7 +5821,7 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
          }\n\
          fn main() {\n\
          \x20   let a = spawn secret.Account();\n\
-         \x20   match await a.id() {\n\
+         \x20   match a.id() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -5988,7 +5988,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          \x20               label: label.clone(),\n\
          \x20               marker: unsafe { hew_deque_new() },\n\
          \x20           );\n\
-         \x20           child.stop();\n\
+         \x20           let _ = child.stop();\n\
          \x20           i = i + 1;\n\
          \x20       }\n\
          \x20       println(\"maker-done\");\n\
@@ -5996,7 +5996,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          }\n\
          fn main() {\n\
          \x20   let maker = spawn Maker;\n\
-         \x20   maker.go();\n\
+         \x20   let _ = maker.go();\n\
          \x20   sleep(200ms);\n\
          }\n",
     )

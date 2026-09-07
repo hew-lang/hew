@@ -203,7 +203,7 @@ impl Checker {
                 ),
                 vec![
                     "handle it with `?`, `match` or `handle`, or discard it deliberately with \
-                     `_ = <expr>;`"
+                     `let _ = <expr>;`"
                         .to_string(),
                 ],
             );

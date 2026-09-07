@@ -770,7 +770,8 @@ pub trait Display {
 /// `Error` adds no methods of its own: an error is a value that can say what
 /// went wrong, so `Display` is the whole obligation. Declaring
 /// `impl Error for MyError {}` therefore requires `impl Display for MyError`.
-pub trait Error: Display {}
+pub trait Error: Display {
+}
 
 // Blanket impls for primitive types.  Each body delegates to the magic
 // `to_string` helper which still routes through `MarkerTrait::Display`

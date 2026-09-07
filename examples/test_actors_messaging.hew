@@ -85,8 +85,8 @@ fn test_lambda_actor() -> i64 {
     let doubler = actor |x: i64| {
         println(f"  doubled: {x * 2}");
     };
-    _ = doubler.send(21);
-    _ = doubler.send(5);
+    let _ = doubler.send(21);
+    let _ = doubler.send(5);
     await doubler.close();
     println("PASS: lambda actor");
     1
@@ -95,8 +95,8 @@ fn test_lambda_actor() -> i64 {
 fn test_actor_factory() -> i64 {
     println("--- test_actor_factory ---");
     let m = make_multiplier(3);
-    _ = m.send(10);
-    _ = m.send(7);
+    let _ = m.send(10);
+    let _ = m.send(7);
     await m.close();
     println("PASS: actor factory");
     1
@@ -117,8 +117,8 @@ fn test_complex_lambda() -> i64 {
             println(f"  small: {n}");
         }
     };
-    _ = processor.send(5);
-    _ = processor.send(15);
+    let _ = processor.send(5);
+    let _ = processor.send(15);
     await processor.close();
     println("PASS: complex lambda actor");
     1

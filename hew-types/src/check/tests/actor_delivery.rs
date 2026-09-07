@@ -114,7 +114,9 @@ fn statement_position_delivery_outcomes_are_refused() {
             hit.message
         );
         assert!(
-            hit.suggestions.iter().any(|s| s.contains("_ = <expr>;")),
+            hit.suggestions
+                .iter()
+                .any(|s| s.contains("let _ = <expr>;")),
             "{body} needs the explicit-discard fix-it: {:?}",
             hit.suggestions
         );

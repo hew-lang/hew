@@ -15,8 +15,8 @@ fn main() {
     // Statement-position match is not yet sandbox-admitted, so the first two
     // replies are discarded deliberately and the last is an expression match
     // (-1 marks a failed ask).
-    _ = await c.increment(5);
-    _ = await c.increment(3);
+    let _ = await c.increment(5);
+    let _ = await c.increment(3);
     let total = match await c.increment(12) {
         .Ok(v) => v,
         .Err(_) => -1,

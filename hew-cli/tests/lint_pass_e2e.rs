@@ -918,7 +918,7 @@ fn discarded_await_ask_is_refused_by_default() {
         "the error should name the AskError type:\n{stderr}"
     );
     assert!(
-        stderr.contains("_ = <expr>;"),
+        stderr.contains("let _ = <expr>;"),
         "the error should carry the explicit-discard fix-it:\n{stderr}"
     );
 }

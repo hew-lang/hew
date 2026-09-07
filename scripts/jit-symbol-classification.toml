@@ -685,6 +685,7 @@ stable = [
   "hew_string_reverse_utf8",
   "hew_string_slice",
   "hew_string_slice_codepoints",
+  "hew_string_slice_codepoints_from",
   "hew_string_split",
   "hew_string_starts_with",
   "hew_string_substring_utf8",

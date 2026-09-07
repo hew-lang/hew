@@ -340,6 +340,7 @@ impl Builder {
             machine.visibility,
         );
         event_enum.type_params.clone_from(&params);
+        event_enum.where_clause.clone_from(&machine.where_clause);
         let mut output_enum = self.enum_decl(
             &format!("{}Output", machine.name),
             &machine
@@ -350,6 +351,7 @@ impl Builder {
             machine.visibility,
         );
         output_enum.type_params.clone_from(&params);
+        output_enum.where_clause.clone_from(&machine.where_clause);
         let disposition_enum = self.enum_decl(
             &format!("{}StepDisposition", machine.name),
             &[
@@ -387,10 +389,19 @@ impl Builder {
         };
         report.origin = DeclarationOrigin::MachineReport;
         report.visibility = machine.visibility;
+        // The shell text spells the parameters without their bounds; the
+        // declared bounds and where clause are the machine's, so the report
+        // and the impl carry them verbatim.
+        report.type_params.clone_from(&params);
+        report.where_clause.clone_from(&machine.where_clause);
         self.refresh_type_decl(&mut report)?;
         let Item::Impl(mut implementation) = shell.next().expect("impl shell").0 else {
             unreachable!()
         };
+        implementation.type_params.clone_from(&params);
+        implementation
+            .where_clause
+            .clone_from(&machine.where_clause);
         self.refresh_type(&mut implementation.target_type);
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;

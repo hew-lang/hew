@@ -2559,7 +2559,24 @@ impl Checker {
             // identity for the receiver binding: a source-defined `Option<T>`
             // must not later be reconstructed as builtin `Option<T>`, while a
             // builtin `Vec<T>` must retain its builtin discriminator.
+            // The impl's own parameter bounds are what satisfy the target
+            // type's declared bounds, so resolve the target inside that scope
+            // rather than before it: `impl<T: Clone> St<T>` for a
+            // `St<T: Clone>` proves its argument from the impl header.
+            let mut target_scope_holes = Vec::new();
+            let target_bounds = self.collect_type_param_scope_with_assoc_bindings(
+                id.type_params.as_ref(),
+                id.where_clause.as_ref(),
+                &mut target_scope_holes,
+            );
+            let pushed_target_bounds = !target_bounds.bounds.is_empty();
+            if pushed_target_bounds {
+                self.current_type_param_bounds.push(target_bounds);
+            }
             let resolved_self_binding_ty = self.resolve_type_expr(&id.target_type);
+            if pushed_target_bounds {
+                self.current_type_param_bounds.pop();
+            }
             let prev_self_type = self.current_self_type.take();
             let self_type_args = match &resolved_self_binding_ty {
                 Ty::Named { args, .. } => args.clone(),

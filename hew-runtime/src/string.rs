@@ -1252,6 +1252,57 @@ pub unsafe extern "C-unwind" fn hew_string_slice_codepoints(
     string_from_str(&buf)
 }
 
+/// Slice `s` from codepoint offset `start` to its end, returning a fresh
+/// managed string owner.
+///
+/// This is the open-ended `s[a..]` form. It exists as its own entry because
+/// the caller has no length to pass: computing one would mean evaluating the
+/// receiver expression twice.
+///
+/// Semantics match [`hew_string_slice_codepoints`]: O(n) walk, fresh owned
+/// allocation that never aliases the input, and an abort when `start < 0` or
+/// `start > char_count(s)`.
+///
+/// # Safety
+///
+/// `s` must be null or a live managed string handle.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "start is bounds-checked >= 0 above before cast to usize"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "i64 -> usize: usize >= 32 bits on all supported targets; \
+              real string codepoint counts never exceed usize::MAX"
+)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "char_len comes from an in-memory string, far below i64::MAX"
+)]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_string_slice_codepoints_from(
+    s: *const HewString,
+    start: i64,
+) -> *mut HewString {
+    if start < 0 {
+        // SAFETY: this is the terminal slice bounds path.
+        unsafe { string_slice_oob_trap(start, start, None) };
+    }
+    // SAFETY: `s` is a live managed handle; null is empty and UTF-8 is invariant.
+    let rust_str = unsafe { string_as_str(s) };
+    let start_idx = start as usize;
+    let char_len = rust_str.chars().count();
+    if start_idx > char_len {
+        // SAFETY: this is the terminal slice bounds path.
+        unsafe { string_slice_oob_trap(start, char_len as i64, Some(char_len)) };
+    }
+    let mut buf = String::new();
+    for ch in rust_str.chars().skip(start_idx) {
+        buf.push(ch);
+    }
+    string_from_str(&buf)
+}
+
 // ---------------------------------------------------------------------------
 // Unicode codepoint classification — std::text::unicode
 // ---------------------------------------------------------------------------

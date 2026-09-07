@@ -813,6 +813,9 @@ pub enum PhysicalRuntimeAction {
     StringToUppercase,
     StringToLowercase,
     StringSlice,
+    StringIndex,
+    StringSliceCodepoints,
+    StringSliceCodepointsFrom,
     StringTrim,
     StringLen,
     StringByteLen,
@@ -872,6 +875,9 @@ impl PhysicalRuntimeAction {
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::StringToLowercase => RuntimeCallFamily::StringToLowercase,
             Self::StringSlice => RuntimeCallFamily::StringSlice,
+            Self::StringIndex => RuntimeCallFamily::StringIndex,
+            Self::StringSliceCodepoints => RuntimeCallFamily::StringSliceCodepoints,
+            Self::StringSliceCodepointsFrom => RuntimeCallFamily::StringSliceCodepointsFrom,
             Self::StringTrim => RuntimeCallFamily::StringTrim,
             Self::StringLen => RuntimeCallFamily::StringLen,
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
@@ -2099,6 +2105,11 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
         RuntimeCallFamily::StringToLowercase => PhysicalRuntimeAction::StringToLowercase,
         RuntimeCallFamily::StringSlice => PhysicalRuntimeAction::StringSlice,
+        RuntimeCallFamily::StringIndex => PhysicalRuntimeAction::StringIndex,
+        RuntimeCallFamily::StringSliceCodepoints => PhysicalRuntimeAction::StringSliceCodepoints,
+        RuntimeCallFamily::StringSliceCodepointsFrom => {
+            PhysicalRuntimeAction::StringSliceCodepointsFrom
+        }
         RuntimeCallFamily::StringTrim => PhysicalRuntimeAction::StringTrim,
         RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
         RuntimeCallFamily::StringByteLen => PhysicalRuntimeAction::StringByteLen,

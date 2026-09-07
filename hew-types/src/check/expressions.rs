@@ -2625,10 +2625,20 @@ impl Checker {
                 if !Self::is_narrower_signed_int(&idx_resolved) {
                     self.check_against(&index.0, &index.1, &Ty::I64);
                 }
-                if matches!(ctx, IndexContext::Read)
-                    && !self.validate_vec_index_borrow_surface(&args[0], span)
-                {
-                    return Ty::Error;
+                if matches!(ctx, IndexContext::Read) {
+                    if !self.validate_vec_index_borrow_surface(&args[0], span) {
+                        return Ty::Error;
+                    }
+                    // D432: an element with no clone is read as a loan of the
+                    // slot the vector still owns, never copied out.
+                    match self.vec_iteration_element_mode(&args[0], span) {
+                        Some(super::types::VecIterationMode::Borrow) => {
+                            self.borrowed_element_index_reads
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                        }
+                        Some(super::types::VecIterationMode::Clone) => {}
+                        None => return Ty::Error,
+                    }
                 }
                 if matches!(ctx, IndexContext::AssignTarget) {
                     self.record_resolved_vec_call("set", &args[0], span);

@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-borrowed-index"
+intent = "`v[i]` over a clone-free element reads a loan of the slot: repeated reads and a borrowing method leave the vector whole and each element released once."
+source = "cases/vector-borrowed-index.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nshow t2\nt\nshow t1\nlen=2\nclose t1\nclose t2\n"
+exit = 0
+stderr = ""

@@ -7730,6 +7730,8 @@ struct LowerCtx {
     actor_self_state_fields: HashSet<SpanKey>,
     /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
     borrowed_element_for_loops: HashSet<SpanKey>,
+    /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
+    borrowed_element_index_reads: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
@@ -8408,6 +8410,7 @@ impl LowerCtx {
             current_actor_self: None,
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
+            borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -19030,10 +19033,18 @@ impl LowerCtx {
                     }
 
                     // C-2 single-element Vec indexing: result type is element type T.
+                    // D432: the checker records the reads whose element has no
+                    // clone; those bind a loan of the slot instead of copying.
+                    let borrowed = self
+                        .borrowed_element_index_reads
+                        .contains(&self.mk_key(&span));
+                    let container = Box::new(container);
+                    let index = Box::new(index_expr);
                     (
-                        HirExprKind::Index {
-                            container: Box::new(container),
-                            index: Box::new(index_expr),
+                        if borrowed {
+                            HirExprKind::BorrowedIndex { container, index }
+                        } else {
+                            HirExprKind::Index { container, index }
                         },
                         result_ty,
                     )

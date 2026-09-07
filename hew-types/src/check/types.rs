@@ -349,6 +349,9 @@ pub struct TypeCheckOutput {
     /// The checker decides borrow versus clone once, here; no lowering stage
     /// re-derives it from the element's facts.
     pub borrowed_element_for_loops: HashSet<SpanKey>,
+    /// Spans of `xs[i]` reads over a `Vec<T>` whose element has no clone, so
+    /// the read is a loan of the slot the vector still owns (D432).
+    pub borrowed_element_index_reads: HashSet<SpanKey>,
     /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
     ///
     /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
@@ -1377,6 +1380,7 @@ impl Default for TypeCheckOutput {
             user_comparison_dispatch: HashMap::new(),
             actor_self_state_fields: HashSet::new(),
             borrowed_element_for_loops: HashSet::new(),
+            borrowed_element_index_reads: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             type_facts: BTreeMap::new(),
             type_fact_context: TypeFactContext::default(),
@@ -2747,6 +2751,8 @@ pub struct Checker {
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::borrowed_element_for_loops`].
     pub(super) borrowed_element_for_loops: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::borrowed_element_index_reads`].
+    pub(super) borrowed_element_index_reads: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
@@ -3841,6 +3847,7 @@ impl Checker {
             flat_file_import_module_names: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             borrowed_element_for_loops: HashSet::new(),
+            borrowed_element_index_reads: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),

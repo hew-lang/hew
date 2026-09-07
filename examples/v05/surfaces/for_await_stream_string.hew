@@ -1,5 +1,5 @@
 //! Status: runnable
-//! Description: Drains a `Stream<string>` with `for await` end-to-end,
+//! Description: Drains a `Stream<string>` with `for` end-to-end,
 //! including an empty `""` item to lock the empty-item invariant.
 //!
 //! `Stream<string>.recv` resolves to the layout-witness runtime entry
@@ -30,7 +30,7 @@ actor DrainStrings {
         sink.send("frame-1");
         sink.send("frame-2");
         sink.close();
-        for await item in input {
+        for item in input {
             println(f"recv [{item}]");
         }
         println("done");

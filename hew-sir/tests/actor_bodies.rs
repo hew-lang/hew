@@ -24,7 +24,7 @@ actor Counter {
 fn main() {
     let counter = spawn Counter();
     let _ = send counter.increment(2);
-    await close(counter);
+    close(counter);
 }
 "#;
 
@@ -117,7 +117,7 @@ fn main() {
         .Ok(label) => println(label),
         .Err(_) => panic("show failed"),
     }
-    await close(ledger);
+    close(ledger);
 }
 "#;
     let module = lower_source(SOURCE);
@@ -229,8 +229,8 @@ actor Source {
 }
 fn main() {
     let source = spawn Source();
-    for await item in source.items(3) { println(item); }
-    await close(source);
+    for item in source.items(3) { println(item); }
+    close(source);
 }
 ";
 

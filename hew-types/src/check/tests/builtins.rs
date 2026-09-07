@@ -319,8 +319,8 @@ fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
         );
         // The single diagnostic points at the supported alternative.
         assert!(
-            adapter_errors[0].message.contains("for await"),
-            "the diagnostic must point at the supported `for await` consumption \
+            adapter_errors[0].message.contains("for"),
+            "the diagnostic must point at the supported `for` consumption \
              pattern; got: {}",
             adapter_errors[0].message
         );

@@ -471,7 +471,7 @@ belong to the caller.
 `main` (#3250) releases the loop binder on the `break` edge and withholds
 it on the `return` edge. §1.3.4 lists `Return`, `Break` and `Continue`
 together as exits of the enclosing scope, so `bb3` and `bb5` are produced
-by one rule; the `for await` shape of #3250 is this loop with a `Suspend`
+by one rule; the `for` shape of #3250 is this loop with a `Suspend`
 at the top of `bb1` and the frame binder as the loop argument, and nothing
 about the exits changes.
 

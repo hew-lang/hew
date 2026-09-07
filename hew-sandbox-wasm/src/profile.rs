@@ -450,15 +450,7 @@ impl<'a> ProfileChecker<'a> {
                 }
                 self.check_block(body);
             }
-            Stmt::For { is_await, iterable, body, label, .. } => {
-                if *is_await {
-                    self.reject(
-                        span.clone(),
-                        "reserved_runtime_feature",
-                        "for-await requires async runtime support reserved for a later sandbox VM milestone",
-                    );
-                    return;
-                }
+            Stmt::For { iterable, body, label, .. } => {
                 if label.is_some() {
                     self.reject(
                         span.clone(),

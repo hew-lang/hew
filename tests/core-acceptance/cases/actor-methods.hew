@@ -32,6 +32,6 @@ fn main() {
         .Ok(total) => println(total),
         .Err(_) => panic("increment failed"),
     }
-    await close(counter);
+    close(counter);
     println("closed");
 }

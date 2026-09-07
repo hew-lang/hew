@@ -1,6 +1,6 @@
 [[case]]
 id = "actor-stream-consumer"
-intent = "A receive gen fn feeds another actor's `for await` from a snapshot of its state; a consumer that leaves early ends the producer turn, so a later ask is answered and the state is unchanged."
+intent = "A receive gen fn feeds another actor's `for` from a snapshot of its state; a consumer that leaves early ends the producer turn, so a later ask is answered and the state is unchanged."
 source = "cases/actor-stream-consumer.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

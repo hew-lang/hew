@@ -2660,7 +2660,6 @@ impl<'a> Formatter<'a> {
             }
             Stmt::For {
                 label,
-                is_await,
                 pattern,
                 iterable,
                 body,
@@ -2672,9 +2671,6 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                 }
                 self.write("for ");
-                if *is_await {
-                    self.write("await ");
-                }
                 self.format_pattern(&pattern.0);
                 self.write(" in ");
                 self.format_expr(&iterable.0);

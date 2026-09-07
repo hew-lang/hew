@@ -1195,7 +1195,6 @@ impl Builder {
                     }
                 }
                 Stmt::For {
-                    is_await: false,
                     pattern,
                     iterable,
                     body,

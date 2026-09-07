@@ -20,7 +20,7 @@ fn main() {
     let cfg = Config { label: "hello" };
     let sup = spawn App(config: cfg);
     let r = sup.r;
-    for await v in r.stream() {
+    for v in r.stream() {
         println(f"{v}");
     }
 }

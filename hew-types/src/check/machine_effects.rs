@@ -567,11 +567,8 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
 
 impl NodeVisitor for EffectVisitor<'_> {
     fn visit_stmt(&mut self, stmt: &Stmt, span: &Span) {
-        if matches!(stmt, Stmt::Defer(_) | Stmt::For { is_await: true, .. }) {
-            self.refuse(
-                span,
-                "deferred effects and suspension are not admitted in machine helpers",
-            );
+        if matches!(stmt, Stmt::Defer(_)) {
+            self.refuse(span, "deferred effects are not admitted in machine helpers");
         }
     }
     fn visit_expr(&mut self, expr: &Expr, span: &Span) {

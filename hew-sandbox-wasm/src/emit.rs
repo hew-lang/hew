@@ -1587,16 +1587,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Stmt::For {
                 label,
-                is_await,
                 pattern,
                 iterable,
                 body,
             } => {
-                if *is_await {
-                    self.emit_unsupported(Some(span));
-                } else {
-                    self.emit_for_range(label.clone(), pattern, iterable, body, span)?;
-                }
+                self.emit_for_range(label.clone(), pattern, iterable, body, span)?;
             }
             Stmt::While {
                 label,

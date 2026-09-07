@@ -3087,7 +3087,7 @@ fi
 grep -qF 'E_STREAM_ADAPTER_UNSUPPORTED' "${reject_output}"
 
 # Accept + run: the §6.5 first-class stream pipe round-trips bytes end-to-end.
-# Two writes then a close drain through `for await`; the summed chunk lengths
+# Two writes then a close drain through `for`; the summed chunk lengths
 # (2 + 3) leave exit code 5. Regression-guards the shipped stream surface so a
 # change to the Duplex split lowering cannot quietly break the stream pair that
 # shares the same dual-queue substrate.
@@ -3749,7 +3749,7 @@ run_accept_expect_stdout "gen_drop_before_first_next"
 # ---------------------------------------------------------------------------
 # `receive gen fn` — actor receive-generators (per-call stream-producer
 # dispatch). A `receive gen fn` handler must feel identical to a standalone
-# `gen fn` at the consumer surface (`for await` vs `for`), with actor state
+# `gen fn` at the consumer surface (`for` vs `for`), with actor state
 # reads snapshotted at stream start (never a live view) and cancellation/fault
 # behaviour matching a real, fail-closed producer.
 # ---------------------------------------------------------------------------
@@ -3763,7 +3763,7 @@ run_accept_expect_stdout "receive_gen_fn_no_env"
 run_accept_expect_stdout "receive_gen_fn_state_param"
 
 # Parity twin: the same base+i sequence, once drained from an actor stream via
-# `for await` and once from a standalone `gen fn` via `for`. The two rendered
+# `for` and once from a standalone `gen fn` via `for`. The two rendered
 # sequences must compare equal — the "feels identical" proof.
 run_accept_expect_stdout "receive_gen_fn_parity_twin"
 
@@ -3775,7 +3775,7 @@ run_accept_expect_stdout "receive_gen_fn_parity_twin"
 # a second, freshly-started stream sees the new value.
 run_accept_expect_stdout "receive_gen_fn_snapshot_isolation"
 
-# Cancellation: `for await ... break` on an infinite generator must not
+# Cancellation: `for ... break` on an infinite generator must not
 # livelock the producer actor — the peer-closed check unwedges the pump, and
 # the actor answers a later ask normally.
 run_accept_expect_stdout "receive_gen_fn_cancellation"
@@ -3795,7 +3795,7 @@ run_accept_expect_stdout "receive_gen_fn_enum_yield"
 # under the repository-wide two-way ratchet until they can return here and to
 # the ASan composite-yield gate.
 
-# Early `return` out of a `for await` drain: the body-end release survives a
+# Early `return` out of a `for` drain: the body-end release survives a
 # return-carrying path, the returning iteration's received string is released
 # on the return edge, and the returned result proves the received values were
 # intact when read. Leak slope pinned by the recv-loop leak oracle in hew-cli.

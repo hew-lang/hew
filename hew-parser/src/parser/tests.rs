@@ -1152,10 +1152,27 @@ fn parse_labeled_continue() {
     assert!(result.errors.is_empty());
 }
 
+/// `for` waits per item on its own (U383): the `for await` spelling is gone
+/// and leaves an ordinary parse error where the pattern belongs.
 #[test]
-fn parse_for_await_loop() {
+fn parse_for_await_is_a_parse_error() {
     let source = r"fn main() {
             for await item in stream {
+                println(item);
+            }
+        }";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "`for await` must not parse; got {:?}",
+        result.program.items
+    );
+}
+
+#[test]
+fn parse_for_over_a_stream_loop() {
+    let source = r"fn main() {
+            for item in stream {
                 println(item);
             }
         }";
@@ -1163,11 +1180,10 @@ fn parse_for_await_loop() {
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 
     if let Item::Function(ref f) = result.program.items[0].0 {
-        if let Stmt::For { is_await, .. } = &f.body.stmts[0].0 {
-            assert!(*is_await);
-        } else {
-            panic!("expected For statement");
-        }
+        assert!(
+            matches!(&f.body.stmts[0].0, Stmt::For { .. }),
+            "expected For statement"
+        );
     } else {
         panic!("expected Function item");
     }

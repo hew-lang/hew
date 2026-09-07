@@ -22,6 +22,6 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => panic("ping failed"),
     }
-    await close(keeper);
+    close(keeper);
     println("unreachable");
 }

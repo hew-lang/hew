@@ -1762,8 +1762,8 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
     );
 }
 
-/// A wasm32 compile must reject `for await item in rx` over a channel receiver
-/// before link/runtime discovery. The `for await` HIR desugar now reaches the
+/// A wasm32 compile must reject `for item in rx` over a channel receiver
+/// before link/runtime discovery. The `for` HIR desugar now reaches the
 /// suspending recv carrier on native targets, so this pins the wasm fail-closed
 /// gate directly against the compile path rather than relying on REPL chunking.
 #[test]
@@ -1778,7 +1778,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
-            "    for await item in rx {\n",
+            "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
             "}\n",
@@ -1795,7 +1795,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
 
     assert!(
         !output.status.success(),
-        "expected failure for `for await` over Receiver<T> on WASM target"
+        "expected failure for `for` over Receiver<T> on WASM target"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

@@ -34,7 +34,7 @@
 //!     sink.write("world");
 //!     sink.close();  // optional — would auto-close on drop
 //!
-//!     for await item in input {
+//!     for item in input {
 //!         println(item);
 //!     }
 //! }

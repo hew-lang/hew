@@ -281,15 +281,6 @@ impl Checker {
         }
     }
 
-    /// Whether `span` is a checked actor delivery that suspends the sender.
-    pub(super) fn submission_suspends(&self, span: &Span) -> bool {
-        self.effect_graph
-            .submission_effects
-            .get(&SpanKey::in_module(span, self.current_module_idx))
-            .copied()
-            .unwrap_or(false)
-    }
-
     /// A closure or named function coerced into a written callable type must
     /// not suspend unless that type says `fn[suspends]`. Bodies are known only
     /// after the fixed point, so the check is deferred to it.

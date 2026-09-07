@@ -26,7 +26,7 @@
 //! `eval_e2e.rs`'s `for_await_*_drains_to_completion_under_single_worker`
 //! tests; both currently fail on the same suspend gap and will resume
 //! proving it once physical MIR grows a channel-recv terminator. The
-//! `--dump-mir raw`/`elab` oracle that pinned the parked `for await`
+//! `--dump-mir raw`/`elab` oracle that pinned the parked `for`
 //! cleanup plan (cursor consumes the receiver; the plan closes exactly one
 //! sender and one receiver) went the same way. Lost coverage: the
 //! exactly-once cursor/sender close on coroutine destruction has no

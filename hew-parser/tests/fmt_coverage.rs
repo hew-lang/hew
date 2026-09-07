@@ -2160,7 +2160,7 @@ fn fmt_pattern_or_roundtrip() {
 
 #[test]
 fn fmt_for_await_roundtrip() {
-    exact_roundtrip("fn main() {\n    for await x in stream {\n        println(x);\n    }\n}\n");
+    exact_roundtrip("fn main() {\n    for x in stream {\n        println(x);\n    }\n}\n");
 }
 
 #[test]

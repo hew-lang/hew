@@ -1,5 +1,5 @@
 //! Status: runnable (v0.5 for-await over Receiver<f64>)
-//! Description: Drains a float channel receiver with `for await`.
+//! Description: Drains a float channel receiver with `for`.
 //!
 //! `Receiver<f64>` rides the element-layout witness: the checker admits any
 //! describable element type and the recv path decodes the 8-byte Plain
@@ -17,7 +17,7 @@ actor DrainFloats {
         tx.send(1.25);
         tx.send(-3.75);
         tx.close();
-        for await sample in rx {
+        for sample in rx {
             println(sample);
         }
     }

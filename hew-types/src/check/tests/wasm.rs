@@ -13,7 +13,7 @@ pub(super) use super::*;
 //
 // Coverage:
 //  - channel.new / send / try_recv → allowed on wasm32 bounded subset
-//  - Receiver<T>::recv / `for await ... in Receiver<T>` → BlockingChannelRecv error
+//  - Receiver<T>::recv / `for ... in Receiver<T>` → BlockingChannelRecv error
 //  - semaphore.new / try_acquire / release / count / close → allowed on wasm32
 //  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
 //  - sleep_ms → now an undefined-function error (removed; use sleep(duration))
@@ -357,7 +357,7 @@ mod wasm_rejects {
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
-            "    for await item in rx {\n",
+            "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
             "}\n",
@@ -373,7 +373,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             has_platform_limitation_error(&output),
-            "`for await` over Receiver<T> should be a compile-time error on WASM; got errors: {:?}",
+            "`for` over Receiver<T> should be a compile-time error on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -390,7 +390,7 @@ mod wasm_rejects {
             "fn main() {\n",
             "    let (sink, input) = match stream.bytes_pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    sink.close();\n",
-            "    for await item in input {\n",
+            "    for item in input {\n",
             "        println(item.to_string());\n",
             "    }\n",
             "}\n",
@@ -406,7 +406,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             has_platform_limitation_error(&output),
-            "`for await` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
+            "`for` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -424,7 +424,7 @@ mod wasm_rejects {
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
-            "    for await item in rx {\n",
+            "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
             "}\n",
@@ -439,7 +439,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             !has_platform_limitation_error(&output),
-            "`for await` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
+            "`for` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }

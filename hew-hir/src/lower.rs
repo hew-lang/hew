@@ -435,7 +435,7 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 enum ForIterNextCall {
     BuiltinVecIter,
     VarSelf(HirVarSelfMethodTarget),
-    /// `for await x in rx` over `Receiver<T>` — each iteration borrows the
+    /// `for x in rx` over `Receiver<T>` — each iteration borrows the
     /// loop's receiver binding and emits the layout-witness runtime recv
     /// call (`hew_channel_recv_layout`, one symbol for every describable
     /// element type). MIR's existing `lower_direct_call` suspend flip turns
@@ -443,7 +443,7 @@ enum ForIterNextCall {
     /// callers, deriving the element type from the call's `Option<T>`
     /// return type.
     ChannelRecv,
-    /// `for await x in stream` over `Stream<T>` — each iteration borrows the
+    /// `for x in stream` over `Stream<T>` — each iteration borrows the
     /// stream binding and emits the layout-witness runtime recv call
     /// (`hew_stream_next_layout`), reusing MIR's existing
     /// `Terminator::SuspendingStreamNext` flip.
@@ -16470,7 +16470,6 @@ impl LowerCtx {
                 pattern,
                 iterable,
                 body,
-                is_await,
             } => {
                 // Lower `for pat in iterable { body }`.
                 // Only `Range`-typed iterables are supported in this slice:
@@ -16635,7 +16634,6 @@ impl LowerCtx {
                         body,
                         label.as_ref(),
                         span.clone(),
-                        *is_await,
                     ),
                     _ => {
                         // Non-identifier range pattern: not supported in this slice.
@@ -17731,13 +17729,13 @@ impl LowerCtx {
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).copied() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
-                (ActorDeliveryCall::Close, Expr::Call { args, .. }) if args.len() == 1 => (
+                (
+                    ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
+                    Expr::Call { args, .. },
+                ) if args.len() == 1 => (
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
-                (ActorDeliveryCall::AwaitClosed, Expr::Await(receiver)) => {
-                    (self.lower_expr(receiver, IntentKind::Read), Vec::new())
-                }
                 (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. }) if args.len() == 2 => (
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
@@ -17797,6 +17795,39 @@ impl LowerCtx {
                         receiver: Box::new(readdressed),
                         args: Vec::new(),
                         operation: ActorDeliveryCall::Submit { policy },
+                    },
+                    span,
+                };
+            }
+            // `close(actor)` requests the stop AND waits for terminal cleanup:
+            // the request yields the same handle back, and the wait consumes it.
+            // `fork close(actor)` is how the request runs without waiting, and
+            // `closed(actor)` is the wait on its own.
+            if let ActorDeliveryCall::Close = operation {
+                let handle_ty = receiver.ty.clone();
+                let requested = HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    value_class: ValueClass::of_ty(&handle_ty, &self.type_classes),
+                    ty: handle_ty,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(receiver),
+                        args,
+                        operation,
+                    },
+                    span: span.clone(),
+                };
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(requested),
+                        args: Vec::new(),
+                        operation: ActorDeliveryCall::AwaitClosed,
                     },
                     span,
                 };
@@ -19621,7 +19652,7 @@ impl LowerCtx {
                         self.checked_actor_ask_result_ty(source_span, &method_id)
                     }
                     // A `receive gen fn` dispatch never reaches a `select`
-                    // ActorAsk arm — `for await` is its only consumer surface.
+                    // ActorAsk arm — the `for` loop is its only consumer surface.
                     Some(
                         ActorMethodKind::Message { .. } | ActorMethodKind::StreamProducer(_, _),
                     )
@@ -24975,7 +25006,6 @@ impl LowerCtx {
         body: &Block,
         label: Option<&String>,
         span: Span,
-        is_await: bool,
     ) -> HirExprKind {
         let (var_name, destructure_pattern) = if let Pattern::Identifier(var_name) = &pattern.0 {
             (var_name.clone(), None)
@@ -25116,23 +25146,23 @@ impl LowerCtx {
                 args,
                 builtin: Some(BuiltinType::Receiver),
                 ..
-            } if is_await && !args.is_empty() => {
+            } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
                 if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
                     self.unsupported(
                         iterable.1.clone(),
-                        format!("for await over Receiver<{elem_ty}>: {reason}"),
-                        "for-await-receiver-runtime-dispatch",
+                        format!("for over Receiver<{elem_ty}>: {reason}"),
+                        "for-receiver-runtime-dispatch",
                     );
                     self.push_scope();
                     let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
-                        "for await over unsupported Receiver<T> element type".into(),
+                        "for over unsupported Receiver<T> element type".into(),
                     );
                 }
-                // Receiver is an affine resource: `for await rx` drains and
+                // Receiver is an affine resource: `for x in rx` drains and
                 // implicitly closes the channel; the source binding is consumed.
                 lowered_iterable.intent = IntentKind::Consume;
                 let iter_ty = lowered_iterable.ty.clone();
@@ -25147,23 +25177,23 @@ impl LowerCtx {
                 args,
                 builtin: Some(BuiltinType::Stream),
                 ..
-            } if is_await && !args.is_empty() => {
+            } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
                 if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
                     self.unsupported(
                         iterable.1.clone(),
-                        format!("for await over Stream<{elem_ty}>: {reason}"),
-                        "for-await-stream-runtime-dispatch",
+                        format!("for over Stream<{elem_ty}>: {reason}"),
+                        "for-stream-runtime-dispatch",
                     );
                     self.push_scope();
                     let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
-                        "for await over unsupported Stream<T> element type".into(),
+                        "for over unsupported Stream<T> element type".into(),
                     );
                 }
-                // Stream is an affine resource: `for await stream` drains it;
+                // Stream is an affine resource: `for x in stream` drains it;
                 // the source binding is consumed.
                 // The layout-witness recv (`hew_stream_next_layout`) carries
                 // every describable element type; MIR's `lower_direct_call`
@@ -25355,7 +25385,7 @@ impl LowerCtx {
                     iterable.1.clone(),
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for await)");
+                self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for loop)");
                 self.make_direct_method_call(
                     "hew_channel_recv_layout".to_string(),
                     receiver,
@@ -25378,7 +25408,7 @@ impl LowerCtx {
                     iterable.1.clone(),
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for await)");
+                self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for loop)");
                 self.make_direct_method_call(
                     "hew_stream_next_layout".to_string(),
                     stream,
@@ -30232,24 +30262,7 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
             }
         }
         Stmt::Loop { body, .. } => scan_block_for_blocking_recv(body, diagnostics),
-        Stmt::For {
-            iterable,
-            body,
-            is_await,
-            ..
-        } => {
-            if *is_await {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm {
-                        construct: "for await".to_string(),
-                    },
-                    iterable.1.clone(),
-                    "Blocking channel receive / stream receive operations via \
-                     `for await` lower to native-only suspending recv substrate \
-                     on wasm32. WASM-TODO(suspending-receive): add the cooperative receive continuation."
-                        .to_string(),
-                ));
-            }
+        Stmt::For { iterable, body, .. } => {
             scan_expr_for_blocking_recv(&iterable.0, diagnostics);
             scan_block_for_blocking_recv(body, diagnostics);
         }
@@ -36521,9 +36534,11 @@ impl Widget {
     // recursion — exhaustivity catches a *missing* arm, but not an arm that
     // exists yet skips sub-expressions.
 
+    /// A lambda actor's `close()` releases the handle and is an ordinary call:
+    /// it needs no `await` in either position (U383).
     #[test]
-    fn awaited_actor_close_produces_unit_in_value_and_statement_positions() {
-        for operation in ["await a.close();", "let value: () = await a.close();"] {
+    fn lambda_actor_close_produces_unit_in_value_and_statement_positions() {
+        for operation in ["a.close();", "let value: () = a.close();"] {
             let source = format!("fn main() {{ let a = actor |x: i64| {{}}; {operation} }}");
             let (_, checked, lowered) = parse_typecheck_and_lower(&source);
             assert!(checked.errors.is_empty(), "{:?}", checked.errors);

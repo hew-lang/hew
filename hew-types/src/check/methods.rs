@@ -4103,7 +4103,7 @@ impl Checker {
                     format!(
                         "`Stream<{}>.{method}` is not yet supported: the lazy \
                          stream adapters (`take`/`map`/`filter`) have no lowering \
-                         yet; consume the stream directly with `for await x in \
+                         yet; consume the stream directly with `for x in \
                          s {{ ... }}` (applying the `take`/`map`/`filter` logic in \
                          the loop body), or `.recv()` in a loop \
                          [E_STREAM_ADAPTER_UNSUPPORTED]",

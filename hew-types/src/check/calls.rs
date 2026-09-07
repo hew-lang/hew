@@ -1865,25 +1865,46 @@ impl Checker {
                 self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
                 return Ty::result(ok_ty, err_ty);
             }
-            "close" => {
-                if !self.check_arity(args, 1, "`close`", span) {
+            // `close(actor)` requests a cooperative stop and waits until the
+            // actor's terminal cleanup has run; `fork close(actor)` is the
+            // non-waiting request. `closed(actor)` waits without requesting.
+            "close" | "closed" => {
+                if !self.check_arity(args, 1, &format!("`{func_name}`"), span) {
                     return Ty::Error;
                 }
                 let (expr, sp) = args[0].expr();
                 let actor_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&actor_ty);
+                // A supervisor stops through its own terminal contract, which
+                // tears its children down before returning: `supervisor_stop`
+                // is that one spelling, and the actor lifecycle boundary has no
+                // separate termination signal to wait on.
+                if let Some(Ty::Named { name, .. }) = resolved.as_actor_handle() {
+                    if self.supervisor_children.contains_key(name) {
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!("`{func_name}` expects an actor handle; `{name}` is a supervisor"),
+                            vec!["use `supervisor_stop(sup)` to stop a supervisor tree".to_string()],
+                        );
+                        return Ty::Error;
+                    }
+                }
                 if resolved.as_actor_handle().is_some() {
-                    self.actor_delivery_calls.insert(
-                        SpanKey::in_module(span, self.current_module_idx),
-                        crate::actor_delivery::ActorDeliveryCall::Close,
-                    );
-                    self.record_submission_suspension(span, false);
-                    return resolved;
+                    let operation = if func_name == "close" {
+                        crate::actor_delivery::ActorDeliveryCall::Close
+                    } else {
+                        crate::actor_delivery::ActorDeliveryCall::AwaitClosed
+                    };
+                    self.actor_delivery_calls
+                        .insert(SpanKey::in_module(span, self.current_module_idx), operation);
+                    self.record_submission_suspension(span, true);
+                    return Ty::Unit;
                 }
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    "`close` expects an actor handle".to_string(),
+                    format!("`{func_name}` expects an actor handle"),
                 );
                 return Ty::Error;
             }
@@ -2660,14 +2681,14 @@ impl Checker {
     }
 
     /// Validates that a `Receiver<T>` element type is resolved and supported for
-    /// `for await`.
-    pub(super) fn check_receiver_element_type_for_await(&mut self, inner: &Ty, span: &Span) {
+    /// `for`.
+    pub(super) fn check_queue_receive_element_type(&mut self, inner: &Ty, span: &Span) {
         let resolved = self.subst.resolve(inner);
         if resolved.has_inference_var() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "`for await` over a channel receiver requires a resolved element type".to_string(),
+                "`for` over a channel receiver requires a resolved element type".to_string(),
             );
             return;
         }
@@ -2676,7 +2697,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                format!("`Channel<{resolved}>` is not supported in `for await`: {reason}"),
+                format!("`Channel<{resolved}>` is not supported in a `for` loop: {reason}"),
             );
             return;
         }

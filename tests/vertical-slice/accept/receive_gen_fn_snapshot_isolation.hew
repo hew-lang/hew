@@ -39,12 +39,12 @@ fn main() {
         .Err(_e) => println("set_base failed"),
     }
 
-    for await v in s1 {
+    for v in s1 {
         println(f"{v}");
     }
 
     let s2 = t.stream(3);
-    for await v in s2 {
+    for v in s2 {
         println(f"{v}");
     }
 }

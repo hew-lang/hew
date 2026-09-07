@@ -1221,13 +1221,12 @@ fn channel_dot_receiver_annotation_typechecks() {
 }
 
 // ===========================================================================
-// for-await fail-closed tests
-// These cover the typechecker's new is_await validation in Stmt::For.
+// Stream and channel `for` loop fail-closed tests
 // ===========================================================================
 
-/// `for await item in rx` over `Receiver<string>` must typecheck cleanly.
+/// `for item in rx` over `Receiver<string>` must typecheck cleanly.
 #[test]
-fn for_await_receiver_string_ok() {
+fn for_receiver_string_ok() {
     let output = typecheck_inline(
         r#"
         import std.channel.channel;
@@ -1236,7 +1235,7 @@ fn for_await_receiver_string_ok() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send("hello");
             tx.close();
-            for await msg in rx {
+            for msg in rx {
                 println(msg);
             }
         }
@@ -1244,14 +1243,14 @@ fn for_await_receiver_string_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<string> should typecheck cleanly, got: {:#?}",
+        "for over Receiver<string> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await val in rx` over `Receiver<i64>` must typecheck cleanly.
+/// `for val in rx` over `Receiver<i64>` must typecheck cleanly.
 #[test]
-fn for_await_receiver_int_ok() {
+fn for_receiver_int_ok() {
     let output = typecheck_inline(
         r"
         import std.channel.channel;
@@ -1260,7 +1259,7 @@ fn for_await_receiver_int_ok() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(42);
             tx.close();
-            for await val in rx {
+            for val in rx {
                 println(val);
             }
         }
@@ -1268,15 +1267,15 @@ fn for_await_receiver_int_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<i64> should typecheck cleanly, got: {:#?}",
+        "for over Receiver<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await _ in rx` over a bare `Receiver` annotation must fail closed
+/// `for _ in rx` over a bare `Receiver` annotation must fail closed
 /// before serializer-time unresolved-type handling.
 #[test]
-fn for_await_receiver_missing_element_type_errors() {
+fn for_receiver_missing_element_type_errors() {
     let output = typecheck_inline(
         r"
         import std.channel.channel;
@@ -1284,7 +1283,7 @@ fn for_await_receiver_missing_element_type_errors() {
         fn main() {
             let (tx, rx): (channel.Sender, channel.Receiver) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
-            for await _ in rx {
+            for _ in rx {
                 println(0);
             }
         }
@@ -1300,10 +1299,10 @@ fn for_await_receiver_missing_element_type_errors() {
     );
 }
 
-/// `for await item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
+/// `for item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
 /// element-layout witness and must typecheck cleanly.
 #[test]
-fn for_await_receiver_record_element_admitted() {
+fn for_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
         import std.channel.channel;
@@ -1314,7 +1313,7 @@ fn for_await_receiver_record_element_admitted() {
 
         fn main() {
             let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            for await item in rx {
+            for item in rx {
                 println(item.x);
             }
         }
@@ -1327,10 +1326,10 @@ fn for_await_receiver_record_element_admitted() {
     );
 }
 
-/// `for await item in rx` over a container element (`Receiver<Vec<i64>>`)
+/// `for item in rx` over a container element (`Receiver<Vec<i64>>`)
 /// must fail closed — the witness cannot clone or drop a container element.
 #[test]
-fn for_await_receiver_container_element_errors() {
+fn for_receiver_container_element_errors() {
     let output = typecheck_inline(
         r"
         import std.channel.channel;
@@ -1338,7 +1337,7 @@ fn for_await_receiver_container_element_errors() {
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
                 match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            for await item in rx {
+            for item in rx {
                 println(item.len());
             }
         }
@@ -1349,15 +1348,15 @@ fn for_await_receiver_container_element_errors() {
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("not supported")
         ),
-        "expected InvalidOperation for Receiver<Vec<i64>> in for await, got: {:#?}",
+        "expected InvalidOperation for Receiver<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in input` over `Stream<Row>` (a `BitCopy` record) rides the
+/// `for item in input` over `Stream<Row>` (a `BitCopy` record) rides the
 /// element-layout witness and must typecheck cleanly.
 #[test]
-fn for_await_stream_record_element_admitted() {
+fn for_stream_record_element_admitted() {
     let output = typecheck_inline(
         r#"
         import std.stream;
@@ -1370,7 +1369,7 @@ fn for_await_stream_record_element_admitted() {
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await row in input {
+            for row in input {
                 println("seen");
             }
         }
@@ -1383,10 +1382,10 @@ fn for_await_stream_record_element_admitted() {
     );
 }
 
-/// `for await item in input` over a container element (`Stream<Vec<i64>>`)
+/// `for item in input` over a container element (`Stream<Vec<i64>>`)
 /// must fail closed at the stream element validation boundary.
 #[test]
-fn for_await_stream_container_element_errors() {
+fn for_stream_container_element_errors() {
     let output = typecheck_inline(
         r#"
         import std.stream;
@@ -1397,7 +1396,7 @@ fn for_await_stream_container_element_errors() {
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await rows in input {
+            for rows in input {
                 println("seen");
             }
         }
@@ -1408,15 +1407,15 @@ fn for_await_stream_container_element_errors() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
 
-/// Unsupported first-class `Stream<T>` element types in `for await` must fail
+/// Unsupported first-class `Stream<T>` element types in `for` must fail
 /// closed without cascading into loop-body field/type errors.
 #[test]
-fn for_await_stream_unsupported_type_does_not_cascade() {
+fn for_stream_unsupported_type_does_not_cascade() {
     let output = typecheck_inline(
         r#"
         extern "C" {
@@ -1425,7 +1424,7 @@ fn for_await_stream_unsupported_type_does_not_cascade() {
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await rows in input {
+            for rows in input {
                 println(rows.missing);
             }
         }
@@ -1442,22 +1441,22 @@ fn for_await_stream_unsupported_type_does_not_cascade() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in input` over a bare `Stream` annotation must fail closed
+/// `for item in input` over a bare `Stream` annotation must fail closed
 /// instead of bypassing stream element validation and lowering as text.
 #[test]
-fn for_await_stream_missing_element_type_errors() {
+fn for_stream_missing_element_type_errors() {
     let output = typecheck_inline(
         r#"
         extern "C" { fn make_stream() -> Stream; }
 
         fn main() {
             let s = unsafe { make_stream() };
-            for await x in s {
+            for x in s {
                 println("bypassed!");
             }
         }
@@ -1468,15 +1467,15 @@ fn for_await_stream_missing_element_type_errors() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("requires a resolved element type")
         }),
-        "expected InvalidOperation for bare Stream in for await, got: {:#?}",
+        "expected InvalidOperation for bare Stream in for, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in actor.receive_gen()` must keep the actor mailbox path and
+/// `for item in actor.receive_gen()` must keep the actor mailbox path and
 /// not reuse first-class `Stream<T>` element restrictions.
 #[test]
-fn for_await_receive_generator_int_stream_typechecks() {
+fn for_receive_generator_int_stream_typechecks() {
     let output = typecheck_inline(
         r"
         actor Counter {
@@ -1487,7 +1486,7 @@ fn for_await_receive_generator_int_stream_typechecks() {
 
         fn main() {
             let c = spawn Counter();
-            for await val in c.count_up() {
+            for val in c.count_up() {
                 println(val);
             }
         }
@@ -1495,7 +1494,7 @@ fn for_await_receive_generator_int_stream_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over receive gen Stream<i64> should typecheck cleanly, got: {:#?}",
+        "for over receive gen Stream<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -1561,10 +1560,11 @@ fn gen_fn_return_type_spelling_yield_type_accepted() {
     );
 }
 
-/// Actor method calls in `for await` must target `receive gen fn`, even if the
-/// method's return type is `Stream<T>`.
+/// Only a `receive gen fn` produces a stream a `for` loop can drain. A plain
+/// `receive fn` is an ask whose call value is `Result<Stream<string>, AskError>`
+/// (U383), so the loop is refused rather than silently draining the reply.
 #[test]
-fn for_await_actor_method_stream_requires_receive_gen() {
+fn for_over_a_plain_receive_fn_is_refused() {
     let output = typecheck_inline(
         r#"
         extern "C" { fn fake_stream() -> Stream<string>; }
@@ -1577,7 +1577,7 @@ fn for_await_actor_method_stream_requires_receive_gen() {
 
         fn main() {
             let r = spawn Reader();
-            for await line in r.lines() {
+            for line in r.lines() {
                 println(line);
             }
         }
@@ -1586,62 +1586,18 @@ fn for_await_actor_method_stream_requires_receive_gen() {
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("requires a `receive gen fn`")
+                && (e.message.contains("requires a `receive gen fn`")
+                    || e.message.contains("type is not iterable"))
         }),
-        "expected InvalidOperation for actor method Stream<T> without receive gen, got: {:#?}",
+        "expected the loop over a plain `receive fn` to be refused, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in vec` must error — Vec is a sync iterable.
+/// A `Receiver<string>` parameter drained by `for` carries an admissible
+/// element type, so the queue-element guard must stay silent.
 #[test]
-fn for_await_over_vec_errors() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let v: Vec<i64> = Vec.new();
-            for await item in v {
-                println(item);
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`for await`")
-        ),
-        "expected InvalidOperation for `for await` over Vec, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for await i in 0..10` must error — Range is a sync iterable.
-#[test]
-fn for_await_over_range_errors() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            for await i in 0..10 {
-                println(i);
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`for await`")
-        ),
-        "expected InvalidOperation for `for await` over Range, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Plain `for item in rx` (no await) over `Receiver<Foo>` should NOT trigger
-/// the for-await guard (a different validation may apply elsewhere).
-#[test]
-fn for_no_await_over_receiver_no_for_await_error() {
+fn for_over_a_receiver_parameter_is_admitted() {
     let output = typecheck_inline(
         r"
         import std.channel;
@@ -1653,13 +1609,12 @@ fn for_no_await_over_receiver_no_for_await_error() {
         }
         ",
     );
-    // The for-await guard must NOT fire on a plain `for` loop.
     assert!(
         output
             .errors
             .iter()
-            .all(|e| !e.message.contains("not supported in `for await`")),
-        "for-await guard must not fire on plain `for`, got errors: {:#?}",
+            .all(|e| !e.message.contains("is not supported in a `for` loop")),
+        "the queue-element guard must not fire on an admissible element type, got errors: {:#?}",
         output.errors
     );
 }

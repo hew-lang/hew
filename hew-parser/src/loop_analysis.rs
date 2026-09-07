@@ -826,7 +826,6 @@ mod tests {
         // outer loop (the iterable is evaluated in the enclosing scope).
         let for_stmt = sp(Stmt::For {
             label: None,
-            is_await: false,
             pattern: sp(Pattern::Identifier("x".into())),
             iterable: break_block_expr(),
             body: empty_block(),
@@ -841,7 +840,6 @@ mod tests {
         // not the outer loop, so the outer loop stays break-less.
         let for_stmt = sp(Stmt::For {
             label: None,
-            is_await: false,
             pattern: sp(Pattern::Identifier("x".into())),
             iterable: sp(Expr::Identifier("v".into())),
             body: block_with_stmts(vec![bare_break()]),

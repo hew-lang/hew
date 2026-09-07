@@ -375,7 +375,7 @@ impl Checker {
         iterable.start..iterable.start
     }
 
-    fn for_await_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
+    fn stream_source_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
         let Expr::MethodCall {
             receiver, method, ..
         } = iterable
@@ -1766,16 +1766,7 @@ impl Checker {
                 pattern,
                 iterable,
                 body,
-                is_await,
             } => {
-                if *is_await && self.deferred_body.is_some() {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "a deferred body cannot suspend in a for await loop".to_string(),
-                    );
-                    return;
-                }
                 let iter_ty = self.synthesize(&iterable.0, &iterable.1);
                 // Generator iteration advances the deferred body; constructing
                 // the iterable does not execute that body.
@@ -1793,127 +1784,112 @@ impl Checker {
                         );
                     }
                 }
-                // Infer element type from iterable, and enforce `for await` restrictions.
-                let elem_ty = match &iter_ty {
-                    Ty::Array(inner, _) | Ty::Slice(inner) => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                "`for await` is not valid over an Array or Slice; \
-                                 use a plain `for` loop"
-                                    .to_string(),
-                            );
-                        }
-                        (**inner).clone()
+                // A stream or channel loop waits per item, exactly like a
+                // generator loop, so it suspends the enclosing body too.
+                if matches!(
+                    resolved_iter_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Stream | BuiltinType::Receiver),
+                        ..
                     }
+                ) {
+                    self.mark_body_suspends("stream iteration");
+                    if self.deferred_body.is_some() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "a deferred body cannot suspend while draining a stream".to_string(),
+                        );
+                        return;
+                    }
+                }
+                // Infer the element type from the iterable.
+                let elem_ty = match &iter_ty {
+                    Ty::Array(inner, _) | Ty::Slice(inner) => (**inner).clone(),
                     Ty::Named {
                         builtin: Some(BuiltinType::Range),
                         args,
                         ..
-                    } if args.len() == 1 => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                "`for await` is not valid over a Range; \
-                                 use a plain `for` loop"
-                                    .to_string(),
-                            );
-                        }
-                        args[0].clone()
-                    }
+                    } if args.len() == 1 => args[0].clone(),
                     Ty::Named {
                         builtin: Some(BuiltinType::Stream),
                         args,
                         ..
                     } => {
                         let inner_opt = args.first().cloned();
-                        if *is_await {
-                            if args.is_empty() {
-                                self.report_error(
-                                    TypeErrorKind::InvalidOperation,
-                                    &iterable.1,
-                                    "`for await` over a stream requires a resolved element type"
-                                        .to_string(),
-                                );
-                                Ty::Error
-                            } else if let Some(method_name) =
-                                self.for_await_actor_method_name(&iterable.0)
-                            {
-                                // SAFETY: args is non-empty (checked above)
-                                let inner = inner_opt.unwrap();
-                                if self.receive_generator_methods.contains(&method_name) {
-                                    let resolved_inner = self.subst.resolve(&inner);
-                                    if resolved_inner.has_inference_var() {
-                                        self.report_error(
-                                            TypeErrorKind::InvalidOperation,
-                                            &iterable.1,
-                                            "`for await` over a generator receive fn requires a resolved element type"
-                                                .to_string(),
-                                        );
-                                        Ty::Error
-                                    } else {
-                                        resolved_inner
-                                    }
-                                } else {
-                                    self.report_error(
-                                        TypeErrorKind::InvalidOperation,
-                                        &iterable.1,
-                                        format!(
-                                            "`for await` over actor method `{method_name}` requires a `receive gen fn`"
-                                        ),
-                                    );
-                                    Ty::Error
-                                }
-                            } else {
-                                match self.validate_stream_sink_element_type(
-                                    args,
-                                    BuiltinNamedType::Stream.canonical_name(),
-                                    "next",
-                                    &iterable.1,
-                                ) {
-                                    Some(validated_inner) => {
-                                        // Stream runtime is native-only in v0.5. Method-call
-                                        // `.recv()` already rejects on wasm; `for await` must
-                                        // mirror that checker gate before HIR desugars it.
-                                        // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
-                                        self.reject_wasm_feature(
-                                            &iterable.1,
-                                            WasmUnsupportedFeature::Streams,
-                                        );
-                                        let resolved = self.subst.resolve(&validated_inner);
-                                        if !matches!(resolved, Ty::Var(_))
-                                            && !self.queue_elem_admissible(&resolved)
-                                        {
-                                            let reason =
-                                                self.queue_elem_rejection_reason(&resolved);
-                                            self.report_error(
-                                                TypeErrorKind::InvalidOperation,
-                                                &iterable.1,
-                                                format!(
-                                                    "`Stream<{}>` is not supported in \
-                                                     `for await`: {reason}",
-                                                    validated_inner.user_facing()
-                                                ),
-                                            );
-                                            Ty::Error
-                                        } else {
-                                            validated_inner
-                                        }
-                                    }
-                                    None => Ty::Error,
-                                }
-                            }
-                        } else if let Some(inner) = inner_opt {
-                            inner
-                        } else {
+                        if args.is_empty() {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for` over a Stream requires a resolved element type".to_string(),
+                                "`for` over a stream requires a resolved element type".to_string(),
                             );
                             Ty::Error
+                        } else if let Some(method_name) =
+                            self.stream_source_actor_method_name(&iterable.0)
+                        {
+                            // SAFETY: args is non-empty (checked above)
+                            let inner = inner_opt.unwrap();
+                            if self.receive_generator_methods.contains(&method_name) {
+                                let resolved_inner = self.subst.resolve(&inner);
+                                if resolved_inner.has_inference_var() {
+                                    self.report_error(
+                                        TypeErrorKind::InvalidOperation,
+                                        &iterable.1,
+                                        "`for` over a generator receive fn requires a resolved element type"
+                                            .to_string(),
+                                    );
+                                    Ty::Error
+                                } else {
+                                    resolved_inner
+                                }
+                            } else {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    &iterable.1,
+                                    format!(
+                                        "`for` over actor method `{method_name}` requires a `receive gen fn`"
+                                    ),
+                                );
+                                Ty::Error
+                            }
+                        } else {
+                            match self.validate_stream_sink_element_type(
+                                args,
+                                BuiltinNamedType::Stream.canonical_name(),
+                                "next",
+                                &iterable.1,
+                            ) {
+                                Some(validated_inner) => {
+                                    // Stream runtime is native-only. Method-call
+                                    // `.recv()` already rejects on wasm; the loop
+                                    // must mirror that checker gate before HIR
+                                    // desugars it.
+                                    // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
+                                    self.reject_wasm_feature(
+                                        &iterable.1,
+                                        WasmUnsupportedFeature::Streams,
+                                    );
+                                    let resolved = self.subst.resolve(&validated_inner);
+                                    if !matches!(resolved, Ty::Var(_))
+                                        && !self.queue_elem_admissible(&resolved)
+                                    {
+                                        let reason = self.queue_elem_rejection_reason(&resolved);
+                                        self.report_error(
+                                            TypeErrorKind::InvalidOperation,
+                                            &iterable.1,
+                                            format!(
+                                                "`Stream<{}>` is not supported in a \
+                                                 `for` loop: {reason}",
+                                                validated_inner.user_facing()
+                                            ),
+                                        );
+                                        Ty::Error
+                                    } else {
+                                        validated_inner
+                                    }
+                                }
+                                None => Ty::Error,
+                            }
                         }
                     }
                     Ty::Named {
@@ -1921,15 +1897,6 @@ impl Checker {
                         args,
                         ..
                     } => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                "`for await` is not valid over a Vec; \
-                                 use a plain `for` loop"
-                                    .to_string(),
-                            );
-                        }
                         if let Some(elem) = args.first().cloned() {
                             if matches!(self.subst.resolve(&elem), Ty::TraitObject { .. }) {
                                 self.report_error(
@@ -1961,15 +1928,6 @@ impl Checker {
                         builtin: Some(BuiltinType::VecIter),
                         ..
                     } if !args.is_empty() => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                "`for await` is not valid over a VecIter; \
-                                 use a plain `for` loop"
-                                    .to_string(),
-                            );
-                        }
                         let elem = args[0].clone();
                         if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
                             elem
@@ -1982,15 +1940,6 @@ impl Checker {
                         args,
                         ..
                     } if args.len() >= 2 => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                "`for await` is not valid over a HashMap; \
-                                 use a plain `for` loop"
-                                    .to_string(),
-                            );
-                        }
                         // `for (k, v) in m` desugars (in HIR) to a `HashMapIter`
                         // cursor built from `m.keys()` and `m.values()`. Both
                         // projections must be lowerable for the key/value types,
@@ -2032,15 +1981,6 @@ impl Checker {
                         args,
                         ..
                     } if !args.is_empty() => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                "`for await` is not valid over a HashSet; \
-                                 use a plain `for` loop"
-                                    .to_string(),
-                            );
-                        }
                         // `for x in s` desugars (in HIR) to a `VecIter` over the
                         // set's `to_vec()` element snapshot. Record the `to_vec`
                         // resolved-call fact (+ matching expr_type) at a synthetic
@@ -2072,9 +2012,14 @@ impl Checker {
                         ..
                     } if !args.is_empty() => {
                         let inner = args[0].clone();
-                        if *is_await {
-                            self.check_receiver_element_type_for_await(&inner, &iterable.1);
-                        }
+                        // The suspending channel receive is native-only; the loop
+                        // mirrors `.recv()`'s gate before HIR desugars it.
+                        // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
+                        self.reject_wasm_feature(
+                            &iterable.1,
+                            WasmUnsupportedFeature::BlockingChannelRecv,
+                        );
+                        self.check_queue_receive_element_type(&inner, &iterable.1);
                         inner
                     }
                     // Propagate already-errored or divergent iterable expressions

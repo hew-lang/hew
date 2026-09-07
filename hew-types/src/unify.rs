@@ -146,6 +146,44 @@ pub fn unify(subst: &mut Substitution, expected: &Ty, actual: &Ty) -> Result<(),
     relate_types(subst, expected, actual, false)
 }
 
+/// Make two types exactly equal after applying any inferred substitutions.
+///
+/// Unlike ordinary unification, this does not retain the permissive
+/// bare/qualified nominal alias rule. The substitution is transactional: any
+/// unification or exact identity failure restores the state supplied by the
+/// caller.
+///
+/// # Errors
+/// Returns an error when unification fails or the resolved types are not
+/// exactly equal.
+#[allow(
+    clippy::result_large_err,
+    reason = "unification errors carry both types for diagnostics"
+)]
+pub(crate) fn unify_exact(
+    subst: &mut Substitution,
+    expected: &Ty,
+    actual: &Ty,
+) -> Result<(), UnifyError> {
+    let snapshot = subst.snapshot();
+    if let Err(error) = unify(subst, expected, actual) {
+        subst.restore(snapshot);
+        return Err(error);
+    }
+
+    let expected_resolved = subst.resolve(expected);
+    let actual_resolved = subst.resolve(actual);
+    if expected_resolved == actual_resolved {
+        return Ok(());
+    }
+
+    subst.restore(snapshot);
+    Err(UnifyError::Mismatch {
+        expected: expected_resolved,
+        actual: actual_resolved,
+    })
+}
+
 /// Coerce an actual value to its expected type, preserving callable signature
 /// invariance while allowing capability weakening through value aggregates.
 ///
@@ -515,6 +553,57 @@ mod tests {
         };
         assert!(unify(&mut subst, &a, &b).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I32);
+    }
+
+    #[test]
+    fn exact_unification_commits_inferred_arguments() {
+        let mut subst = Substitution::new();
+        let element = TypeVar::fresh();
+        let pattern = Ty::named("owner.Wrapper", vec![Ty::Var(element)]);
+        let receiver = Ty::named("owner.Wrapper", vec![Ty::String]);
+
+        unify_exact(&mut subst, &pattern, &receiver).unwrap();
+
+        assert_eq!(subst.resolve(&Ty::Var(element)), Ty::String);
+    }
+
+    #[test]
+    fn exact_unification_rejects_alias_match_and_rolls_back() {
+        let mut subst = Substitution::new();
+        let retained = TypeVar::fresh();
+        let speculative = TypeVar::fresh();
+        subst.insert(retained, &Ty::Bool).unwrap();
+        let pattern = Ty::named("Wrapper", vec![Ty::Var(speculative)]);
+        let foreign = Ty::named("foreign.Wrapper", vec![Ty::I64]);
+
+        assert!(matches!(
+            unify_exact(&mut subst, &pattern, &foreign),
+            Err(UnifyError::Mismatch { .. })
+        ));
+        assert_eq!(subst.resolve(&Ty::Var(retained)), Ty::Bool);
+        assert_eq!(
+            subst.resolve(&Ty::Var(speculative)),
+            Ty::Var(speculative),
+            "an exact-identity refusal must discard speculative bindings"
+        );
+    }
+
+    #[test]
+    fn exact_unification_rolls_back_partial_structural_failure() {
+        let mut subst = Substitution::new();
+        let speculative = TypeVar::fresh();
+        let pattern = Ty::Tuple(vec![Ty::Var(speculative), Ty::Bool]);
+        let incompatible = Ty::Tuple(vec![Ty::I64, Ty::String]);
+
+        assert!(matches!(
+            unify_exact(&mut subst, &pattern, &incompatible),
+            Err(UnifyError::Mismatch { .. })
+        ));
+        assert_eq!(
+            subst.resolve(&Ty::Var(speculative)),
+            Ty::Var(speculative),
+            "a later structural mismatch must roll back earlier element inference"
+        );
     }
 
     #[test]

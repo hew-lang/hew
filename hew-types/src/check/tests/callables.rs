@@ -628,6 +628,58 @@ fn inferred_lambda_returns_join_callable_guarantees() {
     );
 }
 
+fn invariant_test_callable(params: Vec<Ty>, ret: Ty) -> Ty {
+    Ty::Function {
+        capabilities: crate::CallableCapabilities::default(),
+        params,
+        ret: Box::new(ret),
+    }
+}
+
+#[test]
+fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
+    for reverse in [false, true] {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.local_type_defs.insert("Widget".to_string());
+        checker.source_type_defs.insert("Widget".to_string());
+        let speculative = TypeVar::fresh();
+        let local = Ty::named("Carrier", vec![Ty::named("Widget", vec![])]);
+        let foreign = Ty::named("Carrier", vec![Ty::named("foreign.Widget", vec![])]);
+        let left = invariant_test_callable(vec![Ty::Var(speculative), local], Ty::Bool);
+        let right = invariant_test_callable(vec![Ty::I64, foreign], Ty::Bool);
+        let (left, right) = if reverse {
+            (&right, &left)
+        } else {
+            (&left, &right)
+        };
+
+        assert!(
+            checker.join_callable_types(left, right).is_none(),
+            "nested same-leaf nominals from distinct owners must not join"
+        );
+        assert_eq!(
+            checker.subst.resolve(&Ty::Var(speculative)),
+            Ty::Var(speculative),
+            "a failed callable join must discard earlier parameter inference"
+        );
+    }
+}
+
+#[test]
+fn callable_join_accepts_bare_alias_for_current_owner() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("owner".to_string());
+    checker.local_type_defs.insert("Widget".to_string());
+    checker.source_type_defs.insert("Widget".to_string());
+    let bare = Ty::named("Widget", vec![]);
+    let qualified = Ty::named("owner.Widget", vec![]);
+    let left = invariant_test_callable(vec![bare.clone()], bare);
+    let right = invariant_test_callable(vec![qualified.clone()], qualified);
+
+    assert!(checker.join_callable_types(&left, &right).is_some());
+    assert!(checker.join_callable_types(&right, &left).is_some());
+}
+
 #[test]
 fn capture_syntax_composes_with_conditional_result_and_option_types() {
     for body in ["if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }", "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None) }"] {

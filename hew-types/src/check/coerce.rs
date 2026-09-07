@@ -392,6 +392,33 @@ impl Checker {
         crate::unify::coerce(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
     }
 
+    /// Run invariant unification against an isolated substitution while
+    /// retaining the checker's nominal-owner authority.
+    ///
+    /// Callable joins use a trial substitution spanning every parameter and
+    /// the return type. A failed relation restores the trial to its state at
+    /// entry, so this helper is safe for other speculative invariant probes.
+    pub(super) fn try_unify_invariant_with_owner_identity(
+        &self,
+        subst: &mut crate::ty::Substitution,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> bool {
+        let expected_resolved = subst.resolve(expected);
+        let actual_resolved = subst.resolve(actual);
+        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
+            return false;
+        }
+
+        let snapshot = subst.snapshot();
+        if crate::unify::unify(subst, &expected_resolved, &actual_resolved).is_ok() {
+            true
+        } else {
+            subst.restore(snapshot);
+            false
+        }
+    }
+
     /// Commit an inference unification without losing the source inference
     /// variable that owns a literal-backed binding.
     ///

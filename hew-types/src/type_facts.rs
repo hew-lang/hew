@@ -172,20 +172,11 @@ impl ImplMethodBinders {
             .substitute_named_params_parallel(&replacements);
         let mut subst = crate::ty::Substitution::new();
         let receiver_ty = receiver.to_ty();
-        crate::unify::unify(&mut subst, &pattern, &receiver_ty).map_err(|_| {
+        crate::unify::unify_exact(&mut subst, &pattern, &receiver_ty).map_err(|_| {
             ClassError::UnknownDeclaration {
                 name: method.display_name().to_string(),
             }
         })?;
-        // Unification permits checker aliases. Compare in the checker's type
-        // domain to retain exact builtin and nominal identities: converting
-        // back to ResolvedTy would invent `is_opaque: false`, since Ty cannot
-        // carry declaration opacity.
-        if subst.resolve(&pattern) != receiver_ty {
-            return Err(ClassError::UnknownDeclaration {
-                name: method.display_name().to_string(),
-            });
-        }
         let type_args: Vec<_> = self
             .impl_params
             .iter()
@@ -943,6 +934,59 @@ mod tests {
             builtin,
             is_opaque: false,
         }
+    }
+
+    fn generic_impl_binders(receiver_name: &str) -> super::ImplMethodBinders {
+        super::ImplMethodBinders {
+            receiver: crate::Ty::named(receiver_name, vec![crate::Ty::named("T", vec![])]),
+            impl_params: vec!["T".to_string()],
+            method_params: vec![],
+            obligations: Some(vec![]),
+        }
+    }
+
+    #[test]
+    fn impl_method_binders_reject_same_leaf_receiver_from_another_owner() {
+        let binders = generic_impl_binders("local.Wrapper");
+        let receiver = named("foreign.Wrapper", None, vec![ResolvedTy::I64]);
+
+        assert!(matches!(
+            binders.instantiate(
+                &crate::DefId::for_test("local.Wrapper::eq"),
+                &receiver,
+                &crate::traits::TraitRegistry::new(),
+            ),
+            Err(ClassError::UnknownDeclaration { .. })
+        ));
+    }
+
+    #[test]
+    fn impl_method_binders_recover_the_exact_nested_opaque_argument() {
+        let binders = generic_impl_binders("owner.Wrapper");
+        let opaque = ResolvedTy::Named {
+            name: "owner.Handle".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        let argument =
+            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![opaque.clone()]);
+        let receiver = named("owner.Wrapper", None, vec![argument.clone()]);
+
+        let inferred = binders
+            .instantiate(
+                &crate::DefId::for_test("owner.Wrapper::eq"),
+                &receiver,
+                &crate::traits::TraitRegistry::new(),
+            )
+            .unwrap();
+
+        assert_eq!(inferred, vec![argument]);
+        assert!(matches!(
+            &inferred[0],
+            ResolvedTy::Named { args, .. }
+                if matches!(&args[0], ResolvedTy::Named { is_opaque: true, .. })
+        ));
     }
 
     /// Declarations the §1.1 Aggregate rule needs for the cases below.

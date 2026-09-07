@@ -554,7 +554,8 @@ impl Checker {
                 }
                 let mut trial = self.subst.clone();
                 for (left, right) in lp.iter().zip(rp).chain(std::iter::once((&**lr, &**rr))) {
-                    crate::unify::unify(&mut trial, left, right).ok()?;
+                    self.try_unify_invariant_with_owner_identity(&mut trial, left, right)
+                        .then_some(())?;
                 }
                 let capabilities = CallableCapabilities {
                     call: lc.call.max(rc.call),

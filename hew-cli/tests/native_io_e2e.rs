@@ -166,7 +166,7 @@ fn main() {
             let port = listener.local_port();
             let _announced = await fs.write("port", f"{port}");
             let conn = await listener.accept();
-            match await conn.try_read_string() {
+            match await conn.read_string() {
                 .Ok(text) => println(text),
                 .Err(_) => panic("read failed"),
             }

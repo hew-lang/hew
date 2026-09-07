@@ -1820,18 +1820,6 @@ fn fmt_select_roundtrip() {
     );
 }
 
-#[test]
-fn fmt_join_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let pair = join {\n        left(),\n        right(),\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_timeout_roundtrip() {
-    exact_roundtrip("fn main() {\n    let value = await task | after 5s;\n}\n");
-}
-
 /// The `<-` operator was removed in v0.5.  Verify the parser rejects it
 /// rather than producing a silent no-op.  Pairs with the accept path in
 /// `parser_error_recovery.rs` (`left_arrow_send_operator_is_rejected`).

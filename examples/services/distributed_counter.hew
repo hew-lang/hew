@@ -151,11 +151,10 @@ fn main() {
     // ── Local reads are always instant ──
     println("");
     println("--- Local reads (instant, no coordination) ---");
-    let (l1, l2, l3) = join {
-        r1.get_local(),
-        r2.get_local(),
-        r3.get_local(),
-    };
+    let (l1_result, l2_result, l3_result) = await fork (r1.get_local(), r2.get_local(), r3.get_local());
+    let l1 = match l1_result { .Ok(value) => value, .Err(_) => -1 };
+    let l2 = match l2_result { .Ok(value) => value, .Err(_) => -1 };
+    let l3 = match l3_result { .Ok(value) => value, .Err(_) => -1 };
     println(f"  node-1: {l1}, node-2: {l2}, node-3: {l3}");
     println("");
     println("Distributed counter complete.");

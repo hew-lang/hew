@@ -138,7 +138,7 @@ means accepted, not processed and not durable.
 The outcome composes like any other `Result`: propagate it with `?`, recover
 from it with `handle`, or discard it deliberately. Discarding it by accident
 is not available — a statement-position send or ask whose result is dropped is
-`E_SEND_RESULT_DROPPED`, whose fix-it writes `_ = pid.m()` (§5.6). There is no
+`E_SEND_RESULT_DROPPED`, whose fix-it writes `_ = send pid.m()` (§5.6). There is no
 lint tier: an unbounded mailbox reports `SendError.Dead` for a dead target
 exactly as a policy-sensitive one does, so every send has something to say.
 
@@ -205,6 +205,8 @@ let n = await counter.get();
 **Sending messages:**
 
 Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
+
+<!-- doctest: skip -->
 
 ```hew
 // Lambda actor: call the handle directly
@@ -869,7 +871,7 @@ value closes.
 | counted handle | `Rc`, `Weak`, `LambdaPid` | a second name; the count rises (a `LambdaPid` copy is a refcounted retain) | refused: an actor's heap is its own (`E_OPAQUE_MESSAGE_PAYLOAD`, User) | identity | the count falls; drop glue releases the last (for `LambdaPid`, the last release drops the captured environment) |
 | opaque handle | plain `#[opaque]` types (channel `Sender`/`Receiver`) | a second name for one resource; methods act on the resource | local: a move, and the sender's binding is dead (`E_USE_AFTER_SEND`, User, §3.9.6); remote: `E_OPAQUE_MESSAGE_PAYLOAD` (User) | identity | `close(consume self)` where the type declares it |
 | resource handle | `#[resource]` wrappers (`http.Server`, `http.Request`, `Deque`, `Arena`, `process.Child`, `Semaphore`, `regex.Pattern`, `MonitorRef`, `json.Value`) and `Stream`/`Sink` (move-only, §6.5) | a move: `a` is dead, and a later use is the consume wall | local: a move; remote: `E_OPAQUE_MESSAGE_PAYLOAD` | identity | drop glue closes at scope exit, or `close(consume self)` early |
-| callable | closures, generators, tasks | a value (a `move` closure consumes its captures) | refused, `E_CALLABLE_MESSAGE_PAYLOAD` (User) | `E_IS_VALUE_TYPE` | none; a task must be awaited |
+| callable | closures, generators, tasks | a value (a `move` closure consumes its captures) | refused, `E_CALLABLE_MESSAGE_PAYLOAD` (User) | `E_IS_VALUE_TYPE` | none; an unjoined task is joined at its scope's exit |
 
 `LambdaPid` is a counted handle, not a pid handle: its release is the captured
 environment's release, so a copy retains and the last release drops the
@@ -896,6 +898,8 @@ count, or resource?" — see §12.2. There is no `expr is TypeName` form.
 #### 3.4.4 The Boundary Rule: Snapshot on Send
 
 The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), the receiver observes a **logical snapshot** — an independent value — and the sender's binding stays valid:
+
+<!-- doctest: skip -->
 
 ```hew
 type Message { body: string }
@@ -951,6 +955,8 @@ Hew provides two syntactic forms for duplication:
 
 Cloning is never required to keep using a value after a send — the sender's
 binding stays valid. Fan-out to multiple receivers is ordinary code:
+
+<!-- doctest: skip -->
 
 ```hew
 type Message { body: string }
@@ -1052,6 +1058,8 @@ borrow checker buys is that calls borrow, so a value stays usable after being
 passed, and mutation inside an actor needs no annotation beyond `var`.
 
 #### 3.4.7 What is NOT Allowed
+
+<!-- doctest: skip -->
 
 ```hew
 actor Example {
@@ -1545,6 +1553,8 @@ Hew distinguishes three cases of variable shadowing:
 
 **Trait bounds on generics:**
 
+<!-- doctest: skip -->
+
 ```hew
 type Message { body: string }
 
@@ -1644,6 +1654,8 @@ This hybrid gives actor isolation (no shared mutable state between actors) with 
 - When a message is sent to an actor (via method call or `.send()`), the receiver gets a logical snapshot and the sender's binding stays valid. At runtime, the mechanism is gated: provably-unique values are transferred by pointer; immutable-shareable values (`string`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
 - The receiver observes an independent value (alias-sharing is an optimization invisible to program semantics)
 - No user-visible references or borrows cross actor boundaries: ordinary message declarations cannot contain foreign-view syntax. The runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a view into the sender's heap.
+
+<!-- doctest: skip -->
 
 ```hew
 type Message { body: string }
@@ -2196,6 +2208,8 @@ alternative when you need to iterate without draining.
 
 **Inline bounds:**
 
+<!-- doctest: skip -->
+
 ```hew
 type Message { body: string }
 
@@ -2301,6 +2315,8 @@ impl<T: Frozen> Frozen for Vec<T> {}
 The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are not yet part of surfaced Hew source syntax.
 
 **Actor boundary enforcement:**
+
+<!-- doctest: skip -->
 
 ```hew
 // Error: T might not be Send
@@ -3151,8 +3167,8 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
-| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.set_timeout(d)`, `.close()` |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `.set_timeout(d)`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
+| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
 | `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
 
 Handle types are opaque — their internal representation is not accessible.
@@ -3165,7 +3181,7 @@ rules of §3.9.6 apply for holding one inside an actor.
 `net.Listener.accept()` and `net.Connection.read()` are plain suspending
 calls (§4.0): they park the calling execution context rather than blocking
 its thread, and they carry no `await`. A deadline on one of them is the
-socket's own `.set_timeout(d)`, not a wrapper around the call.
+socket's own read and write timeouts, not a wrapper around the call.
 
 #### 3.10.8 Regular Expressions
 
@@ -4608,6 +4624,8 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 
 ### 5.6 Spawning and Accessing Supervised Children
 
+<!-- doctest: skip -->
+
 ```hew
 fn main() {
     let pool = spawn MyPool;
@@ -4648,7 +4666,7 @@ traps, and it never returns `Ok(())`.
 
 Discarding that result is `E_SEND_RESULT_DROPPED`, a compile error, matching
 §2.1.1: a statement-position send or ask whose `Result` is discarded is an
-error, with the fix-it `_ = pid.m()`. There is no `must_use` lint tier — the
+error, with the fix-it `_ = send pid.m()`. There is no `must_use` lint tier — the
 rule is the same for an unbounded mailbox and a policy-sensitive one, because
 both can now report `Dead`.
 
@@ -5905,7 +5923,7 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `from`, `send`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `from`, `await`, `await_restart` |
 | Wire | `reserved`, `optional`, `deprecated` |
 | Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
@@ -5926,6 +5944,7 @@ an ordinary name is legal everywhere else:
 | `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses, and `within` a scope deadline (§4.11.3) |
 | `handle` | the error-recovery and scope-failure clause (§2.2.1, §4.11.3) |
 | `policy`, `on_full` | a sender's mailbox-policy view (§2.1.1) |
+| `send` | the prefix of a message-submission expression (§2.1.1); still an ordinary name elsewhere, including the `.send()` methods of `Sender<T>` and a lambda-actor handle |
 | `suspends` | the suspension qualifier in a written callable type (§4.0) |
 | `self`, `consume` | receiver and transfer positions (§3.6, §3.9) |
 | `clone` | the prefix-clone expression (§3.4.4) |

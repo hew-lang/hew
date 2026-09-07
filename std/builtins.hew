@@ -261,22 +261,13 @@ impl Display for AskError {
     }
 }
 
-/// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
+/// Error arm of a receive that ran out of time.
 ///
 /// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
 /// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
 ///
-/// Not yet implemented: `await ... | after d` requires a suspendable
-/// actor/closure/task context, so this snippet is illustrative only and does
-/// not compile standalone.
-///
-/// ```hew
-/// match await rx.recv() | after 50ms {
-///     Ok(Some(v)) => v,       // item received before deadline
-///     .Ok(None)    => -1,      // channel closed (no deadline race)
-///     .Err(_)      => -2,      // deadline fired
-/// }
-/// ```
+/// A deadline over a receive is a `scope within d { .. }` block or a `select`
+/// timer arm; there is no timeout combinator on the call itself.
 pub enum TimeoutError {
     /// The deadline fired before the recv completed.
     Timeout,

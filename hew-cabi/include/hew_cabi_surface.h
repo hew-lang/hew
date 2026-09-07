@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1612u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1617u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1612] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1617] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -6034,6 +6034,32 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1612] = {
      "{\"native\": \"fn hew_supervisor_is_running( *mut HewSupervisor) -> "
      "c_int\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_add_child",
+     "{\"native\": \"fn hew_supervisor_native_add_child( HewLocalPidId, c_int, "
+     "HewNativeChildSpawnFn, ) -> c_int\"}",
+     "native", "codegen-stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_await_restart",
+     "{\"native\": \"fn hew_supervisor_native_await_restart( HewLocalPidId, "
+     "u32, )\"}",
+     "native", "codegen-stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_child",
+     "{\"native\": \"fn hew_supervisor_native_child( HewLocalPidId, u32, *mut "
+     "c_int, ) -> usize\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_new",
+     "{\"native\": \"fn hew_supervisor_native_new( c_int, c_int, c_int, *mut "
+     "c_void, Option<unsafe extern \\\"C\\\" fn(*mut c_void)>, ) -> "
+     "HewLocalPidId\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_start",
+     "{\"native\": \"fn hew_supervisor_native_start( HewLocalPidId, ) -> "
+     "c_int\"}",
+     "native", "codegen-stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_nested_get",
      "{\"native\": \"fn hew_supervisor_nested_get( *mut HewSupervisor, u32, ) "

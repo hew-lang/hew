@@ -4,7 +4,7 @@
 //! (which uses a blocking native engine and cannot suspend an actor). The codec
 //! here is pure Hew: an actor handler (or any execution-context caller) connects
 //! with `net.connect`, writes an HTTP/1.1 request built by [`build_request`],
-//! then drives an **`await conn.read()` loop** that suspends the worker until the
+//! then drives a **`conn.read()` loop** that suspends the worker until the
 //! server replies — exactly the NEW-1 escapee shape. The accumulated bytes are
 //! parsed by [`parse_response`] into an [`AsyncResponse`] exposing the same
 //! `status()` / `body()` / `header()` / `content_type()` accessor surface as the
@@ -27,13 +27,13 @@
 //!     let path: string;   // "/hello"
 //!     let host: string;   // "127.0.0.1"
 //!     receive fn go(unused: i64) {
-//!         let conn = match await net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+//!         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 //!         conn.write_string(http_async_client.build_get(host, path)).expect("write_string succeeds");
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;
 //!         while !done {
-//!             let chunk = utf8.decode(await conn.read()) handle error {
+//!             let chunk = utf8.decode(conn.read()) handle error {
 //!                 println(f"invalid UTF-8: {error}");
 //!                 return;
 //!             };   // suspends the worker

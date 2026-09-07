@@ -10,7 +10,7 @@
 //!
 //! ## Receiving
 //!
-//! - `await rx.recv()` from an actor handler / closure / task entry
+//! - `rx.recv()` from an actor handler / closure / task entry
 //!   SUSPENDS the calling coroutine worker-free when the channel is empty
 //!   with live senders, and resumes when a sender deposits a value or the
 //!   last sender closes (`None`). From a plain `main`/free function it
@@ -113,7 +113,7 @@ impl SenderMethods for Sender {
 trait ReceiverMethods {
     /// Receive the next message, suspending if necessary.
     ///
-    /// `await rx.recv()` from an actor handler / closure / task entry
+    /// `rx.recv()` from an actor handler / closure / task entry
     /// suspends the calling coroutine worker-free until a message arrives
     /// or the channel closes; from `main`/a free function it blocks the
     /// foreign thread. Returns `Some(value)` on a message, or `None` when

@@ -2,9 +2,9 @@
 //!
 //! The `await`-suspended sibling of the blocking `std.net.http` server
 //! (which is backed by a native engine and cannot suspend an actor). The codec
-//! is pure Hew layered on NEW-2's `await listener.accept()` carrier and NEW-1's
-//! `await conn.read()`: an acceptor handler creates a listener with
-//! `net.listen`, **`await`s a connection**, drives an **`await conn.read()`
+//! is pure Hew layered on NEW-2's `listener.accept()` carrier and NEW-1's
+//! `conn.read()`: an acceptor handler creates a listener with
+//! `net.listen`, **accepts a connection**, drives a **`conn.read()`
 //! loop** until the request is fully buffered ([`request_complete`]), parses it
 //! ([`parse_request`]), and replies by writing the bytes from [`response_text`]
 //! / [`response_json`] / [`build_response`] over the connection.
@@ -27,12 +27,12 @@
 //!     let addr: string;   // "127.0.0.1:8080"
 //!     receive fn serve(unused: i64) {
 //!         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-//!         let conn = await listener.accept();         // suspends on readiness
+//!         let conn = listener.accept();               // suspends on readiness
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;
 //!         while !done {
-//!             let chunk = utf8.decode(await conn.read()) handle error {
+//!             let chunk = utf8.decode(conn.read()) handle error {
 //!                 println(f"invalid UTF-8: {error}");
 //!                 return;
 //!             };    // suspends the worker

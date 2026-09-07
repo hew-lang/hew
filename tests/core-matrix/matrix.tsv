@@ -53,7 +53,7 @@ closure__construct	PASS
 closure__equality	NYI-CLEAN	tests/core-matrix/cells/closure__equality.hew:5:21: error: type mismatch: each closure literal has its own type
 closure__format	NYI-CLEAN	tests/core-matrix/cells/closure__format.hew:3:18: error: type `fn[clone](i64) -> i64` does not implement `Display` (f-string interpolation requires `impl Display for fn[clone](i64) -> i64`)
 closure__index	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime argument 1 has `fn[clone](i64) -> i64`, expected `fn(i64) -> i64`
-closure__iterate	NYI-CLEAN	tests/core-matrix/cells/closure__iterate.hew:7:14: error: `VecIter<fn(i64) -> i64>` is not supported: `VecIter.next()` clones each element into an independent owner, but closure value `fn(i64) -> i64` has no semantic clo
+closure__iterate	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime argument 1 has `fn[clone](i64) -> i64`, expected `fn(i64) -> i64`
 closure__map_key	NYI-CLEAN	tests/core-matrix/cells/closure__map_key.hew:3:12: error: `fn(i64) -> i64` does not satisfy the required bounds for `Map` (Hash + Eq)
 closure__move	PASS
 closure__mutate	PASS
@@ -224,7 +224,7 @@ opaque__drop_scope	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic loweri
 opaque__equality	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__equality.hew_deque_free" }, endpoint: "hew_deque_free",
 opaque__format	NYI-CLEAN	tests/core-matrix/cells/opaque__format.hew:26:18: error: type `Dq` does not implement `Display` (f-string interpolation requires `impl Display for Dq`)
 opaque__index	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__index.hew_deque_free" }, endpoint: "hew_deque_free", tru
-opaque__iterate	NYI-CLEAN	tests/core-matrix/cells/opaque__iterate.hew:30:14: error: `VecIter<Dq>` is not supported: `VecIter.next()` clones each element into an independent owner, but resource/linear value `Dq` has no semantic clone/retain operat
+opaque__iterate	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__iterate.hew_deque_free" }, endpoint: "hew_deque_free", t
 opaque__map_key	NYI-CLEAN	tests/core-matrix/cells/opaque__map_key.hew:27:5: error: `Dq` does not satisfy the required bounds for `Map.insert` (K: Hash)
 opaque__move	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__move.hew_deque_free" }, endpoint: "hew_deque_free", trus
 opaque__mutate	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__mutate.hew_deque_free" }, endpoint: "hew_deque_free", tr
@@ -280,8 +280,8 @@ resource__drop_panic	PASS
 resource__drop_scope	PASS
 resource__equality	PASS
 resource__format	NYI-CLEAN	tests/core-matrix/cells/resource__format.hew:14:18: error: type `Tok` does not implement `Display` (f-string interpolation requires `impl Display for Tok`)
-resource__index	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime read cannot copy an affine element; use an owning removal
-resource__iterate	NYI-CLEAN	tests/core-matrix/cells/resource__iterate.hew:18:14: error: `VecIter<Tok>` is not supported: `VecIter.next()` clones each element into an independent owner, but resource/linear value `Tok` has no semantic clone/retain op
+resource__index	PASS
+resource__iterate	PASS
 resource__map_key	NYI-CLEAN	tests/core-matrix/cells/resource__map_key.hew:15:5: error: `Tok` does not satisfy the required bounds for `Map.insert` (K: Hash)
 resource__move	PASS
 resource__mutate	PASS

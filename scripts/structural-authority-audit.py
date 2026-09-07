@@ -1212,14 +1212,12 @@ def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
     have allowlisted `..._with_assoc_renamed`), and it reduces callees through
     the parse rather than through rendered text. EVERY primitive call anywhere
     under `hew-types/src/` is a finding whose form is its enclosing function's
-    exact name, so the inventory records a reviewed count per (function, file) —
+    exact name, so the inventory records a reviewed row per (function, file) —
     including the authority's own.
 
-    Residual, stated rather than implied: the inventory is a per-function COUNT,
-    so it cannot see a net-zero relocation — moving a call from one already
-    reviewed function to another leaves both totals unchanged only if the two
-    counts move in opposite directions by the same amount, which the count
-    comparison does not distinguish from no change at all.
+    Residual, stated rather than implied: the inventory is presence-only, so
+    it cannot see a net-zero relocation — moving a call between two already
+    reviewed functions changes neither function's presence in the inventory.
     """
     functions = enclosing_function_index(ast_grep, root)
     findings: set[Finding] = set()
@@ -1501,24 +1499,13 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-5"
 
 
-def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
-    expected: dict[tuple[str, str, str], int] = {}
+def load_inventory(path: Path) -> set[tuple[str, str, str]]:
+    expected: set[tuple[str, str, str]] = set()
     with path.open(newline="") as handle:
         source = (line for line in handle if line.strip() and not line.startswith("#"))
         for row in csv.DictReader(source, delimiter="\t"):
-            group, form, target, count = (
-                row["group"],
-                row["form"],
-                row["path"],
-                row["count"],
-            )
-            if (
-                group not in ALL_GROUPS
-                or not form
-                or not target
-                or not count.isdigit()
-                or int(count) == 0
-            ):
+            group, form, target = row["group"], row["form"], row["path"]
+            if group not in ALL_GROUPS or not form or not target:
                 raise SystemExit(f"invalid authority inventory row: {row}")
             required_stage = canonical_stage(group, form, target)
             if row.get("retirement_stage") != required_stage:
@@ -1532,7 +1519,7 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
             key = (group, form, target)
             if key in expected:
                 raise SystemExit(f"duplicate authority inventory row: {key}")
-            expected[key] = int(count)
+            expected.add(key)
     return expected
 
 
@@ -1548,30 +1535,29 @@ def load_inventory_reasons(path: Path) -> dict[tuple[str, str, str], str]:
 
 def render_inventory(
     path: Path,
-    counts: dict[tuple[str, str, str], int],
+    keys: set[tuple[str, str, str]],
     reasons: dict[tuple[str, str, str], str],
 ) -> str:
-    """Rebuild the inventory from observed counts, preserving the prologue.
+    """Rebuild the inventory from observed keys, preserving the prologue.
 
-    Counts are derived, so they are rewritten. Reasons are editorial, so an
-    authority form/path that has never been reviewed cannot be minted here --
-    `write_inventory` refuses instead of authoring a placeholder.
+    Presence is derived, so the row set is rewritten. Reasons are editorial,
+    so an authority form/path that has never been reviewed cannot be minted
+    here -- `write_inventory` refuses instead of authoring a placeholder.
     """
     lines = path.read_text().splitlines()
     prologue = [line for line in lines if line.startswith("#")]
-    header = "group\tform\tpath\tcount\tretirement_stage\treason"
+    header = "group\tform\tpath\tretirement_stage\treason"
     rows = [
         "\t".join(
             (
                 group,
                 form,
                 target,
-                str(counts[(group, form, target)]),
                 canonical_stage(group, form, target),
                 reasons[(group, form, target)],
             )
         )
-        for (group, form, target) in counts
+        for (group, form, target) in keys
     ]
     rows.sort()
     return "\n".join([*prologue, header, *rows]) + "\n"
@@ -1579,17 +1565,18 @@ def render_inventory(
 
 def write_inventory(
     path: Path,
-    counts: dict[tuple[str, str, str], int],
+    keys: set[tuple[str, str, str]],
 ) -> int:
-    """Re-record the inventory counts. A brand-new authority row is an error.
+    """Re-record the present inventory keys. A brand-new authority row is an error.
 
-    Dropping to zero and shrinking are the drift this regen exists to absorb:
-    they mean an authority was retired, which is the direction the cutover is
-    supposed to move. A key with no prior row is the opposite -- new authority
-    landed -- and it needs a human reason before it enters the baseline.
+    Dropping a key is not drift this regen absorbs silently -- it means an
+    authority was retired, which is the direction the cutover is supposed to
+    move, so the row is simply omitted. A key with no prior row is the
+    opposite -- new authority landed -- and it needs a human reason before it
+    enters the baseline.
     """
     reasons = load_inventory_reasons(path)
-    unreviewed = sorted(key for key in counts if key not in reasons)
+    unreviewed = sorted(key for key in keys if key not in reasons)
     if unreviewed:
         print(
             "structural authority inventory: new authority form/path rows cannot be "
@@ -1598,14 +1585,14 @@ def write_inventory(
         )
         for group, form, target in unreviewed:
             print(
-                f"  - {group}\t{form}\t{target}\t{counts[(group, form, target)]}"
+                f"  - {group}\t{form}\t{target}"
                 f"\t{canonical_stage(group, form, target)}\t<reason>",
                 file=sys.stderr,
             )
         return 1
-    path.write_text(render_inventory(path, counts, reasons))
+    path.write_text(render_inventory(path, keys, reasons))
     print(
-        f"structural authority inventory: re-recorded {len(counts)} authority "
+        f"structural authority inventory: re-recorded {len(keys)} authority "
         "form/path rows"
     )
     return 0
@@ -2360,12 +2347,12 @@ def main() -> int:
             return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
-    expected = {} if args.write_inventory else load_inventory(inventory)
+    expected = set() if args.write_inventory else load_inventory(inventory)
     findings, test_ranges = discover(ast_grep, root)
 
-    actual: defaultdict[tuple[str, str, str], int] = defaultdict(int)
-    for item in findings:
-        actual[(item.group, item.form, item.path)] += 1
+    actual: set[tuple[str, str, str]] = {
+        (item.group, item.form, item.path) for item in findings
+    }
 
     if args.write_inventory:
         # A forbidden authority is not drift and is never re-recorded; it stops
@@ -2384,13 +2371,13 @@ def main() -> int:
         if blocked:
             print("\n".join(f"  - {item}" for item in blocked), file=sys.stderr)
             return 1
-        return write_inventory(inventory, dict(actual))
+        return write_inventory(inventory, actual)
 
     failures = []
-    for key in sorted(set(expected) | set(actual)):
-        want, got = expected.get(key, 0), actual.get(key, 0)
-        if want != got:
-            failures.append(f"{key[0]}/{key[1]} {key[2]}: expected {want}, found {got}")
+    for key in sorted(actual - expected):
+        failures.append(f"new authority form/path: {key[0]}/{key[1]} {key[2]}")
+    for key in sorted(expected - actual):
+        failures.append(f"stale inventory row: {key[0]}/{key[1]} {key[2]}")
     forbidden = scalar_span_site_findings(ast_grep, root, test_ranges)
     for item in forbidden:
         failures.append(

@@ -1823,3 +1823,43 @@ timeout_seconds = 15
 stdout = "width=5\n"
 stderr = "error: parse failed: empty input\n"
 exit = 1
+
+# The three `dyn Error` cases below are the erased half of the same story and
+# do not pass yet: SIR has no value contract for a trait object. The entry case
+# additionally needs a `Display::fmt` target an erased value can supply, which
+# the process-entry exit plan resolves as a concrete declaration. They are held
+# for the lane that gives dyn objects a value contract.
+
+[[case]]
+id = "dyn-error-success"
+intent = "A `fails dyn Error` function that does not fail returns its value and the program exits zero."
+source = "cases/dyn-error-success.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "width=5\n"
+exit = 0
+
+[[case]]
+id = "dyn-error-display"
+intent = "A failure erased to `dyn Error` reaches its `handle` block and the recovery value flows on."
+source = "cases/dyn-error-display.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "caught\nwidth=0\n"
+exit = 0
+
+[[case]]
+id = "dyn-error-main-exit"
+intent = "A `dyn Error` propagated out of `main` renders on stderr and exits 1."
+source = "cases/dyn-error-main-exit.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "width=5\n"
+stderr = "error: parse failed: empty input\n"
+exit = 1

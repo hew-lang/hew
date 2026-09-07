@@ -1,0 +1,26 @@
+type ParseFailure {
+    detail: string,
+}
+
+impl Display for ParseFailure {
+    fn fmt(value: ParseFailure) -> string {
+        f"parse failed: {value.detail}"
+    }
+}
+
+impl Error for ParseFailure {}
+
+fn parse(text: string) -> i64 fails dyn Error {
+    if text == "" {
+        return error ParseFailure { detail: "empty input" }
+    }
+    return text.len()
+}
+
+fn main() {
+    let width = parse("") handle _problem {
+        println("caught");
+        0
+    };
+    println(f"width={width}");
+}

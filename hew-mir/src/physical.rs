@@ -384,6 +384,10 @@ pub enum CloneAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DestroyAction {
     Resource(PhysicalResourceId),
+    /// Release an erased value through its own vtable: the drop slot runs the
+    /// concrete destructor, then the heap box is freed with the size and
+    /// alignment the same table carries.
+    TraitObject,
     Encoding(EncodingFormat),
     Callable,
     StringRelease,
@@ -419,6 +423,33 @@ pub struct PhysicalCallSignature {
     pub params: Vec<PhysicalParam>,
     pub return_ty: ResolvedTy,
     pub return_layout: Option<PhysicalLayout>,
+}
+
+/// Module-local identity of one realized trait-object dispatch table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalVtableId(pub u32);
+
+/// One dispatchable slot of a realized trait-object table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalVtableSlot {
+    pub slot: u32,
+    pub callee: CallableId,
+    /// The erased boundary: the receiver rides a pointer, the rest of the ABI
+    /// is this signature.
+    pub signature: PhysicalCallSignature,
+}
+
+/// Realized dispatch table for one erasure of a concrete type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalVtable {
+    pub id: PhysicalVtableId,
+    pub dyn_ty: ResolvedTy,
+    pub concrete_ty: ResolvedTy,
+    pub concrete_layout: PhysicalLayout,
+    /// Copy/drop recipe of the boxed concrete value, used to emit the table's
+    /// drop slot.
+    pub concrete: PhysicalValueRecipe,
+    pub slots: Vec<PhysicalVtableSlot>,
 }
 
 /// Capture recipes shared by concrete environments of an exact closure type.
@@ -621,6 +652,12 @@ pub enum PhysicalOp {
     },
     CallableCoerce {
         dest: StorageId,
+        source: StorageId,
+    },
+    /// Box the concrete value and pair it with its table's constant.
+    DynMake {
+        dest: StorageId,
+        vtable: PhysicalVtableId,
         source: StorageId,
     },
     Const {
@@ -1036,6 +1073,16 @@ pub enum PhysicalTerminator {
         normal: Option<PhysicalEdge>,
         unwind: Option<PhysicalEdge>,
     },
+    /// Load one slot from the receiver's vtable and call through it.
+    DynCall {
+        receiver: ArgumentTransfer,
+        slot: u32,
+        signature: PhysicalCallSignature,
+        args: Vec<ArgumentTransfer>,
+        result: Option<StorageId>,
+        normal: Option<PhysicalEdge>,
+        unwind: Option<PhysicalEdge>,
+    },
     Return {
         value: Option<ReturnTransfer>,
     },
@@ -1129,6 +1176,7 @@ pub struct PhysicalModule {
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,
     pub target: PhysicalTarget,
     pub closures: Vec<PhysicalClosure>,
+    pub vtables: Vec<PhysicalVtable>,
     pub environment_glue: Vec<PhysicalEnvironmentGlue>,
     pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub variant_glue: Vec<PhysicalVariantGlue>,
@@ -1234,15 +1282,7 @@ pub fn lower_physical_module(
                         ty: param.ty.clone(),
                         layout: required_layout(&target, &param.ty)?.clone(),
                         passing: param.passing,
-                        carrier: if param.passing == hew_sir::SemParamPassing::BorrowMut
-                            || matches!(
-                                required_layout(&target, &param.ty)?.repr,
-                                PhysicalRepr::Struct(_)
-                            ) {
-                            ParamCarrier::Indirect
-                        } else {
-                            ParamCarrier::Direct
-                        },
+                        carrier: param_carrier(param.passing, required_layout(&target, &param.ty)?),
                     })
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
@@ -1279,6 +1319,57 @@ pub fn lower_physical_module(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let vtables = module
+        .vtables
+        .iter()
+        .map(|vtable| {
+            let slots = vtable
+                .slots
+                .iter()
+                .map(|slot| {
+                    let params = slot
+                        .signature
+                        .params
+                        .iter()
+                        .map(|param| {
+                            let layout = required_layout(&target, &param.ty)?.clone();
+                            Ok(PhysicalParam {
+                                ty: param.ty.clone(),
+                                carrier: param_carrier(param.passing, &layout),
+                                passing: param.passing,
+                                layout,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, PhysicalError>>()?;
+                    let return_layout = if slot.signature.return_ty == ResolvedTy::Never
+                        || slot.signature.return_ty == ResolvedTy::Unit
+                    {
+                        None
+                    } else {
+                        Some(required_layout(&target, &slot.signature.return_ty)?.clone())
+                    };
+                    Ok(PhysicalVtableSlot {
+                        slot: slot.slot,
+                        callee: slot.callee,
+                        signature: PhysicalCallSignature {
+                            params,
+                            return_ty: slot.signature.return_ty.clone(),
+                            return_layout,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            Ok(PhysicalVtable {
+                id: PhysicalVtableId(vtable.id.0),
+                dyn_ty: vtable.dyn_ty.clone(),
+                concrete_ty: vtable.concrete_ty.clone(),
+                concrete_layout: required_layout(&target, &vtable.concrete_ty)?.clone(),
+                concrete: physical_value_recipe(module, &ids, &vtable.concrete_ty)?,
+                slots,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
+
     let physical = PhysicalModule {
         actor_recipes: actor_value_recipes(module, &ids)?,
         actors: module.actors.clone(),
@@ -1295,6 +1386,7 @@ pub fn lower_physical_module(
                 ty: closure.ty.clone(),
             })
             .collect(),
+        vtables,
         environment_glue,
         target,
         aggregate_glue,
@@ -1642,6 +1734,7 @@ fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<Des
         _ if ids.resources.contains_key(ty) => Some(DestroyAction::Resource(ids.resources[ty])),
         _ if encoding_format(ty).is_some() => encoding_format(ty).map(DestroyAction::Encoding),
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some(DestroyAction::Callable),
+        ResolvedTy::TraitObject { .. } => Some(DestroyAction::TraitObject),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
         _ if ids.vectors.contains_key(ty) => Some(DestroyAction::Vector(ids.vectors[ty])),
@@ -1695,6 +1788,10 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
                 types.insert(result.ty.clone());
             }
         }
+    }
+    for vtable in &module.vtables {
+        types.insert(vtable.dyn_ty.clone());
+        types.insert(vtable.concrete_ty.clone());
     }
     let mut inventory = PhysicalTypeInventory {
         types,
@@ -1860,6 +1957,23 @@ fn collect_inventory_type(
     );
     for field in fields {
         collect_inventory_type(module, inventory, &field);
+    }
+}
+
+/// The one rule that decides whether a parameter rides its own value or a
+/// pointer to it. Direct calls, indirect invocations and vtable slots all
+/// derive their ABI from this, so a dispatch and its implementation cannot
+/// disagree about a carrier.
+pub(crate) fn param_carrier(
+    passing: hew_sir::SemParamPassing,
+    layout: &PhysicalLayout,
+) -> ParamCarrier {
+    if passing == hew_sir::SemParamPassing::BorrowMut
+        || matches!(layout.repr, PhysicalRepr::Struct(_))
+    {
+        ParamCarrier::Indirect
+    } else {
+        ParamCarrier::Direct
     }
 }
 
@@ -2079,6 +2193,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             ..
         }
         | SemTerminator::IndirectCall {
+            result: CallResult::Value(result),
+            ..
+        }
+        | SemTerminator::DynCall {
             result: CallResult::Value(result),
             ..
         }
@@ -2444,6 +2562,11 @@ impl FunctionLowerer<'_> {
                     .map(|field| self.value(field.value))
                     .collect::<Result<Vec<_>, _>>()?,
             }),
+            SemOpKind::DynMake { vtable, value } => one(PhysicalOp::DynMake {
+                dest: self.one_result(operation)?,
+                vtable: PhysicalVtableId(vtable.0),
+                source: self.value(value.value)?,
+            }),
             SemOpKind::CallableCoerce { source } => one(PhysicalOp::CallableCoerce {
                 dest: self.one_result(operation)?,
                 source: self.value(source.value)?,
@@ -2768,6 +2891,7 @@ impl FunctionLowerer<'_> {
                 },
             }),
             call @ SemTerminator::IndirectCall { .. } => self.lower_indirect_call(call),
+            call @ SemTerminator::DynCall { .. } => self.lower_dyn_call(call),
             SemTerminator::ValueCall {
                 ty,
                 capability,
@@ -4130,6 +4254,9 @@ fn verify_destroy_action(
                 own == OwnKind::Owned
                     && matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
             }
+            DestroyAction::TraitObject => {
+                own == OwnKind::Owned && matches!(ty, ResolvedTy::TraitObject { .. })
+            }
             DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
             DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
             DestroyAction::Aggregate(id) => {
@@ -4582,6 +4709,7 @@ fn verify_operation_storage(
         }
         operation @ (PhysicalOp::FunctionMake { .. }
         | PhysicalOp::ClosureMake { .. }
+        | PhysicalOp::DynMake { .. }
         | PhysicalOp::CallableCoerce { .. }) => {
             callable::verify_operation(module, function, operation)?;
         }
@@ -5269,7 +5397,9 @@ fn apply_operation(
             initialized(function, state, *rhs, block, "binary operation")?;
             define(function, state, *dest, block, "binary operation")?;
         }
-        PhysicalOp::Transfer { dest, source } | PhysicalOp::CallableCoerce { dest, source } => {
+        PhysicalOp::Transfer { dest, source }
+        | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::DynMake { dest, source, .. } => {
             initialized(function, state, *source, block, "transfer")?;
             if dest != source {
                 define(function, state, *dest, block, "transfer")?;
@@ -5756,14 +5886,22 @@ fn terminator_successors(
             ])
         }
         PhysicalTerminator::IndirectCall {
-            callee,
+            callee: receiver,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::DynCall {
+            receiver,
             args,
             result,
             normal,
             unwind,
             ..
         } => {
-            let transfers = std::iter::once(*callee)
+            let transfers = std::iter::once(*receiver)
                 .chain(args.iter().copied())
                 .collect::<Vec<_>>();
             call_successors(
@@ -6356,6 +6494,31 @@ fn verify_terminator(
         PhysicalTerminator::CleanupDispatch { normal, fault } => {
             edge(normal)?;
             edge(fault)
+        }
+        PhysicalTerminator::DynCall {
+            receiver,
+            slot,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+        } => {
+            callable::verify_dyn_call(
+                module, function, *receiver, *slot, signature, args, *result,
+            )?;
+            if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
+                return Err(PhysicalError::new(
+                    "call normal edge differs from its return type",
+                ));
+            }
+            if let Some(normal) = normal {
+                edge(normal)?;
+            }
+            edge(unwind.as_ref().ok_or_else(|| {
+                PhysicalError::new("dynamic dispatch requires a fault cleanup edge")
+            })?)?;
+            Ok(())
         }
         PhysicalTerminator::IndirectCall {
             callee,
@@ -7693,6 +7856,7 @@ mod tests {
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
+            vtables: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![callable],
             generic_templates: vec![],
@@ -8965,6 +9129,7 @@ mod tests {
             actor_recipes: BTreeMap::new(),
             resources: vec![],
             closures: vec![],
+            vtables: vec![],
             environment_glue: vec![],
             value_capabilities: BTreeMap::new(),
             target: physical_target,

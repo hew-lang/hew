@@ -607,7 +607,12 @@ fn classify(
     let cow_retain = (ValueClass::CowValue, CloneKind::Retain);
     let affine_none = (ValueClass::AffineResource, CloneKind::None);
     let affine_retain = (ValueClass::AffineResource, CloneKind::Retain);
-    let share_retain = (ValueClass::PersistentShare, CloneKind::Retain);
+    // A trait object erases its concrete type, and its vtable carries a drop
+    // slot but no clone slot, so there is nothing a copy could call. The
+    // checker already refuses `dyn T.clone()`; recording `CloneKind::None`
+    // keeps the physical stages from selecting a clone action that has no
+    // implementation behind it.
+    let share_none = (ValueClass::PersistentShare, CloneKind::None);
     let linear_none = (ValueClass::Linear, CloneKind::None);
 
     Ok(match ty {
@@ -632,7 +637,7 @@ fn classify(
         ResolvedTy::String | ResolvedTy::Bytes => cow_retain,
         ResolvedTy::CancellationToken | ResolvedTy::Task(_) => affine_none,
         ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => view,
-        ResolvedTy::TraitObject { .. } => share_retain,
+        ResolvedTy::TraitObject { .. } => share_none,
         ResolvedTy::Function { capabilities, .. } => {
             if capabilities.clone {
                 (ValueClass::CowValue, CloneKind::FieldWise)

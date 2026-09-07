@@ -306,6 +306,7 @@ pub(crate) fn verify_calls(
             }
             SemTerminator::Suspend { .. }
             | SemTerminator::IndirectCall { .. }
+            | SemTerminator::DynCall { .. }
             | SemTerminator::ValueCall { .. } => {
                 return Err("defer call has unproven or suspending effects");
             }

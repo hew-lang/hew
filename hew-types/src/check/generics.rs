@@ -1669,6 +1669,70 @@ impl Checker {
         self.lookup_trait_method_with_origin_inner(trait_name, method, true)
     }
 
+    /// The ordered vtable method slots for one trait-object bound.
+    ///
+    /// Slot `3 + index` names `(declaring trait key, declaring trait spelling,
+    /// method name)`. The bound trait's own methods come first in declaration
+    /// order, then each supertrait's methods depth-first in supertrait
+    /// declaration order; a method name already claimed by an earlier slot is
+    /// not repeated, so a supertrait redeclaration keeps the sub-trait's slot.
+    ///
+    /// This is the one authority for the layout: the coercion site fills the
+    /// vtable in this order and every dispatch site reads its slot index from
+    /// the same list. Slots 0..3 are the runtime's fixed prefix triple
+    /// (`drop_in_place`, `size_of`, `align_of` — see
+    /// `hew-runtime/src/trait_object.rs`).
+    pub(super) fn dyn_vtable_slots(&self, trait_name: &str) -> Vec<(String, String, String)> {
+        let mut slots: Vec<(String, String, String)> = Vec::new();
+        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut stack: Vec<(String, String)> = vec![(
+            self.trait_ref_lookup_key(trait_name),
+            trait_name.to_string(),
+        )];
+        while let Some((key, spelling)) = stack.pop() {
+            if !visited.insert(key.clone()) {
+                continue;
+            }
+            if let Some(info) = self.trait_defs.get(&key) {
+                for method in &info.methods {
+                    if claimed.insert(method.name.clone()) {
+                        slots.push((key.clone(), spelling.clone(), method.name.clone()));
+                    }
+                }
+            }
+            if let Some(supers) = self.trait_super.get(&key) {
+                for super_key in supers.iter().rev() {
+                    let spelling = super_key
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(super_key.as_str())
+                        .to_string();
+                    stack.push((super_key.clone(), spelling));
+                }
+            }
+        }
+        slots
+    }
+
+    /// The vtable slot a dynamic dispatch of `method` on `dyn trait_name`
+    /// occupies, with the trait that declares it.
+    pub(super) fn dyn_vtable_slot_for_method(
+        &self,
+        trait_name: &str,
+        method: &str,
+    ) -> Option<(u32, String, String)> {
+        self.dyn_vtable_slots(trait_name)
+            .into_iter()
+            .enumerate()
+            .find(|(_, (_, _, name))| name == method)
+            .map(|(index, (key, spelling, _))| {
+                // A trait's method count is bounded far below `u32::MAX`;
+                // `try_from` keeps the boundary explicit.
+                (3 + u32::try_from(index).unwrap_or(u32::MAX), key, spelling)
+            })
+    }
+
     /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting
     /// every trait that DIRECTLY declares a method named `method` in its
     /// `trait_defs` entry. The returned `Vec` is sorted + deduplicated so

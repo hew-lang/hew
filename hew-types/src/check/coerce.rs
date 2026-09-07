@@ -668,8 +668,26 @@ impl Checker {
         //   1. No generic methods.
         //   2. No `Self`-returning methods.
         // Both are rejected with `E_TRAIT_NOT_OBJECT_SAFE`.
-        if !self.validate_dyn_object_safety(&trait_lookup_key, &trait_info, span) {
-            return None;
+        // Every trait whose methods reach the vtable must be object safe,
+        // including the supertraits whose slots this bound publishes.
+        let declaring_keys: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            std::iter::once(trait_lookup_key.clone())
+                .chain(
+                    self.dyn_vtable_slots(trait_name)
+                        .into_iter()
+                        .map(|(key, _, _)| key),
+                )
+                .filter(|key| seen.insert(key.clone()))
+                .collect()
+        };
+        for key in declaring_keys {
+            let Some(info) = self.trait_defs.get(&key).cloned() else {
+                continue;
+            };
+            if !self.validate_dyn_object_safety(&key, &info, span) {
+                return None;
+            }
         }
 
         // Build the method-table. Prefer the nominal impl registries; fall
@@ -709,25 +727,31 @@ impl Checker {
                 .canonical_nominal_name(concrete_type_name)
                 .unwrap_or_else(|| concrete_type_name.to_string()),
         };
-        let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
-        for method in &trait_info.methods {
-            let impl_fn_key = format!("{canonical_type_name}::{}", method.name);
-            let Some(mut signature) = self.lookup_trait_method(&trait_lookup_key, &method.name)
-            else {
-                // JUSTIFIED: `trait_info` is cloned from `trait_defs[trait_name]`,
-                // and this loop iterates its own `methods`. If lookup fails,
-                // the checker metadata is internally inconsistent; fabricating
-                // an empty signature would poison the vtable.
+        // One authority for the slot layout: the bound's own methods in
+        // declaration order, then its supertraits' methods. `trait Error:
+        // Display` therefore publishes `Display::fmt` at the slot every
+        // dispatch site computes from the same list.
+        let slots = self.dyn_vtable_slots(trait_name);
+        let mut table: Vec<DynVtableEntry> = Vec::with_capacity(slots.len());
+        for (declaring_key, declaring_spelling, method_name) in slots {
+            let impl_fn_key = format!("{canonical_type_name}::{method_name}");
+            let Some(mut signature) = self.lookup_trait_method(&declaring_key, &method_name) else {
+                // JUSTIFIED: the slot list is built from `trait_defs`, so a
+                // method it names is resolvable. Fabricating an empty
+                // signature would poison the vtable.
                 unreachable!(
-                    "trait method `{trait_name}.{}` is listed in trait_defs but is not resolvable",
-                    method.name
+                    "trait method `{declaring_key}.{method_name}` is listed in trait_defs but is not resolvable"
                 );
             };
             self.apply_trait_object_bound_substitutions(&mut signature, bound);
+            let impl_method = self
+                .trait_impl_method_declaration(concrete_type, &declaring_spelling, &method_name)
+                .map(|(declaration, _)| declaration);
             table.push(DynVtableEntry {
-                trait_name: trait_name.to_string(),
-                method_name: method.name.clone(),
+                trait_name: declaring_spelling,
+                method_name,
                 impl_fn_key,
+                impl_method,
                 signature,
             });
         }

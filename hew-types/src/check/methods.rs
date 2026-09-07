@@ -10325,46 +10325,39 @@ impl Checker {
                         // 0..3 are the fixed prefix triple
                         // (`drop_in_place`/`size_of`/`align_of`), trait methods
                         // start at slot 3 in trait-declaration order.
-                        let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
-                        if let Some(trait_info) = self.trait_defs.get(&trait_lookup_key) {
-                            if let Some(method_idx) =
-                                trait_info.methods.iter().position(|m| m.name == method)
-                            {
-                                // Slot index is bounded by the trait's
-                                // method count, which Hew limits to
-                                // u32-sized vtables long before any
-                                // truncation risk. `try_from` keeps the
-                                // boundary explicit (LESSONS:
-                                // `boundary-fail-closed`).
-                                let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
-                                let target = self
-                                    .trait_method_call_target_ids(&bound.trait_name, method)
-                                    .map_or_else(
-                                        || CallTarget::Unsupported {
-                                            reason: format!(
-                                                "dynamic trait method `{}.{method}` has no registered declaration identity",
-                                                bound.trait_name
-                                            ),
-                                        },
-                                        |(declaring_trait, method)| {
-                                            CallTarget::DynamicVtable {
-                                                declaring_trait,
-                                                method,
-                                                slot,
-                                            }
-                                        },
-                                    );
-                                self.dyn_trait_method_calls.insert(
-                                    SpanKey::in_module(span, self.current_module_idx),
-                                    crate::check::types::DynMethodCall {
-                                        target,
-                                        trait_name: bound.trait_name.clone(),
-                                        method_name: method.to_string(),
-                                        slot,
-                                        signature: sig.clone(),
+                        // The slot comes from the one authority shared with
+                        // the coercion site, so a supertrait method such as
+                        // `Display::fmt` on `dyn Error` resolves to the slot
+                        // the vtable actually publishes.
+                        if let Some((slot, _, declaring_spelling)) =
+                            self.dyn_vtable_slot_for_method(&bound.trait_name, method)
+                        {
+                            let target = self
+                                .trait_method_call_target_ids(&declaring_spelling, method)
+                                .map_or_else(
+                                    || CallTarget::Unsupported {
+                                        reason: format!(
+                                            "dynamic trait method `{declaring_spelling}.{method}` has no registered declaration identity"
+                                        ),
+                                    },
+                                    |(declaring_trait, method)| {
+                                        CallTarget::DynamicVtable {
+                                            declaring_trait,
+                                            method,
+                                            slot,
+                                        }
                                     },
                                 );
-                            }
+                            self.dyn_trait_method_calls.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                crate::check::types::DynMethodCall {
+                                    target,
+                                    trait_name: bound.trait_name.clone(),
+                                    method_name: method.to_string(),
+                                    slot,
+                                    signature: sig.clone(),
+                                },
+                            );
                         }
                         if sig.consumes_receiver {
                             self.method_call_consumes_receiver

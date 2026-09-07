@@ -93,29 +93,55 @@ impl Builder<'_, '_> {
         display: &hew_types::EntryDisplayTarget,
         error: crate::ValueId,
     ) -> Result<crate::ValueId, String> {
-        let target = self.service.resolve_entry_display(display)?;
-        let [receiver] = target.signature.params.as_slice() else {
-            return Err("entry Display target must take exactly its receiver".into());
-        };
-        let decision = match receiver.passing {
-            SemParamPassing::Consume => BoundaryDecision::Move,
-            SemParamPassing::Borrow => BoundaryDecision::Borrow,
-            SemParamPassing::BorrowMut => BoundaryDecision::BorrowMut,
-            SemParamPassing::ReadOnly => BoundaryDecision::Copy,
+        let (callee, signature, decision) = match display {
+            hew_types::EntryDisplayTarget::Declared {
+                declaration,
+                instance,
+            } => {
+                let target = self.service.resolve_entry_display(declaration, instance)?;
+                let [receiver] = target.signature.params.as_slice() else {
+                    return Err("entry Display target must take exactly its receiver".into());
+                };
+                let decision = match receiver.passing {
+                    SemParamPassing::Consume => BoundaryDecision::Move,
+                    SemParamPassing::Borrow => BoundaryDecision::Borrow,
+                    SemParamPassing::BorrowMut => BoundaryDecision::BorrowMut,
+                    SemParamPassing::ReadOnly => BoundaryDecision::Copy,
+                };
+                (
+                    PreparedCallee::Direct(target.id),
+                    target.signature.clone(),
+                    decision,
+                )
+            }
+            // An erased entry error renders through the same vtable slot a
+            // source-level `Display::fmt` call on that trait object uses.
+            hew_types::EntryDisplayTarget::DynSlot { slot } => (
+                PreparedCallee::Dyn {
+                    receiver: BoundaryOperand {
+                        operand: Operand { value: error },
+                        decision: BoundaryDecision::Borrow,
+                    },
+                    slot: *slot,
+                },
+                crate::SemSignature {
+                    params: Vec::new(),
+                    return_ty: hew_types::ResolvedTy::String,
+                },
+                BoundaryDecision::Borrow,
+            ),
         };
         let live_before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
+        let arguments = if matches!(callee, PreparedCallee::Dyn { .. }) {
+            Vec::new()
+        } else {
+            vec![BoundaryOperand {
+                operand: Operand { value: error },
+                decision,
+            }]
+        };
         let rendered = self
-            .finish_user_call(
-                PreparedCallee::Direct(target.id),
-                target.signature.clone(),
-                vec![BoundaryOperand {
-                    operand: Operand { value: error },
-                    decision,
-                }],
-                &[],
-                &live_before,
-                true,
-            )?
+            .finish_user_call(callee, signature, arguments, &[], &live_before, true)?
             .ok_or("entry Display target produced no string")?;
         if self.owned_live.contains_key(&error) {
             self.emit_destroy(error)?;

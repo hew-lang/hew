@@ -192,6 +192,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::CallableCoerce { source } => {
             writeln!(out, "callable.coerce %{}", source.value.0).expect("write to String");
         }
+        SemOpKind::DynMake { vtable, value } => {
+            writeln!(out, "dyn.make vt{} %{}", vtable.0, value.value.0).expect("write to String");
+        }
         SemOpKind::LoadBorrow { place } => {
             writeln!(out, "load.borrow p{}", place.0).expect("write to String");
         }
@@ -484,6 +487,7 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         SemTerminator::Call { .. }
         | SemTerminator::ValueCall { .. }
         | SemTerminator::IndirectCall { .. }
+        | SemTerminator::DynCall { .. }
         | SemTerminator::ActorCall { .. }
         | SemTerminator::RtCall { .. } => {
             dump_call_terminator(out, module, term);
@@ -554,6 +558,21 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             ..
         } => (
             format!("indirect.call {}", boundary_operand(callee)),
+            args,
+            result,
+            normal.as_ref(),
+            unwind,
+        ),
+        SemTerminator::DynCall {
+            receiver,
+            slot,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("dyn.call slot {slot} {}", boundary_operand(receiver)),
             args,
             result,
             normal.as_ref(),

@@ -240,6 +240,7 @@ pub fn module(case: Case) -> sir::SemModule {
         supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: vec![],
+        vtables: vec![],
         value_capabilities: BTreeMap::new(),
         callables: vec![callable],
         generic_templates: vec![],

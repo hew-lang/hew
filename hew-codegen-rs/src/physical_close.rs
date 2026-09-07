@@ -200,7 +200,10 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 self.emit_invalid_variant_tag()?;
                 self.builder.position_at_end(done);
             }
-            DestroyAction::StringRelease
+            // A trait object's release is a synchronous vtable drop slot; it
+            // owns no cooperative child to close.
+            DestroyAction::TraitObject
+            | DestroyAction::StringRelease
             | DestroyAction::BytesRelease
             | DestroyAction::Encoding(_) => {}
         }

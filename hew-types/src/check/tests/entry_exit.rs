@@ -84,14 +84,21 @@ fn result_main_carries_resolved_display_declaration() {
         }
     ));
     assert_eq!(error_ty.user_facing().to_string(), "AppError");
+    let EntryDisplayTarget::Declared {
+        declaration,
+        instance,
+    } = display
+    else {
+        panic!("a concrete entry error type renders through a resolved declaration");
+    };
     assert!(
         output
             .impl_method_declaration_ids
             .values()
-            .any(|declaration| declaration == &display.declaration),
+            .any(|resolved| resolved == declaration),
         "Display target must be one of the checker's resolved impl declarations"
     );
-    assert_eq!(display.instance, EntryCallableInstance::Declared);
+    assert_eq!(instance, &EntryCallableInstance::Declared);
 }
 
 #[test]

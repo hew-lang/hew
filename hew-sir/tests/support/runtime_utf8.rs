@@ -148,6 +148,7 @@ pub(super) fn decode_module() -> SemModule {
         supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
+        vtables: Vec::new(),
         value_capabilities: BTreeMap::new(),
         callables: vec![SemCallable {
             id: CallableId(0),

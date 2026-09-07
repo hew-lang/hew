@@ -49,6 +49,10 @@ pub enum SirDiagnosticKind {
         shape: VariantShapeId,
         reason: String,
     },
+    InvalidVtable {
+        vtable: crate::SemVtableId,
+        reason: String,
+    },
     InvalidRootCallable {
         callable: CallableId,
         reason: String,
@@ -241,6 +245,7 @@ pub(crate) struct CallableContext<'a> {
     closures: &'a [crate::SemClosure],
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
+    vtables: &'a [crate::SemVtable],
 }
 
 /// Index an already-verified module's callable table.
@@ -254,11 +259,13 @@ pub(crate) fn callable_context<'a>(
     closures: &'a [crate::SemClosure],
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
+    vtables: &'a [crate::SemVtable],
 ) -> CallableContext<'a> {
     CallableContext {
         closures,
         actors,
         supervisors,
+        vtables,
         by_id: callables
             .iter()
             .map(|callable| (callable.id, callable))
@@ -269,6 +276,20 @@ pub(crate) fn callable_context<'a>(
 impl<'a> CallableContext<'a> {
     fn callable(&self, id: CallableId) -> Option<&'a SemCallable> {
         self.by_id.get(&id).copied()
+    }
+
+    fn vtable(&self, id: crate::SemVtableId) -> Option<&'a crate::SemVtable> {
+        self.vtables
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|vtable| vtable.id == id)
+    }
+
+    /// Every published table that erases into `dyn_ty`.
+    fn vtables_for(&self, dyn_ty: &ResolvedTy) -> impl Iterator<Item = &'a crate::SemVtable> {
+        let dyn_ty = dyn_ty.clone();
+        self.vtables
+            .iter()
+            .filter(move |vtable| vtable.dyn_ty == dyn_ty)
     }
 
     /// The ABI slot of one parameter of `id`, when the table names it.
@@ -446,6 +467,71 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     check_module(module).err().unwrap_or_default()
 }
 
+/// Every published dispatch table names one exact implementation per slot,
+/// and each implementation's signature is the slot's signature with the
+/// concrete receiver restored. A table whose slot disagrees with its body
+/// would produce a call through a mismatched ABI, so it fails closed here
+/// rather than at emission.
+fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
+    let mut erasures = HashSet::new();
+    for (index, vtable) in module.vtables.iter().enumerate() {
+        let expected =
+            crate::SemVtableId(u32::try_from(index).expect("SIR vtable count exceeds u32"));
+        let mut refuse = |reason: String| {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidVtable {
+                vtable: vtable.id,
+                reason,
+            }));
+        };
+        if vtable.id != expected {
+            refuse(format!(
+                "non-canonical table position: expected {}, found {}",
+                expected.0, vtable.id.0
+            ));
+        }
+        if !matches!(vtable.dyn_ty, ResolvedTy::TraitObject { .. }) {
+            refuse("a dispatch table must erase into a trait-object type".into());
+        }
+        if !erasures.insert((vtable.dyn_ty.clone(), vtable.concrete_ty.clone())) {
+            refuse("the same erasure is published twice".into());
+        }
+        for (position, slot) in vtable.slots.iter().enumerate() {
+            let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
+            if slot.slot != expected_slot {
+                refuse(format!(
+                    "slot {} for `{}` is out of emitted order; expected {expected_slot}",
+                    slot.slot, slot.method_name
+                ));
+                continue;
+            }
+            let Some(callee) = module.callable(slot.callee) else {
+                refuse(format!(
+                    "slot {} for `{}` names no callable",
+                    slot.slot, slot.method_name
+                ));
+                continue;
+            };
+            let Some((receiver, arguments)) = callee.signature.params.split_first() else {
+                refuse(format!(
+                    "slot {} implementation `{}` takes no receiver",
+                    slot.slot, callee.symbol
+                ));
+                continue;
+            };
+            if receiver.ty != vtable.concrete_ty
+                || receiver.passing != slot.receiver
+                || arguments != slot.signature.params.as_slice()
+                || callee.signature.return_ty != slot.signature.return_ty
+            {
+                refuse(format!(
+                    "slot {} implementation `{}` differs from the dispatch signature",
+                    slot.slot, callee.symbol
+                ));
+            }
+        }
+    }
+}
+
 fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for key in module.type_facts.keys().filter(|key| {
         matches!(key.0, ResolvedTy::Task(_))
@@ -489,6 +575,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
     verify_variant_shapes(module, &mut diagnostics);
+    verify_vtables(module, &mut diagnostics);
     verify_resources(module, &mut diagnostics);
 
     for ((ty, capability), plan) in &module.value_capabilities {
@@ -1019,6 +1106,7 @@ fn check_function_with_context(
         | SemTerminator::ActorCall { id, .. }
         | SemTerminator::ValueCall { id, .. }
         | SemTerminator::IndirectCall { id, .. }
+        | SemTerminator::DynCall { id, .. }
         | SemTerminator::CheckedBinary { id, .. }
         | SemTerminator::SwitchVariant { id, .. } = &block.terminator
         {
@@ -1556,6 +1644,7 @@ fn verify_callable_table<'a>(
         closures: &module.closures,
         actors: &module.actors,
         supervisors: &module.supervisors,
+        vtables: &module.vtables,
     }
 }
 
@@ -2109,6 +2198,116 @@ fn verify_indirect_call(
     }
 }
 
+/// A dynamic dispatch agrees with every table that can reach it.
+///
+/// The slot index is the checker's, so the verifier's job is to prove the
+/// erased boundary is the one each published implementation of that trait
+/// object was admitted under: the same receiver transfer, the same argument
+/// ABI and the same result.
+fn verify_dyn_call(
+    terminator: &SemTerminator,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    context: Option<&CallableContext<'_>>,
+) -> Result<(), String> {
+    let SemTerminator::DynCall {
+        receiver,
+        slot,
+        signature,
+        args,
+        result,
+        normal,
+        unwind,
+        ..
+    } = terminator
+    else {
+        unreachable!()
+    };
+    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+    {
+        return Err(
+            "dynamic dispatch requires cleanup that propagates the original fault".to_string(),
+        );
+    }
+    let ty = types
+        .get(&receiver.operand.value)
+        .ok_or_else(|| "dynamic dispatch has no typed receiver".to_string())?;
+    if !matches!(ty, ResolvedTy::TraitObject { .. })
+        || OwnKind::of_ty(ty, facts) != Ok(OwnKind::Owned)
+    {
+        return Err("dynamic dispatch requires an owned trait-object receiver".to_string());
+    }
+    let context = context
+        .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
+    let mut reachable = 0usize;
+    for table in context.vtables_for(ty) {
+        reachable += 1;
+        let published = table
+            .slots
+            .iter()
+            .find(|published| published.slot == *slot)
+            .ok_or_else(|| {
+                format!(
+                    "`{}` publishes no slot {slot} for `{}`",
+                    table.concrete_ty.user_facing(),
+                    ty.user_facing()
+                )
+            })?;
+        let expected = match published.receiver {
+            SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
+            SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            SemParamPassing::Consume => crate::BoundaryDecision::Move,
+        };
+        if receiver.decision != expected || &published.signature != signature {
+            return Err(format!(
+                "dynamic dispatch of slot {slot} differs from the boundary `{}` was erased under",
+                table.concrete_ty.user_facing()
+            ));
+        }
+    }
+    if reachable == 0 {
+        return Err(format!(
+            "`{}` has no published dispatch table",
+            ty.user_facing()
+        ));
+    }
+    if args.len() != signature.params.len() {
+        return Err("dynamic dispatch argument count differs from its signature".to_string());
+    }
+    for (arg, param) in args.iter().zip(&signature.params) {
+        let expected = match param.passing {
+            SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
+            SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            SemParamPassing::Consume => crate::BoundaryDecision::Move,
+        };
+        if arg.decision != expected || types.get(&arg.operand.value) != Some(&param.ty) {
+            return Err(
+                "dynamic dispatch argument type or transfer differs from its signature".to_string(),
+            );
+        }
+    }
+    if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
+        return Err("dynamic dispatch normal edge differs from its return type".to_string());
+    }
+    match result {
+        crate::CallResult::Value(value)
+            if value.ty == signature.return_ty && value.ty != ResolvedTy::Unit =>
+        {
+            Ok(())
+        }
+        crate::CallResult::Unit if signature.return_ty == ResolvedTy::Unit => Ok(()),
+        crate::CallResult::Never if signature.return_ty == ResolvedTy::Never => Ok(()),
+        _ => Err("dynamic dispatch result differs from its signature".to_string()),
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one construction contract per callable-shaped operation"
+)]
 fn verify_callable_operation(
     function: &SemFunction,
     operation: &SemOp,
@@ -2123,6 +2322,7 @@ fn verify_callable_operation(
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::GeneratorMake { .. }
             | SemOpKind::CallableCoerce { .. }
+            | SemOpKind::DynMake { .. }
     ) {
         return;
     }
@@ -2203,6 +2403,17 @@ fn verify_callable_operation(
                     .ok_or_else(|| "callable coercion has no input definition".to_string())?;
                 crate::verify_callable_coercion(source_ty, &result.ty, facts)?;
             }
+            SemOpKind::DynMake { vtable, value } => {
+                let table = context
+                    .vtable(*vtable)
+                    .ok_or_else(|| "erasure has no canonical dispatch table".to_string())?;
+                if result.ty != table.dyn_ty {
+                    return Err("erasure result differs from its table's trait object".into());
+                }
+                if types.get(&value.value) != Some(&table.concrete_ty) {
+                    return Err("erasure input differs from its table's concrete type".into());
+                }
+            }
             _ => unreachable!("selected callable construction operation"),
         }
         if result.own != crate::OwnKind::Owned {
@@ -2274,7 +2485,12 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
-        || matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+        || matches!(
+            ty,
+            ResolvedTy::Function { .. }
+                | ResolvedTy::Closure { .. }
+                | ResolvedTy::TraitObject { .. }
+        )
         || matches!(ty, ResolvedTy::Tuple(_))
         || module.aggregate_shape_for_type(ty).is_some()
         || module.variant_shape_for_type(ty).is_some()
@@ -3165,7 +3381,8 @@ fn verify_operation_shape(
         | SemOpKind::ClosureMake { .. }
         | SemOpKind::GeneratorMake { .. }
         | SemOpKind::StreamPipe { .. }
-        | SemOpKind::CallableCoerce { .. } => {}
+        | SemOpKind::CallableCoerce { .. }
+        | SemOpKind::DynMake { .. } => {}
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
         SemOpKind::LoadBorrow { .. }
@@ -3915,6 +4132,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::ActorCall { .. }
             | SemTerminator::ValueCall { .. }
             | SemTerminator::IndirectCall { .. }
+            | SemTerminator::DynCall { .. }
             | SemTerminator::Suspend { .. }
             | SemTerminator::Unreachable => false,
         };
@@ -4321,6 +4539,13 @@ fn verify_terminator_shape(
                 blocks,
                 callable_context,
             ) {
+                invalid_operation(function, *id, reason, diagnostics);
+            }
+        }
+        call @ SemTerminator::DynCall { id, .. } => {
+            if let Err(reason) =
+                verify_dyn_call(call, types, variants.facts, blocks, callable_context)
+            {
                 invalid_operation(function, *id, reason, diagnostics);
             }
         }
@@ -4744,7 +4969,8 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
         | SemTerminator::ValueCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()
         }
-        SemTerminator::IndirectCall { args, normal, .. } => {
+        SemTerminator::IndirectCall { args, normal, .. }
+        | SemTerminator::DynCall { args, normal, .. } => {
             let start = 1 + args.len();
             start..start + normal.as_ref().map_or(0, |edge| edge.args.len())
         }
@@ -5032,7 +5258,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[], &[], &[]);
+        let context = callable_context(&callables, &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -5051,7 +5277,7 @@ mod parameter_own_kind_tests {
     fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[], &[], &[]);
+        let context = callable_context(&callables, &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -5069,7 +5295,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
-        let context = callable_context(&callables, &[], &[], &[]);
+        let context = callable_context(&callables, &[], &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics =

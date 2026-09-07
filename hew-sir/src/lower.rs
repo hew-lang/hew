@@ -575,6 +575,9 @@ struct InstanceService<'a> {
     synthetic_sources: HashMap<CallableId, HirFn>,
     closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
     closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
+    /// Dispatch tables demanded by the erasure sites this module lowered.
+    vtables: Vec<crate::SemVtable>,
+    vtables_by_erasure: HashMap<(ResolvedTy, ResolvedTy), crate::SemVtableId>,
     entry_adapter: Option<EntryAdapter>,
     /// Only template headers that back a requested concrete SIR instance are
     /// emitted into the SIR module. HIR remains the authority for unselected
@@ -1051,6 +1054,8 @@ impl<'a> InstanceService<'a> {
             synthetic_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
             closure_sources: Vec::new(),
+            vtables: Vec::new(),
+            vtables_by_erasure: HashMap::new(),
             entry_adapter: None,
             used_templates: std::collections::HashSet::new(),
             scanned_record_closes: 0,
@@ -1361,28 +1366,116 @@ impl<'a> InstanceService<'a> {
         self.request_body(id);
     }
 
+    /// Intern the dispatch table for one `(dyn Trait, concrete type)` erasure.
+    ///
+    /// Each slot resolves the checker's implementer declaration to a demanded
+    /// SIR callable, so no later stage joins a slot to a body by name. The
+    /// slot order is the checker's, past the runtime's three-word prefix.
+    fn request_vtable(
+        &mut self,
+        dyn_ty: &ResolvedTy,
+        concrete_ty: &ResolvedTy,
+        entries: &[hew_types::DynVtableEntry],
+    ) -> Result<crate::SemVtableId, String> {
+        let key = (dyn_ty.clone(), concrete_ty.clone());
+        if let Some(id) = self.vtables_by_erasure.get(&key) {
+            return Ok(*id);
+        }
+        self.require_type_facts(dyn_ty)?;
+        self.require_type_facts(concrete_ty)?;
+        let mut slots = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let slot = 3 + u32::try_from(index)
+                .map_err(|_| "trait-object method count exceeds u32".to_string())?;
+            let declaration = entry.impl_method.as_ref().ok_or_else(|| {
+                format!(
+                    "`{}` fills slot {slot} of `{}` with `{}`, which has no source declaration",
+                    concrete_ty.user_facing(),
+                    dyn_ty.user_facing(),
+                    entry.impl_fn_key
+                )
+            })?;
+            let callee = *self
+                .table
+                .monomorphic_by_declaration
+                .get(declaration)
+                .ok_or_else(|| {
+                    format!(
+                        "slot {slot} of `{}` names `{}`, which has no monomorphic SIR callable",
+                        dyn_ty.user_facing(),
+                        declaration.full_path()
+                    )
+                })?;
+            // Erasure is what obliges the module to carry every slot body:
+            // the dispatch edge cannot demand one, because it names an index
+            // rather than a declaration.
+            self.request_body(callee);
+            let target = self
+                .callable(callee)
+                .cloned()
+                .ok_or_else(|| format!("SIR callable {callee:?} is absent from its table"))?;
+            let Some((receiver, arguments)) = target.signature.params.split_first() else {
+                return Err(format!(
+                    "slot {slot} implementation `{}` takes no receiver",
+                    target.symbol
+                ));
+            };
+            if receiver.ty != *concrete_ty {
+                return Err(format!(
+                    "slot {slot} implementation `{}` does not receive `{}`",
+                    target.symbol,
+                    concrete_ty.user_facing()
+                ));
+            }
+            slots.push(crate::SemVtableSlot {
+                slot,
+                trait_name: entry.trait_name.clone(),
+                method_name: entry.method_name.clone(),
+                callee,
+                receiver: receiver.passing,
+                signature: SemSignature {
+                    params: arguments.to_vec(),
+                    return_ty: target.signature.return_ty.clone(),
+                },
+            });
+        }
+        let id = crate::SemVtableId(
+            u32::try_from(self.vtables.len())
+                .map_err(|_| "SIR vtable count exceeds u32".to_string())?,
+        );
+        self.vtables.push(crate::SemVtable {
+            id,
+            dyn_ty: dyn_ty.clone(),
+            concrete_ty: concrete_ty.clone(),
+            slots,
+        });
+        self.vtables_by_erasure.insert(key, id);
+        Ok(id)
+    }
+
     /// The checker-selected `Display::fmt` body for the entry error type.
     fn resolve_entry_display(
         &mut self,
-        display: &hew_types::EntryDisplayTarget,
+        declaration: &DefId,
+        instance: &hew_types::EntryCallableInstance,
     ) -> Result<SemCallable, String> {
-        let id = match &display.instance {
+        let id = match instance {
             hew_types::EntryCallableInstance::Declared => {
                 let id = *self
                     .table
                     .monomorphic_by_declaration
-                    .get(&display.declaration)
+                    .get(declaration)
                     .ok_or_else(|| {
                         format!(
                             "entry Display target `{}` has no SIR callable",
-                            display.declaration.full_path()
+                            declaration.full_path()
                         )
                     })?;
                 self.request_body(id);
                 id
             }
             hew_types::EntryCallableInstance::Generic { type_args } => {
-                self.request_instance(&display.declaration, type_args.clone())?
+                self.request_instance(declaration, type_args.clone())?
             }
         };
         self.callable(id)
@@ -1955,6 +2048,7 @@ impl<'a> InstanceService<'a> {
             closures,
             actors,
             supervisors,
+            vtables,
             aggregate_shapes,
             variant_shapes,
             string_literals,
@@ -1979,6 +2073,7 @@ impl<'a> InstanceService<'a> {
             &functions,
             &aggregate_shapes,
             &variant_shapes,
+            &vtables,
         );
         let mut resources: BTreeMap<ResolvedTy, crate::ResourceRelease> = type_facts
             .keys()
@@ -2016,6 +2111,7 @@ impl<'a> InstanceService<'a> {
             supervisors,
             resources,
             closures,
+            vtables,
             callables: table.callables,
             generic_templates,
             root_unit_callables: table.root_unit_callables,
@@ -2054,6 +2150,7 @@ fn project_type_facts(
     functions: &[SemFunction],
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
+    vtables: &[crate::SemVtable],
 ) -> TypeFactTable {
     let mut mentioned: Vec<ResolvedTy> = Vec::new();
     let push_signature = |signature: &SemSignature, out: &mut Vec<ResolvedTy>| {
@@ -2085,6 +2182,13 @@ fn project_type_facts(
                     mentioned.push(result.ty.clone());
                 }
             }
+        }
+    }
+    for vtable in vtables {
+        mentioned.push(vtable.dyn_ty.clone());
+        mentioned.push(vtable.concrete_ty.clone());
+        for slot in &vtable.slots {
+            push_signature(&slot.signature, &mut mentioned);
         }
     }
     for shape in aggregate_shapes {
@@ -2284,6 +2388,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Bytes
                 | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }
+                | ResolvedTy::TraitObject { .. }
         )
         || crate::generator_parts(ty).is_some()
         || crate::stream_element(ty).is_some()
@@ -2479,6 +2584,10 @@ enum OwnedBindingUse {
 enum PreparedCallee {
     Direct(CallableId),
     Indirect(crate::BoundaryOperand),
+    Dyn {
+        receiver: crate::BoundaryOperand,
+        slot: u32,
+    },
 }
 
 impl PreparedCallee {
@@ -2503,6 +2612,16 @@ impl PreparedCallee {
             Self::Indirect(callee) => SemTerminator::IndirectCall {
                 id,
                 callee,
+                signature,
+                args,
+                result,
+                normal,
+                unwind,
+            },
+            Self::Dyn { receiver, slot } => SemTerminator::DynCall {
+                id,
+                receiver,
+                slot,
                 signature,
                 args,
                 result,
@@ -4390,6 +4509,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),
             HirExprKind::ActorGenStream { .. } => self.lower_actor_stream(expr),
+            HirExprKind::CoerceToDynTrait {
+                value,
+                concrete_type,
+                vtable_entries,
+                ..
+            } => self.lower_dyn_make(expr, value, concrete_type, vtable_entries),
+            HirExprKind::CallDynMethod {
+                receiver,
+                slot,
+                args,
+                signature,
+                ..
+            } => self
+                .lower_dyn_call(expr, receiver, *slot, args, signature, true)?
+                .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {
@@ -6738,6 +6872,112 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    /// Erase one owned concrete value into a trait object.
+    fn lower_dyn_make(
+        &mut self,
+        expr: &HirExpr,
+        value: &HirExpr,
+        concrete_type: &ResolvedTy,
+        entries: &[hew_types::DynVtableEntry],
+    ) -> Result<ValueId, String> {
+        let dyn_ty = self.ty(&expr.ty);
+        let concrete_ty = self.ty(concrete_type);
+        let vtable = self
+            .service
+            .request_vtable(&dyn_ty, &concrete_ty, entries)?;
+        let source = self.lower_consuming_value(value)?;
+        if self.ty(&value.ty) != concrete_ty {
+            return Err(format!(
+                "erasure input `{}` differs from the checker's concrete type `{}`",
+                self.ty(&value.ty).user_facing(),
+                concrete_ty.user_facing()
+            ));
+        }
+        self.owned_live.remove(&source);
+        self.emit(
+            expr,
+            SemOpKind::DynMake {
+                vtable,
+                value: Operand { value: source },
+            },
+        )
+    }
+
+    /// The erased dispatch boundary for one trait method.
+    ///
+    /// Parameter transfer follows the same rule the implementations were
+    /// admitted under, so the verifier can compare this boundary against every
+    /// table that erases into the receiver's trait object.
+    fn dyn_dispatch_signature(
+        &mut self,
+        args: &[HirExpr],
+        return_ty: &ResolvedTy,
+    ) -> Result<SemSignature, String> {
+        let mut params = Vec::with_capacity(args.len());
+        for arg in args {
+            let ty = self.ty(&arg.ty);
+            self.service.require_type_facts(&ty)?;
+            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            params.push(SemAbiParam {
+                passing: if own == OwnKind::Owned {
+                    SemParamPassing::Borrow
+                } else {
+                    SemParamPassing::ReadOnly
+                },
+                ty,
+                caller_visible_projection: false,
+            });
+        }
+        Ok(SemSignature {
+            params,
+            return_ty: return_ty.clone(),
+        })
+    }
+
+    /// Dispatch one trait method through the receiver's vtable slot.
+    fn lower_dyn_call(
+        &mut self,
+        expr: &HirExpr,
+        receiver: &HirExpr,
+        slot: u32,
+        args: &[HirExpr],
+        signature: &hew_types::FnSig,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let return_ty = self.ty(&expr.ty);
+        let dispatch = self.dyn_dispatch_signature(args, &return_ty)?;
+        let decision = if signature.consumes_receiver {
+            crate::BoundaryDecision::Move
+        } else if signature.requires_mutable_receiver {
+            crate::BoundaryDecision::BorrowMut
+        } else {
+            crate::BoundaryDecision::Borrow
+        };
+        let value = if decision == crate::BoundaryDecision::Move {
+            self.lower_consuming_value(receiver)?
+        } else {
+            self.lower_borrowed_read(receiver, &mut loans)?.value
+        };
+        let lowered_args = self.lower_user_arguments(args, &dispatch.params, &mut loans)?;
+        self.finish_user_call(
+            PreparedCallee::Dyn {
+                receiver: crate::BoundaryOperand {
+                    operand: Operand { value },
+                    decision,
+                },
+                slot,
+            },
+            dispatch,
+            lowered_args,
+            &loans,
+            &live_before_arguments,
+            value_required,
+        )
+    }
+
     /// Direct and indirect user calls share argument capture and both cleanup paths.
     #[allow(
         clippy::too_many_lines,
@@ -6927,7 +7167,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.owned_live.remove(&argument.operand.value);
             }
         }
-        if let PreparedCallee::Indirect(receiver) = &callee {
+        if let PreparedCallee::Indirect(receiver) | PreparedCallee::Dyn { receiver, .. } = &callee {
             if receiver.decision == crate::BoundaryDecision::Move {
                 self.owned_live.remove(&receiver.operand.value);
             }

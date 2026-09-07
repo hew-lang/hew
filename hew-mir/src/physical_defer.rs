@@ -189,7 +189,8 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             .chain(failures.iter().map(|f| &f.edge))
             .collect(),
         PhysicalTerminator::Call { normal, unwind, .. }
-        | PhysicalTerminator::IndirectCall { normal, unwind, .. } => {
+        | PhysicalTerminator::IndirectCall { normal, unwind, .. }
+        | PhysicalTerminator::DynCall { normal, unwind, .. } => {
             normal.iter().chain(unwind).collect()
         }
         PhysicalTerminator::ActorCall { normal, unwind, .. } => {
@@ -237,6 +238,7 @@ fn operation_storage(
         PhysicalOp::Unary { dest, source, .. }
         | PhysicalOp::Cast { dest, source, .. }
         | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::DynMake { dest, source, .. }
         | PhysicalOp::Transfer { dest, source }
         | PhysicalOp::Clone { dest, source, .. }
         | PhysicalOp::Borrow { dest, source } => {
@@ -339,6 +341,10 @@ fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>)
             used.insert(source(callee));
             used.extend(args.iter().map(source));
         }
+        PhysicalTerminator::DynCall { receiver, args, .. } => {
+            used.insert(source(receiver));
+            used.extend(args.iter().map(source));
+        }
         PhysicalTerminator::Panic { message, .. } => {
             used.insert(source(message));
         }
@@ -382,6 +388,7 @@ pub(super) fn verify_calls(
             | PhysicalTerminator::ActorAsk { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }
             | PhysicalTerminator::IndirectCall { .. }
+            | PhysicalTerminator::DynCall { .. }
             | PhysicalTerminator::ValueCall { .. } => {
                 return Err(PhysicalError::new(
                     "physical defer call has unproven effects",
@@ -495,6 +502,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
                 }
                 PhysicalTerminator::Call { result, .. }
                 | PhysicalTerminator::IndirectCall { result, .. }
+                | PhysicalTerminator::DynCall { result, .. }
                 | PhysicalTerminator::RuntimeCall { result, .. } => {
                     region.values.extend(result);
                 }

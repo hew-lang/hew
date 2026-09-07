@@ -512,6 +512,7 @@ mod tests {
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
+            vtables: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![SemCallable {
                 id: function.callable,

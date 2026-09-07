@@ -237,11 +237,19 @@ impl EntryIntegerType {
     }
 }
 
-/// Concrete `Display::fmt` implementation selected for a `Result` entry error.
+/// `Display::fmt` realization selected for a `Result` entry error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EntryDisplayTarget {
-    pub declaration: crate::DefId,
-    pub instance: EntryCallableInstance,
+pub enum EntryDisplayTarget {
+    /// A concrete implementation resolved from the error type.
+    Declared {
+        declaration: crate::DefId,
+        instance: EntryCallableInstance,
+    },
+    /// The error type is erased to a trait object, so the entry renders it
+    /// through the vtable slot the coercion site published. The receiver is
+    /// borrowed: `Display::fmt` declares a by-value named receiver, which is
+    /// a read at the semantic call boundary.
+    DynSlot { slot: u32 },
 }
 
 /// Complete callable realization selected for an entry-boundary dependency.
@@ -991,6 +999,12 @@ pub struct DynVtableEntry {
     pub method_name: String,
     /// Implementer-side function key (`Type::method`).
     pub impl_fn_key: String,
+    /// Declaration identity of the implementer-side method that fills this
+    /// slot. `None` when the impl was matched structurally or comes from a
+    /// primitive/builtin registry that mints no source declaration; a
+    /// consumer that needs an executable target fails closed on `None`
+    /// rather than recovering one from `impl_fn_key`.
+    pub impl_method: Option<crate::DefId>,
     /// Caller-side signature after substituting trait type parameters and
     /// associated-type bindings (e.g. `Self::Item` -> `int`).
     pub signature: FnSig,

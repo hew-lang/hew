@@ -819,7 +819,8 @@ impl<'a> Flow<'a> {
                 successors.extend(self.edge(id, cleanup, state, emit));
             }
             SemTerminator::Call { normal, unwind, .. }
-            | SemTerminator::IndirectCall { normal, unwind, .. } => {
+            | SemTerminator::IndirectCall { normal, unwind, .. }
+            | SemTerminator::DynCall { normal, unwind, .. } => {
                 Self::require_fault(id, DEAD, &state, emit);
                 let mut returned = state.clone();
                 block
@@ -861,7 +862,8 @@ impl<'a> Flow<'a> {
                         SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
                         | SemTerminator::ValueCall { .. }
-                        | SemTerminator::IndirectCall { .. } => true,
+                        | SemTerminator::IndirectCall { .. }
+                        | SemTerminator::DynCall { .. } => true,
                         SemTerminator::RtCall { family, .. } => family
                             .semantic_contract()
                             .is_some_and(hew_types::RuntimeSemanticContract::propagates_fault),
@@ -1600,6 +1602,7 @@ impl<'a> Flow<'a> {
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }
+                        | SemTerminator::DynCall { .. }
                         | SemTerminator::Panic { .. }
                         | SemTerminator::Suspend {
                             kind: crate::SuspendKind::Select { .. }
@@ -1637,6 +1640,7 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
             | SemOpKind::TaskSpawn { .. }
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::CallableCoerce { .. }
+            | SemOpKind::DynMake { .. }
             | SemOpKind::TupleMake { .. }
             | SemOpKind::AggregateMake { .. }
             | SemOpKind::VariantMake { .. }

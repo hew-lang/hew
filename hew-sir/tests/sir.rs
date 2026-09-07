@@ -121,6 +121,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
+        vtables: Vec::new(),
         value_capabilities: BTreeMap::new(),
         callables,
         generic_templates: Vec::new(),

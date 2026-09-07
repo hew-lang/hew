@@ -127,25 +127,37 @@ writes. `ChildRef<A>` stays distinct because it names a supervised *role*
 rather than an incarnation, and re-resolves on every call (§5.6).
 
 **Submission and reply.** A `receive fn` with a return type `R` is asked;
-`await <pid>.<method>(<args>)` joins its reply and has type
+`<pid>.<method>(<args>)` waits for its reply and has type
 `Result<R, AskError>`, and `fork <pid>.<method>(<args>)` starts the same ask
-as a `Task<Result<R, AskError>>`. A `receive fn` without a return type is
-submitted: `send <pid>.<method>(<args>)` is a message-submission expression
-whose value is the typed delivery outcome, `Result<(), SendError>`. `send`
-describes a message; it does not call the handler locally, and its completion
-means accepted, not processed and not durable.
+concurrently as a `Task<Result<R, AskError>>` that `await` then joins. An ask
+carries no operator: an ordinary call waits, `fork` starts concurrent work,
+and `await` joins a task. A `receive fn` without a return type is
+submitted, and the call is the submission: `<pid>.<method>(<args>)` has the
+value `Result<Delivery, SendFailure<M>>`. There is no submission keyword. The
+call does not run the handler locally, and its completion means accepted, not
+processed and not durable. `Delivery` reports `.Accepted` or an explicitly
+chosen `.Discarded`.
+
+A rejected submission hands the whole unaccepted message back inside
+`SendFailure`, so a consumed payload is never lost on the failure path. That
+returned message has exactly two moves left, both yielding the same outcome
+type as a call: `.retry()` resubmits it to the same target, and `.to(other)`
+readdresses it to a compatible actor and resubmits. Its payload is sealed —
+programs move the message, they never open it — and no program constructs one.
 
 The outcome composes like any other `Result`: propagate it with `?`, recover
 from it with `handle`, or discard it deliberately. Discarding it by accident
 is not available — a statement-position send or ask whose result is dropped is
-`E_SEND_RESULT_DROPPED`, whose fix-it writes `_ = send pid.m()` (§5.6). There is no
-lint tier: an unbounded mailbox reports `SendError.Dead` for a dead target
-exactly as a policy-sensitive one does, so every send has something to say.
+`E_SEND_RESULT_DROPPED`, whose fix-it writes `let _ = pid.m();` (§5.6). There
+is no lint tier: an unbounded mailbox reports `SendError.Dead` for a dead
+target exactly as a policy-sensitive one does, so every send has something to
+say.
 
 **Mailbox policy at the sender.** `policy(worker, on_full: .Wait)` yields an
-immutable typed view of the same actor and mailbox. It mutates nothing and
-grants no authority over other senders' work; it selects what *this* sender
-does when the mailbox is full. The default is `.Reject`, which fails
+immutable typed view of the same actor and mailbox; a receive call through
+that view submits under that policy. It mutates nothing and grants no
+authority over other senders' work; it selects what *this* sender does when
+the mailbox is full. The default is `.Reject`, which fails
 immediately and hands the unaccepted payload back — transferred resources
 included — so the caller can retry, redirect, or discard. `.Wait` parks until
 the message is accepted, cancelled, closed, or timed out, and is the one
@@ -154,7 +166,7 @@ message and reports that disposition distinctly. Coalescing requires the
 actor's own mailbox support for its key policy (§6.3). Capacity and queue-wide
 eviction belong to the actor and its supervisor, never to a sender view.
 
-The token `ask` does not appear at actor call sites: `await` is the ask marker and `send` the submission marker. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
+No token marks an actor call site: an unmarked call is the ask or the submission, decided by the handler's return type. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
 If the receiving handler faults before replying, the ask resolves to
 `.Err(AskError.HandlerTrapped)`. The receiving actor retains ownership of the
@@ -166,7 +178,7 @@ cancellation still follows the caller's own cancellation and cleanup edges.
 actor Counter {
     var count: i64 = 0,
 
-    // Submission: no return type, caller writes `send`
+    // Submission: no return type, the call submits
     receive fn increment(n: i64) {
         count += n;
     }
@@ -185,8 +197,8 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → submission. The caller writes `send`, and the expression's value is `Result<(), SendError>` whatever the mailbox policy.
-- **`receive fn` with return type** → request-response. `await` joins the reply and produces `Result<R, AskError>`. Inside a `select` arm the ask is the arm's source, so the arm's `from` clause is what waits and no `await` is written there.
+- **`receive fn` without return type** → submission. The call submits, and its value is `Result<Delivery, SendFailure<M>>` whatever the mailbox policy.
+- **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, AskError>`. Inside a `select` arm the ask is the arm's source, so the arm's `from` clause is what waits.
 
 **Calling named actors:**
 
@@ -196,10 +208,10 @@ actor Counter {
 let counter = spawn Counter(count: 0);
 
 // Submission: no return type, typed delivery outcome
-send counter.increment(10)?;
+counter.increment(10)?;
 
-// Request-response: has return type, joined with await
-let n = await counter.get();
+// Request-response: has return type, the call waits for the reply
+let n = counter.get()?;
 ```
 
 **Sending messages:**
@@ -213,8 +225,8 @@ Lambda actors receive messages via call-syntax. Named actors expose typed receiv
 let worker = actor |msg: i64| { println(msg * 2); };
 worker.send(42);                // fire-and-forget
 
-// Named actor: `send` submits, and the outcome is not discardable
-_ = send counter.increment(10);
+// Named actor: the call submits, and the outcome is not discardable
+let _ = counter.increment(10);
 ```
 
 **Message payloads (normative):**
@@ -260,7 +272,7 @@ error; there is no `must_use` lint tier below that widening (hew-lang/hew#3254).
 A bare statement that discards any send or ask result is
 `E_SEND_RESULT_DROPPED`, a compile error. The caller MUST handle it with
 `match`, `handle` or `?`, or explicitly acknowledge the decision with the
-fix-it `_ = send pid.m();`. This explicit discard exists for metrics/sampling workloads,
+fix-it `let _ = pid.m();`. This explicit discard exists for metrics/sampling workloads,
 but loss can no longer be introduced by changing an actor declaration while
 leaving an ordinary bare send apparently successful.
 
@@ -912,14 +924,14 @@ actor Handler {
 
 actor Forwarder {
     receive fn forward(message: Message, target: Pid<Handler>) {
-        _ = send target.process(message);  // target receives a snapshot of message
+        let _ = target.process(message);  // target receives a snapshot of message
     }
 }
 
 fn main() {
     let handler = spawn Handler();
     let forwarder = spawn Forwarder();
-    _ = send forwarder.forward(Message { body: "hello" }, handler);
+    let _ = forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
 
@@ -969,8 +981,8 @@ actor Handler {
 
 actor Broadcaster {
     receive fn broadcast(message: Message, first: Pid<Handler>, second: Pid<Handler>) {
-        _ = send first.process(message);
-        _ = send second.process(message);   // message still valid — each send snapshots
+        let _ = first.process(message);
+        let _ = second.process(message);   // message still valid — each send snapshots
     }
 }
 
@@ -978,7 +990,7 @@ fn main() {
     let first = spawn Handler();
     let second = spawn Handler();
     let broadcaster = spawn Broadcaster();
-    _ = send broadcaster.broadcast(Message { body: "hello" }, first, second);
+    let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 
 // Lambda actor .send() uses the same snapshot-on-send rule.
@@ -1066,7 +1078,7 @@ actor Example {
     receive fn bad_examples(other: Pid<Other>) {
         // Sending a non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
-        _ = send other.process(local_handle);  // compile error: RawPointer is not Send
+        let _ = other.process(local_handle);  // compile error: RawPointer is not Send
 
         // Capturing non-Send value - ERROR
         let worker = actor |x: i64| {
@@ -1566,8 +1578,8 @@ actor Receiver {
 
 actor Broadcaster {
     receive fn broadcast(message: Message, first: Pid<Receiver>, second: Pid<Receiver>) {
-        _ = send first.accept(message.clone());
-        _ = send second.accept(message.clone());
+        let _ = first.accept(message.clone());
+        let _ = second.accept(message.clone());
     }
 }
 
@@ -1575,7 +1587,7 @@ fn main() {
     let first = spawn Receiver();
     let second = spawn Receiver();
     let broadcaster = spawn Broadcaster();
-    _ = send broadcaster.broadcast(Message { body: "hello" }, first, second);
+    let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -1668,14 +1680,14 @@ actor Handler {
 
 actor Forwarder {
     receive fn forward(message: Message, target: Pid<Handler>) {
-        _ = send target.process(message);  // target receives a snapshot; message stays valid
+        let _ = target.process(message);  // target receives a snapshot; message stays valid
     }
 }
 
 fn main() {
     let handler = spawn Handler();
     let forwarder = spawn Forwarder();
-    _ = send forwarder.forward(Message { body: "hello" }, handler);
+    let _ = forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
 
@@ -2221,8 +2233,8 @@ actor Receiver {
 
 actor Broadcaster {
     receive fn broadcast(message: Message, first: Pid<Receiver>, second: Pid<Receiver>) {
-        _ = send first.accept(message.clone());
-        _ = send second.accept(message.clone());
+        let _ = first.accept(message.clone());
+        let _ = second.accept(message.clone());
     }
 }
 
@@ -2230,7 +2242,7 @@ fn main() {
     let first = spawn Receiver();
     let second = spawn Receiver();
     let broadcaster = spawn Broadcaster();
-    _ = send broadcaster.broadcast(Message { body: "hello" }, first, second);
+    let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -2321,12 +2333,12 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 ```hew
 // Error: T might not be Send
 receive fn forward_unsafe<T>(message: T, target: Pid<Handler<T>>) {
-    _ = send target.process(message);    // Compile error: T not bounded by Send
+    let _ = target.process(message);    // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
 receive fn forward<T: Send>(message: T, target: Pid<Handler<T>>) {
-    _ = send target.process(message);    // OK: T: Send verified at instantiation
+    let _ = target.process(message);    // OK: T: Send verified at instantiation
 }
 ```
 
@@ -2558,8 +2570,8 @@ actor Latest<T> {
 fn main() {
     let numbers = spawn Latest<i64>();
     let names = spawn Latest<string>();
-    send numbers.put(41)?;
-    send names.put("hew")?;
+    numbers.put(41)?;
+    names.put("hew")?;
     println(f"{(await numbers.get())?.expect("set")} {(await names.get())?.expect("set")}");
     await close(numbers);
     await close(names);
@@ -3652,9 +3664,10 @@ suspend the calling execution context. Every one of them is a plain call:
 carry no operator.
 
 **What `await` means.** `await` joins something that has its own life: a
-`Task<T>` (§4.4), an actor's reply, an actor's termination, or another
-actor's stream. `await` on any other operand is a diagnostic with a fix-it
-that deletes it; it is never a silent no-op.
+`Task<T>` (§4.4), an actor's termination, or another actor's stream. An
+actor's reply is not one of them — an ask is an ordinary call that waits, and
+`fork` is how it runs concurrently. `await` on any other operand is a
+diagnostic with a fix-it that deletes it; it is never a silent no-op.
 
 **Deferred bodies cannot suspend.** A `defer` body runs on an exit path with
 no context to park on. A suspending call inside one is rejected, and the
@@ -3940,19 +3953,19 @@ let value = (await task)?;
 
 > **Note:** Only traps (panics) propagate as unrecoverable. Cancellation is always catchable via the `Result` return type.
 
-**The four things `await` joins (normative):**
+**The three things `await` joins (normative):**
 
 | Operand              | Written                              | Yields                     |
 | -------------------- | ------------------------------------ | -------------------------- |
 | A task               | `await task`                         | the task's result          |
-| An actor's reply     | `await worker.compute(x)`            | `Result<R, AskError>`      |
 | An actor's end       | `await actor`, `await close(actor)`  | the termination outcome    |
 | Another actor's stream | `for await x in pid.stream()`      | each item as it arrives    |
 
-`await` on any other operand — a plain call, a value, a generator's `next()`
-— is a diagnostic whose fix-it deletes the word. A concurrent ask is written
+`await` on any other operand — a plain call, an actor's reply, a value, a
+generator's `next()` — is a diagnostic whose fix-it deletes the word. An ask
+is written `worker.compute(x)` and waits; a concurrent ask is
 `fork worker.compute(x)`, which yields a `Task<Result<R, AskError>>` like any
-other fork.
+other fork and is joined with `await`.
 
 **Batch fork:** `fork` over a list or a tuple starts every operand and yields
 one task for the group. `fork [a(), b()]` is a `Task<Vec<T>>` when the
@@ -4294,8 +4307,9 @@ An actor has its own life, so it is one of the things `await` joins (§4.4).
 - `await close(pid)` asks the actor to stop, then joins the same
   termination. It is idempotent: closing an actor that has already stopped
   returns the recorded outcome.
-- `await pid.method(args)` is the ask (§2.1.1) and yields
-  `Result<R, AskError>`.
+- `pid.method(args)` is the ask (§2.1.1) and yields `Result<R, AskError>`.
+  It waits on its own, with no `await`; `fork pid.method(args)` runs it
+  concurrently and `await` then joins that task.
 - `for await x in pid.stream()` consumes another actor's stream producer
   (§4.12); `await` is what marks the pull as crossing an actor boundary.
 
@@ -4716,10 +4730,10 @@ fn main() {
 
     // Access children by declared name
     let w = pool.worker1;              // ChildRef<Worker>
-    _ = send w.tick();
+    let _ = w.tick();
 
     let w2 = pool.worker2;             // ChildRef<Worker>
-    _ = send w2.tick();
+    let _ = w2.tick();
 
     supervisor_stop(pool);              // Graceful shutdown
 }
@@ -4741,15 +4755,16 @@ gone resolves closed, not open: a `ChildRef` send reports `Dead`,
 on every ask or tell precisely so that this is decidable at the call and not
 guessed from a stale address.
 
-A handle that is already held reports the same fact at the send. Every send
-expression has type `Result<(), SendError>`. For an unbounded mailbox the only
-inhabitant of `Err` is `SendError.Dead`; for a bounded or policy-sensitive
-mailbox `Dead` joins the policy variants of §9.3. A send to a dead target never
-traps, and it never returns `Ok(())`.
+A handle that is already held reports the same fact at the send. Every
+submitting call has type `Result<Delivery, SendFailure<M>>`, and the failure's
+`reason` is a `SendError`. For an unbounded mailbox the only inhabitant of
+`Err` is `SendError.Dead`; for a bounded or policy-sensitive mailbox `Dead`
+joins the policy variants of §9.3. A send to a dead target never traps, and it
+never returns `Ok(Delivery.Accepted)`.
 
 Discarding that result is `E_SEND_RESULT_DROPPED`, a compile error, matching
 §2.1.1: a statement-position send or ask whose `Result` is discarded is an
-error, with the fix-it `_ = send pid.m()`. There is no `must_use` lint tier — the
+error, with the fix-it `let _ = pid.m();`. There is no `must_use` lint tier — the
 rule is the same for an unbounded mailbox and a policy-sensitive one, because
 both can now report `Dead`.
 

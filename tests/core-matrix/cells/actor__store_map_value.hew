@@ -9,7 +9,7 @@ actor Echo {
 
 fn main() {
     let x = spawn Echo(seen: 0);
-    let m: HashMap<string, LocalPid<Echo>> = HashMap.new();
+    var m: HashMap<string, LocalPid<Echo>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {

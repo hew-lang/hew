@@ -5,7 +5,7 @@ type Rec {
 
 fn main() {
     let x = Rec { a: 1, b: "x0" };
-    let v: Vec<Rec> = Vec.new();
+    var v: Vec<Rec> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

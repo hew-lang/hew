@@ -23,7 +23,7 @@ extern "C" {
 
 fn main() {
     let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
-    let v: Vec<Dq> = Vec.new();
+    var v: Vec<Dq> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

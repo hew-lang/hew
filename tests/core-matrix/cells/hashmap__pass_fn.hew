@@ -5,7 +5,7 @@ fn use_it(v: HashMap<string, i64>) {
 }
 
 fn main() {
-    let x: HashMap<string, i64> = HashMap.new();
+    var x: HashMap<string, i64> = HashMap.new();
     x.insert("a", 1);
     x.insert("b", 2);
     use_it(x);

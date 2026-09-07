@@ -1,5 +1,5 @@
 fn make() -> HashMap<string, i64> {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     m.insert("b", 2);
     m

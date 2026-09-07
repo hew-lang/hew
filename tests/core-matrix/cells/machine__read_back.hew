@@ -11,7 +11,7 @@ machine Counter {
 fn main() {
     var x = Zero;
     x.step(.Inc);
-    let v: Vec<Counter> = Vec.new();
+    var v: Vec<Counter> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

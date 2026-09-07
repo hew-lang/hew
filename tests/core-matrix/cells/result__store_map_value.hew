@@ -1,6 +1,6 @@
 fn main() {
     let x: Result<i64, string> = Result.Ok(6);
-    let m: HashMap<string, Result<i64, string>> = HashMap.new();
+    var m: HashMap<string, Result<i64, string>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {

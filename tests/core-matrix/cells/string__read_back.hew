@@ -1,6 +1,6 @@
 fn main() {
     let x: string = "ab";
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

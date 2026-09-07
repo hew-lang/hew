@@ -1,6 +1,6 @@
 fn main() {
     let x: Option<i64> = Option.Some(5);
-    let v: Vec<Option<i64>> = Vec.new();
+    var v: Vec<Option<i64>> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

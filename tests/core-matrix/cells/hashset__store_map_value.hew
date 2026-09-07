@@ -1,8 +1,8 @@
 fn main() {
-    let x: HashSet<i64> = HashSet.new();
+    var x: HashSet<i64> = HashSet.new();
     x.insert(1);
     x.insert(2);
-    let m: HashMap<string, HashSet<i64>> = HashMap.new();
+    var m: HashMap<string, HashSet<i64>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {

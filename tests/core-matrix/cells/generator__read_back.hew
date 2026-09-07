@@ -3,7 +3,7 @@ fn main() {
         yield 1;
         yield 2;
     };
-    let v: Vec<Generator<i64, ()>> = Vec.new();
+    var v: Vec<Generator<i64, ()>> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

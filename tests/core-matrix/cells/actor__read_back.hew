@@ -9,7 +9,7 @@ actor Echo {
 
 fn main() {
     let x = spawn Echo(seen: 0);
-    let v: Vec<LocalPid<Echo>> = Vec.new();
+    var v: Vec<LocalPid<Echo>> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

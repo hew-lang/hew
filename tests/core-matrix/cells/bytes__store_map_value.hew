@@ -1,8 +1,8 @@
 fn main() {
-    let x: bytes = bytes.new();
+    var x: bytes = bytes.new();
     x.push(65);
     x.push(66);
-    let m: HashMap<string, bytes> = HashMap.new();
+    var m: HashMap<string, bytes> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {

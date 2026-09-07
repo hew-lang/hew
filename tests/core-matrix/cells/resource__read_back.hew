@@ -11,7 +11,7 @@ impl Tok {
 
 fn main() {
     let x = Tok { id: 1 };
-    let v: Vec<Tok> = Vec.new();
+    var v: Vec<Tok> = Vec.new();
     v.push(x);
     match v.get(0) {
         Option.Some(e) => {

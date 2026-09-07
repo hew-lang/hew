@@ -10,7 +10,7 @@ enum Payload { Empty, Full(string), }
 type Bag { items: Vec<Payload> @1, n: i64 @2, }
 
 fn main() -> i64 {
-    let xs: Vec<Payload> = Vec.new();
+    var xs: Vec<Payload> = Vec.new();
     xs.push(Payload.Full("first-owned"));
     xs.push(Payload.Empty);
     xs.push(Payload.Full("second-owned"));

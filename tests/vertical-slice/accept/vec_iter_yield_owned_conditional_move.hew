@@ -8,7 +8,7 @@
 // leak oracle: a regressed release leaks one row per iteration, a double
 // release aborts before the final line prints.
 
-fn keep_big(rows: Vec<i64>, keep: HashMap<string, Vec<i64>>) {
+fn keep_big(rows: Vec<i64>, var keep: HashMap<string, Vec<i64>>) {
     var all: Vec<Vec<i64>> = [];
     all.push(rows);
     for row in all {
@@ -24,7 +24,7 @@ fn keep_big(rows: Vec<i64>, keep: HashMap<string, Vec<i64>>) {
 }
 
 fn main() {
-    let keep: HashMap<string, Vec<i64>> = HashMap.new();
+    var keep: HashMap<string, Vec<i64>> = HashMap.new();
     keep_big([1, 2, 3], keep);
     keep_big([4, 5], keep);
     println("conditional-move-ok");

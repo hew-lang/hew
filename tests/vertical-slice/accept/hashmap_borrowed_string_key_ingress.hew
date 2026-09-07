@@ -17,12 +17,12 @@
 // the caller's duplicate), literal vs local-variable vs parameter operands,
 // and the `HashMap` value and `HashSet` element siblings.
 
-fn bump(counts: HashMap<string, i64>, category: string) {
+fn bump(var counts: HashMap<string, i64>, category: string) {
     let next = match counts.get(category) { .Some(old) => old + 1, .None => 1 };
     counts.insert(category, next);
 }
 
-fn insert_only(counts: HashMap<string, i64>, category: string, amount: i64) {
+fn insert_only(var counts: HashMap<string, i64>, category: string, amount: i64) {
     counts.insert(category, amount);
 }
 
@@ -30,11 +30,11 @@ fn lookup_only(counts: HashMap<string, i64>, category: string) -> i64 {
     match counts.get(category) { .Some(found) => found, .None => -1 }
 }
 
-fn store_value(labels: HashMap<i64, string>, id: i64, label: string) {
+fn store_value(var labels: HashMap<i64, string>, id: i64, label: string) {
     labels.insert(id, label);
 }
 
-fn add_member(members: HashSet<string>, name: string) {
+fn add_member(var members: HashSet<string>, name: string) {
     members.insert(name);
 }
 
@@ -42,7 +42,7 @@ fn add_member(members: HashSet<string>, name: string) {
 // it. Repeated categories drive the overwrite path; distinct ones the vacant
 // path. Every category is built on the heap by `.trim()`.
 fn tally() -> i64 {
-    let counts: HashMap<string, i64> = HashMap.new();
+    var counts: HashMap<string, i64> = HashMap.new();
     for raw in " coffee , rent , coffee , transit , coffee ".split(",") {
         bump(counts, raw.trim());
     }
@@ -56,7 +56,7 @@ fn tally() -> i64 {
 // Insert alone through a parameter, over many distinct heap keys, plus one
 // overwrite of an already-present key.
 fn fill() -> i64 {
-    let counts: HashMap<string, i64> = HashMap.new();
+    var counts: HashMap<string, i64> = HashMap.new();
     for i in 0..64 {
         insert_only(counts, f"key-{i}".to_upper(), i);
     }
@@ -69,7 +69,7 @@ fn fill() -> i64 {
 // Operand-provenance matrix: a static literal, a local heap variable, and a
 // parameter must each release exactly once at the same ingress.
 fn provenance() -> i64 {
-    let counts: HashMap<string, i64> = HashMap.new();
+    var counts: HashMap<string, i64> = HashMap.new();
     counts.insert("literal", 1);
     let local = "loc" + "al";
     counts.insert(local, 2);
@@ -84,8 +84,8 @@ fn provenance() -> i64 {
 // Siblings: a `HashMap` VALUE and a `HashSet` ELEMENT reaching the same MOVE
 // ingress through a borrowed `string` parameter.
 fn siblings() -> i64 {
-    let labels: HashMap<i64, string> = HashMap.new();
-    let members: HashSet<string> = HashSet.new();
+    var labels: HashMap<i64, string> = HashMap.new();
+    var members: HashSet<string> = HashSet.new();
     for i in 0..32 {
         store_value(labels, i, f"label-{i}".to_upper());
         add_member(members, f"member-{i}".to_upper());

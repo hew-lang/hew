@@ -5,7 +5,7 @@
 import std.encoding.wire;
 
 fn main() -> i64 {
-    let values: HashMap<string, i64> = HashMap.new();
+    var values: HashMap<string, i64> = HashMap.new();
     values.insert("beta", 2);
     values.insert("alpha", 1);
 

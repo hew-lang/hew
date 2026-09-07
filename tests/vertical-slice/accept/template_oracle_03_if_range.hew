@@ -3,7 +3,7 @@ import std.text.template;
 fn main() {
     let ctx = template.new_ctx();
     template.ctx_set_bool(ctx, "show", true);
-    let colours: Vec<string> = Vec.new();
+    var colours: Vec<string> = Vec.new();
     colours.push("red");
     colours.push("blue");
     template.ctx_set_list(ctx, "colours", colours);

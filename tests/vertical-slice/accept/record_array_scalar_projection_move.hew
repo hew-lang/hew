@@ -1,7 +1,7 @@
 type ArrayScalarMoveCarrier { items: Vec<i64>, sibling: string }
 
 fn project(i: i64) -> i64 {
-    let values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new();
     values.push(i);
     let r = ArrayScalarMoveCarrier {
         items: values,

@@ -4,7 +4,7 @@ actor VecSetCrasher {
     var value: i64,
 
     receive fn boom() {
-        let xs: Vec<i64> = Vec.new();
+        var xs: Vec<i64> = Vec.new();
         xs.push(value);
         xs.set(99, 7);
     }

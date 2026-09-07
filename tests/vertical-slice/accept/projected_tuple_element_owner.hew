@@ -8,7 +8,7 @@ type T { pair: (Vec<string>, i64), tag: string }
 type Slot { balancer: Vec<i64>, label: string }
 
 fn mk() -> T {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push(string.repeat("k", 32));
     T { pair: (v, 7), tag: string.repeat("y", 32) }
 }

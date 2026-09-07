@@ -32,7 +32,7 @@ fn describe(s: Source) -> string {
 }
 
 fn main() {
-    let items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new();
     items.push("a");
     items.push("b");
     println(describe(Source.Packed(Bag { items: items })));

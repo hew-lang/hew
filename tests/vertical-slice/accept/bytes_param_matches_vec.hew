@@ -6,7 +6,7 @@
 //! discarded copy) while the `Vec` read back as 1; now both read 1, so the two
 //! value types are consistent. A successful run prints `vec_len=1 bytes_len=1`.
 
-fn fill_vec(v: Vec<i64>) {
+fn fill_vec(var v: Vec<i64>) {
     v.push(7);
 }
 
@@ -15,7 +15,7 @@ fn fill_bytes(b: bytes) {
 }
 
 fn main() -> i64 {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     fill_vec(v);
     let b: bytes = bytes.new();
     fill_bytes(b);

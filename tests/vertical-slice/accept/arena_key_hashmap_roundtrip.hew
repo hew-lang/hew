@@ -6,7 +6,7 @@ import std.arena.{ Arena, Key };
 fn main() {
     let store: Arena<string> = arena.new();
     let key = store.insert("through-map");
-    let keys: HashMap<string, Key<string>> = HashMap.new();
+    var keys: HashMap<string, Key<string>> = HashMap.new();
     keys.insert("key", key);
 
     let cloned = keys.get("key").expect("get succeeds");

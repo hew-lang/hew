@@ -48,13 +48,6 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     },
     BuiltinEnumAbi {
         module: "std.builtins",
-        name: "AskError",
-        variant_count: 22,
-        order_fingerprint: 0x7325_2226_9903_16fb,
-        suppress_from_sandbox_emit: false,
-    },
-    BuiltinEnumAbi {
-        module: "std.builtins",
         name: "TimeoutError",
         variant_count: 1,
         order_fingerprint: 0xe9ae_0b1c_348b_0715,

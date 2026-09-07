@@ -103,8 +103,10 @@ impl SemActor {
             .chain(self.handlers.iter().map(|handler| handler.callable))
     }
 
-    /// The receive protocol owns request parameter order and its full fallible
-    /// reply type. Source and downstream verifiers consume this same signature.
+    /// The receive protocol owns request parameter order and the reply value;
+    /// the call site owns the sealed message inside its `ActorError`, so the
+    /// caller supplies the complete checked error type. Source and downstream
+    /// verifiers consume this same signature.
     ///
     /// # Errors
     /// Rejects an unknown protocol member or an unresolved reply type.
@@ -112,6 +114,7 @@ impl SemActor {
         &self,
         message: u32,
         target: &ResolvedTy,
+        error_ty: ResolvedTy,
     ) -> Result<crate::SemSignature, String> {
         let handler = self
             .handlers
@@ -131,11 +134,12 @@ impl SemActor {
             passing: crate::SemParamPassing::Consume,
             caller_visible_projection: false,
         }));
-        let return_ty = ResolvedTy::from_ty(&hew_types::Ty::result(
-            handler.return_ty.to_ty(),
-            hew_types::Ty::ask_error(),
-        ))
-        .map_err(|error| error.to_string())?;
+        let return_ty = ResolvedTy::Named {
+            name: "Result".to_string(),
+            args: vec![handler.return_ty.clone(), error_ty],
+            builtin: Some(hew_types::BuiltinType::Result),
+            is_opaque: false,
+        };
         Ok(crate::SemSignature { params, return_ty })
     }
 

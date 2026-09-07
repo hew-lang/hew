@@ -165,7 +165,7 @@ mod tests {
             fact.canonical_name,
             Some(discriminator)
         ));
-        for missing_or_wrong in [None, Some(crate::BuiltinType::AskError)] {
+        for missing_or_wrong in [None, Some(crate::BuiltinType::Iterator)] {
             assert!(!has_exact_monomorphic_builtin_enum_identity(
                 fact.canonical_name,
                 missing_or_wrong

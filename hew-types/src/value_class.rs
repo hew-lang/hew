@@ -707,7 +707,6 @@ fn classify(
             | BuiltinType::CrashAction
             | BuiltinType::CrashKind
             | BuiltinType::SendError
-            | BuiltinType::AskError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError

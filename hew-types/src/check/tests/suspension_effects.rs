@@ -137,6 +137,10 @@ fn deferred_generator_iteration_cannot_suspend() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one program pins every task-boundary shape of a completion call"
+)]
 fn actor_ask_task_boundaries_preserve_reply_and_transport_errors() {
     let source = r"
 actor Worker {
@@ -163,50 +167,86 @@ fn main() {
 ";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let reply = crate::Ty::result(crate::Ty::I64, crate::Ty::ask_error());
-    let checked_reply = crate::Ty::result(
-        crate::Ty::result(crate::Ty::I64, crate::Ty::String),
-        crate::Ty::ask_error(),
-    );
+    // A completion call yields `Result<R, ActorError<E, M>>`: `E` is the
+    // handler's declared failure (`Never` here — neither handler declares
+    // `fails`) and `M` is the call's own sealed message type, so the error arm
+    // is pinned by shape rather than by one spelling shared across call sites.
+    let reply = crate::Ty::I64;
+    let checked_reply = crate::Ty::result(crate::Ty::I64, crate::Ty::String);
+    let actor_error = |ty: &crate::Ty| -> bool {
+        matches!(ty, crate::Ty::Named { name, args, builtin: None }
+            if name == crate::actor_delivery::ACTOR_ERROR_TYPE
+                && args.first() == Some(&crate::Ty::never_type()))
+    };
+    let completion = |ty: &crate::Ty, success: &crate::Ty| -> bool {
+        ty.as_result()
+            .is_some_and(|(ok, err)| ok == success && actor_error(err))
+    };
     for (expression, expected) in [
         ("worker.value()", reply.clone()),
         ("worker.value()", reply.clone()),
-        (
-            "fork worker.value()",
-            crate::Ty::Task(Box::new(reply.clone())),
-        ),
         ("await child", reply.clone()),
         ("await checked", checked_reply.clone()),
-        (
-            "await batch",
-            crate::Ty::Tuple(vec![reply.clone(), checked_reply]),
-        ),
-        (
-            "await values",
-            crate::Ty::Named {
-                name: "Vec".into(),
-                builtin: Some(crate::BuiltinType::Vec),
-                args: vec![reply.clone()],
-            },
-        ),
         (
             "select { value = await worker.value() => value }",
             reply.clone(),
         ),
         ("callback(1)", reply.clone()),
-        ("fork callback(2)", crate::Ty::Task(Box::new(reply.clone()))),
-        ("await callback_child", reply),
+        ("await callback_child", reply.clone()),
     ] {
         let start = source.find(expression).unwrap();
-        assert_eq!(
-            output.expr_types.get(&crate::check::SpanKey::in_module(
+        let ty = output
+            .expr_types
+            .get(&crate::check::SpanKey::in_module(
                 &(start..start + expression.len()),
-                0
-            )),
-            Some(&expected),
-            "{expression}"
-        );
+                0,
+            ))
+            .unwrap_or_else(|| panic!("{expression} has no checked type"));
+        assert!(completion(ty, &expected), "{expression}: {ty:?}");
     }
+    for (expression, expected) in [
+        ("fork worker.value()", reply.clone()),
+        ("fork callback(2)", reply.clone()),
+    ] {
+        let start = source.find(expression).unwrap();
+        let ty = output
+            .expr_types
+            .get(&crate::check::SpanKey::in_module(
+                &(start..start + expression.len()),
+                0,
+            ))
+            .unwrap_or_else(|| panic!("{expression} has no checked type"));
+        let crate::Ty::Task(inner) = ty else {
+            panic!("{expression} is not a task: {ty:?}");
+        };
+        assert!(completion(inner, &expected), "{expression}: {ty:?}");
+    }
+    let start = source.find("await batch").unwrap();
+    let batch = output
+        .expr_types
+        .get(&crate::check::SpanKey::in_module(
+            &(start..start + "await batch".len()),
+            0,
+        ))
+        .expect("batch join type");
+    let crate::Ty::Tuple(joined) = batch else {
+        panic!("batch join is not a tuple: {batch:?}");
+    };
+    assert!(completion(&joined[0], &reply), "{batch:?}");
+    assert!(completion(&joined[1], &checked_reply), "{batch:?}");
+    let start = source.find("await values").unwrap();
+    let values = output
+        .expr_types
+        .get(&crate::check::SpanKey::in_module(
+            &(start..start + "await values".len()),
+            0,
+        ))
+        .expect("vector join type");
+    let crate::Ty::Named { name, args, .. } = values else {
+        panic!("vector join is not a Vec: {values:?}");
+    };
+    assert_eq!(name, "Vec");
+    assert!(completion(&args[0], &reply), "{values:?}");
     let captures: Vec<_> = output
         .suspension_effects
         .fork_transfers

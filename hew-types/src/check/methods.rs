@@ -1025,7 +1025,10 @@ impl Checker {
         let call_ty = match &dispatch {
             ActorMethodKind::Ask {
                 reply_ty: reply, ..
-            } => Ty::result(reply.clone(), Ty::ask_error()),
+            } => Ty::result(
+                reply.clone(),
+                Ty::actor_error(Ty::never_type(), Ty::never_type()),
+            ),
             _ => reply_ty,
         };
         self.actor_method_dispatch
@@ -4200,12 +4203,15 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
                 // Return type depends on reply direction, mirroring call-syntax dispatch:
                 //   tell-shaped (R = ())  → Result<(), SendError>
-                //   ask-shaped  (R = R)   → Result<R, AskError>
+                //   ask-shaped  (R = R)   → Result<R, ActorError>
                 let resolved_r = self.subst.resolve(&r_ty);
                 if matches!(resolved_r, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(resolved_r, Ty::ask_error())
+                    Ty::result(
+                        resolved_r,
+                        Ty::actor_error(Ty::never_type(), Ty::never_type()),
+                    )
                 }
             }
             "try_send" => {
@@ -4395,12 +4401,15 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
                 // Return type depends on reply direction, mirroring call-syntax dispatch:
                 //   tell-shaped (R = ())  → Result<(), SendError>
-                //   ask-shaped  (R = R)   → Result<R, AskError>
+                //   ask-shaped  (R = R)   → Result<R, ActorError>
                 let resolved_r = self.subst.resolve(&r_ty);
                 if matches!(resolved_r, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(resolved_r, Ty::ask_error())
+                    Ty::result(
+                        resolved_r,
+                        Ty::actor_error(Ty::never_type(), Ty::never_type()),
+                    )
                 }
             }
             "close" => {

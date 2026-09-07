@@ -221,6 +221,17 @@ impl Checker {
             return Ty::Error;
         };
         let through_view = delivery::sender_parts(&receiver_ty).is_some();
+        let payload = argument_order
+            .iter()
+            .map(|index| {
+                self.expr_types
+                    .get(&SpanKey::in_module(
+                        &args[*index].expr().1,
+                        self.current_module_idx,
+                    ))
+                    .map_or(Ty::Error, |ty| self.subst.resolve(ty))
+            })
+            .collect::<Vec<_>>();
         if let Some(reply_ty) = reply_ty {
             if through_view {
                 let handler = method_id
@@ -237,6 +248,13 @@ impl Checker {
                 );
                 return Ty::Error;
             }
+            let completion = self.completion_call_type(
+                &method_id,
+                &reply_ty,
+                target,
+                Ty::Tuple(payload),
+                SendPolicy::Wait,
+            );
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -245,12 +263,19 @@ impl Checker {
                     argument_order,
                 },
             );
-            return result;
+            return completion;
         }
         if !through_view {
             // The call on an actor handle is a completion call: it waits for
             // the handler to finish and yields its unit reply, exactly as a
             // value-returning handler yields its own.
+            let completion = self.completion_call_type(
+                &method_id,
+                &Ty::Unit,
+                target,
+                Ty::Tuple(payload),
+                SendPolicy::Wait,
+            );
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -260,19 +285,8 @@ impl Checker {
                 },
             );
             self.record_submission_suspension(span, true);
-            return Ty::result(Ty::Unit, Ty::ask_error());
+            return completion;
         }
-        let payload = argument_order
-            .iter()
-            .map(|index| {
-                self.expr_types
-                    .get(&SpanKey::in_module(
-                        &args[*index].expr().1,
-                        self.current_module_idx,
-                    ))
-                    .map_or(Ty::Error, |ty| self.subst.resolve(ty))
-            })
-            .collect();
         self.actor_method_dispatch.insert(
             key,
             ActorMethodKind::Message {
@@ -289,6 +303,33 @@ impl Checker {
             Ty::Tuple(payload),
             policy,
         ))
+    }
+
+    /// The result of a completion call: the handler's success value, or an
+    /// `ActorError` carrying the handler's declared failure and the call's own
+    /// sealed message. A handler without a `fails` clause can never produce
+    /// `Failed`, so its error parameter is the uninhabited `Never`.
+    fn completion_call_type(
+        &mut self,
+        method_id: &str,
+        reply_ty: &Ty,
+        target: &Ty,
+        payload: Ty,
+        policy: SendPolicy,
+    ) -> Ty {
+        let (success, failure) = match reply_ty.as_result() {
+            Some((success, failure)) if self.receive_fails_methods.contains(method_id) => {
+                (success.clone(), failure.clone())
+            }
+            _ => (reply_ty.clone(), Ty::never_type()),
+        };
+        Ty::result(
+            success,
+            Ty::actor_error(
+                failure,
+                delivery::message_type(target.clone(), payload, policy),
+            ),
+        )
     }
 
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {

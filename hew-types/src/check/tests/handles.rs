@@ -683,6 +683,74 @@ mod task_type_surface_rules {
     }
 
     #[test]
+    fn await_vector_of_tasks_yields_vector_of_results() {
+        // `await tasks` joins one task layer through the vector: the annotation
+        // proves the result is `Vec<i64>`, not `Vec<Task<i64>>` or `Error`.
+        let output = check_source(
+            r"
+            fn compute(n: i64) -> i64 { n * 2 }
+            fn main() {
+                let tasks = [fork compute(1), fork compute(2)];
+                let values: Vec<i64> = await tasks;
+                let _ = values;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "await of Vec<Task<i64>> must type as Vec<i64>; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn await_vector_of_tasks_consumes_the_vector() {
+        // The join consumes the vector and every handle in it, exactly as
+        // `await task` consumes a single handle.
+        let output = check_source(
+            r"
+            fn compute(n: i64) -> i64 { n * 2 }
+            fn main() {
+                let tasks = [fork compute(1), fork compute(2)];
+                let _values = await tasks;
+                let _again = tasks.len();
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("use of moved value `tasks`")),
+            "using a vector of tasks after the join must report the move; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn await_vector_of_non_tasks_rejected() {
+        // Negative control: only a vector of task handles joins. A plain
+        // `Vec<i64>` keeps the ordinary non-task refusal.
+        let output = check_source(
+            r"
+            fn main() {
+                let numbers = [1, 2, 3];
+                let _joined = await numbers;
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("`await` joins a task")
+                    && error.message.contains("Vec<i64>")),
+            "await of Vec<i64> must be refused as a non-task; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn fork_non_call_rhs_rejected() {
         // Parity with HIR's ForkChildNotACall gate, raised at check time.
         let output = check_source(

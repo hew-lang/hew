@@ -71,6 +71,34 @@ impl Drop for OwnedWaker {
     }
 }
 
+/// Registrations are weak so cancelling a sender immediately releases its
+/// readiness target. A notification retains each live target outside the lock.
+#[derive(Debug, Default)]
+pub(crate) struct ReadinessRegistrations(std::sync::Mutex<Vec<std::sync::Weak<OwnedWaker>>>);
+
+impl ReadinessRegistrations {
+    pub(crate) fn register(&self, waker: &std::sync::Arc<OwnedWaker>) {
+        let mut waiters = crate::util::MutexExt::lock_or_recover(&self.0);
+        waiters.retain(|waiter| waiter.strong_count() != 0);
+        waiters.push(std::sync::Arc::downgrade(waker));
+    }
+
+    pub(crate) fn notify(&self) {
+        let ready: Vec<_> = {
+            let mut waiters = crate::util::MutexExt::lock_or_recover(&self.0);
+            let ready = waiters
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect();
+            waiters.retain(|waiter| waiter.strong_count() != 0);
+            ready
+        };
+        for waker in ready {
+            waker.wake();
+        }
+    }
+}
+
 /// A readiness latch for a top-level or task-thread coroutine driver. Actor
 /// workers use their scheduler's readiness target instead of waiting here.
 #[cfg(not(target_arch = "wasm32"))]

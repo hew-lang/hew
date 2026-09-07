@@ -6406,6 +6406,21 @@ fn actor_value_recipes(
                         .chain(std::iter::once(&handler.return_ty))
                 }))
         })
+        .chain(module.functions.iter().flat_map(|function| {
+            function
+                .blocks
+                .iter()
+                .filter_map(|block| match &block.terminator {
+                    SemTerminator::ActorCall {
+                        operation:
+                            ActorOperation::Submit {
+                                policy, message_ty, ..
+                            },
+                        ..
+                    } if policy.may_suspend() => Some(message_ty),
+                    _ => None,
+                })
+        }))
         .filter(|ty| **ty != ResolvedTy::Unit)
         .map(|ty| physical_value_recipe(module, ids, ty).map(|recipe| (ty.clone(), recipe)))
         .collect::<Result<_, _>>()

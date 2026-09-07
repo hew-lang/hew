@@ -1856,6 +1856,11 @@ impl Checker {
                 let actor_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&actor_ty);
                 if resolved.as_actor_handle().is_some() {
+                    self.actor_delivery_calls.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        crate::actor_delivery::ActorDeliveryCall::Close,
+                    );
+                    self.record_submission_suspension(span, false);
                     return resolved;
                 }
                 self.report_error(

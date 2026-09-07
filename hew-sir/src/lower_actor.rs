@@ -339,11 +339,39 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "checked actor operation argument selection"
+    )]
     fn actor_arguments(
         &mut self,
         expression: &HirExpr,
     ) -> Result<(crate::ActorOperation, Vec<HirExpr>, Vec<usize>), String> {
         match &expression.kind {
+            HirExprKind::ActorDelivery {
+                receiver,
+                args,
+                operation,
+            } if matches!(
+                operation,
+                hew_types::actor_delivery::ActorDeliveryCall::Close
+                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitClosed
+            ) =>
+            {
+                if !args.is_empty() {
+                    return Err("actor lifecycle boundary has unexpected arguments".into());
+                }
+                let actor = self.service.require_actor(&self.ty(&receiver.ty))?;
+                let boundary = if matches!(
+                    operation,
+                    hew_types::actor_delivery::ActorDeliveryCall::Close
+                ) {
+                    crate::ActorOperation::Close(actor)
+                } else {
+                    crate::ActorOperation::AwaitClosed(actor)
+                };
+                Ok((boundary, vec![(**receiver).clone()], vec![0]))
+            }
             HirExprKind::Spawn { args, .. } => {
                 let ty = self.ty(&expression.ty);
                 let id = self.service.require_actor(&ty)?;
@@ -754,7 +782,9 @@ impl Builder<'_, '_> {
                 };
                 self.make_delivery_record(expression, vec![target, message.id, payload.id])
             }
-            ActorDeliveryCall::Submit { .. } => self
+            ActorDeliveryCall::Submit { .. }
+            | ActorDeliveryCall::Close
+            | ActorDeliveryCall::AwaitClosed => self
                 .lower_actor_boundary(expression)?
                 .ok_or_else(|| "submission has no result".into()),
         }

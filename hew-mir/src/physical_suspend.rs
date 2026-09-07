@@ -132,6 +132,18 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     // guarantee, so their invocation must admit suspension.
                     resumable.insert(function.callable);
                 }
+                hew_sir::SemTerminator::ActorCall {
+                    operation: hew_sir::ActorOperation::Submit { policy, .. },
+                    ..
+                } if policy.may_suspend() => {
+                    resumable.insert(function.callable);
+                }
+                hew_sir::SemTerminator::ActorCall {
+                    operation: hew_sir::ActorOperation::AwaitClosed(_),
+                    ..
+                } => {
+                    resumable.insert(function.callable);
+                }
                 hew_sir::SemTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
                 }
@@ -157,7 +169,17 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
-                | PhysicalTerminator::TaskScopeJoin { .. } => {
+                | PhysicalTerminator::TaskScopeJoin { .. }
+                | PhysicalTerminator::ActorCall {
+                    operation: hew_sir::ActorOperation::AwaitClosed(_),
+                    ..
+                } => {
+                    resumable.insert(function.callable);
+                }
+                PhysicalTerminator::ActorCall {
+                    operation: hew_sir::ActorOperation::Submit { policy, .. },
+                    ..
+                } if policy.may_suspend() => {
                     resumable.insert(function.callable);
                 }
                 PhysicalTerminator::Call { callee, .. } => {

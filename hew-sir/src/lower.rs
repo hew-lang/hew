@@ -3615,6 +3615,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
+            HirExprKind::ActorDelivery {
+                operation: hew_types::actor_delivery::ActorDeliveryCall::AwaitClosed,
+                ..
+            } => {
+                self.lower_actor_boundary(expr)?;
+                return Ok(());
+            }
+            HirExprKind::ActorDelivery { .. } => {
+                let value = self.lower_actor_delivery(expr)?;
+                if self.owned_live.contains_key(&value) {
+                    self.emit_destroy(value)?;
+                }
+                return Ok(());
+            }
             HirExprKind::Yield { value, yield_ty } => {
                 return self.lower_generator_yield(expr, value.as_deref(), yield_ty)
             }

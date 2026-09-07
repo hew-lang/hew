@@ -18206,6 +18206,13 @@ impl LowerCtx {
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).copied() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
+                (ActorDeliveryCall::Close, Expr::Call { args, .. }) if args.len() == 1 => (
+                    self.lower_expr(args[0].expr(), IntentKind::Read),
+                    Vec::new(),
+                ),
+                (ActorDeliveryCall::AwaitClosed, Expr::Await(receiver)) => {
+                    (self.lower_expr(receiver, IntentKind::Read), Vec::new())
+                }
                 (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. }) if args.len() == 2 => (
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),

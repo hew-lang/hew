@@ -28,6 +28,8 @@ pub enum CoroStatus {
 /// Invocation-owned state, separate from the LLVM frame and result storage.
 #[derive(Debug)]
 pub struct HewCoroState {
+    /// Direct nested calls share their strict actor turn; fresh tasks do not.
+    pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
     waker: OwnedWaker,
     token: *mut HewCancellationToken,
     enclosing_tokens: Vec<*mut HewCancellationToken>,
@@ -70,6 +72,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
     // SAFETY: token and the retained descriptor are live for registration.
     let observer = unsafe { hew_cancel_observe(token, retained.descriptor()) };
     Box::into_raw(Box::new(HewCoroState {
+        actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
         waker: retained,
         token,
         enclosing_tokens: Vec::new(),
@@ -105,7 +108,10 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     // SAFETY: parent retains both inputs throughout child construction.
     let parent = unsafe { &*parent };
     // SAFETY: parent retains both inputs for child construction.
-    unsafe { hew_coro_state_new(parent.waker.descriptor(), parent.token) }
+    let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), parent.token) };
+    // SAFETY: the new child is exclusively owned and its parent remains live.
+    unsafe { (*child).actor_turn = parent.actor_turn };
+    child
 }
 
 /// Request cancellation of this invocation and its descendants.

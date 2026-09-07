@@ -541,3 +541,163 @@ fn main() {
         "",
     );
 }
+
+#[test]
+fn waiting_submission_releases_worker_and_transfers_owned_message_on_capacity() {
+    run_actor(
+        r#"actor Probe { receive fn run() { println("other-actor"); } }
+actor Sink {
+    mailbox 1,
+    receive fn hold(me: LocalPid<Sink>, driver: LocalPid<Driver>, probe: LocalPid<Probe>) {
+        let _ = send driver.run(me, probe);
+        await sleep(20ms);
+    }
+    receive fn process(value: string) { println(value); }
+}
+actor Driver {
+    receive fn run(sink: LocalPid<Sink>, probe: LocalPid<Probe>) {
+        let _ = send sink.process("first".to_upper());
+        let _ = send probe.run();
+        let waiting = policy(sink, on_full: .Wait);
+        match await send waiting.process("second".to_upper()) {
+            .Ok(.Accepted) => println("admitted"),
+            _ => panic("unexpected wait failure"),
+        }
+    }
+}
+fn main() {
+    let sink = spawn Sink();
+    let driver = spawn Driver();
+    let probe = spawn Probe();
+    let _ = send sink.hold(sink, driver, probe);
+}
+"#,
+        "other-actor\nFIRST\nadmitted\nSECOND\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn waiting_submission_deadline_cleans_sender_without_delivering_pending_message() {
+    run_actor(
+        r#"actor Probe { receive fn run() { println("other-actor"); } }
+actor Sink {
+    mailbox 1,
+    receive fn hold(me: LocalPid<Sink>, driver: LocalPid<Driver>, probe: LocalPid<Probe>) {
+        let _ = send driver.run(me, probe);
+        await sleep(30ms);
+    }
+    receive fn process(value: string) { println(value); }
+}
+actor Driver {
+    receive fn run(sink: LocalPid<Sink>, probe: LocalPid<Probe>) {
+        let _ = send sink.process("first".to_upper());
+        let _ = send probe.run();
+        let waiting = policy(sink, on_full: .Wait);
+        let outcome = scope within 1ms {
+            defer println("sender-cleanup");
+            let _ = await send waiting.process("must-not-arrive".to_upper());
+            "unexpected acceptance"
+        } handle failure {
+            match failure { .Deadline { message } => "deadline", .Fault { message } => "unexpected fault", }
+        };
+        println(outcome);
+
+    }
+}
+fn main() {
+    let sink = spawn Sink();
+    let driver = spawn Driver();
+    let probe = spawn Probe();
+    let _ = send sink.hold(sink, driver, probe);
+}
+"#,
+        "other-actor\nsender-cleanup\ndeadline\nFIRST\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn actor_close_waits_for_handler_cleanup() {
+    run_actor(
+        r#"actor Holder {
+    label: string,
+    receive fn slow(me: LocalPid<Holder>, closer: LocalPid<Closer>) {
+        defer println(label);
+        let _ = send closer.started(me);
+        await sleep(1s);
+        println("must-not-complete");
+    }
+}
+actor Closer {
+    receive fn started(holder: LocalPid<Holder>) {
+        let result = scope within 1ms {
+            await holder;
+            "unexpected clean wait"
+        } handle failure {
+            match failure { .Deadline { message } => "waiter-deadline", .Fault { message } => "unexpected fault", }
+        };
+        println(result);
+        await close(holder);
+        println("closed");
+    }
+}
+fn main() {
+    let holder = spawn Holder(label: "cleaned".to_upper());
+    let closer = spawn Closer();
+    let _ = send holder.slow(holder, closer);
+}
+"#,
+        "waiter-deadline\nCLEANED\nclosed\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn actor_termination_fault_reaches_waiter_recovery() {
+    run_actor(
+        r#"actor Broken { receive fn fail() { defer println("receiver-cleanup"); await sleep(1ms); panic("receiver-failed"); } }
+fn main() {
+    let broken = spawn Broken();
+    let _ = send broken.fail();
+    let result = scope { await broken; "unexpected clean termination" } handle failure {
+        match failure { .Fault { message } => "observed fault", .Deadline { message } => "unexpected deadline", }
+    };
+    println(result);
+}
+"#,
+        "receiver-cleanup\nobserved fault\n",
+        1,
+        "actor crash",
+    );
+}
+
+#[test]
+fn local_actor_ask_cycle_runs_cleanup_and_can_be_recovered() {
+    run_actor(r#"actor Peer {
+    receive fn run(other: LocalPid<Peer>, me: LocalPid<Peer>) -> string {
+        match await other.reply(me) { .Ok(value) => value, .Err(_) => "unexpected ask failure", }
+    }
+    receive fn reply(other: LocalPid<Peer>) -> string {
+        let answer = scope {
+            defer println("cycle-cleanup");
+            let result = await other.leaf();
+            match result { .Ok(value) => value, .Err(_) => "unexpected response", }
+        } handle failure {
+            match failure { .Fault { message } => { println(message); "recovered" }, .Deadline { message } => "unexpected deadline", }
+        };
+        answer
+    }
+    receive fn leaf() -> string { "leaf" }
+}
+fn main() {
+    let first = spawn Peer();
+    let second = spawn Peer();
+    match await first.run(second, first) { .Ok(value) => println(value), .Err(_) => panic("unexpected failure"), }
+    println("caller-continues");
+}
+"#, "cycle-cleanup\nhew: failure: UserPanic (212): local actor wait cycle at ask: 2 -> 1 -> 2\n\nrecovered\ncaller-continues\n", 0, "");
+}

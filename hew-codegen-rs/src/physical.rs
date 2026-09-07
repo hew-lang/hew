@@ -7,6 +7,9 @@
 #[path = "physical_actor.rs"]
 mod actor;
 
+#[path = "physical_supervisor.rs"]
+mod supervisor;
+
 #[path = "physical_callable.rs"]
 mod callable;
 
@@ -593,6 +596,12 @@ fn primitive_repr(
         actor if actor.is_builtin(hew_types::BuiltinType::LocalPid) => {
             PhysicalRepr::Integer { bits: pointer_bits }
         }
+        // A supervised role addresses its actor through the supervisor that
+        // owns it: the supervisor's handle and the declared slot.
+        role if role.is_builtin(hew_types::BuiltinType::ChildRef) => PhysicalRepr::Struct(vec![
+            integer_layout(ctx, target, pointer_bits)?,
+            integer_layout(ctx, target, 32)?,
+        ]),
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
         encoding if hew_mir::physical::encoding_format(encoding).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![

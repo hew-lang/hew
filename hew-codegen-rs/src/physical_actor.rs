@@ -113,7 +113,7 @@ fn message_type<'ctx>(
     Ok(ctx.struct_type(&fields, false))
 }
 
-fn allocate<'ctx>(
+pub(super) fn allocate<'ctx>(
     module: &PhysicalModule,
     ctx: &'ctx Context,
     llvm: &Module<'ctx>,
@@ -244,7 +244,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 self.emit_actor_terminate(actor)?;
             }
         }
-        Ok(())
+        self.emit_supervisor_descriptors()
     }
 
     /// `#[on(stop)]` hooks run in lexical order at the terminal transition
@@ -778,16 +778,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::Submit { actor: id, .. } => *id,
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
-            | ActorOperation::SupervisorStop(_) => {
-                return Err(CodegenError::FailClosed(
-                    "supervisor boundaries need their native realization".into(),
-                ))
-            }
+            | ActorOperation::SupervisorStop(_) => ActorId(u32::MAX),
         };
-        let actor =
-            self.module.actors.get(id.0 as usize).ok_or_else(|| {
-                CodegenError::FailClosed("missing native actor descriptor".into())
-            })?;
         let mut sources = Vec::new();
         for transfer in transfers {
             let ArgumentTransfer::Move(source) = transfer else {
@@ -797,6 +789,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             };
             sources.push(*source);
         }
+        if let Some(status) = self.emit_supervisor_boundary(&operation, &sources, result)? {
+            for source in sources {
+                self.clear_owned(source)?;
+            }
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("record supervisor boundary status")?;
+            return self.emit_call_outcome(status, result, Some(normal), unwind);
+        }
+        let actor =
+            self.module.actors.get(id.0 as usize).ok_or_else(|| {
+                CodegenError::FailClosed("missing native actor descriptor".into())
+            })?;
         let status = match operation {
             ActorOperation::Close(_) => {
                 let [source] = sources.as_slice() else {
@@ -835,7 +840,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
-            | ActorOperation::SupervisorStop(_) => unreachable!("refused above"),
+            | ActorOperation::SupervisorStop(_) => unreachable!("emitted above"),
             ActorOperation::StreamStart { message, .. } => {
                 self.emit_actor_stream_start(actor, message, &sources, unwind)?
             }

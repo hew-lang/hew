@@ -6,7 +6,8 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorOperation, SemActor, SemActorHandler, SemActorOverflow, TaskScopeJoinMode,
+    ActorId, ActorOperation, SemActor, SemActorHandler, SemActorOverflow, SemRestartPolicy,
+    SemRestartStrategy, SemSupervisedRole, SemSupervisor, SupervisorId, TaskScopeJoinMode,
     TaskSelectionOrder,
 };
 

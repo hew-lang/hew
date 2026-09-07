@@ -6968,12 +6968,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_sleep(expr, args)?;
                 Ok(None)
             }
-            CallTarget::Builtin { endpoint } if endpoint == "supervisor_stop" => {
-                let [handle] = args.as_slice() else {
-                    return Err("supervisor stop takes exactly one handle".into());
-                };
-                self.lower_supervisor_stop(handle)
-            }
             CallTarget::Extern {
                 declaration,
                 endpoint,
@@ -7008,6 +7002,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     &args.iter().collect::<Vec<_>>(),
                     value_required,
                 )
+            }
+            CallTarget::Runtime(hew_types::RuntimeCallFamily::SupervisorStop) => {
+                let [handle] = args.as_slice() else {
+                    return Err("supervisor stop takes exactly one handle".into());
+                };
+                self.lower_supervisor_stop(handle)
             }
             CallTarget::Runtime(family) => self.lower_runtime_operation(
                 expr,

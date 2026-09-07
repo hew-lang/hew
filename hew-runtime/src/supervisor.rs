@@ -1378,7 +1378,17 @@ struct InternalChildSpec {
     /// every call. The supervisor owns the allocation (freed once at teardown);
     /// this spec never frees it. `null` for a const-only thunk.
     config: *mut c_void,
+    /// The native declared-child incarnation source. When `Some`, the adapter
+    /// re-runs the child's init arguments against `config` and publishes a
+    /// complete actor itself, so this restart path registers no state, no
+    /// dispatch and no lifecycle wrapper of its own.
+    native_spawn: Option<HewNativeChildSpawnFn>,
 }
+
+/// Spawn one incarnation of a declared native child from the supervisor's
+/// config, returning its stable handle or `INVALID` when the spawn faulted.
+pub type HewNativeChildSpawnFn =
+    unsafe extern "C-unwind" fn(*const c_void) -> crate::lifetime::local_handles::HewLocalPidId;
 
 /// One state-drop descriptor shared by every immutable template generation.
 /// The setter may arrive after the initial generation was constructed; an
@@ -1497,6 +1507,7 @@ impl Default for InternalChildSpec {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            native_spawn: None,
             restart_delay_ms: 0,
             max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
             next_restart_time_ns: 0,
@@ -2744,6 +2755,7 @@ unsafe fn restart_child_from_spec_expected(
         lifecycle_fn,
         init_fn,
         config,
+        native_spawn,
     ) = {
         // SAFETY: caller guarantees `sup` is live; the guard serializes roster access.
         let roster = unsafe { &(*sup).roster }.lock_or_recover();
@@ -2784,9 +2796,55 @@ unsafe fn restart_child_from_spec_expected(
             spec.lifecycle_fn,
             spec.init_fn,
             spec.config,
+            spec.native_spawn,
         )
     };
     run_restart_spec_snapshot_hook_for_test();
+
+    // ── Native declared child ────────────────────────────────────────────
+    //
+    // The adapter is the whole incarnation: it re-runs the declared init
+    // arguments against the supervisor's config, runs `init()` / `#[on(start)]`
+    // and publishes the actor with its own state, drop and terminate
+    // callbacks. Nothing below may run for it — a second lifecycle firing or a
+    // second state registration would double what the spawn already did. This
+    // path only claims the slot: the supervisor back-edge that routes a crash
+    // here, and the exact-generation publish.
+    if let Some(spawn) = native_spawn {
+        // SAFETY: the adapter is emitted with this exact ABI and `config` is
+        // the supervisor-owned buffer, alive for the supervisor's lifetime.
+        let token = unsafe { spawn(config.cast_const()) };
+        let child = if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
+            ptr::null_mut()
+        } else {
+            crate::lifetime::local_handles::resolve_current_actor(token)
+                .and_then(crate::lifetime::live_actors::get_actor_ptr_by_id)
+                .unwrap_or(ptr::null_mut())
+        };
+        if child.is_null() {
+            fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
+            return ptr::null_mut();
+        }
+        // SAFETY: the adapter returned a live, published actor and this thread
+        // is the only writer of its supervision edge.
+        unsafe {
+            (*child).supervisor = sup.cast::<c_void>();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "declared child index fits i32 for any declarable supervisor"
+            )]
+            {
+                (*child).supervisor_child_index = index as i32;
+            }
+        }
+        if !publish_restart_snapshot(sup, index, spec_identity, spec_revision, &template, child) {
+            // SAFETY: publication failed, so no supervisor slot owns this actor.
+            unsafe { discard_unpublished_restart(child) };
+            return ptr::null_mut();
+        }
+        return child;
+    }
     let state_clone_fn = template.clone_fn;
     let borrows_shallow_template = init_fn.is_none()
         && state_clone_fn.is_none()
@@ -4055,6 +4113,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         coalesce_fallback: sp.coalesce_fallback,
         message_drop_fn: sp.message_drop_fn,
         sys_dispatch: sp.sys_dispatch,
+        native_spawn: None,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -9852,6 +9911,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         coalesce_fallback: sp.coalesce_fallback,
         message_drop_fn: sp.message_drop_fn,
         sys_dispatch: sp.sys_dispatch,
+        native_spawn: None,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -11217,6 +11277,135 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
     }
     // SAFETY: pool is valid.
     unsafe { crate::pool::hew_pool_size(pool) as i64 }
+}
+
+// ---------------------------------------------------------------------------
+// Native declared-supervisor ABI
+// ---------------------------------------------------------------------------
+//
+// A declared supervisor is addressed only by its stable `LocalPid` token; no
+// supervisor pointer ever becomes a program value. Construction is
+// `new` → `add_child` (once per declared child, in declaration order) →
+// `start`, and the slot a child occupies is its position in that sequence.
+
+/// Create a declared supervisor and adopt its config buffer.
+///
+/// The config is read by every child adapter and freed once, with `config_drop`,
+/// at supervisor teardown. Returns `INVALID` when the supervisor cannot be
+/// published.
+///
+/// # Safety
+///
+/// `config` is a unique allocation `config_drop` can release, or null.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_new(
+    strategy: c_int,
+    max_restarts: c_int,
+    window_secs: c_int,
+    config: *mut c_void,
+    config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
+) -> crate::lifetime::local_handles::HewLocalPidId {
+    // SAFETY: construction has no preconditions.
+    let sup = unsafe { hew_supervisor_new(strategy, max_restarts, window_secs) };
+    if sup.is_null() {
+        return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+    }
+    {
+        // SAFETY: the fresh allocation is not yet reachable by another thread.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        guard.config_buf = config;
+        guard.config_drop_fn = config_drop;
+    }
+    // SAFETY: `hew_supervisor_new` published this allocation's token.
+    unsafe { (*sup).local_pid_id }
+}
+
+/// Register one declared child and spawn its first incarnation.
+///
+/// Returns the child's slot, or `-1` when the supervisor is gone or the slot
+/// space is exhausted. A refused first spawn still reserves the slot: the
+/// child is then a dead role, which fails closed at lookup and at send.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_native_add_child(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    restart_policy: c_int,
+    spawn: HewNativeChildSpawnFn,
+) -> c_int {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+        return -1;
+    };
+    let sup = pin.supervisor();
+    let index = {
+        // SAFETY: the pin keeps the allocation live; the guard makes the slot
+        // reservation and its spec one transaction.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        let s = &mut *guard;
+        let Some(next_identity) = s.next_child_spec_identity.checked_add(1) else {
+            set_last_error("hew_supervisor_native_add_child: child-spec identity exhausted");
+            return -1;
+        };
+        let index = s.child_count;
+        let mut spec = InternalChildSpec::default();
+        spec.identity = s.next_child_spec_identity;
+        spec.restart_policy = restart_policy;
+        spec.native_spawn = Some(spawn);
+        spec.config = s.config_buf;
+        s.child_specs.push(spec);
+        s.next_child_spec_identity = next_identity;
+        s.children.push(ptr::null_mut());
+        s.child_count += 1;
+        index
+    };
+    // SAFETY: the reservation above published the exact slot this spawns into.
+    unsafe { restart_child_from_spec(sup, index) };
+    c_int::try_from(index).unwrap_or(-1)
+}
+
+/// Start supervising. Until this returns, a child crash has no authority to
+/// consult.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_native_start(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> c_int {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+        return -1;
+    };
+    // SAFETY: the pin keeps the allocation live across construction.
+    unsafe { hew_supervisor_start(pin.supervisor()) }
+}
+
+/// Resolve one declared child's current incarnation. `INVALID` means the role
+/// has no live occupant right now — restarting, or spent.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_native_child(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+) -> usize {
+    let result = hew_local_pid_supervisor_child_get(token, slot);
+    if result.tag == 0 {
+        result.handle as usize
+    } else {
+        crate::lifetime::local_handles::HewLocalPidId::INVALID.as_usize()
+    }
+}
+
+/// Block the calling thread until one declared child is Live again or is
+/// permanently gone. The contextless restart barrier for `main`.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_native_await_restart(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+) {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+        return;
+    };
+    // SAFETY: the pin keeps the allocation live for the blocking wait.
+    unsafe { hew_supervisor_restart_await_blocking(pin.supervisor(), slot) };
 }
 
 #[cfg(test)]

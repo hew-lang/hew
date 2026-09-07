@@ -154,8 +154,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm
             .get_function(&message_symbol(actor.id, message))
             .ok_or_else(|| CodegenError::FailClosed("ask request lacks its destructor".into()))?;
-        let wait_edge =
-            self.new_actor_wait_edge(self.load(sources[0], "ask.wait.target")?.into(), 0)?;
+        let wait_edge = self.new_actor_wait_edge(
+            self.load_actor_target(sources[0], "ask.wait.target")?
+                .into(),
+            0,
+        )?;
         let cycle = self.ctx.append_basic_block(self.value, "ask.cycle.fault");
         let submit_fn = coro::external(
             self.llvm,
@@ -176,7 +179,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &self.builder,
             submit_fn,
             &[
-                self.load(sources[0], "ask.target")?.into(),
+                self.load_actor_target(sources[0], "ask.target")?.into(),
                 self.ctx
                     .i32_type()
                     .const_int(u64::from(message), false)

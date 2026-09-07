@@ -160,7 +160,7 @@ fn generic_and_nested_literals_preserve_owned_guard_fallthrough() {
     let expected = concat!(
         "true\nfalse\nERROR\nask true\nask false\n",
         "SHORT guarded\nTINY true\nFALSE false\npayload empty\nenvelope empty\n",
-        "FIRST seven\nSECOND other\nmatched\nFALLBACK\n",
+        "FIRST seven\nSECOND other\nZERO zero\nMAXIMUM maximum\nmatched\nFALLBACK\n",
         "SHORT nested guarded\nTINY nested true\nFALSE nested false\n",
         "nested payload empty\nnested envelope empty\n",
         "FIRST deep seven\nSECOND deep other\ndeep empty\n",

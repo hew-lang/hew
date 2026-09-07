@@ -1219,7 +1219,7 @@ actor Sink {
 fn main() {
     let s = spawn Sink();
     let _ = s.put(Record { key: 1, val: 99 });
-    let r = await s.get();
+    let r = s.get();
     match r { .Ok(v) => println(v), .Err(_) => println("err") }
 }
 ```
@@ -1334,31 +1334,39 @@ fn main() {
 
 Write request-reply as `ref.method(args)` and match `Ok`/`Err` — the call waits on its own, with no `await`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, AskError>`, never bare `R`. To run an ask concurrently, `fork` it and `await` the task.
 
-### await position rules
+### What `await` waits for
 
-`await` can appear in three contexts:
+`await` joins a `Task<T>` and nothing else. Everything else that waits is an
+ordinary call:
 
-**1. Statement position in any fn or receive fn** — the most common case, and it always works:
+| You want                          | You write                            |
+| --------------------------------- | ------------------------------------ |
+| a reply from an actor             | `pid.method(args)`                   |
+| that reply concurrently           | `let t = fork pid.method(args);` then `await t` |
+| an actor to stop, and to wait     | `close(pid)`                         |
+| an actor to stop, without waiting | `fork close(pid)`                    |
+| to wait for a stop someone else asked for | `closed(pid)`                |
+| each item of another actor's stream | `for x in pid.stream()`            |
+
+`await` on any of the right-hand column is a compile error whose fix-it
+deletes the word.
+
+`await` binds to one expression, so bind the task first rather than nesting
+the join inside a larger expression:
+
+<!-- doctest: skip -->
 
 ```hew
-actor Src { receive fn val() -> i64 { 42 } }
-actor Consumer {
-    var src: LocalPid<Src>,
-    receive fn run(unused: i64) -> i64 {
-        // an ask inside a receive fn — always valid
-        let r = src.val();
-        match r { .Ok(v) => v, .Err(_) => -1 }
-    }
-}
-fn main() {
-    let s = spawn Src();
-    let c = spawn Consumer(src: s);
-    let r = c.run(0);
-    match r { .Ok(v) => println(f"v={v}"), .Err(_) => println("err") }
-}
+// Wrong: the join nested inside a call argument
+// println(await task);
+
+// Right: bind first
+let r = await task;
+match r { .Ok(v) => println(v), .Err(_) => println("err") }
 ```
 
-**2. `scope{}` body for concurrent tasks** — use `scope{}` with `fork` for structured concurrency. `await` suspensions inside a `scope{}` do not block its sibling forks:
+A `scope{}` body runs its forks concurrently, and an `await` inside it does
+not block its sibling forks:
 
 <!-- doctest: skip -->
 
@@ -1368,19 +1376,6 @@ scope {
     fork { result_b = work_b(); };
 }
 // Both forks have joined here
-```
-
-**3. `await` as a value in non-statement positions is rejected** — `await` cannot be used as a function argument, binary operand, or let-binding right-hand side nested inside a larger expression. Bind the awaited result to a `let` first:
-
-<!-- doctest: skip -->
-
-```hew
-// Wrong: await as function argument
-// println(await actor.method());   // compile error
-
-// Right: bind first
-let r = await actor.method();
-match r { .Ok(v) => println(v), .Err(_) => println("err") }
 ```
 
 Note that `.send()` is accepted as an actor method name and compiles correctly — there is no compiler-level restriction on it.
@@ -1473,7 +1468,7 @@ actor Risky {
 }
 fn main() {
     let r = spawn Risky(n: 0);
-    let v = await r.value();
+    let v = r.value();
     match v { .Ok(x) => println(f"n={x}"), .Err(_) => println("failed") }
 }
 ```
@@ -1635,7 +1630,7 @@ actor Pulse {
 fn main() {
     let p = spawn Pulse(count: 0);
     sleep(250ms);
-    let r = await p.total();
+    let r = p.total();
     match r {
         .Ok(n) => println(f"ticks={n}"),
         .Err(_) => println("ask failed"),
@@ -1687,7 +1682,7 @@ fn main() {
     sleep(150ms);
     let _ = worker.halt();
     sleep(150ms);
-    let r = await worker.total();
+    let r = worker.total();
     match r {
         .Ok(n) => println(f"ticks={n}"),
         .Err(_) => println("ask failed"),

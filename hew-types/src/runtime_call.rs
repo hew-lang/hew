@@ -4236,7 +4236,7 @@ pub enum AsyncSuspendKind {
     /// backpressure-aware suspend ramp; codegen picks the concrete
     /// runtime entry from the value's `ResolvedTy`.
     SinkSend,
-    /// `await actor.close()` over a lambda-actor `Duplex` →
+    /// `actor.close()` over a lambda-actor `Duplex` →
     /// `hew_duplex_close`.
     DuplexClose,
     /// `await rx.recv()` over a `std::channel` `Receiver<T>` →

@@ -2573,8 +2573,8 @@ fn main() {
     numbers.put(41)?;
     names.put("hew")?;
     println(f"{(await numbers.get())?.expect("set")} {(await names.get())?.expect("set")}");
-    await close(numbers);
-    await close(names);
+    close(numbers);
+    close(names);
 }
 ```
 
@@ -2601,7 +2601,7 @@ fn main() {
         .Some(v) => println(v),
         .None => println("miss"),
     }
-    await close(cache);
+    close(cache);
 }
 ```
 
@@ -2630,7 +2630,7 @@ supervisor Pool<Job: Send> {
 fn main() {
     let pool = spawn Pool<string>;
     println((await pool.worker.run("parse"))?);
-    await close(pool);
+    supervisor_stop(pool);
 }
 ```
 
@@ -3663,11 +3663,12 @@ suspend the calling execution context. Every one of them is a plain call:
 `sleep(1s)`, `fs.read(path)`, `rx.recv()`, `gen.next()`, and `for x in gen`
 carry no operator.
 
-**What `await` means.** `await` joins something that has its own life: a
-`Task<T>` (§4.4), an actor's termination, or another actor's stream. An
-actor's reply is not one of them — an ask is an ordinary call that waits, and
-`fork` is how it runs concurrently. `await` on any other operand is a
-diagnostic with a fix-it that deletes it; it is never a silent no-op.
+**What `await` means.** `await` joins a `Task<T>` (§4.4) and nothing else.
+An actor's reply is not a task — an ask is an ordinary call that waits, and
+`fork` is how it runs concurrently. An actor's termination is not a task
+either: `close(actor)` waits for it and `closed(actor)` waits without asking
+for it (§4.10). `await` on any other operand is a diagnostic with a fix-it
+that deletes it; it is never a silent no-op.
 
 **Deferred bodies cannot suspend.** A `defer` body runs on an exit path with
 no context to park on. A suspending call inside one is rejected, and the
@@ -3953,19 +3954,16 @@ let value = (await task)?;
 
 > **Note:** Only traps (panics) propagate as unrecoverable. Cancellation is always catchable via the `Result` return type.
 
-**The three things `await` joins (normative):**
+**What `await` joins (normative):** a `Task<T>`. `await task` yields the
+task's result, and that is the whole surface.
 
-| Operand              | Written                              | Yields                     |
-| -------------------- | ------------------------------------ | -------------------------- |
-| A task               | `await task`                         | the task's result          |
-| An actor's end       | `await actor`, `await close(actor)`  | the termination outcome    |
-| Another actor's stream | `for await x in pid.stream()`      | each item as it arrives    |
-
-`await` on any other operand — a plain call, an actor's reply, a value, a
-generator's `next()` — is a diagnostic whose fix-it deletes the word. An ask
-is written `worker.compute(x)` and waits; a concurrent ask is
-`fork worker.compute(x)`, which yields a `Task<Result<R, AskError>>` like any
-other fork and is joined with `await`.
+`await` on any other operand — a plain call, an actor's reply, an actor
+handle, a value, a generator's `next()` — is a diagnostic whose fix-it
+deletes the word. An ask is written `worker.compute(x)` and waits; a
+concurrent ask is `fork worker.compute(x)`, which yields a
+`Task<Result<R, AskError>>` like any other fork and is joined with `await`.
+An actor's end is waited for by `close(actor)` or `closed(actor)` (§4.10),
+and another actor's stream by an ordinary `for x in pid.stream()` (§4.12).
 
 **Batch fork:** `fork` over a list or a tuple starts every operand and yields
 one task for the group. `fork [a(), b()]` is a `Task<Vec<T>>` when the
@@ -4299,19 +4297,22 @@ spawn strategies is not user-visible.
 
 ### 4.10 Actor Await and Synchronization
 
-An actor has its own life, so it is one of the things `await` joins (§4.4).
+An actor has its own life. Waiting for it is a plain call, not an `await`
+(§4.4).
 
-- `await pid` joins the actor's termination and yields its exit outcome. It
-  does not stop the actor and does not join its lifetime to the caller's
-  task scope; it waits for an end the actor reaches on its own.
-- `await close(pid)` asks the actor to stop, then joins the same
-  termination. It is idempotent: closing an actor that has already stopped
+- `close(pid)` asks the actor to stop and returns once its terminal cleanup
+  has run. It is idempotent: closing an actor that has already stopped
   returns the recorded outcome.
+- `fork close(pid)` makes the same request without waiting. It yields a
+  `Task<()>`, and `await` on that task waits for the same point.
+- `closed(pid)` waits for the actor's termination and requests nothing. It
+  does not stop the actor and does not join its lifetime to the caller's
+  task scope; it waits for an end another party brings about.
 - `pid.method(args)` is the ask (§2.1.1) and yields `Result<R, AskError>`.
   It waits on its own, with no `await`; `fork pid.method(args)` runs it
   concurrently and `await` then joins that task.
-- `for await x in pid.stream()` consumes another actor's stream producer
-  (§4.12); `await` is what marks the pull as crossing an actor boundary.
+- `for x in pid.stream()` consumes another actor's stream producer (§4.12)
+  and waits per item, exactly like `for x in gen`.
 
 > See HEW-FUTURE.md §1.3 for the read-after-send barrier, which is the one
 > part of this section still deferred.
@@ -4558,16 +4559,16 @@ with `Y`. The handle type is what the caller receives; a declaration that
 names it says the body yields handles. A generator yielding `i64` is declared
 `gen fn counter() -> i64`, and its `yield` operands are `i64`.
 
-There is no `async gen fn`. A plain `gen fn` body may suspend, is consumed by
-`for`, and is consumed by `for await` when its producer is an actor, so the
-word marked nothing; `async` is not a keyword (§12) and `async gen fn` is
-`E_NO_ASYNC_GEN` (User) with a fix-it that deletes it. `gen.next()` and
-`for x in gen` are plain calls: pulling from a generator you own is a call
-into your own frame, and it carries the generator's inferred suspension
-effect like any other call (§4.0). What `await` selects is the pull that
-crosses an actor boundary: `for` over a `Stream` is
-`E_FOR_STREAM_NEEDS_AWAIT` (User, fix-it adds the word) and `for await` over
-a generator or a collection is `E_AWAIT_NOT_STREAM` (User, fix-it drops it).
+There is no `async gen fn`. A plain `gen fn` body may suspend and is consumed
+by `for` wherever its producer lives, so the word marked nothing; `async` is
+not a keyword (§12) and `async gen fn` is `E_NO_ASYNC_GEN` (User) with a
+fix-it that deletes it. `gen.next()` and `for x in gen` are plain calls:
+pulling from a generator you own is a call into your own frame, and it carries
+the generator's inferred suspension effect like any other call (§4.0). The
+pull that crosses an actor boundary is written the same way:
+`for x in pid.stream()` waits per item with no marker on the loop. There is no
+`for await` spelling; `await` after `for` is an ordinary parse error where the
+pattern belongs.
 
 Generator construction snapshots every captured value into a heap-owned
 environment before the body ramp reaches its first `yield`. Bit-copy values and
@@ -5074,7 +5075,7 @@ bytes_sink.close();   // graceful EOF for the paired reader
 bytes_stream.close(); // local cancel / discard unread items
 ```
 
-`for await` is the usual way to drain a stream. The only adapter point frozen in
+`for` is the usual way to drain a stream. The only adapter point frozen in
 this slice is that `lines()` remains `Stream<string> -> Stream<string>` today;
 no `Stream<bytes>` `lines()` surface is promised here.
 
@@ -5108,7 +5109,7 @@ may be passed to separate actors. See `std/net/net.hew` for the full API.
 
 `receive gen fn` produces a `Stream<Y>` backed by the actor mailbox protocol.
 First-class `Stream<T>` values from `std.stream` are bounded handles that may
-be moved across actor boundaries. Both are consumed with `for await`, but they
+be moved across actor boundaries. Both are consumed with `for`, but they
 have different implementations:
 
 |                     | Actor stream (`receive gen fn`) | `std.stream::Stream<T>`                   |

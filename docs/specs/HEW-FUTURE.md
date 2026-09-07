@@ -59,7 +59,7 @@ computation gives it its own scope.
 
 **[Target: v0.7 / needs more design]**
 
-`await actor` and `await close(actor)` are normative (HEW-SPEC-2026 §4.10).
+`close(actor)` and `closed(actor)` are normative (HEW-SPEC-2026 §4.10).
 The "awaited read acts as a barrier" rule that accompanied them in earlier
 drafts is not: it parses today but lacks end-to-end implementation and has
 not been audited against the actor mailbox protocol's failure modes. Track

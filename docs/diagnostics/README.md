@@ -72,7 +72,7 @@ here. Each row is added by the lane that lands the refusal:
 `E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_SCOPE_IS_STATEMENT`,
 `E_SEND_RESULT_DROPPED`,
 `E_GEN_RETURN_SPELLING`, `E_NO_ASYNC_FN`,
-`E_NO_ASYNC_GEN`, `E_FOR_STREAM_NEEDS_AWAIT`, `E_AWAIT_NOT_STREAM`.
+`E_NO_ASYNC_GEN`.
 
 ## Refusals with no code yet
 

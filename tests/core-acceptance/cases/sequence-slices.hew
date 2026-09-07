@@ -1,0 +1,28 @@
+// Open-start, ranged and open-end slices over the three sliceable receivers.
+// A string slice copies codepoints, a bytes slice shares the allocation behind
+// an independent handle, and a Vec slice is a fresh Vec of copied elements.
+fn main() -> i64 {
+    let text = "Aé中🙂";
+    println(text[..2]);
+    println(text[1..3]);
+    println(text[2..]);
+    println(text[..]);
+
+    let raw = "abcdef".to_bytes();
+    println(raw[..2].len());
+    println(raw[1..4].len());
+    println(raw[4..].len());
+    println(raw[..].len());
+    println(raw[1..4][0] as i64);
+
+    let numbers = [10, 20, 30, 40];
+    let head = numbers[..2];
+    println(head.len());
+    println(head[0]);
+    println(numbers[1..3][1]);
+    println(numbers[2..].len());
+    println(numbers[..].len());
+    // The source vector is untouched by every slice above.
+    println(numbers.len());
+    0
+}

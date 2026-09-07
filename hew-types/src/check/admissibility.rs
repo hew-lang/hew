@@ -1258,6 +1258,33 @@ impl Checker {
         false
     }
 
+    /// Checker boundary for `xs[a..b]` over `Vec<T>`.
+    ///
+    /// A Vec range slice is an independent `Vec<T>`: every selected element is
+    /// copied into the result. An element with no clone therefore has no slice,
+    /// and the consuming drain is the operation that moves elements out.
+    pub(super) fn validate_vec_slice_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::Error) {
+            return false;
+        }
+        let mut visiting = CollectionClonePath::default();
+        let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {
+            return true;
+        };
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`Vec<{}>` cannot be range-sliced: a slice copies each element into an \
+                 independent `Vec`, but {blocker} has no semantic clone/retain operation; \
+                 use `into_iter()` to consume and move the elements instead",
+                resolved.user_facing()
+            ),
+        );
+        false
+    }
+
     /// Whether a direct `for value in vec` is admitted for this element type.
     ///
     /// Direct Vec iteration uses `VecIter::next`, which clones each element into

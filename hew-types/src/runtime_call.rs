@@ -538,6 +538,11 @@ pub enum VecValueOp {
     Set,
     Pop,
     Clear,
+    /// `v[a..b]` - a fresh independent `Vec<T>` over the selected range.
+    Slice,
+    /// `v[a..]` - the open-ended form; the runtime supplies the end bound so
+    /// the receiver expression is evaluated once.
+    SliceFrom,
 }
 
 impl VecValueOp {
@@ -603,6 +608,16 @@ impl VecValueOp {
             Self::Pop => runtime_semantic_contract(
                 &[WRITE],
                 UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::Slice => runtime_semantic_contract(
+                &[READ, INDEX, INDEX],
+                IndependentValue(VECTOR),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::SliceFrom => runtime_semantic_contract(
+                &[READ, INDEX],
+                IndependentValue(VECTOR),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
         }
@@ -1306,6 +1321,9 @@ pub enum RuntimeCallFamily {
     BytesPush,
     BytesSet,
     BytesSlice,
+    /// `b[a..]` - the open-ended byte slice. The end bound is the receiver's
+    /// own length, so the receiver expression is evaluated once.
+    BytesSliceFrom,
     /// `bytes::new` constructor callee identity. Codegen materialises the
     /// runtime `hew_bytes_new` call from the destination type.
     BytesNew,
@@ -2158,6 +2176,38 @@ impl RuntimeCallFamily {
                 BitCopy(RuntimeValueKind::Char),
                 SIR_INDEX_FAILURES,
             ),
+            Self::BytesSlice => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: Bytes,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                FreshOwned(Bytes),
+                SIR_INDEX_FAILURES,
+            ),
+            Self::BytesSliceFrom => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: Bytes,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                FreshOwned(Bytes),
+                SIR_INDEX_FAILURES,
+            ),
             Self::StringSliceCodepoints => runtime_semantic_contract(
                 &[
                     RuntimeArgumentContract {
@@ -2413,6 +2463,7 @@ impl RuntimeCallFamily {
             Self::BytesPush => "hew_bytes_push",
             Self::BytesSet => "hew_bytes_set",
             Self::BytesSlice => "hew_bytes_slice",
+            Self::BytesSliceFrom => "hew_bytes_slice_from",
             Self::BytesNew => "bytes::new",
             // CancellationToken
             Self::CancelTokenIsRequested => "hew_cancel_token_is_requested",
@@ -2686,6 +2737,8 @@ impl RuntimeCallFamily {
                 VecValueOp::Set => "vec.value.set",
                 VecValueOp::Pop => "vec.value.pop",
                 VecValueOp::Clear => "vec.value.clear",
+                VecValueOp::Slice => "vec.value.slice",
+                VecValueOp::SliceFrom => "vec.value.slice_from",
             },
             // Vec
             Self::VecAppend => "hew_vec_append",
@@ -2816,6 +2869,7 @@ impl RuntimeCallFamily {
             "hew_bytes_push" => Self::BytesPush,
             "hew_bytes_set" => Self::BytesSet,
             "hew_bytes_slice" => Self::BytesSlice,
+            "hew_bytes_slice_from" => Self::BytesSliceFrom,
             "bytes::new" => Self::BytesNew,
             // CancellationToken
             "hew_cancel_token_is_requested" => Self::CancelTokenIsRequested,
@@ -3128,6 +3182,8 @@ impl RuntimeCallFamily {
             "vec.value.set" => Self::Vector(VecValueOp::Set),
             "vec.value.pop" => Self::Vector(VecValueOp::Pop),
             "vec.value.clear" => Self::Vector(VecValueOp::Clear),
+            "vec.value.slice" => Self::Vector(VecValueOp::Slice),
+            "vec.value.slice_from" => Self::Vector(VecValueOp::SliceFrom),
             "Vec::new" => Self::VecNew,
             "hew_vec_pop_bool" => Self::VecPopBool,
             "hew_vec_pop_layout" => Self::VecPopLayout,
@@ -3305,6 +3361,7 @@ impl RuntimeCallFamily {
                 | Self::BytesPush
                 | Self::BytesSet
                 | Self::BytesSlice
+                | Self::BytesSliceFrom
         )
     }
 
@@ -3968,6 +4025,7 @@ impl RuntimeCallFamily {
             | F::BytesPush
             | F::BytesSet
             | F::BytesSlice
+            | F::BytesSliceFrom
             | F::BytesNew
             | F::CancelTokenIsRequested
             | F::CancelTokenRelease

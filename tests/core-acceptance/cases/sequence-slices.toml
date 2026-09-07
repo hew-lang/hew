@@ -1,0 +1,11 @@
+[[case]]
+id = "sequence-slices"
+intent = "Open-start, ranged and open-end slices over string, bytes and Vec produce independent values without disturbing the source."
+source = "cases/sequence-slices.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Aé\né中\n中🙂\nAé中🙂\n2\n3\n2\n6\n98\n2\n10\n30\n2\n4\n4\n"
+exit = 0
+stderr = ""

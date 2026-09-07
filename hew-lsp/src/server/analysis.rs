@@ -1583,17 +1583,13 @@ mod tests {
         let root_uri = Url::parse("file:///project/main.hew").unwrap();
         let root_source = "fn main() { abc }\nfn helper() {}\n";
         let diagnostic = HirDiagnostic::new(
-            HirDiagnosticKind::MachineEffectParityViolation {
-                machine_name: "M".to_string(),
-                state_name: "S".to_string(),
-                field_name: "field".to_string(),
-                transition_event: "tick".to_string(),
-                is_entry_conflict: true,
+            HirDiagnosticKind::UnresolvedSymbol {
+                name: "abc".to_string(),
             },
             12..15,
-            "transition conflicts with state entry",
+            "identifier has no binding in resolved HIR",
         )
-        .with_secondary_spans(vec![(21..27, "conflicting state entry".to_string())]);
+        .with_secondary_spans(vec![(21..27, "declared here".to_string())]);
 
         let by_uri = build_hir_lsp_diagnostics(
             &root_uri,

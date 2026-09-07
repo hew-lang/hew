@@ -176,24 +176,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::TryWidthCast { value, .. } => {
             visit_expr(value, out);
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, field_val) in fields {
-                visit_expr(field_val, out);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        }
-        | HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            visit_expr(receiver, out);
-            visit_expr(event, out);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::GeneratorNext { receiver, .. } => {
             visit_expr(receiver, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -242,9 +227,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         }
         HirExprKind::Loop { body, .. } => visit_block(body, out),
         HirExprKind::RecordCloneCall { src, .. } => visit_expr(src, out),
-        HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
-        | HirExprKind::Select(_)
+        HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }

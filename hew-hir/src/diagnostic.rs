@@ -309,36 +309,6 @@ pub enum HirDiagnosticKind {
     /// produces no values and is rejected at the surface.
     JoinNoBranches,
 
-    // ── Machine static checks ────────────────────────────────────────────
-    /// One or more `(state, event)` pairs have no matching transition and
-    /// the machine does not declare a `default` arm.
-    MachineExhaustivenessViolation {
-        machine_name: String,
-        missing: Vec<(String, String)>,
-    },
-    /// A self-transition (`source == target`) has a non-empty body but is not
-    /// annotated `@reenter`.  Moore-style self-loops must be empty; Mealy-style
-    /// re-entry requires the explicit `@reenter` annotation so the compiler can
-    /// enforce that `entry`/`exit` run correctly.
-    MachineSelfTransitionNeedsReenter {
-        machine_name: String,
-        state_name: String,
-        event_name: String,
-    },
-    /// A transition body writes a field that is also written by the target
-    /// state's `entry` block or the source state's `exit` block, creating
-    /// ambiguous initialization/teardown order.  `secondary_spans` points at
-    /// the conflicting entry/exit site.
-    MachineEffectParityViolation {
-        machine_name: String,
-        /// The state whose `entry` or `exit` block conflicts.
-        state_name: String,
-        field_name: String,
-        transition_event: String,
-        /// Whether the conflict is with the target `entry` block (`true`) or
-        /// the source `exit` block (`false`).
-        is_entry_conflict: bool,
-    },
     /// A direct `emit(E)` cycle was detected: a transition's `on E` arm
     /// contains `emit E`, which would immediately re-trigger the same handler.
     MachineEmitCycle {
@@ -352,22 +322,6 @@ pub enum HirDiagnosticKind {
     MachineEmitNotInManifest {
         machine_name: String,
         event_name: String,
-    },
-    /// A transition body reads `event.<field>` but `<field>` is not declared
-    /// on the triggering event type. This is a user type error — the field
-    /// does not exist — not a compiler limitation. The available field names
-    /// for the event are included in the note so the user can correct the
-    /// access without inspecting the machine declaration.
-    MachineEventFieldNotFound {
-        /// The machine name (e.g. `"TrafficLight"`).
-        machine_name: String,
-        /// The event type name (e.g. `"TrafficLightEvent"`).
-        event_name: String,
-        /// The field name the user wrote (e.g. `"wrong_field"`).
-        field_name: String,
-        /// Fields actually declared on this event (empty if the event
-        /// has no payload fields).
-        available_fields: Vec<String>,
     },
     /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
     /// AND no entry in `TypeCheckOutput.resolved_calls` for its span. Fail-closed
@@ -511,43 +465,6 @@ pub enum HirDiagnosticKind {
     EnumLayoutCapExceeded {
         /// The configured cap (typically `MONOMORPHISATION_REGISTRY_CAP`,
         /// shared with the fn and record registries).
-        cap: usize,
-    },
-    /// The dedicated `MachineMonoPass`
-    /// ([`crate::machine_mono::run_machine_mono_pass`]) observed a
-    /// machine type whose substituted type args still carry a residual
-    /// type-parameter symbol (`ResolvedTy::Named { name, args: [] }`
-    /// where `name` is the name of a generic type-parameter declared
-    /// somewhere upstream in the program). After function-mono has
-    /// completed, every machine instantiation reachable from a
-    /// monomorphic entry point must be fully concrete — a residual
-    /// abstract symbol is a function-mono defect (the closure pass
-    /// failed to reach this site) or a checker-side authority gap
-    /// (the type wasn't recorded). Either way the machine-mono pass
-    /// fails closed rather than silently propagating an
-    /// under-instantiated layout to MIR/codegen.
-    ///
-    /// Per W3.033c Stage 2 (R244=B): this is the load-bearing
-    /// invariant that justifies the dedicated-pass design — the
-    /// observation that the pass runs after function-mono completes
-    /// is what makes residual abstract symbols an unambiguous defect.
-    UnresolvedMachineTypeParamPostMono {
-        /// Origin machine name as written in source.
-        machine: String,
-        /// Human-readable rendering of the residual abstract symbol
-        /// (e.g. `"T"`). Kept as a `String` to avoid leaking the full
-        /// `ResolvedTy` shape into the diagnostic schema; the surrounding
-        /// span pins the site for any deeper triage.
-        residual_var: String,
-    },
-    /// The dedicated `MachineMonoPass` discovered more distinct
-    /// machine instantiations than the configured monomorphisation cap
-    /// admits. Mirrors `MonomorphisationCapExceeded` for the
-    /// function-mono registry and `EnumLayoutCapExceeded` /
-    /// `RecordLayoutCapExceeded` for the layout registries.
-    MachineMonomorphisationCapExceeded {
-        /// The configured cap (shared with the function-mono and layout
-        /// registries — see [`crate::monomorph::MONOMORPHISATION_REGISTRY_CAP`]).
         cap: usize,
     },
     /// The dedicated layout-mono pass
@@ -816,8 +733,7 @@ impl HirDiagnosticKind {
             | Self::RecordLayoutTypeArgsViolation { .. } => DiagChannel::Internal,
             Self::NotYetImplemented { .. }
             | Self::MonomorphisationCapExceeded { .. }
-            | Self::RecordLayoutCapExceeded { .. }
-            | Self::MachineMonomorphisationCapExceeded { .. } => DiagChannel::Limitation,
+            | Self::RecordLayoutCapExceeded { .. } => DiagChannel::Limitation,
             _ => DiagChannel::User,
         }
     }

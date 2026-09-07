@@ -63,10 +63,6 @@ struct Verifier {
 }
 
 impl Verifier {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "module verification exhaustively dispatches every HIR item family"
-    )]
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
             self.current_source_module = Self::item_source_module(module, item);
@@ -102,35 +98,6 @@ impl Verifier {
                     // consuming-method validations fire upstream in
                     // `lower_type_decl`.
                     self.node(decl.node, decl.span.clone());
-                }
-                HirItem::Machine(machine) => {
-                    self.node(machine.node, machine.span.clone());
-                    for state in &machine.states {
-                        for field in &state.fields {
-                            if let Some(default) = &field.default {
-                                self.expr(default);
-                            }
-                        }
-                        if let Some(entry) = &state.entry {
-                            self.block(entry);
-                        }
-                        if let Some(exit) = &state.exit {
-                            self.block(exit);
-                        }
-                    }
-                    for event in &machine.events {
-                        for field in &event.fields {
-                            if let Some(default) = &field.default {
-                                self.expr(default);
-                            }
-                        }
-                    }
-                    for transition in &machine.transitions {
-                        if let Some(guard) = &transition.guard {
-                            self.expr(guard);
-                        }
-                        self.expr(&transition.body);
-                    }
                 }
                 HirItem::Record(record) => {
                     // Record declarations contribute only their HirNodeId
@@ -647,9 +614,7 @@ impl Verifier {
             HirExprKind::FieldAccess { object, .. } => {
                 self.expr(object);
             }
-            HirExprKind::MachineFieldAccess { .. }
-            | HirExprKind::MachineEventFieldAccess { .. }
-            | HirExprKind::ContextReader { .. }
+            HirExprKind::ContextReader { .. }
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::Continue { .. }
@@ -900,24 +865,9 @@ impl Verifier {
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
             }
-            HirExprKind::MachineEmit { fields, .. } => {
-                for (_, field_val) in fields {
-                    self.expr(field_val);
-                }
-            }
-            HirExprKind::MachineStep {
-                receiver, event, ..
-            }
-            | HirExprKind::MachineTakeEmits {
-                receiver, event, ..
-            } => {
-                self.expr(receiver);
-                self.expr(event);
-            }
             HirExprKind::ChannelRecvAwait { receiver, .. }
             | HirExprKind::CancellationTokenIsCancelled { receiver }
             | HirExprKind::GeneratorNext { receiver, .. }
-            | HirExprKind::MachineStateName { receiver, .. }
             | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);
             }
@@ -1205,7 +1155,6 @@ impl Verifier {
         let id = match item {
             HirItem::Function(item) => item.id,
             HirItem::TypeDecl(item) => item.id,
-            HirItem::Machine(item) => item.id,
             HirItem::Record(item) => item.id,
             HirItem::Actor(item) => item.id,
             HirItem::Supervisor(item) => item.id,
@@ -1294,7 +1243,6 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             record_layouts: Vec::new(),
             enum_layouts: Vec::new(),
-            machine_instantiations: Vec::new(),
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),

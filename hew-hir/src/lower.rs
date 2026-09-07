@@ -47,9 +47,8 @@ use crate::node::{
     HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture,
     HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirField, HirFn,
     HirGenCapture, HirGenCaptureSource, HirItem, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule,
-    HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
+    HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
     HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
     HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
@@ -4920,11 +4919,6 @@ pub fn lower_program_with_mono_cap(
                     imported.as_ref(),
                 );
             }
-            Item::Machine(machine) => {
-                if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
-                    items.push(HirItem::Machine(hir_machine));
-                }
-            }
             Item::Actor(actor) => {
                 // P0.1: Fail-closed gate: actors require the actor runtime ABI.
                 // wasm32 is admitted: `hew-runtime/src/scheduler_wasm.rs` provides
@@ -4980,7 +4974,10 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::Supervisor(supervisor));
                 }
             }
-            Item::Import(_) | Item::TypeAlias(_) => {
+            Item::Import(_) | Item::TypeAlias(_) | Item::Machine(_) => {
+                // The checker normalizes every machine into ordinary enum,
+                // report and impl declarations before HIR, so no machine
+                // declaration reaches lowering.
                 // Imports are frontend-resolved: module-path imports
                 // (`import greeting;`) are lowered from `program.module_graph`
                 // below under their qualified mangled name (e.g. `greeting$hello`).
@@ -5359,29 +5356,6 @@ pub fn lower_program_with_mono_cap(
                             };
                             items.push(HirItem::TypeDecl(hir_decl));
                         }
-                        // Emit `HirItem::Machine` entries for imported
-                        // machines so MIR's `machine_layout_names` set (built
-                        // from `module.items`) includes their names. Without
-                        // this, the MIR `Builder::is_known_actor_runtime_ty`
-                        // classifies `Named { name: "Toggle" }` as
-                        // `ValueClass::Unknown` → `Strategy::UnknownBlocked` →
-                        // `DecisionMapTotal` + `UnknownType` diagnostics, even
-                        // though HIR's `machine_ctor_registry` already resolved
-                        // the qualified ctor reference. A private declaration
-                        // can still cross the module boundary through a public
-                        // function signature, so visibility cannot discard its
-                        // runtime layout and value-class identity here.
-                        Item::Machine(machine) => {
-                            // File imports are flattened into the source-order
-                            // pass above. Lowering them again here would mint
-                            // duplicate machine mono/layout entries.
-                            if file_import_modules.contains(mod_id) {
-                                continue;
-                            }
-                            if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
-                                items.push(HirItem::Machine(hir_machine));
-                            }
-                        }
                         // Emit HirItem::ExternFn entries for extern declarations
                         // in imported modules so MIR/codegen sees them in the
                         // lowered item list. Mirrors the root-item arm at the
@@ -5708,12 +5682,15 @@ pub fn lower_program_with_mono_cap(
                         // Non-pub Function/TypeDecl/Actor fall here (not
                         // visible to importers). If a new Item variant is
                         // added, the compiler will force a conscious decision.
+                        // Machines are normalized into ordinary declarations
+                        // by the checker before HIR.
                         Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Record(_)
                         | Item::Actor(_)
+                        | Item::Machine(_)
                         | Item::Supervisor(_) => {}
                     }
                 }
@@ -5948,7 +5925,7 @@ pub fn lower_program_with_mono_cap(
     // a generic record/enum constructed only inside a generic fn body (e.g.
     // `fn make<T>() -> Box<T> { Box { value: x } }`) is observable as a
     // concrete `Box<i64>` layout only after `make` is substituted as
-    // `make$$i64`. Mirrors the `run_machine_mono_pass` ordering invariant.
+    // `make$$i64`.
     // The pass is purely additive: the origin-site path already registered
     // every concrete-site instantiation, and the dedup set is seeded from
     // those so nothing is double-counted. New entries are merged BEFORE
@@ -6016,15 +5993,6 @@ pub fn lower_program_with_mono_cap(
     // return-type slot — and BEFORE the `HirModule` is handed to MIR for
     // `machine_layouts` build (Stage 3, out of scope for this change).
     //
-    // Pass-ordering invariant — see `machine_mono.rs` module docs and
-    // the `machine_mono_pass_records_*` integration tests. Any future
-    // refactor that moves this call before `closure_under_substitution`
-    // (or parallelises the two passes) silently drops generic-mediated
-    // machine instantiations.
-    let (machine_instantiations, machine_mono_diagnostics) =
-        crate::machine_mono::run_machine_mono_pass(&items, &monomorphisations, mono_cap);
-    ctx.diagnostics.extend(machine_mono_diagnostics);
-
     admit_opaque_resource_lifecycles(
         &items,
         &ctx.opaque_resource_candidates,
@@ -6057,7 +6025,6 @@ pub fn lower_program_with_mono_cap(
         vec_generic_element_abi: type_check_output.vec_generic_element_abi.clone(),
         record_layouts,
         enum_layouts,
-        machine_instantiations,
         supervisor_child_slots,
         pool_accessor_sites,
         regex_literals: ctx.regex_literals,
@@ -7019,7 +6986,6 @@ fn record_source_modules_for_items(
         let id = match item {
             HirItem::Function(item) => item.id,
             HirItem::TypeDecl(item) => item.id,
-            HirItem::Machine(item) => item.id,
             HirItem::Record(item) => item.id,
             HirItem::Actor(item) => item.id,
             HirItem::Supervisor(item) => item.id,
@@ -7315,24 +7281,9 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(receiver, out, trait_out);
             collect_call_sites_in_expr(arg, out, trait_out);
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, e) in fields {
-                collect_call_sites_in_expr(e, out, trait_out);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        }
-        | HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            collect_call_sites_in_expr(receiver, out, trait_out);
-            collect_call_sites_in_expr(event, out, trait_out);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -7379,8 +7330,6 @@ fn collect_call_sites_in_expr(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
@@ -8015,42 +7964,6 @@ struct LowerCtx {
     /// allocated `literal_id`. Lookups via `alloc_regex_literal` avoid
     /// scanning the `Vec` linearly.
     regex_literal_index: HashMap<String, u32>,
-    /// Event names of the machine currently being lowered, set only while
-    /// lowering a machine body (transition bodies, entry/exit blocks). The
-    /// index position corresponds to `HirMachineDecl::events` ordering so
-    /// `Expr::MachineEmit` can resolve `event_idx` by name lookup.
-    ///
-    /// `None` outside of any machine body; `Some(names)` inside. Restored
-    /// via `mem::replace` at the end of each machine-body lowering.
-    current_machine_events: Option<Vec<String>>,
-    /// Name of the machine currently being lowered, set at the same boundaries
-    /// as `current_machine_events`. Used by `MachineVariantCtor` and
-    /// `MachineFieldAccess` resolution to carry the machine type name.
-    current_machine_name: Option<String>,
-    /// Exact generic self type of the machine currently being lowered.
-    ///
-    /// Machine-state constructor sites are not checker-typed expression sites:
-    /// HIR derives them from the enclosing declaration.  Keeping this symbolic
-    /// `Machine<T, ..>` type in the context (rather than reconstructing a bare
-    /// `Machine`) is what lets MIR's concrete machine-mono substitution retain
-    /// the registered instance identity through a generated step body.
-    current_machine_self_ty: Option<ResolvedTy>,
-    /// Ordered state descriptors for the machine currently being lowered.
-    /// Each entry is `(state_name, fields)` in declaration order, matching
-    /// `HirMachineDecl.states` indices. Used by bare state-name resolution
-    /// (`MachineVariantCtor`) and `self.field` resolution (`MachineFieldAccess`).
-    ///
-    /// `None` outside a machine body. Set alongside `current_machine_events`.
-    current_machine_states: Option<Vec<(String, Vec<HirField>)>>,
-    current_machine_transition_event: Option<(usize, Vec<HirField>)>,
-    /// Source-state index for the transition currently being lowered.
-    /// `Some(idx)` inside a transition body; `None` inside entry/exit blocks
-    /// (where `self.field` reads are not valid surface syntax today).
-    ///
-    /// Used by `MachineFieldAccess` to identify which variant's payload fields
-    /// are in scope. Set per-transition inside `lower_machine`; restored after
-    /// each `lower_machine_expr_filtered` call.
-    current_machine_source_state: Option<usize>,
     /// Module-scope registry of tagged-union unit constructors, keyed by the
     /// surface identifier the user writes at the construction site. Covers
     /// three surface forms that share one tagged-union substrate:
@@ -8551,12 +8464,6 @@ impl LowerCtx {
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),
             regex_literal_index: HashMap::new(),
-            current_machine_events: None,
-            current_machine_name: None,
-            current_machine_self_ty: None,
-            current_machine_states: None,
-            current_machine_transition_event: None,
-            current_machine_source_state: None,
             machine_ctor_registry: HashMap::new(),
             const_registry: HashMap::new(),
             folded_integer_consts: HashMap::new(),
@@ -11150,9 +11057,6 @@ impl LowerCtx {
             }
             HirExprKind::FieldAccess { object, .. }
             | HirExprKind::TupleIndex { tuple: object, .. }
-            | HirExprKind::MachineStateName {
-                receiver: object, ..
-            }
             | HirExprKind::CancellationTokenIsCancelled { receiver: object }
             | HirExprKind::GeneratorNext {
                 receiver: object, ..
@@ -11196,27 +11100,13 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::MachineEmit { fields, .. }
-            | HirExprKind::MachineVariantCtor {
+            HirExprKind::MachineVariantCtor {
                 payload: Some(fields),
                 ..
             } => {
                 for (_, field_expr) in fields {
                     self.wrap_var_self_explicit_expr_returns(field_expr, receiver, abi_return_ty);
                 }
-            }
-            HirExprKind::MachineStep {
-                receiver: target,
-                event,
-                ..
-            }
-            | HirExprKind::MachineTakeEmits {
-                receiver: target,
-                event,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_expr_returns(event, receiver, abi_return_ty);
             }
             HirExprKind::ScopeRecovery { scope, handler, .. } => {
                 self.wrap_var_self_explicit_expr_returns(scope, receiver, abi_return_ty);
@@ -11298,8 +11188,6 @@ impl LowerCtx {
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::BindingRef { .. }
             | HirExprKind::ContextReader { .. }
-            | HirExprKind::MachineFieldAccess { .. }
-            | HirExprKind::MachineEventFieldAccess { .. }
             | HirExprKind::Continue { .. }
             | HirExprKind::ActorSelf
             | HirExprKind::MachineVariantCtor { payload: None, .. }
@@ -14782,537 +14670,6 @@ impl LowerCtx {
             .insert(event_type_name, event_variants);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "machine lowering has three distinct phases (structure, checks, assembly) \
-                  that read more clearly as a single function than as multiple helpers"
-    )]
-    fn lower_machine(
-        &mut self,
-        decl: &MachineDecl,
-        span: std::ops::Range<usize>,
-    ) -> Option<HirMachineDecl> {
-        // Collect declared state names up front; the machine-body diagnostic
-        // filter uses this to recognise the semicolon-shorthand transition
-        // body (`Expr::Identifier(target_state)`) and avoid leaking its
-        // expected `UnresolvedSymbol` diagnostic, while leaving every other
-        // unresolved identifier visible.
-        let state_names: HashSet<String> = decl.states.iter().map(|s| s.name.clone()).collect();
-
-        // Collect event names in declaration order so `Expr::MachineEmit` can
-        // resolve its event_idx by position lookup during body lowering.
-        let event_names: Vec<String> = decl.events.iter().map(|ev| ev.name.clone()).collect();
-
-        // Pre-lower state field types and build the `current_machine_states`
-        // descriptor table. This is used during transition-body and entry/exit-block
-        // lowering to resolve bare state-name identifiers (`MachineVariantCtor`)
-        // and `self.field` accesses (`MachineFieldAccess`) without re-reading the
-        // AST during expression lowering.
-        //
-        // WHY HIR-side authority: the type checker does not produce side-table
-        // entries for machine state-name identifier references or self-field
-        // accesses inside transition bodies. HIR derives these types from the
-        // machine declaration itself, which is local to this pass.
-        let machine_state_descriptors: Vec<(String, Vec<HirField>)> = decl
-            .states
-            .iter()
-            .map(|s| {
-                let fields: Vec<HirField> = s
-                    .fields
-                    .iter()
-                    .map(|(name, ty)| HirField {
-                        name: name.clone(),
-                        ty: self.lower_type(ty),
-                        default: None,
-                        // Machine state fields are written by transition
-                        // bodies; there is no `let`/`var` surface on them.
-                        is_mutable: true,
-                        span: ty.1.clone(),
-                    })
-                    .collect();
-                (s.name.clone(), fields)
-            })
-            .collect();
-
-        // Install machine context so nested `lower_expr` calls can resolve
-        // state-name references and self-field accesses.  State constructors
-        // do not receive a checker expression-type entry, so retain the
-        // declaration's symbolic generic arguments here; MIR substitutes them
-        // using the concrete `MachineMonoEntry` while synthesising each step.
-        // Restored at the end of `lower_machine` via `mem::replace`.
-        let prev_machine_name = self.current_machine_name.replace(decl.name.clone());
-        let machine_origin = self.current_module_name.as_ref().map_or_else(
-            || decl.name.clone(),
-            |module| format!("{module}.{}", decl.name),
-        );
-        let machine_self_ty = ResolvedTy::named_user(
-            machine_origin,
-            decl.type_params
-                .iter()
-                .map(|param| ResolvedTy::named_user(param.name.clone(), Vec::new()))
-                .collect(),
-        );
-        let prev_machine_self_ty = self.current_machine_self_ty.replace(machine_self_ty);
-        let prev_machine_states = self
-            .current_machine_states
-            .replace(machine_state_descriptors.clone());
-
-        // Lower states.
-        let mut hir_states = Vec::new();
-        for (state_index, state) in decl.states.iter().enumerate() {
-            let fields: Vec<HirField> = machine_state_descriptors
-                .iter()
-                .find(|(name, _)| name == &state.name)
-                .map(|(_, fields)| fields.clone())
-                .unwrap_or_default();
-
-            // Shallow-scan the entry and exit blocks for field-assignment targets.
-            // Body-level effect-parity checking still uses the AST summary
-            // walk; the lowered HIR block below is structural substrate.
-            let entry_writes = state
-                .entry
-                .as_ref()
-                .map(collect_assigned_field_names)
-                .unwrap_or_default();
-            let exit_writes = state
-                .exit
-                .as_ref()
-                .map(collect_assigned_field_names)
-                .unwrap_or_default();
-
-            // Lower entry/exit blocks. The filter drops only the explicitly
-            // expected diagnostics for the machine-body forms not yet wired
-            // through HIR (state-name identifier refs, `this`); emit now
-            // lowers to `HirExprKind::MachineEmit` so it no longer needs
-            // filtering here.
-            let entry = state.entry.as_ref().map(|block| {
-                self.lower_machine_block_filtered(block, &state_names, event_names.clone())
-            });
-            let exit = state.exit.as_ref().map(|block| {
-                self.lower_machine_block_filtered(block, &state_names, event_names.clone())
-            });
-
-            let entry_declaration = if state.entry.is_some() {
-                Some(self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineStateEntry,
-                    state_index,
-                )?)
-            } else {
-                None
-            };
-            let exit_declaration = if state.exit.is_some() {
-                Some(self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineStateExit,
-                    state_index,
-                )?)
-            } else {
-                None
-            };
-            hir_states.push(HirMachineState {
-                declaration: self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineState,
-                    state_index,
-                )?,
-                entry_declaration,
-                exit_declaration,
-                name: state.name.clone(),
-                fields,
-                has_entry: state.entry.is_some(),
-                has_exit: state.exit.is_some(),
-                entry_writes,
-                exit_writes,
-                entry,
-                exit,
-                span: span.clone(),
-            });
-        }
-
-        // Lower events.
-        let hir_events: Vec<HirMachineEvent> = decl
-            .events
-            .iter()
-            .enumerate()
-            .map(|(event_index, ev)| {
-                let fields = ev
-                    .fields
-                    .iter()
-                    .map(|(name, ty)| HirField {
-                        name: name.clone(),
-                        ty: self.lower_type(ty),
-                        default: None,
-                        is_mutable: false,
-                        span: ty.1.clone(),
-                    })
-                    .collect();
-                Some(HirMachineEvent {
-                    declaration: self.source_declaration(
-                        &span,
-                        hew_types::DeclarationKind::MachineEvent,
-                        event_index,
-                    )?,
-                    name: ev.name.clone(),
-                    fields,
-                    span: span.clone(),
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-
-        // Lower transitions — record names, guard presence, body writes,
-        // and emitted event names (for static checks). The body is also
-        // lowered to `HirExpr`; see `lower_machine_expr_filtered` for the
-        // narrow diagnostic-filter contract.
-        let mut hir_transitions: Vec<HirMachineTransition> =
-            Vec::with_capacity(decl.transitions.len());
-        for (transition_index, tr) in decl.transitions.iter().enumerate() {
-            let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
-            let body_writes = collect_assigned_field_names_expr(&tr.body.0);
-            // Set the source-state index so `lower_expr` can resolve `self.field`
-            // accesses to `MachineFieldAccess` nodes. Wildcard source `_` has no
-            // concrete state index, so leave it as `None` — `self.field` access
-            // inside a wildcard transition body cannot resolve to a specific
-            // variant's fields and will be rejected by the `MachineFieldAccess`
-            // producer with a diagnostic.
-            let src_state_idx = decl.states.iter().position(|s| s.name == tr.source_state);
-            let prev_source_state = self.current_machine_source_state;
-            self.current_machine_source_state = src_state_idx;
-            let prev_transition_event = self.current_machine_transition_event.take();
-            self.current_machine_transition_event = hir_events
-                .iter()
-                .position(|ev| ev.name == tr.event_name)
-                .map(|idx| (idx, hir_events[idx].fields.clone()));
-            let body =
-                self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
-            // Lower the guard expression (if any) through the same
-            // machine-body filter so the guard sees the same implicit
-            // bindings (`self`, source-state alias, event-field aliases) the
-            // body sees, and so machine-body walkers can recurse into it.
-            // Without this, FC-P1-B (call-shape gates), FC-P1-D/A3/E
-            // (blocking-recv gates), and every future machine-body walker
-            // would silently treat guarded transitions as if the guard
-            // position contained no expressions at all.
-            let guard = tr
-                .guard
-                .as_ref()
-                .map(|g| self.lower_machine_expr_filtered(g, &state_names, event_names.clone()));
-            self.current_machine_source_state = prev_source_state;
-            self.current_machine_transition_event = prev_transition_event;
-            // body_emits is derived from the lowered HIR body by walking
-            // `HirExprKind::MachineEmit { event_idx, .. }` rather than the
-            // AST summary shape, so emit expressions nested inside
-            // conditionals or match arms are correctly detected.
-            let body_emits = collect_hir_emitted_events(&body, &event_names);
-            hir_transitions.push(HirMachineTransition {
-                declaration: self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineTransition,
-                    transition_index,
-                )?,
-                event_name: tr.event_name.clone(),
-                source_state: tr.source_state.clone(),
-                target_state: tr.target_state.clone(),
-                guard,
-                is_self_transition,
-                reenter: tr.reenter,
-                body_writes,
-                body_emits,
-                body,
-                span: tr.body.1.clone(),
-            });
-        }
-
-        // ── Static checks ────────────────────────────────────────────────────
-
-        // 1. Exhaustiveness: every concrete (state, event) pair must have a
-        //    transition, or a `default` arm must exist, or a wildcard source `_`
-        //    covers it.
-        if !decl.has_default {
-            let mut missing: Vec<(String, String)> = Vec::new();
-            for state in &decl.states {
-                for event in &decl.events {
-                    let covered = decl.transitions.iter().any(|tr| {
-                        tr.event_name == event.name
-                            && (tr.source_state == state.name || tr.source_state == "_")
-                    });
-                    if !covered {
-                        missing.push((state.name.clone(), event.name.clone()));
-                    }
-                }
-            }
-            if !missing.is_empty() {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MachineExhaustivenessViolation {
-                        machine_name: decl.name.clone(),
-                        missing,
-                    },
-                    span.clone(),
-                    format!(
-                        "machine `{}` does not handle all (state, event) pairs; \
-                         add the missing transitions or a `default` arm",
-                        decl.name
-                    ),
-                ));
-                // Restore machine context before early return so the next
-                // top-level item lowers in a clean context.
-                self.current_machine_name = prev_machine_name;
-                self.current_machine_self_ty = prev_machine_self_ty;
-                self.current_machine_states = prev_machine_states;
-                return None;
-            }
-        }
-
-        // 2. Self-transition @reenter rule: a non-empty self-loop body without
-        //    @reenter is a compile error. Empty body OR @reenter are both OK.
-        //    "Empty" means the body resolves to `Expr::Identifier(target_state)`
-        //    (the no-body semicolon shorthand) or an `Expr::Block` with no stmts
-        //    and no trailing expression.
-        for tr in decl.transitions.iter().zip(hir_transitions.iter()) {
-            let (ast_tr, hir_tr) = tr;
-            if !hir_tr.is_self_transition || hir_tr.reenter {
-                continue;
-            }
-            let body_is_empty = is_empty_self_body(&ast_tr.body.0, &hir_tr.target_state);
-            if !body_is_empty {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MachineSelfTransitionNeedsReenter {
-                        machine_name: decl.name.clone(),
-                        state_name: hir_tr.source_state.clone(),
-                        event_name: hir_tr.event_name.clone(),
-                    },
-                    hir_tr.span.clone(),
-                    format!(
-                        "self-transition `on {event}` in state `{state}` has a non-empty body \
-                         but is not marked `reenter`; write `=> {state} reenter {{ … }}` to opt \
-                         in to Mealy re-entry semantics, or remove the body",
-                        event = hir_tr.event_name,
-                        state = hir_tr.source_state,
-                    ),
-                ));
-            }
-        }
-
-        // 3. Effect-parity: a transition body that writes a field also written
-        //    by the *target* state's `entry` block or the *source* state's `exit`
-        //    block creates ambiguous initialization/teardown order.
-        for tr in &hir_transitions {
-            if tr.body_writes.is_empty() {
-                continue;
-            }
-            // Check target entry conflict.
-            if let Some(target) = hir_states.iter().find(|s| s.name == tr.target_state) {
-                for field in &tr.body_writes {
-                    if let Some((_, entry_assign_span)) =
-                        target.entry_writes.iter().find(|(n, _)| n == field)
-                    {
-                        self.diagnostics.push(
-                            HirDiagnostic::new(
-                                HirDiagnosticKind::MachineEffectParityViolation {
-                                    machine_name: decl.name.clone(),
-                                    state_name: tr.target_state.clone(),
-                                    field_name: field.clone(),
-                                    transition_event: tr.event_name.clone(),
-                                    is_entry_conflict: true,
-                                },
-                                tr.span.clone(),
-                                format!(
-                                    "transition `on {}` body and state `{}` entry block both \
-                                     write field `{}`; remove the write from one site",
-                                    tr.event_name, tr.target_state, field
-                                ),
-                            )
-                            .with_secondary_spans(vec![(
-                                entry_assign_span.clone(),
-                                format!(
-                                    "state `{}` entry block assigns `{}` here",
-                                    tr.target_state, field
-                                ),
-                            )]),
-                        );
-                    }
-                }
-            }
-            // Check source exit conflict.
-            if let Some(source) = hir_states.iter().find(|s| s.name == tr.source_state) {
-                for field in &tr.body_writes {
-                    if let Some((_, exit_assign_span)) =
-                        source.exit_writes.iter().find(|(n, _)| n == field)
-                    {
-                        self.diagnostics.push(
-                            HirDiagnostic::new(
-                                HirDiagnosticKind::MachineEffectParityViolation {
-                                    machine_name: decl.name.clone(),
-                                    state_name: tr.source_state.clone(),
-                                    field_name: field.clone(),
-                                    transition_event: tr.event_name.clone(),
-                                    is_entry_conflict: false,
-                                },
-                                tr.span.clone(),
-                                format!(
-                                    "transition `on {}` body and state `{}` exit block both \
-                                     write field `{}`; remove the write from one site",
-                                    tr.event_name, tr.source_state, field
-                                ),
-                            )
-                            .with_secondary_spans(vec![(
-                                exit_assign_span.clone(),
-                                format!(
-                                    "state `{}` exit block assigns `{}` here",
-                                    tr.source_state, field
-                                ),
-                            )]),
-                        );
-                    }
-                }
-            }
-        }
-
-        // 4. Emit-cycle: `on E` transition that directly emits `E` would
-        //    immediately re-trigger its own handler.
-        for tr in &hir_transitions {
-            if tr.body_emits.contains(&tr.event_name) {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MachineEmitCycle {
-                        machine_name: decl.name.clone(),
-                        event_name: tr.event_name.clone(),
-                    },
-                    tr.span.clone(),
-                    format!(
-                        "transition `on {}` emits `{}` which immediately re-triggers itself; \
-                         rename the emitted event or remove the emit",
-                        tr.event_name, tr.event_name
-                    ),
-                ));
-            }
-        }
-
-        // 5. Emits-manifest cross-check: when the machine declares an
-        //    `emits { … }` header, every event named by an `emit` statement in
-        //    any transition body must appear in that manifest. The manifest is
-        //    an auditable allowlist of permitted Mealy outputs.
-        if !decl.emits.is_empty() {
-            for tr in &hir_transitions {
-                for emitted in &tr.body_emits {
-                    if !decl.emits.iter().any(|output| &output.name == emitted) {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::MachineEmitNotInManifest {
-                                machine_name: decl.name.clone(),
-                                event_name: emitted.clone(),
-                            },
-                            tr.span.clone(),
-                            format!(
-                                "transition `on {}` emits `{}`, which is not declared in the \
-                                 `emits {{ … }}` manifest of machine `{}`; add `{}` to `emits` \
-                                 or remove the emit",
-                                tr.event_name, emitted, decl.name, emitted
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Fail-closed: if any diagnostic was pushed for this machine, abort.
-        // (Effect-parity, self-transition, and emit-cycle diagnostics are not
-        // return-None by themselves but we abort to avoid a partially-valid
-        // machine in HIR.)
-        let has_machine_errors = self.diagnostics.iter().any(|d| {
-            matches!(
-                &d.kind,
-                HirDiagnosticKind::MachineSelfTransitionNeedsReenter { machine_name, .. }
-                | HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
-                | HirDiagnosticKind::MachineEmitCycle { machine_name, .. }
-                | HirDiagnosticKind::MachineEmitNotInManifest { machine_name, .. }
-                if machine_name == &decl.name
-            )
-        });
-        if has_machine_errors {
-            // Restore machine context before early return.
-            self.current_machine_name = prev_machine_name;
-            self.current_machine_self_ty = prev_machine_self_ty;
-            self.current_machine_states = prev_machine_states;
-            return None;
-        }
-
-        // Restore machine context before returning.
-        self.current_machine_name = prev_machine_name;
-        self.current_machine_self_ty = prev_machine_self_ty;
-        self.current_machine_states = prev_machine_states;
-
-        // Lower trait bounds declared on the machine's type parameters.
-        // Both the inline `<T: Trait>` form and the trailing
-        // `where T: Trait` clause are flattened into a single
-        // `Vec<HirMachineBound>` in authored order: inline bounds
-        // first (in the order their owning `TypeParam` appears, with
-        // each param's `bounds` walked in their authored order), then
-        // where-clause predicates. Per Q230-B the carrier is flat —
-        // duplicate `(param, trait)` pairs from inline+where are
-        // preserved at this layer with distinct `origin`s and dedup'd
-        // downstream by the checker's per-machine bound table. The
-        // span on `WhereOrigin::WhereClause` is the `WherePredicate.ty`
-        // span (the LHS of the predicate), used by downstream
-        // diagnostics that want to point at the predicate's source.
-        let mut type_param_bounds: Vec<crate::node::HirMachineBound> = Vec::new();
-        for tp in &decl.type_params {
-            for tb in &tp.bounds {
-                let trait_bound = self.lower_machine_trait_bound(tb);
-                type_param_bounds.push(crate::node::HirMachineBound {
-                    param: tp.name.clone(),
-                    trait_bound,
-                    origin: crate::node::WhereOrigin::Inline,
-                });
-            }
-        }
-        if let Some(where_clause) = &decl.where_clause {
-            for predicate in &where_clause.predicates {
-                // The LHS `ty` of a where predicate on a machine
-                // type-param is parsed as a `TypeExpr::Named { name, .. }`
-                // where `name` is the bare type-param symbol; this
-                // matches the checker's `validate_machine_type_param_bounds`
-                // contract that rejects anything else as `UndefinedType`.
-                // Extract the param name; fall back to the displayed
-                // form for resilience when the upstream parser admits
-                // a non-Named LHS that has slipped past the checker
-                // (defensive — should be unreachable in well-formed
-                // programs).
-                let param_name = match &predicate.ty.0 {
-                    hew_parser::ast::TypeExpr::Named { name, .. } => name.clone(),
-                    other => format!("{other:?}"),
-                };
-                let lhs_span = predicate.ty.1.clone();
-                for tb in &predicate.bounds {
-                    let trait_bound = self.lower_machine_trait_bound(tb);
-                    type_param_bounds.push(crate::node::HirMachineBound {
-                        param: param_name.clone(),
-                        trait_bound,
-                        origin: crate::node::WhereOrigin::WhereClause(lhs_span.clone()),
-                    });
-                }
-            }
-        }
-
-        let defining_module = self.current_module_name.clone();
-        Some(HirMachineDecl {
-            id: self.ids.item(),
-            node: self.ids.node(),
-            // Mint the machine's declaration identity here, the same way
-            // `lower_type_decl` mints a type declaration's: the dotted owner
-            // path when the machine came from a module, the bare spelling for
-            // a root-program machine. Consumers project this field.
-            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Machine, 0)?,
-            name: decl.name.clone(),
-            defining_module,
-            type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
-            type_param_bounds,
-            states: hir_states,
-            events: hir_events,
-            transitions: hir_transitions,
-            has_default: decl.has_default,
-            span,
-        })
-    }
-
     /// Lower a parser `TraitBound` (used in a machine's type-param
     /// bound list or where-clause predicate) into the cross-layer
     /// `ResolvedTraitBound` carrier. Trait `args` and
@@ -15339,84 +14696,6 @@ impl LowerCtx {
             trait_name: tb.name.clone(),
             args,
             assoc_bindings,
-        }
-    }
-
-    /// Lower a machine transition body expression to `HirExpr` so MIR /
-    /// codegen has a typed-HIR tree to consume. The body's surface still
-    /// uses constructs that aren't yet wired through HIR — direct
-    /// state-name references (the semicolon-shorthand body
-    /// `Expr::Identifier(target_state)`) and `Expr::This`. Those produce
-    /// specific, expected diagnostics that the AST-summary walks
-    /// (`body_writes` / `body_emits`) and the per-machine static checks
-    /// (exhaustiveness, self-transition rules, effect-parity, emit-cycle)
-    /// already cover; this helper filters out *only those exact* diagnostics
-    /// whose span matches an allowlisted construct in the AST. Unrelated
-    /// diagnostics — unresolved user symbols, type mismatches, malformed
-    /// checker output, etc. — flow through unchanged so a buggy machine body
-    /// still fails closed.
-    ///
-    /// `event_names` is the ordered list of event names for the enclosing
-    /// machine (corresponding to `HirMachineDecl::events`). Set as
-    /// `current_machine_events` during lowering so `Expr::MachineEmit` can
-    /// resolve its `event_idx`.
-    fn lower_machine_expr_filtered(
-        &mut self,
-        body: &Spanned<Expr>,
-        state_names: &HashSet<String>,
-        event_names: Vec<String>,
-    ) -> HirExpr {
-        let mut allowlist = MachineBodyAllowlist::default();
-        walk_expr_for_machine_allowlist(body, state_names, &mut allowlist);
-        let diag_snapshot = self.diagnostics.len();
-        self.push_scope();
-        self.bind_machine_transition_implicits(body.1.clone());
-        let prev_events = self.current_machine_events.replace(event_names);
-        let expr = self.lower_expr(body, IntentKind::Read);
-        self.current_machine_events = prev_events;
-        self.pop_scope();
-        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
-        expr
-    }
-
-    /// Lower a machine state's `entry { ... }` / `exit { ... }` block,
-    /// applying the same allowlist filter as `lower_machine_expr_filtered`.
-    ///
-    /// `event_names` is the ordered list of event names for the enclosing
-    /// machine; see `lower_machine_expr_filtered` for details.
-    fn lower_machine_block_filtered(
-        &mut self,
-        block: &Block,
-        state_names: &HashSet<String>,
-        event_names: Vec<String>,
-    ) -> HirBlock {
-        let mut allowlist = MachineBodyAllowlist::default();
-        walk_block_for_machine_allowlist(block, state_names, &mut allowlist);
-        let diag_snapshot = self.diagnostics.len();
-        let prev_events = self.current_machine_events.replace(event_names);
-        let lowered = self.lower_block(block, &ResolvedTy::Unit);
-        self.current_machine_events = prev_events;
-        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
-        lowered
-    }
-
-    /// Filter diagnostics produced since `snapshot_len`: drop only those
-    /// whose `(kind, span)` matches an entry in `allowlist`. Anything else
-    /// — including diagnostics with the same *kind* but a different span,
-    /// or with the same span but a different kind — is preserved.
-    fn retain_or_drop_machine_body_diags(
-        &mut self,
-        snapshot_len: usize,
-        allowlist: &MachineBodyAllowlist,
-    ) {
-        if snapshot_len >= self.diagnostics.len() {
-            return;
-        }
-        let tail: Vec<_> = self.diagnostics.drain(snapshot_len..).collect();
-        for diag in tail {
-            if !allowlist.permits(&diag) {
-                self.diagnostics.push(diag);
-            }
         }
     }
 
@@ -18484,21 +17763,7 @@ impl LowerCtx {
                 // HIR-side authority: the type checker does not record a side-table
                 // entry for this expression; the result type is derived from the
                 // machine declaration context held in `current_machine_states`.
-                if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
-                    let machine_ty = self.current_machine_self_ty.clone().expect(
-                        "machine-state resolution requires the enclosing machine self type",
-                    );
-                    (
-                        HirExprKind::MachineVariantCtor {
-                            machine_name,
-                            state_idx,
-                            payload: None,
-                        },
-                        machine_ty,
-                    )
-                } else {
-                    self.lower_identifier(name, span.clone(), site)
-                }
+                self.lower_identifier(name, span.clone(), site)
             }
             Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
                 unreachable!("compatibility suffix expressions are lowered before site allocation")
@@ -18974,44 +18239,6 @@ impl LowerCtx {
                             payload: Some(hir_payload),
                         },
                         result_ty,
-                    )
-                } else if let Some((machine_name, state_idx)) =
-                    self.resolve_machine_state_name(name)
-                {
-                    // Reject functional-update syntax (`SynReceived { ..base }`) on
-                    // machine state constructors — the semantics differ from records.
-                    if base.is_some() {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "functional-update syntax on machine state constructors"
-                                    .to_string(),
-                                owning_pass: "machine state constructor validation".to_string(),
-                            },
-                            span.clone(),
-                            "machine state constructors do not support `..base` syntax",
-                        ));
-                    }
-                    // Resolve payload field expressions against the state's declared fields.
-                    // Field order follows source declaration; unknown field names are
-                    // carried through (MIR validates against the state schema at Slice 4b).
-                    let hir_payload: Vec<(String, HirExpr)> = fields
-                        .iter()
-                        .map(|(fname, expr)| {
-                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
-                        })
-                        .collect();
-                    let machine_ty = self.current_machine_self_ty.clone().expect(
-                        "machine-state resolution requires the enclosing machine self type",
-                    );
-                    // Break out of the match to let the outer wrapper build the HirExpr.
-                    // We use a nested block that evaluates to `(kind, ty)`.
-                    (
-                        HirExprKind::MachineVariantCtor {
-                            machine_name,
-                            state_idx,
-                            payload: Some(hir_payload),
-                        },
-                        machine_ty,
                     )
                 } else {
                     // Not a machine state — regular record init path.
@@ -19665,28 +18892,6 @@ impl LowerCtx {
                 // identifier (the conventional machine-body receiver). Both
                 // forms route to the same machine-self-field resolver inside
                 // a machine transition body.
-                let is_self_receiver = matches!(&object.0, Expr::This)
-                    || matches!(&object.0, Expr::Identifier(name) if name == "self")
-                        && self.current_machine_name.is_some();
-                if is_self_receiver {
-                    if let Some(hir_expr) =
-                        self.try_lower_machine_self_field_access(field, &span, site, intent)
-                    {
-                        return hir_expr;
-                    }
-                    // If we're not in a machine body with a known source state, fall
-                    // through to the catch-all below (which will emit `NotYetImplemented`
-                    // because `Expr::This` is not otherwise handled).
-                }
-                if matches!(&object.0, Expr::Identifier(name) if name == "event")
-                    && self.current_machine_name.is_some()
-                {
-                    if let Some(hir_expr) =
-                        self.try_lower_machine_event_field_access(field, &span, site, intent)
-                    {
-                        return hir_expr;
-                    }
-                }
                 // Dotted module-qualified unit constructor:
                 // `module.Type.Variant`. The checker has already resolved
                 // this nested field-access surface to the exact tagged-union
@@ -19945,48 +19150,21 @@ impl LowerCtx {
                     }
                 }
             }
-            Expr::MachineEmit { event_name, fields } => {
-                // Lower `emit EventName { field: value, ... }` to
-                // `HirExprKind::MachineEmit { event_idx, fields }`.
-                //
-                // Resolution: look up the event name in `current_machine_events`
-                // (set by `lower_machine_expr_filtered` / `lower_machine_block_filtered`).
-                // Outside a machine body (e.g. a bare `emit` in a function) the
-                // context is absent and we produce `UnresolvedSymbol` to fail
-                // closed — `emit` outside a machine body is already rejected by
-                // the parser / static checks.
-                let event_idx_opt = self
-                    .current_machine_events
-                    .as_ref()
-                    .and_then(|names| names.iter().position(|n| n == event_name));
-                if let Some(event_idx) = event_idx_opt {
-                    let lowered_fields: Vec<(String, HirExpr)> = fields
-                        .iter()
-                        .map(|(fname, fval)| {
-                            let hir_val = self.lower_expr(fval, IntentKind::Read);
-                            (fname.clone(), hir_val)
-                        })
-                        .collect();
-                    (
-                        HirExprKind::MachineEmit {
-                            event_idx,
-                            fields: lowered_fields,
-                        },
-                        ResolvedTy::Unit,
-                    )
-                } else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::UnresolvedSymbol {
-                            name: event_name.clone(),
-                        },
-                        span.clone(),
-                        format!("emitted event `{event_name}` is not declared in this machine"),
-                    ));
-                    (
-                        HirExprKind::Unsupported(format!("unresolved emit event `{event_name}`")),
-                        ResolvedTy::Unit,
-                    )
-                }
+            // `emit` only appears inside a machine body, which the checker
+            // normalizes into an ordinary push onto the step's output vector
+            // before HIR. Reaching this arm means an un-normalized program.
+            Expr::MachineEmit { event_name, .. } => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedSymbol {
+                        name: event_name.clone(),
+                    },
+                    span.clone(),
+                    "`emit` outside a normalized machine body has no output vector",
+                ));
+                (
+                    HirExprKind::Unsupported(format!("emit `{event_name}` outside a machine")),
+                    ResolvedTy::Unit,
+                )
             }
             Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             Expr::PostfixTry(inner) => self.lower_postfix_try(inner, &span),
@@ -26277,33 +25455,8 @@ impl LowerCtx {
     ///
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
     /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
-    /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
-    /// other rewrite variants are rejected as unsupported (they targeted the legacy
-    /// codegen pipeline, not the Rust MIR pipeline).
-    /// Replace a presentation-only machine leaf with the checker-proven
-    /// declaration owner carried by `MachineMethodKind`. Machine method
-    /// dispatch is resolved before HIR lowering, so this is not a leaf-name
-    /// lookup: the call-site fact already selected the exact declaration.
-    ///
-    /// This keeps the receiver and generated event companion on the same
-    /// nominal identity that machine-mono and MIR layout classification use.
-    /// In particular, an imported `lifecycle.Lifecycle<i64>` must not leave a
-    /// bare `Lifecycle` / `LifecycleEvent` type on the runtime call boundary.
-    fn canonicalize_machine_runtime_ty(&self, expr: &mut HirExpr, canonical_name: &str) {
-        let ResolvedTy::Named { name, args, .. } = &expr.ty else {
-            return;
-        };
-        if name == canonical_name {
-            return;
-        }
-        let canonical_leaf = hew_types::short_name(canonical_name);
-        if name != canonical_leaf || name.contains('.') {
-            return;
-        }
-        expr.ty = ResolvedTy::named_user(canonical_name.to_string(), args.clone());
-        expr.value_class = ValueClass::of_ty(&expr.ty, &self.type_classes);
-    }
-
+    /// symbol from the receiver type.  Only `RewriteToFunction` is recognised
+    /// here; every other rewrite kind is handled by its own lowering path.
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with three exclusive branches \
@@ -26824,82 +25977,6 @@ impl LowerCtx {
                 )),
                 ResolvedTy::Unit,
             );
-        }
-        // Machine method dispatch: `.step()` / `.state_name()` recorded in the
-        // checker's `machine_method_dispatch` side-table. Checked before
-        // `method_call_rewrites` so these calls produce dedicated HIR nodes
-        // (`MachineStep` / `MachineStateName`) rather than falling through to
-        // `MethodCallNoRewrite`. MIR/codegen consumers wire this in slice 6.
-        if let Some(dispatch) = self.machine_method_dispatch.get(&key).cloned() {
-            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-            return match dispatch {
-                hew_types::MachineMethodKind::Step { machine_name } => {
-                    let mut receiver = lowered_receiver;
-                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
-                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::PersistentShare,
-                        ty: ResolvedTy::Unit,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "machine step: missing event argument".into(),
-                        ),
-                        span: span.clone(),
-                    });
-                    self.canonicalize_machine_runtime_ty(
-                        &mut event,
-                        &format!("{machine_name}Event"),
-                    );
-                    (
-                        HirExprKind::MachineStep {
-                            machine_name,
-                            receiver: Box::new(receiver),
-                            event: Box::new(event),
-                        },
-                        ResolvedTy::Unit,
-                    )
-                }
-                hew_types::MachineMethodKind::StateName { machine_name } => {
-                    let mut receiver = lowered_receiver;
-                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
-                    (
-                        HirExprKind::MachineStateName {
-                            machine_name,
-                            receiver: Box::new(receiver),
-                        },
-                        ResolvedTy::String,
-                    )
-                }
-                hew_types::MachineMethodKind::TakeEmits { machine_name } => {
-                    let mut receiver = lowered_receiver;
-                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
-                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::PersistentShare,
-                        ty: ResolvedTy::Unit,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "machine take_emits: missing event argument".into(),
-                        ),
-                        span: span.clone(),
-                    });
-                    self.canonicalize_machine_runtime_ty(
-                        &mut event,
-                        &format!("{machine_name}Event"),
-                    );
-                    (
-                        HirExprKind::MachineTakeEmits {
-                            machine_name,
-                            receiver: Box::new(receiver),
-                            event: Box::new(event),
-                        },
-                        ResolvedTy::I64,
-                    )
-                }
-            };
         }
         // `dyn Trait` receivers take precedence: the checker's
         // `dyn_trait_method_calls` side-table pins the trait/method/slot
@@ -29298,212 +28375,6 @@ impl LowerCtx {
         }
     }
 
-    /// Resolve an identifier to a machine state constructor if `name` is a
-    /// declared state of the currently-enclosing machine.
-    ///
-    /// Returns `Some((machine_name, state_idx))` when both conditions hold:
-    /// - `current_machine_name` / `current_machine_states` are set (inside a
-    ///   machine lowering), AND
-    /// - `name` matches one of the state names in declaration order.
-    ///
-    /// Returns `None` otherwise; the caller falls through to `lower_identifier`.
-    fn resolve_machine_state_name(&self, name: &str) -> Option<(String, usize)> {
-        let machine_name = self.current_machine_name.as_ref()?;
-        let states = self.current_machine_states.as_ref()?;
-        let idx = states.iter().position(|(n, _)| n == name)?;
-        Some((machine_name.clone(), idx))
-    }
-
-    /// Attempt to lower a `self.<field>` access inside a machine transition body.
-    ///
-    /// Called when the `Expr::FieldAccess` arm detects `object == Expr::This`.
-    ///
-    /// Returns `Some(HirExpr)` on both the happy path (resolved to
-    /// `HirExprKind::MachineFieldAccess`) and the error paths (diagnostic pushed,
-    /// `HirExprKind::Unsupported` returned wrapped in `Some`). Returns `None` only
-    /// when `self` is outside a machine body entirely, signalling the caller to
-    /// fall through to the generic `Expr::This` handler (which will emit
-    /// `NotYetImplemented`).
-    fn try_lower_machine_self_field_access(
-        &mut self,
-        field: &str,
-        span: &std::ops::Range<usize>,
-        site: SiteId,
-        intent: IntentKind,
-    ) -> Option<HirExpr> {
-        let machine_name = self.current_machine_name.as_ref()?.clone();
-
-        // We are in a machine body.  Now check whether the source state is known.
-        let Some(src_state_idx) = self.current_machine_source_state else {
-            // Wildcard (`_`) transition body — no concrete source state.
-            // `self.field` access has no unique variant to read from.
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!("`self.{field}` inside a wildcard (`_`) transition body"),
-                    owning_pass: "machine typed self-field access in wildcard transitions"
-                        .to_string(),
-                },
-                span.clone(),
-                "self-field reads inside wildcard transitions have no concrete source \
-                 state; refactor to use a named source state or match on the state first",
-            ));
-            return Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
-                intent,
-                kind: HirExprKind::Unsupported(format!(
-                    "self.{field} in wildcard transition (no source state)"
-                )),
-                span: span.clone(),
-            });
-        };
-
-        // Look up the field by name in the source state's payload.
-        let states = self.current_machine_states.as_ref()?;
-        let state_fields = &states[src_state_idx].1;
-        let state_name = states[src_state_idx].0.clone();
-        if let Some((field_idx, hir_field)) = state_fields
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name == field)
-        {
-            let field_ty = hir_field.ty.clone();
-            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
-
-            Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: field_ty,
-                value_class: vc,
-                intent,
-                kind: HirExprKind::MachineFieldAccess {
-                    machine_name,
-                    state_idx: src_state_idx,
-                    field_idx,
-                    field_name: field.to_string(),
-                },
-                span: span.clone(),
-            })
-        } else {
-            // Field name not declared on this state.
-            let available: Vec<String> = state_fields.iter().map(|f| f.name.clone()).collect();
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "`self.{field}` — field not declared on state `{state_name}` \
-                         of machine `{machine_name}`"
-                    ),
-                    owning_pass: "machine state payload field validation".to_string(),
-                },
-                span.clone(),
-                format!(
-                    "state `{state_name}` has fields: [{}]; `{field}` is not one of them",
-                    available.join(", ")
-                ),
-            ));
-            Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
-                intent,
-                kind: HirExprKind::Unsupported(format!(
-                    "self.{field} not found on state {state_name}"
-                )),
-                span: span.clone(),
-            })
-        }
-    }
-
-    fn try_lower_machine_event_field_access(
-        &mut self,
-        field: &str,
-        span: &std::ops::Range<usize>,
-        site: SiteId,
-        intent: IntentKind,
-    ) -> Option<HirExpr> {
-        let machine_name = self.current_machine_name.as_ref()?.clone();
-        let (event_idx, event_fields) = self.current_machine_transition_event.clone()?;
-        if let Some((field_idx, hir_field)) = event_fields
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name == field)
-        {
-            let field_ty = hir_field.ty.clone();
-            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
-
-            return Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: field_ty,
-                value_class: vc,
-                intent,
-                kind: HirExprKind::MachineEventFieldAccess {
-                    machine_name,
-                    event_idx,
-                    field_idx,
-                    field_name: field.to_string(),
-                },
-                span: span.clone(),
-            });
-        }
-
-        // Derive the event name from the event index into `current_machine_events`.
-        let event_name = self
-            .current_machine_events
-            .as_ref()
-            .and_then(|ev| ev.get(event_idx))
-            .cloned()
-            .unwrap_or_else(|| format!("{machine_name}Event"));
-        let available: Vec<String> = event_fields.iter().map(|f| f.name.clone()).collect();
-        let note = if available.is_empty() {
-            format!("event `{event_name}` has no payload fields; `{field}` does not exist")
-        } else {
-            format!(
-                "event `{event_name}` has fields: [{}]; `{field}` is not one of them",
-                available.join(", ")
-            )
-        };
-        self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::MachineEventFieldNotFound {
-                machine_name: machine_name.clone(),
-                event_name,
-                field_name: field.to_string(),
-                available_fields: available,
-            },
-            span.clone(),
-            note,
-        ));
-        Some(HirExpr {
-            node: self.ids.node(),
-            site,
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent,
-            kind: HirExprKind::Unsupported(format!("event.{field} not found")),
-            span: span.clone(),
-        })
-    }
-
-    fn bind_machine_transition_implicits(&mut self, span: std::ops::Range<usize>) {
-        let Some(machine_ty) = self.current_machine_self_ty.clone() else {
-            return;
-        };
-        let ResolvedTy::Named {
-            name: machine_name,
-            args,
-            ..
-        } = &machine_ty
-        else {
-            unreachable!("machine context self type must be a named type");
-        };
-        let event_ty = ResolvedTy::named_user(format!("{machine_name}Event"), args.clone());
-        let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
-        let _event = self.bind("event".to_string(), event_ty, false, span);
-    }
-
     fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
         if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
             stdlib_catalog::missing_import_module(name)
@@ -30625,8 +29496,6 @@ fn collect_captures_walk(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -30791,34 +29660,9 @@ fn collect_captures_walk(
                 collect_captures_walk(e, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            // `emit` is only valid inside a machine body, which is never
-            // inside a lambda/closure — so this arm should be unreachable in
-            // practice.  Walk fields defensively to keep the traversal
-            // exhaustive.
-            for (_, field_val) in fields {
-                collect_captures_walk(field_val, param_ids, seen, captures, self_id);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            // Machine method calls are not expected inside lambda/closure
-            // bodies in v0.5. Walk defensively for exhaustiveness.
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(event, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            // Same defensive rationale as `MachineStep` above.
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(event, param_ids, seen, captures, self_id);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -30936,8 +29780,6 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -31124,26 +29966,9 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            // `emit` cannot appear inside a closure body (machine bodies are
-            // not closures); walk fields defensively for exhaustiveness.
-            for (_, field_val) in fields {
-                collect_general_closure_captures_walk(field_val, outer_bindings, seen, captures);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        }
-        | HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -31335,264 +30160,6 @@ fn collect_captures_walk_block(
 
 // ── Machine static-check helpers ────────────────────────────────────────────
 
-/// Allowlist of AST spans that mark constructs in a machine transition body
-/// or entry/exit block which the HIR lowerer cannot resolve today but which
-/// are owned by the AST-summary static checks (exhaustiveness, self-
-/// transition rules, effect-parity, emit-cycle). When lowering a machine
-/// body produces a diagnostic whose `(kind, span)` matches one of these
-/// entries exactly, the diagnostic is dropped; every other diagnostic
-/// produced during the same lowering is preserved so unrelated unresolved
-/// symbols and type errors still fail closed.
-///
-/// Note: `Expr::MachineEmit` is no longer in the allowlist because it now
-/// lowers to `HirExprKind::MachineEmit` directly rather than falling through
-/// to `NotYetImplemented`.
-#[derive(Debug, Default)]
-struct MachineBodyAllowlist {
-    /// Spans of `Expr::Identifier(name)` where `name` is a declared state
-    /// name in the current machine — drops the matching `UnresolvedSymbol`.
-    state_name_refs: Vec<(Span, String)>,
-    /// Spans of `Expr::This` — drops the matching `NotYetImplemented`
-    /// raised by the catch-all expression arm.
-    this_spans: Vec<Span>,
-}
-
-impl MachineBodyAllowlist {
-    /// Return `true` iff the diagnostic's `(kind, span)` is one this
-    /// allowlist explicitly accounts for. Anything else flows through.
-    fn permits(&self, diag: &HirDiagnostic) -> bool {
-        match &diag.kind {
-            HirDiagnosticKind::UnresolvedSymbol { name } => self
-                .state_name_refs
-                .iter()
-                .any(|(span, allowed)| spans_equal(span, &diag.span) && allowed == name),
-            HirDiagnosticKind::NotYetImplemented { .. } => self
-                .this_spans
-                .iter()
-                .any(|span| spans_equal(span, &diag.span)),
-            _ => false,
-        }
-    }
-}
-
-fn spans_equal(a: &Span, b: &Span) -> bool {
-    a.start == b.start && a.end == b.end
-}
-
-/// Walk a machine transition body expression to populate
-/// `MachineBodyAllowlist`. Only the specific constructs that the HIR
-/// lowerer is known not to support yet (state-name identifier references,
-/// `this`, and `emit`) are recorded. All other sub-expressions are walked
-/// solely to descend into their children — they themselves are never
-/// allowlisted, so e.g. an unresolved user identifier inside a `Call`
-/// argument still produces a visible diagnostic.
-fn walk_expr_for_machine_allowlist(
-    expr: &Spanned<Expr>,
-    state_names: &HashSet<String>,
-    out: &mut MachineBodyAllowlist,
-) {
-    let (node, span) = expr;
-    match node {
-        Expr::This => out.this_spans.push(span.clone()),
-        Expr::MachineEmit { fields, .. } => {
-            // `emit` now lowers to `HirExprKind::MachineEmit` directly; no
-            // allowlist entry is needed.  Still descend into field values in
-            // case they contain state-name refs or `this` that do need entries.
-            for (_, value) in fields {
-                walk_expr_for_machine_allowlist(value, state_names, out);
-            }
-        }
-        Expr::Identifier(name) if state_names.contains(name) => {
-            out.state_name_refs.push((span.clone(), name.clone()));
-        }
-        Expr::Block(block) => walk_block_for_machine_allowlist(block, state_names, out),
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
-        | Expr::Handle {
-            operand: left,
-            body: right,
-            ..
-        } => {
-            walk_expr_for_machine_allowlist(left, state_names, out);
-            walk_expr_for_machine_allowlist(right, state_names, out);
-        }
-        Expr::Unary { operand, .. } => {
-            walk_expr_for_machine_allowlist(operand, state_names, out);
-        }
-        Expr::Call { function, args, .. } => {
-            walk_expr_for_machine_allowlist(function, state_names, out);
-            for arg in args {
-                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
-            }
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            walk_expr_for_machine_allowlist(receiver, state_names, out);
-            for arg in args {
-                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
-            }
-        }
-        Expr::FieldAccess { object, .. } => {
-            walk_expr_for_machine_allowlist(object, state_names, out);
-        }
-        Expr::Index { object, index } => {
-            walk_expr_for_machine_allowlist(object, state_names, out);
-            walk_expr_for_machine_allowlist(index, state_names, out);
-        }
-        Expr::StructInit { fields, base, .. } => {
-            for (_, value) in fields {
-                walk_expr_for_machine_allowlist(value, state_names, out);
-            }
-            if let Some(base) = base {
-                walk_expr_for_machine_allowlist(base, state_names, out);
-            }
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            walk_expr_for_machine_allowlist(condition, state_names, out);
-            walk_expr_for_machine_allowlist(then_block, state_names, out);
-            if let Some(else_block) = else_block {
-                walk_expr_for_machine_allowlist(else_block, state_names, out);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            walk_expr_for_machine_allowlist(scrutinee, state_names, out);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    walk_expr_for_machine_allowlist(guard, state_names, out);
-                }
-                walk_expr_for_machine_allowlist(&arm.body, state_names, out);
-            }
-        }
-        Expr::Cast { expr, .. } => walk_expr_for_machine_allowlist(expr, state_names, out),
-        Expr::Range { start, end, .. } => {
-            if let Some(start) = start {
-                walk_expr_for_machine_allowlist(start, state_names, out);
-            }
-            if let Some(end) = end {
-                walk_expr_for_machine_allowlist(end, state_names, out);
-            }
-        }
-        Expr::Is { lhs, rhs } => {
-            walk_expr_for_machine_allowlist(lhs, state_names, out);
-            walk_expr_for_machine_allowlist(rhs, state_names, out);
-        }
-        Expr::Tuple(items) | Expr::Array(items) => {
-            for item in items {
-                walk_expr_for_machine_allowlist(item, state_names, out);
-            }
-        }
-        // LEGITIMATE-NOOP: conservative Expr walker — only Expr variants
-        // reachable in machine transition/entry/exit bodies are descended into.
-        // Unknown variants cannot mask unresolved diagnostics; they simply
-        // aren't allowlisted and surface normally. Expr has many variants not
-        // valid here (lambdas, spawn, select, scope, timeout, for-loops, …).
-        _ => {}
-    }
-}
-
-/// Walk a machine entry/exit block to populate `MachineBodyAllowlist`.
-fn walk_block_for_machine_allowlist(
-    block: &Block,
-    state_names: &HashSet<String>,
-    out: &mut MachineBodyAllowlist,
-) {
-    for (stmt, _) in &block.stmts {
-        walk_stmt_for_machine_allowlist(stmt, state_names, out);
-    }
-    if let Some(tail) = &block.trailing_expr {
-        walk_expr_for_machine_allowlist(tail, state_names, out);
-    }
-}
-
-fn walk_stmt_for_machine_allowlist(
-    stmt: &Stmt,
-    state_names: &HashSet<String>,
-    out: &mut MachineBodyAllowlist,
-) {
-    match stmt {
-        Stmt::Expression(e) => walk_expr_for_machine_allowlist(e, state_names, out),
-        Stmt::Assign { target, value, .. } => {
-            walk_expr_for_machine_allowlist(target, state_names, out);
-            walk_expr_for_machine_allowlist(value, state_names, out);
-        }
-        Stmt::Let { value, .. } | Stmt::Var { value, .. } | Stmt::Return(value) => {
-            if let Some(value) = value {
-                walk_expr_for_machine_allowlist(value, state_names, out);
-            }
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            walk_expr_for_machine_allowlist(condition, state_names, out);
-            walk_block_for_machine_allowlist(then_block, state_names, out);
-            if let Some(else_block) = else_block {
-                if let Some(block) = &else_block.block {
-                    walk_block_for_machine_allowlist(block, state_names, out);
-                }
-                if let Some(if_stmt) = &else_block.if_stmt {
-                    walk_stmt_for_machine_allowlist(&if_stmt.0, state_names, out);
-                }
-            }
-        }
-        Stmt::Defer(inner) => walk_expr_for_machine_allowlist(inner, state_names, out),
-        // LEGITIMATE-NOOP: conservative Stmt walker — only statement variants
-        // reachable in machine entry/exit blocks are descended into. See the
-        // walker contract note on `walk_expr_for_machine_allowlist`.
-        _ => {}
-    }
-}
-
-/// Determine whether a self-transition body is "empty" for the `@reenter` rule.
-///
-/// A body is considered empty when:
-/// - It is `Expr::Identifier(target_state)` — the no-body semicolon shorthand
-///   that the parser synthesises for `on E: S -> S;`.
-/// - It is `Expr::Block` with no statements and no trailing expression.
-///
-/// Any other form (statements, expressions) is non-empty and requires `@reenter`.
-fn is_empty_self_body(body: &Expr, target_state: &str) -> bool {
-    match body {
-        Expr::Identifier(name) => name == target_state,
-        Expr::Block(block) => block.stmts.is_empty() && block.trailing_expr.is_none(),
-        _ => false,
-    }
-}
-
-/// Shallow-scan a `Block` for field names appearing as the left-hand side of
-/// an assignment statement (`self.field = ...`). Used for effect-parity checking
-/// in entry blocks — the scan is intentionally shallow (depth = 1) since a
-/// full walk would require type information we don't have in Lane A.
-fn collect_assigned_field_names(block: &Block) -> Vec<(String, Span)> {
-    let mut names = Vec::new();
-    for (stmt, _) in &block.stmts {
-        if let Stmt::Assign { target, .. } = stmt {
-            if let Expr::FieldAccess { object, field } = &target.0 {
-                if matches!(object.0, Expr::This) {
-                    names.push((field.clone(), target.1.clone()));
-                }
-            }
-        }
-    }
-    names
-}
-
-/// Shallow-scan an `Expr` (transition body) for `self.field = ...` assignments.
-fn collect_assigned_field_names_expr(expr: &Expr) -> Vec<String> {
-    if let Expr::Block(block) = expr {
-        collect_assigned_field_names(block)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
 /// Collect event names directly emitted by `emit EventName` expressions within
 /// an expression (transition body). Only direct emits are tracked; deeper nesting
 /// is deferred to runtime (per the plan's "direct cycles only" rule).
@@ -31627,368 +30194,6 @@ fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
         // descends into `Block` for top-level event counting. Other Expr
         // variants are irrelevant to direct-emit detection.
         _ => {}
-    }
-}
-
-/// Collect event names emitted by `HirExprKind::MachineEmit` nodes within a
-/// lowered HIR expression tree, resolving `event_idx` back to names via
-/// `event_names` (the ordered event list of the enclosing machine declaration,
-/// matching `HirMachineDecl::events` order).
-///
-/// Descends into all sub-expressions including `if`/`else` branches so that a
-/// direct self-emit nested inside a conditional is detected by the emit-cycle
-/// check — unlike the old AST walker which only traversed top-level blocks.
-fn collect_hir_emitted_events(expr: &HirExpr, event_names: &[String]) -> Vec<String> {
-    let mut events = Vec::new();
-    collect_hir_emitted_events_walk(expr, event_names, &mut events);
-    events
-}
-
-/// Walk every statement and the tail of a `HirBlock`, collecting machine-emit
-/// event names. Used by the let-else arm (whose `else_body` is a `HirBlock`,
-/// not an `Expr::Block`) so a self-emit inside a let-else fallback is counted
-/// by the emit-cycle check.
-fn collect_hir_emitted_events_in_block(
-    block: &HirBlock,
-    event_names: &[String],
-    out: &mut Vec<String>,
-) {
-    for stmt in &block.statements {
-        collect_hir_emitted_events_in_stmt(stmt, event_names, out);
-    }
-    if let Some(tail) = &block.tail {
-        collect_hir_emitted_events_walk(tail, event_names, out);
-    }
-}
-
-/// Walk one HIR statement for machine-emit event names. Centralised so every
-/// block-bearing walker (the `_in_block` helper plus the inline `Block` /
-/// `GenBlock` / etc. arms) reaches an identical set of emit-bearing
-/// sub-expressions — including the let-else success prelude.
-fn collect_hir_emitted_events_in_stmt(
-    stmt: &HirStmt,
-    event_names: &[String],
-    out: &mut Vec<String>,
-) {
-    match &stmt.kind {
-        HirStmtKind::Expr(e) | HirStmtKind::Let(_, Some(e)) | HirStmtKind::Return(Some(e)) => {
-            collect_hir_emitted_events_walk(e, event_names, out);
-        }
-        HirStmtKind::Destructure { value, .. } => {
-            collect_hir_emitted_events_walk(value, event_names, out);
-        }
-        HirStmtKind::Assign { value, .. } => {
-            collect_hir_emitted_events_walk(value, event_names, out);
-        }
-        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-        HirStmtKind::Defer { body, .. } => {
-            collect_hir_emitted_events_walk(body, event_names, out);
-        }
-        HirStmtKind::LetElse {
-            scrutinee,
-            success_prelude,
-            else_body,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for prelude_stmt in success_prelude {
-                collect_hir_emitted_events_in_stmt(prelude_stmt, event_names, out);
-            }
-            collect_hir_emitted_events_in_block(else_body, event_names, out);
-        }
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "single recursive walker spanning all HirExprKind variants"
-)]
-#[allow(
-    clippy::match_same_arms,
-    reason = "block-bearing variants (GenBlock / Scope / ForkBlock / While / \
-              ForRange / WhileLet / Loop) all delegate to \
-              collect_hir_emitted_events_in_block but are kept as distinct arms \
-              so a new variant forces an explicit per-variant decision rather \
-              than silently joining a merged arm"
-)]
-fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: &mut Vec<String>) {
-    match &expr.kind {
-        HirExprKind::RcIntrinsic {
-            receiver, value, ..
-        } => {
-            for operand in receiver.iter().chain(value.iter()) {
-                collect_hir_emitted_events_walk(operand, event_names, out);
-            }
-        }
-        HirExprKind::MachineEmit { event_idx, fields } => {
-            if let Some(name) = event_names.get(*event_idx) {
-                out.push(name.clone());
-            }
-            // Recurse into field expressions — they may contain nested emits.
-            for (_, e) in fields {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::Block(block) => {
-            collect_hir_emitted_events_in_block(block, event_names, out);
-        }
-        HirExprKind::GenBlock { body, .. } => {
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::Yield {
-            value: Some(value), ..
-        } => collect_hir_emitted_events_walk(value, event_names, out),
-        HirExprKind::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            collect_hir_emitted_events_walk(condition, event_names, out);
-            collect_hir_emitted_events_walk(then_expr, event_names, out);
-            if let Some(e) = else_expr {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
-            collect_hir_emitted_events_walk(left, event_names, out);
-            collect_hir_emitted_events_walk(right, event_names, out);
-        }
-        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
-            collect_hir_emitted_events_walk(operand, event_names, out);
-        }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            collect_hir_emitted_events_walk(conn, event_names, out);
-        }
-        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
-            collect_hir_emitted_events_walk(child, event_names, out);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            collect_hir_emitted_events_walk(listener, event_names, out);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            collect_hir_emitted_events_walk(stream, event_names, out);
-        }
-        HirExprKind::NumericCast { value, .. }
-        | HirExprKind::SaturatingWidthCast { value, .. }
-        | HirExprKind::TryWidthCast { value, .. }
-        | HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_hir_emitted_events_walk(value, event_names, out);
-        }
-        HirExprKind::TupleLiteral { elements } => {
-            for elem in elements {
-                collect_hir_emitted_events_walk(elem, event_names, out);
-            }
-        }
-        HirExprKind::Call { callee, args, .. } => {
-            collect_hir_emitted_events_walk(callee, event_names, out);
-            for a in args {
-                collect_hir_emitted_events_walk(a, event_names, out);
-            }
-        }
-        HirExprKind::Match { scrutinee, arms } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    collect_hir_emitted_events_walk(guard, event_names, out);
-                }
-                collect_hir_emitted_events_walk(&arm.body, event_names, out);
-            }
-        }
-        // Additional expression forms whose sub-expressions can contain emits.
-        HirExprKind::ActorMessage { receiver, args, .. }
-        | HirExprKind::ActorDelivery { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::ActorGenStream { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
-        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            for a in args {
-                collect_hir_emitted_events_walk(a, event_names, out);
-            }
-        }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(msg, event_names, out);
-            collect_hir_emitted_events_walk(timeout_ms, event_names, out);
-        }
-        HirExprKind::Spawn { args, .. } => {
-            for (_, e) in args {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::StructInit { fields, base, .. } => {
-            for (_, e) in fields {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-            if let Some(b) = base {
-                collect_hir_emitted_events_walk(b, event_names, out);
-            }
-        }
-        HirExprKind::FieldAccess { object, .. } => {
-            collect_hir_emitted_events_walk(object, event_names, out);
-        }
-        HirExprKind::Scope { body }
-        | HirExprKind::Race { body }
-        | HirExprKind::ForkBlock { body, .. } => {
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::ScopeRecovery { scope, handler, .. } => {
-            collect_hir_emitted_events_walk(scope, event_names, out);
-            collect_hir_emitted_events_walk(handler, event_names, out);
-        }
-        HirExprKind::ScopeDeadline { duration, body } => {
-            collect_hir_emitted_events_walk(duration, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::While {
-            condition, body, ..
-        } => {
-            collect_hir_emitted_events_walk(condition, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::ForRange {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(start, event_names, out);
-            collect_hir_emitted_events_walk(end, event_names, out);
-            collect_hir_emitted_events_walk(step, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for block in std::iter::once(body).chain(else_body.as_ref()) {
-                collect_hir_emitted_events_in_block(block, event_names, out);
-            }
-        }
-        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
-            if let Some(value) = value {
-                collect_hir_emitted_events_walk(value, event_names, out);
-            }
-        }
-        HirExprKind::Loop { body, .. } => {
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::TupleIndex { tuple, .. } => {
-            collect_hir_emitted_events_walk(tuple, event_names, out);
-        }
-        HirExprKind::Index { container, index } => {
-            collect_hir_emitted_events_walk(container, event_names, out);
-            collect_hir_emitted_events_walk(index, event_names, out);
-        }
-        HirExprKind::Slice {
-            container,
-            start,
-            end,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(container, event_names, out);
-            if let Some(s) = start {
-                collect_hir_emitted_events_walk(s, event_names, out);
-            }
-            if let Some(e) = end {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(arg, event_names, out);
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(event, event_names, out);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(event, event_names, out);
-        }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. }
-        | HirExprKind::SubsumedValue {
-            source: receiver, ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-        }
-        HirExprKind::MachineVariantCtor { payload, .. } => {
-            if let Some(fields) = payload {
-                for (_, e) in fields {
-                    collect_hir_emitted_events_walk(e, event_names, out);
-                }
-            }
-        }
-        HirExprKind::Select(sel) => {
-            for arm in &sel.arms {
-                match &arm.kind {
-                    HirSelectArmKind::StreamNext { stream } => {
-                        collect_hir_emitted_events_walk(stream, event_names, out);
-                    }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_hir_emitted_events_walk(actor, event_names, out);
-                        for a in args {
-                            collect_hir_emitted_events_walk(a, event_names, out);
-                        }
-                    }
-                    HirSelectArmKind::TaskAwait { task } => {
-                        collect_hir_emitted_events_walk(task, event_names, out);
-                    }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        collect_hir_emitted_events_walk(receiver, event_names, out);
-                    }
-                    HirSelectArmKind::AfterTimer { duration } => {
-                        collect_hir_emitted_events_walk(duration, event_names, out);
-                    }
-                }
-                collect_hir_emitted_events_walk(&arm.body, event_names, out);
-            }
-        }
-        // A general closure executes inline in the current lowering flow;
-        // emits in its body belong to the enclosing transition.
-        HirExprKind::Closure { body, .. } => {
-            collect_hir_emitted_events_walk(body, event_names, out);
-        }
-        // Lambda-actors run on a separate actor substrate; MIR materialises
-        // only the handle/captures. Emits in their bodies belong to the inner
-        // actor, not the enclosing transition.
-        // Leaf variants also produce no emits.
-        HirExprKind::SpawnLambdaActor { .. }
-        | HirExprKind::Literal(_)
-        | HirExprKind::RegexLiteralRef { .. }
-        | HirExprKind::BindingRef { .. }
-        | HirExprKind::ContextReader { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
-        | HirExprKind::Yield { value: None, .. }
-        | HirExprKind::Continue { .. }
-        | HirExprKind::ActorSelf
-        | HirExprKind::Unsupported(_) => {}
     }
 }
 
@@ -33375,29 +31580,6 @@ fn scan_item_for_call_shape(
                 scan_block_for_call_shape(&hook.body, callable, diagnostics);
             }
         }
-        HirItem::Machine(machine) => {
-            for state in &machine.states {
-                if let Some(entry) = &state.entry {
-                    scan_block_for_call_shape(entry, callable, diagnostics);
-                }
-                if let Some(exit) = &state.exit {
-                    scan_block_for_call_shape(exit, callable, diagnostics);
-                }
-            }
-            for trans in &machine.transitions {
-                // FC-P1-B revision pass 1: walk the guard expression as
-                // well as the body. Prior to lowering `tr.guard` into HIR
-                // (resolved in this same pass), `HirMachineTransition`
-                // carried only `has_guard: bool`, so this walker — and
-                // every other machine-body walker — was a no-op for guard
-                // positions. With `guard: Option<HirExpr>` the gate now
-                // sees call shapes inside `when <expr>` predicates.
-                if let Some(g) = &trans.guard {
-                    scan_expr_for_call_shape(g, callable, diagnostics);
-                }
-                scan_expr_for_call_shape(&trans.body, callable, diagnostics);
-            }
-        }
         // TypeDecl, Record, Supervisor, Impl, ExternFn carry no user
         // expression bodies that contain `HirExprKind::Call` nodes at this
         // stage (impl methods are also re-emitted as `HirItem::Function`
@@ -33837,29 +32019,11 @@ fn scan_expr_for_call_shape(
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
         } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
-        }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_call_shape(v, callable, diagnostics);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(event, callable, diagnostics);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(event, callable, diagnostics);
         }
         HirExprKind::MachineVariantCtor {
             payload: Some(fields),
@@ -33933,8 +32097,6 @@ fn scan_expr_for_call_shape(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::MachineVariantCtor { payload: None, .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -38669,138 +36831,6 @@ impl Widget {
     // functions.  They guard against a future variant arm accidentally dropping
     // recursion — exhaustivity catches a *missing* arm, but not an arm that
     // exists yet skips sub-expressions.
-
-    /// Build a minimal `HirExpr` wrapping a given `kind`.  All identity fields
-    /// are set to zero/default; they have no effect on the walker functions.
-    fn dummy_expr(kind: HirExprKind) -> HirExpr {
-        use crate::ids::HirNodeId;
-        HirExpr {
-            node: HirNodeId(0),
-            site: SiteId(0),
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind,
-            span: 0..0,
-        }
-    }
-
-    /// `collect_call_sites_in_expr` must recurse into the field expressions of
-    /// a `MachineEmit` node.  Without the arm added in the exhaustivity fix, a
-    /// `Call` nested in an emit field was silently ignored, so the call site
-    /// would never surface in the monomorphisation registry.
-    #[test]
-    fn collect_call_sites_in_expr_recurses_through_machine_emit_fields() {
-        let call_expr = dummy_expr(HirExprKind::Call {
-            target: CallTarget::IndirectFunctionValue,
-            callee: Box::new(dummy_expr(HirExprKind::BindingRef {
-                name: "call_some_fn".to_string(),
-                resolved: ResolvedRef::Unresolved,
-            })),
-            args: vec![],
-        });
-        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![("x".to_string(), call_expr)],
-        });
-
-        let mut sites: Vec<(String, SiteId)> = Vec::new();
-        let mut trait_sites: Vec<TraitMethodStaticSite> = Vec::new();
-        collect_call_sites_in_expr(&emit_expr, &mut sites, &mut trait_sites);
-
-        assert!(
-            sites.iter().any(|(name, _)| name == "call_some_fn"),
-            "collect_call_sites_in_expr must recurse into MachineEmit fields; \
-             got sites: {sites:?}"
-        );
-    }
-
-    /// `collect_hir_emitted_events_walk` must recurse into the field
-    /// expressions of a `MachineEmit` node so that a nested emit is reported.
-    /// Before the exhaustivity fix the field loop was absent; `Inner` would be
-    /// silently dropped from `body_emits`.
-    #[test]
-    fn collect_hir_emitted_events_walk_recurses_through_machine_emit_fields() {
-        let inner_emit = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 1,
-            fields: vec![],
-        });
-        let outer_emit = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![("x".to_string(), inner_emit)],
-        });
-        let event_names = vec!["Outer".to_string(), "Inner".to_string()];
-
-        let mut out: Vec<String> = Vec::new();
-        collect_hir_emitted_events_walk(&outer_emit, &event_names, &mut out);
-
-        assert!(
-            out.contains(&"Outer".to_string()),
-            "Outer emit must be reported; got: {out:?}"
-        );
-        assert!(
-            out.contains(&"Inner".to_string()),
-            "Inner emit nested in Outer field must be reported; got: {out:?}"
-        );
-    }
-
-    /// A general `Closure` body executes inline — its emits belong to the
-    /// enclosing transition and must bubble out.  Before revision 1 of the
-    /// exhaustivity fix, `Closure { .. }` was grouped with `SpawnLambdaActor`
-    /// as a scope boundary, so `emit Beep` inside a closure was silently
-    /// dropped from `body_emits`.
-    #[test]
-    fn collect_hir_emitted_events_walk_recurses_into_closure_body() {
-        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![],
-        });
-        let closure_expr = dummy_expr(HirExprKind::Closure {
-            params: vec![],
-            ret_ty: ResolvedTy::Unit,
-            body: Box::new(emit_expr),
-            captures: vec![],
-            escape_kind: hew_types::ClosureEscapeKind::Local,
-        });
-        let event_names = vec!["Beep".to_string()];
-
-        let mut out: Vec<String> = Vec::new();
-        collect_hir_emitted_events_walk(&closure_expr, &event_names, &mut out);
-
-        assert!(
-            out.contains(&"Beep".to_string()),
-            "emit inside a Closure body must bubble to the enclosing transition; \
-             got: {out:?}"
-        );
-    }
-
-    /// A `SpawnLambdaActor` body runs on a separate actor substrate; its emits
-    /// must NOT bubble out to the parent transition.  This is the inverse of
-    /// the `Closure` test above and guards that the `SpawnLambdaActor` leaf
-    /// boundary is preserved by the revision-1 fix.
-    #[test]
-    fn collect_hir_emitted_events_walk_does_not_recurse_into_spawn_lambda_actor_body() {
-        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![],
-        });
-        let spawn_expr = dummy_expr(HirExprKind::SpawnLambdaActor {
-            params: vec![],
-            reply_ty: ResolvedTy::Unit,
-            body: Box::new(emit_expr),
-            captures: vec![],
-        });
-        let event_names = vec!["Inner".to_string()];
-
-        let mut out: Vec<String> = Vec::new();
-        collect_hir_emitted_events_walk(&spawn_expr, &event_names, &mut out);
-
-        assert!(
-            out.is_empty(),
-            "emit inside a SpawnLambdaActor body must NOT bubble to the parent \
-             transition; got: {out:?}"
-        );
-    }
 
     #[test]
     fn awaited_actor_close_produces_unit_in_value_and_statement_positions() {

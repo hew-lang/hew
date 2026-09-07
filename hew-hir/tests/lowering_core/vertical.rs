@@ -535,7 +535,6 @@ fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
             hew_hir::HirItem::Function(f) if f.name == "main" => Some(f),
             hew_hir::HirItem::Function(_)
             | hew_hir::HirItem::TypeDecl(_)
-            | hew_hir::HirItem::Machine(_)
             | hew_hir::HirItem::Record(_)
             | hew_hir::HirItem::Actor(_)
             | hew_hir::HirItem::Supervisor(_)

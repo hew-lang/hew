@@ -1,7 +1,6 @@
 //! Dedicated post-function-mono record/enum layout discovery pass.
 //!
-//! This is the structural sibling of [`crate::machine_mono`]. Where
-//! `machine_mono` discovers concrete *machine* instantiations reachable only
+//! Where function-mono discovers concrete instantiations reachable only
 //! through a substituted generic-function body, this pass discovers concrete
 //! *record* and *enum* layout instantiations reachable the same way and
 //! registers them under the shared `origin$$arg1$arg2` mangling so MIR's
@@ -25,7 +24,7 @@
 //!
 //! `run_layout_mono_pass` MUST run **after** `closure_under_substitution` has
 //! fully populated [`crate::node::HirModule::monomorphisations`] and **before**
-//! the `HirModule` is constructed — the same window as `run_machine_mono_pass`.
+//! the `HirModule` is constructed.
 //! Running earlier would observe a partial function-mono registry and miss
 //! transitively-reachable instantiations.
 //!
@@ -37,13 +36,13 @@
 //! domain is a function-mono defect or a checker-authority gap; the pass emits
 //! [`crate::diagnostic::HirDiagnosticKind::UnresolvedLayoutTypeParamPostMono`]
 //! and refuses to register the under-instantiated layout. This mirrors
-//! `machine_mono`'s DI-015 residual discipline exactly (see that module for
+//! the DI-015 residual discipline exactly (see the module docs for
 //! the name-collision rationale): a concrete decl whose spelling collides with
 //! an origin type-param name on some *unrelated* declaration must not be
 //! flagged abstract, so the domain is built from the walked fn's own params.
 
 // The layout-mono walker visits the `#[deprecated]` `CallTraitMethodStatic`
-// variant exhaustively (same justification as `lower.rs` / `machine_mono.rs`).
+// variant exhaustively (same justification as `lower.rs`).
 // Construction sites are allowlist-gated by the test below.
 #![allow(
     deprecated,
@@ -249,8 +248,7 @@ pub fn run_layout_mono_pass(
             // walk below (impl methods are also emitted as `HirItem::Function`
             // entries; actor/machine bodies carry concrete `expr.ty`s walked
             // via their monomorphic-fn analogue when reachable).
-            HirItem::Machine(_)
-            | HirItem::Actor(_)
+            HirItem::Actor(_)
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)
             | HirItem::Const(_) => {}
@@ -328,7 +326,6 @@ pub fn run_layout_mono_pass(
             // caller error; contribute nothing.
             HirItem::Function(_)
             | HirItem::Impl(_)
-            | HirItem::Machine(_)
             | HirItem::Actor(_)
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)
@@ -555,7 +552,7 @@ fn walk_stmt(
 )]
 #[allow(
     clippy::match_same_arms,
-    reason = "many HirExprKind arms recurse identically (same args to walk_expr); merging via `|` would obscure which variants the walker explicitly handles vs. delegates — same rationale as machine_mono::walk_expr"
+    reason = "many HirExprKind arms recurse identically (same args to walk_expr); merging via `|` would obscure which variants the walker explicitly handles vs. delegates"
 )]
 fn walk_expr(
     expr: &HirExpr,
@@ -775,26 +772,8 @@ fn walk_expr(
             walk_expr(receiver, subst, residual_domain, disc);
             walk_expr(arg, subst, residual_domain, disc);
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, e) in fields {
-                walk_expr(e, subst, residual_domain, disc);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(event, subst, residual_domain, disc);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(event, subst, residual_domain, disc);
-        }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -840,8 +819,6 @@ fn walk_expr(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Break { value: None, .. }
         | HirExprKind::Return { value: None }

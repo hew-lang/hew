@@ -15,7 +15,7 @@
 //!    name and identical type args but differing only in
 //!    [`SymbolClass`] mangle to distinct symbols. This is the
 //!    cross-category collision guarantee that makes
-//!    `MachineMonoKey` / `MonoKey<Actor>` safe to dispatch to
+//!    `MonoKey<Actor>` safe to dispatch to
 //!    downstream codegen alongside the existing function-mono symbols.
 
 use hew_hir::mono::{mangle_instantiation, ConstValue, SymbolClass};
@@ -118,7 +118,6 @@ fn class_tag_uniqueness() {
         SymbolClass::Function,
         SymbolClass::Record,
         SymbolClass::Enum,
-        SymbolClass::Machine,
         SymbolClass::Actor,
         SymbolClass::TraitConcrete,
     ];
@@ -138,13 +137,11 @@ fn class_tag_uniqueness() {
     }
 }
 
-/// `SymbolClass::Machine` (and every non-Function class) emits a class
-/// prefix. Verify the exact format.
+/// Every non-Function class emits a class prefix. Verify the exact format.
 #[test]
 fn non_function_class_emits_prefix() {
-    let machine_mangled =
-        mangle_instantiation(SymbolClass::Machine, "Counter", &[ResolvedTy::I64], &[]);
-    assert_eq!(machine_mangled, "mc$$Counter$$i64");
+    let enum_mangled = mangle_instantiation(SymbolClass::Enum, "Counter", &[ResolvedTy::I64], &[]);
+    assert_eq!(enum_mangled, "en$$Counter$$i64");
 
     let actor_mangled =
         mangle_instantiation(SymbolClass::Actor, "Worker", &[ResolvedTy::String], &[]);
@@ -163,24 +160,24 @@ fn non_function_class_emits_prefix() {
 /// no suffix.
 #[test]
 fn const_args_segment_format() {
-    let empty = mangle_instantiation(SymbolClass::Machine, "M", &[ResolvedTy::I32], &[]);
-    assert_eq!(empty, "mc$$M$$i32");
+    let empty = mangle_instantiation(SymbolClass::Actor, "M", &[ResolvedTy::I32], &[]);
+    assert_eq!(empty, "ac$$M$$i32");
 
     let one = mangle_instantiation(
-        SymbolClass::Machine,
+        SymbolClass::Actor,
         "M",
         &[ResolvedTy::I32],
         &[ConstValue::Usize(16)],
     );
-    assert_eq!(one, "mc$$M$$i32$$c$u16");
+    assert_eq!(one, "ac$$M$$i32$$c$u16");
 
     let two = mangle_instantiation(
-        SymbolClass::Machine,
+        SymbolClass::Actor,
         "M",
         &[ResolvedTy::I32],
         &[ConstValue::Usize(16), ConstValue::Usize(32)],
     );
-    assert_eq!(two, "mc$$M$$i32$$c$u16$u32");
+    assert_eq!(two, "ac$$M$$i32$$c$u16$u32");
 }
 
 /// `MonoKey<Function>` constructed via the parametric helper and then
@@ -211,28 +208,6 @@ fn function_mono_key_mangle_matches_legacy() {
 // The sanitizer turns any character that is not ASCII alphanumeric or `_`
 // into `_`.  Module-qualified names with `::` are the primary motivating
 // case: `My::Module::Foo` → `My__Module__Foo`.
-
-/// Machine class: a module-qualified origin name has `::` replaced by `__`.
-#[test]
-fn mangle_instantiation_machine_sanitizes_origin_name() {
-    // `My::Module::Foo` → sanitized to `My__Module__Foo`
-    let out = mangle_instantiation(
-        SymbolClass::Machine,
-        "My::Module::Foo",
-        &[ResolvedTy::I64],
-        &[],
-    );
-    assert_eq!(out, "mc$$My__Module__Foo$$i64");
-
-    // A name with hyphens (unusual but should not produce unsafe chars).
-    let hyphen = mangle_instantiation(
-        SymbolClass::Machine,
-        "some-machine",
-        &[ResolvedTy::Bool],
-        &[],
-    );
-    assert_eq!(hyphen, "mc$$some_machine$$bool");
-}
 
 /// Actor class: module-qualified origin name is sanitized identically.
 #[test]
@@ -294,20 +269,3 @@ fn mangle_instantiation_function_preserves_legacy_bytes() {
 }
 
 // ── end sanitize_for_symbol wiring tests ──────────────────────────────────
-
-/// `MachineMonoKey::mangle` routes through the class-tagged path and
-/// produces the expected `mc$$<name>$$<args>` shape for the empty-
-/// const-args common case.
-#[test]
-fn machine_mono_key_mangle_uses_machine_class() {
-    use hew_hir::ids::ItemId;
-    use hew_hir::mono::MachineMonoKey;
-
-    let key = MachineMonoKey::new(
-        ItemId(11),
-        "Lifecycle".to_string(),
-        vec![ResolvedTy::named_user("File", vec![])],
-    );
-    let mangled = key.mangle();
-    assert_eq!(mangled, "mc$$Lifecycle$$File");
-}

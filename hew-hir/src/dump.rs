@@ -134,28 +134,6 @@ pub fn dump_hir(module: &HirModule) -> String {
                     writeln!(out, "  consuming-method {method}").expect("write to string");
                 }
             }
-            HirItem::Machine(machine) => {
-                writeln!(out, "machine {} {}", machine.id, machine.name).expect("write to string");
-                for state in &machine.states {
-                    writeln!(
-                        out,
-                        "  state {} entry={} exit={}",
-                        state.name, state.has_entry, state.has_exit
-                    )
-                    .expect("write to string");
-                }
-                for event in &machine.events {
-                    writeln!(out, "  event {}", event.name).expect("write to string");
-                }
-                for tr in &machine.transitions {
-                    writeln!(
-                        out,
-                        "  transition on {}: {} -> {} self={}",
-                        tr.event_name, tr.source_state, tr.target_state, tr.is_self_transition
-                    )
-                    .expect("write to string");
-                }
-            }
             HirItem::Record(record) => {
                 writeln!(out, "record {} {}", record.id, record.name).expect("write to string");
                 if let Some(module_short) = &record.defining_module {
@@ -1215,42 +1193,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  subsumed-value").expect("write to string");
             dump_expr(out, source, indent + 4);
         }
-        HirExprKind::MachineEmit { event_idx, fields } => {
-            writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
-            for (field_name, field_val) in fields {
-                writeln!(out, "{pad}    field {field_name}:").expect("write to string");
-                dump_expr(out, field_val, indent + 6);
-            }
-        }
-        HirExprKind::MachineStep {
-            machine_name,
-            receiver,
-            event,
-        } => {
-            writeln!(out, "{pad}  machine-step {machine_name}").expect("write to string");
-            writeln!(out, "{pad}    receiver:").expect("write to string");
-            dump_expr(out, receiver, indent + 6);
-            writeln!(out, "{pad}    event:").expect("write to string");
-            dump_expr(out, event, indent + 6);
-        }
-        HirExprKind::MachineStateName {
-            machine_name,
-            receiver,
-        } => {
-            writeln!(out, "{pad}  machine-state-name {machine_name}").expect("write to string");
-            dump_expr(out, receiver, indent + 4);
-        }
-        HirExprKind::MachineTakeEmits {
-            machine_name,
-            receiver,
-            event,
-        } => {
-            writeln!(out, "{pad}  machine-take-emits {machine_name}").expect("write to string");
-            writeln!(out, "{pad}    receiver:").expect("write to string");
-            dump_expr(out, receiver, indent + 6);
-            writeln!(out, "{pad}    event:").expect("write to string");
-            dump_expr(out, event, indent + 6);
-        }
         HirExprKind::MachineVariantCtor {
             machine_name,
             state_idx,
@@ -1267,32 +1209,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     dump_expr(out, val, indent + 6);
                 }
             }
-        }
-        HirExprKind::MachineFieldAccess {
-            machine_name,
-            state_idx,
-            field_idx,
-            field_name,
-            ..
-        } => {
-            writeln!(
-                out,
-                "{pad}  machine-field-access {machine_name}[{state_idx}].{field_name}[{field_idx}]"
-            )
-            .expect("write to string");
-        }
-        HirExprKind::MachineEventFieldAccess {
-            machine_name,
-            event_idx,
-            field_idx,
-            field_name,
-            ..
-        } => {
-            writeln!(
-                out,
-                "{pad}  machine-event-field-access {machine_name}Event[{event_idx}].{field_name}[{field_idx}]"
-            )
-            .expect("write to string");
         }
         HirExprKind::While {
             label,

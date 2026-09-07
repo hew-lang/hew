@@ -107,21 +107,6 @@ fn ordinary<T>(value: T) -> T { value }
                     "App::<bootstrap>"
                 );
             }
-            HirItem::Machine(machine) if machine.name == "Toggle" => {
-                assert_eq!(machine.declaration.full_path(), "Toggle");
-                assert_eq!(
-                    machine.states[0].declaration.full_path(),
-                    "Toggle::state Off"
-                );
-                assert_eq!(
-                    machine.events[0].declaration.full_path(),
-                    "Toggle::event Flip"
-                );
-                assert_eq!(
-                    machine.transitions[0].declaration.full_path(),
-                    "Toggle::<transition#0>"
-                );
-            }
             _ => {}
         }
     }

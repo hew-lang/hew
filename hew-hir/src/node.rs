@@ -15,7 +15,6 @@ use hew_types::{
 };
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::mono::MachineMonoEntry;
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
 use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::{IntentKind, ValueClass};
@@ -134,31 +133,6 @@ pub struct HirModule {
     /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub enum_layouts: Vec<EnumLayout>,
-    /// Distinct machine-type instantiations discovered by the dedicated
-    /// post-function-mono pass
-    /// ([`crate::machine_mono::run_machine_mono_pass`]). Populated after
-    /// `monomorphisations` is closed under substitution, before MIR
-    /// layout build.
-    ///
-    /// Per the R246 uniform-path ratification: every machine
-    /// declaration produces at least one entry — monomorphic machines
-    /// (no type params) get a single entry with empty `type_args`,
-    /// generic machines get one entry per concrete `(type_args,
-    /// const_args)` reach-through observed in the substituted-body
-    /// walk (annotations, struct-state inits, ctor forms,
-    /// spawn-target machines).
-    ///
-    /// Insertion-ordered for deterministic codegen. Downstream MIR
-    /// (W3.033c Stage 3) and codegen (Stage 4) iterate this list to
-    /// emit one `MachineLayout` per entry under the mangled name.
-    ///
-    /// Empty when the program contains no machine declarations.
-    /// `const_args` is empty on every entry until W3.039 Stage 3
-    /// populates the slot with constexpr-evaluated values.
-    ///
-    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
-    /// `checker-authority` (P0).
-    pub machine_instantiations: Vec<MachineMonoEntry>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
     /// expressions. Populated during HIR lowering from the checker's
     /// `supervisor_child_slots` side-table (keyed by span) by translating each
@@ -195,7 +169,6 @@ pub struct HirModule {
 pub enum HirItem {
     Function(HirFn),
     TypeDecl(HirTypeDecl),
-    Machine(HirMachineDecl),
     Record(HirRecordDecl),
     Actor(HirActorDecl),
     Supervisor(HirSupervisorDecl),
@@ -662,184 +635,18 @@ pub enum HirLifecycleHookKind {
 /// authored. Origin is preserved for downstream diagnostics that
 /// want to point at the predicate's source span (e.g. "the bound on
 /// `T` declared on line 12 is not satisfied"). For inline bounds the
-/// span is implicit in the surrounding `HirMachineDecl.span`; for
+/// span is implicit in the surrounding declaration's span; for
 /// where-clause bounds the span carries the LHS type's span lifted
 /// from `WherePredicate.ty`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WhereOrigin {
     /// The bound was authored inline in the type-parameter list,
-    /// e.g. `machine Holder<T: Resource>`.
+    /// e.g. `type Holder<T: Resource>`.
     Inline,
     /// The bound was authored in a `where` clause, e.g.
-    /// `machine Holder<T> where T: Resource`. The carried span is the
+    /// `type Holder<T> where T: Resource`. The carried span is the
     /// `WherePredicate.ty` span (the LHS of the predicate).
     WhereClause(Span),
-}
-
-/// One `(param, trait_bound)` entry from a machine's combined inline
-/// `<T: Trait>` and `where T: Trait` predicates.
-///
-/// `param` is the bare type-parameter name (e.g. `"T"`); `trait_bound`
-/// reuses the cross-layer `ResolvedTraitBound` carrier from `hew-types`
-/// rather than forking a parallel HIR shape. Per Q230-B the carrier
-/// is a flat `Vec<HirMachineBound>`, one entry per `(param, trait)` pair —
-/// not a `HashMap<param, Vec<bounds>>` — so iteration order is the
-/// authored order and duplicate `(param, trait)` pairs from inline+where
-/// dedup can be observed by downstream consumers if they care to.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineBound {
-    /// The bound type-parameter name.
-    pub param: String,
-    /// The trait constraint.
-    pub trait_bound: hew_types::ResolvedTraitBound,
-    /// Where the predicate was authored.
-    pub origin: WhereOrigin,
-}
-
-/// Lowered machine declaration. Carries the full structural shape needed for
-/// static checks and visualisation; transition bodies are not lowered to `HirExpr`
-/// in Lane A (codegen/execution is Lane B).
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineDecl {
-    pub id: ItemId,
-    pub node: HirNodeId,
-    /// Canonical declaration identity of this machine, minted here beside the
-    /// [`HirFn::declaration`] and [`HirTypeDecl::declaration`] mints.
-    ///
-    /// The synthesized machine-step callable is a child of THIS declaration, so
-    /// its MIR callable key must project this field. Reconstructing an owner
-    /// from [`Self::qualified_name`] at the consumer would make the presentation
-    /// spelling a second identity authority — exactly the seam this carrier
-    /// closes.
-    pub declaration: DefId,
-    pub name: String,
-    /// Defining-module identity of this machine declaration.
-    ///
-    /// `None` denotes the root program namespace; `Some(module)` is the
-    /// dotted owner of a package-module machine.  The declaration spelling is
-    /// intentionally kept bare in [`Self::name`], while this provenance lets
-    /// post-HIR registries distinguish, for example, `left.Lifecycle` from
-    /// `right.Lifecycle` without any leaf-name recovery.
-    pub defining_module: Option<String>,
-    /// Generic type parameters declared on the machine (e.g. `Lifecycle<T>`).
-    ///
-    /// Names only — see `MachineDecl::type_params`. Threaded verbatim from
-    /// the parser AST; subsequent layers (type checker, MIR, codegen) are
-    /// responsible for interpreting these names.
-    pub type_params: Vec<String>,
-    /// Trait bounds declared on the machine's type parameters, drawn from
-    /// both the inline `<T: Trait>` form and the trailing `where T: Trait`
-    /// clause. One entry per `(param, trait_bound)` pair in authored order;
-    /// `WhereOrigin` preserves which form each entry came from for
-    /// diagnostic span recovery.
-    ///
-    /// Empty when the machine declares no type-param bounds. The checker's
-    /// canonical bound-enforcement seam consults a separate, dedup'd side
-    /// table during type checking; this HIR field exists so post-checker
-    /// passes (static trait dispatch, const-generic substrate, future
-    /// const-arg validation) have a structured carrier to read instead of
-    /// re-walking the parser AST.
-    pub type_param_bounds: Vec<HirMachineBound>,
-    pub states: Vec<HirMachineState>,
-    pub events: Vec<HirMachineEvent>,
-    pub transitions: Vec<HirMachineTransition>,
-    /// Whether an unhandled-event `default` arm is present. When true,
-    /// exhaustiveness checking is satisfied for any `(state, event)` pair
-    /// without an explicit transition.
-    pub has_default: bool,
-    pub span: Span,
-}
-
-impl HirMachineDecl {
-    /// Dotted canonical identity used by machine monomorphisation and layout
-    /// registries.  Root-program machines retain their source spelling.
-    #[must_use]
-    pub fn qualified_name(&self) -> String {
-        match &self.defining_module {
-            Some(module) => format!("{module}.{}", self.name),
-            None => self.name.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineState {
-    pub declaration: DefId,
-    pub entry_declaration: Option<DefId>,
-    pub exit_declaration: Option<DefId>,
-    pub name: String,
-    pub fields: Vec<HirField>,
-    /// Whether this state has an `entry { ... }` lifecycle block.
-    pub has_entry: bool,
-    /// Whether this state has an `exit { ... }` lifecycle block.
-    pub has_exit: bool,
-    /// Field names written by the `entry` block, each paired with the span of
-    /// the specific `self.field = ...` assignment (used for effect-parity
-    /// diagnostics that need to cite the offending entry-block site, not the
-    /// whole state).
-    pub entry_writes: Vec<(String, Span)>,
-    /// Field names written by the `exit` block, each paired with the span of
-    /// the specific `self.field = ...` assignment.
-    pub exit_writes: Vec<(String, Span)>,
-    /// Best-effort lowered `entry { ... }` block, populated when the source
-    /// state carries an entry block. Slice 1 substrate — downstream consumers
-    /// (MIR/codegen) are wired in later slices. Constructs that depend on
-    /// later-slice HIR forms (e.g. `emit`, `this`, bare state-name expressions)
-    /// lower to `HirExprKind::Unsupported` placeholders; the canonical
-    /// machine-body diagnostics still come from the AST-walking summary checks
-    /// driven by `entry_writes` / `body_emits`.
-    pub entry: Option<HirBlock>,
-    /// Best-effort lowered `exit { ... }` block. See `entry` for the
-    /// best-effort lowering contract.
-    pub exit: Option<HirBlock>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineEvent {
-    pub declaration: DefId,
-    pub name: String,
-    pub fields: Vec<HirField>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineTransition {
-    pub declaration: DefId,
-    pub event_name: String,
-    pub source_state: String,
-    pub target_state: String,
-    /// Lowered transition guard expression (`on E: A -> B when <expr> { ... }`).
-    /// `None` when the transition has no guard. Lowered through the same
-    /// machine-body allowlist + implicit-binding scope as the transition body
-    /// (`lower_machine_expr_filtered`) so the guard sees `self`, the source-
-    /// state binding, and the event-field aliases.
-    ///
-    /// Carrying the guard expression in HIR (rather than the prior
-    /// `has_guard: bool`) is required for every machine-body walker —
-    /// call-shape gates, blocking-recv gates, effect-parity checks — to
-    /// actually visit guard sub-expressions instead of silently treating
-    /// guarded transitions as if the guard position were empty.
-    pub guard: Option<HirExpr>,
-    /// True when `source_state == target_state` (self-transition). In a
-    /// Moore machine, self-transitions do not re-run entry/exit.
-    pub is_self_transition: bool,
-    /// True when the transition carries `@reenter`.  Only meaningful for self-
-    /// transitions; HIR rejects `@reenter` on non-self-transitions.  When true,
-    /// the Lane B codegen must fire `source.exit` and `target.entry` even though
-    /// the state identity does not change.
-    pub reenter: bool,
-    /// Field names written by the transition body (used for effect-parity checking).
-    pub body_writes: Vec<String>,
-    /// Event names emitted directly from the transition body (used for emit-cycle checking).
-    pub body_emits: Vec<String>,
-    /// Lowered transition body. Constructs that depend on later-slice HIR
-    /// forms (notably `Expr::This` and bare state-name references) lower to
-    /// `HirExprKind::Unsupported` placeholders. `emit` expressions lower to
-    /// `HirExprKind::MachineEmit` (Slice 2). Downstream MIR/codegen consumers
-    /// are wired in later slices.
-    pub body: HirExpr,
-    pub span: Span,
 }
 
 /// Lowered `record` declaration.
@@ -2138,61 +1945,6 @@ pub enum HirExprKind {
     SubsumedValue {
         source: Box<HirExpr>,
     },
-    /// `emit EventName { field: value, ... }` inside a machine transition body,
-    /// entry block, or exit block.
-    ///
-    /// `event_idx` is the zero-based index of the emitted event in the enclosing
-    /// machine's event list (`HirMachineDecl::events`). Resolved at HIR lowering
-    /// time from the `Expr::MachineEmit { event_name }` surface form; an unknown
-    /// event name emits `UnresolvedSymbol` and the HIR body is not produced.
-    ///
-    /// `fields` are the named field initialisers for the event payload. Unit
-    /// events (no declared fields) have an empty `fields` vec.
-    ///
-    /// MIR/codegen consumers: wired in Lane B Slices 4b and 7.
-    MachineEmit {
-        event_idx: usize,
-        fields: Vec<(String, HirExpr)>,
-    },
-    /// `m.step(event) -> ()` — advance the machine one step.
-    ///
-    /// The checker has verified that `receiver` is a mutable binding and that
-    /// `event` matches the `NameEvent` companion enum.  MIR/codegen consumers
-    /// lower this to a call to the internal `<machine_name>__step` helper
-    /// followed by a store-back into the receiver's binding slot (slice 6).
-    ///
-    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
-    MachineStep {
-        machine_name: String,
-        receiver: Box<HirExpr>,
-        event: Box<HirExpr>,
-    },
-    /// `m.state_name() -> String` — current state tag as a string.
-    ///
-    /// MIR/codegen consumers lower this to a static string-table lookup on
-    /// the tag field of the machine value (slice 6).
-    ///
-    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
-    MachineStateName {
-        machine_name: String,
-        receiver: Box<HirExpr>,
-    },
-    /// `m.take_emits(event) -> i64` — remove every queued emit matching
-    /// (this machine's type id, `event`'s discriminant tag) from the
-    /// thread-local emit queue and return the count removed.
-    ///
-    /// MIR/codegen consumers lower this to an `Instr::EnumTagLoad` on `event`
-    /// followed by `Instr::MachineEmitTake` keyed by the machine's stable
-    /// type id (`hew-mir`'s `machine_emit_type_id`, the same
-    /// `SipHasher13`-over-name authority the actor `msg_type` precedent
-    /// uses). Unconsumed events of other tags/machines stay queued.
-    ///
-    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
-    MachineTakeEmits {
-        machine_name: String,
-        receiver: Box<HirExpr>,
-        event: Box<HirExpr>,
-    },
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.
     ///
@@ -2217,9 +1969,9 @@ pub enum HirExprKind {
     /// `machine_name`: the unqualified tagged-union type name. For machine states
     ///   this is the machine type (e.g. `"TrafficLight"`). For user enum variants
     ///   this is the enum type (e.g. `"Colour"`). The MIR consumer looks up the
-    ///   layout in the shared `MachineLayoutMap` / `EnumLayout` registry by this name.
+    ///   layout in the shared `EnumLayout` registry by this name.
     /// `state_idx`: zero-based ordinal of this variant within the tagged union.
-    ///   For machine states: index into `HirMachineDecl.states` (declaration order).
+    ///   Declaration-order index of the variant.
     ///   For user enum variants: position within `HirTypeDecl.variants` (declaration
     ///   order across unit + tuple + struct shapes — same index the
     ///   ctor-registry pre-pass assigns).
@@ -2234,35 +1986,6 @@ pub enum HirExprKind {
         machine_name: String,
         state_idx: usize,
         payload: Option<Vec<(String, HirExpr)>>,
-    },
-    /// Read a payload field from the machine value bound to `self` inside a
-    /// transition body. Resolved when `Expr::FieldAccess { object: Expr::This, field }`
-    /// appears inside a machine transition body.
-    ///
-    /// `machine_name`: enclosing machine type name.
-    /// `state_idx`: source state index (the transition's `from` state), which
-    ///   determines which variant's payload fields are in scope. Tag dominance
-    ///   is guaranteed by the transition dispatch context (Slice 4b).
-    /// `field_idx`: zero-based index into that state's `HirMachineState.fields`.
-    /// `field_name`: the field name for diagnostics and dump output.
-    ///
-    /// HIR derives the result type from `HirMachineState.fields[field_idx].ty`
-    /// (same HIR-side-authority deviation as `MachineVariantCtor`).
-    ///
-    /// MIR consumers: load via `Place::MachineVariant { binding: <self-binding>,
-    /// variant_idx: state_idx, field_idx }` (Slice 4b).
-    MachineFieldAccess {
-        machine_name: String,
-        state_idx: usize,
-        field_idx: usize,
-        field_name: String,
-    },
-    /// Read a payload field from the transition's matched `event` value.
-    MachineEventFieldAccess {
-        machine_name: String,
-        event_idx: usize,
-        field_idx: usize,
-        field_name: String,
     },
     /// `while cond { body }` / `@label: while cond { body }` — loops until
     /// `cond` evaluates to false.

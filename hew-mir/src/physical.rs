@@ -1984,24 +1984,6 @@ fn collect_inventory_type(
 /// pointer to it. Direct calls, indirect invocations and vtable slots all
 /// derive their ABI from this, so a dispatch and its implementation cannot
 /// disagree about a carrier.
-/// The `ActorError<E, M>` arm of a completion call's checked result. The sealed
-/// message is a per-call-site fact, so the protocol signature takes it from the
-/// call rather than reconstructing it.
-fn ask_error_ty(result_ty: &ResolvedTy) -> Result<ResolvedTy, PhysicalError> {
-    let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::Result),
-        args,
-        ..
-    } = result_ty
-    else {
-        return Err(PhysicalError::new("ask result is not a checked Result"));
-    };
-    let [_, error_ty] = args.as_slice() else {
-        return Err(PhysicalError::new("ask result is not a checked Result"));
-    };
-    Ok(error_ty.clone())
-}
-
 pub(crate) fn param_carrier(
     passing: hew_sir::SemParamPassing,
     layout: &PhysicalLayout,
@@ -6378,7 +6360,7 @@ fn verify_terminator(
                 .get(actor.0 as usize)
                 .filter(|descriptor| descriptor.id == *actor)
                 .ok_or_else(|| PhysicalError::new("ask requires its exact actor descriptor"))?
-                .ask_signature(*message, &target, ask_error_ty(&slot(*result)?.ty)?)
+                .ask_signature(*message, &target, slot(*result)?.ty.clone())
                 .map_err(PhysicalError::new)?;
             if args.len() != signature.params.len() || slot(*result)?.ty != signature.return_ty {
                 return Err(PhysicalError::new(

@@ -1,0 +1,66 @@
+// A completion call fails with `ActorError<E, M>`: `Failed(e)` carries the
+// handler's declared error and the lifecycle variants report a target that is
+// gone. Only `Rejected` is safely retryable, so nothing here resubmits.
+actor Vault {
+    var balance: i64 = 100,
+
+    receive fn withdraw(amount: i64) -> i64 fails string {
+        if amount > balance {
+            return Err("insufficient funds");
+        }
+        balance = balance - amount;
+        Ok(balance)
+    }
+}
+
+fn main() {
+    let vault = spawn Vault();
+    match vault.withdraw(30) {
+        .Ok(left) => println(left),
+        .Err(e) => match e {
+            ActorError.Rejected(_) => println("rejected"),
+            ActorError.Failed(reason) => println(reason),
+            ActorError.Trapped => println("trapped"),
+            ActorError.Dead => println("dead"),
+            ActorError.Timeout => println("timeout"),
+            ActorError.NodeNotRunning => println("node not running"),
+            ActorError.RoutingFailed => println("routing failed"),
+            ActorError.EncodeFailed => println("encode failed"),
+            ActorError.ConnectionDropped => println("connection dropped"),
+            ActorError.Partition => println("partition"),
+        },
+    }
+    match vault.withdraw(500) {
+        .Ok(left) => println(left),
+        .Err(e) => match e {
+            ActorError.Rejected(_) => println("rejected"),
+            ActorError.Failed(reason) => println(reason),
+            ActorError.Trapped => println("trapped"),
+            ActorError.Dead => println("dead"),
+            ActorError.Timeout => println("timeout"),
+            ActorError.NodeNotRunning => println("node not running"),
+            ActorError.RoutingFailed => println("routing failed"),
+            ActorError.EncodeFailed => println("encode failed"),
+            ActorError.ConnectionDropped => println("connection dropped"),
+            ActorError.Partition => println("partition"),
+        },
+    }
+    close(vault);
+    // The target is gone: the envelope reports a lifecycle outcome, never a
+    // retryable rejection.
+    match vault.withdraw(1) {
+        .Ok(left) => println(left),
+        .Err(e) => match e {
+            ActorError.Rejected(_) => println("rejected"),
+            ActorError.Failed(reason) => println(reason),
+            ActorError.Trapped => println("trapped"),
+            ActorError.Dead => println("dead"),
+            ActorError.Timeout => println("timeout"),
+            ActorError.NodeNotRunning => println("node not running"),
+            ActorError.RoutingFailed => println("routing failed"),
+            ActorError.EncodeFailed => println("encode failed"),
+            ActorError.ConnectionDropped => println("connection dropped"),
+            ActorError.Partition => println("partition"),
+        },
+    }
+}

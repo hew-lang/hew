@@ -114,7 +114,7 @@ impl SemActor {
         &self,
         message: u32,
         target: &ResolvedTy,
-        error_ty: ResolvedTy,
+        result_ty: ResolvedTy,
     ) -> Result<crate::SemSignature, String> {
         let handler = self
             .handlers
@@ -134,13 +134,25 @@ impl SemActor {
             passing: crate::SemParamPassing::Consume,
             caller_visible_projection: false,
         }));
-        let return_ty = ResolvedTy::Named {
-            name: "Result".to_string(),
-            args: vec![handler.return_ty.clone(), error_ty],
-            builtin: Some(hew_types::BuiltinType::Result),
-            is_opaque: false,
+        let [reply, error] =
+            result_parts(&result_ty).ok_or("a completion call must return its checked Result")?;
+        // The handler declares either the reply itself, or `R fails E` — whose
+        // `Err` becomes the envelope's `Failed(E)`, so the call's success arm is
+        // `R` and its declared failure is the envelope's first argument.
+        let declared_failure = match error {
+            ResolvedTy::Named { args, .. } => args.first(),
+            _ => None,
         };
-        Ok(crate::SemSignature { params, return_ty })
+        let matches_protocol = handler.return_ty == *reply
+            || result_parts(&handler.return_ty)
+                .is_some_and(|[ok, err]| ok == reply && Some(err) == declared_failure);
+        if !matches_protocol {
+            return Err("ask reply differs from its receive protocol".into());
+        }
+        Ok(crate::SemSignature {
+            params,
+            return_ty: result_ty,
+        })
     }
 
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
@@ -548,4 +560,20 @@ impl ActorOperation {
         }
         Ok(consume(types, return_ty))
     }
+}
+
+/// The `Ok` and `Err` arms of a checked `Result`.
+fn result_parts(ty: &ResolvedTy) -> Option<[&ResolvedTy; 2]> {
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::Result),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let [ok, err] = args.as_slice() else {
+        return None;
+    };
+    Some([ok, err])
 }

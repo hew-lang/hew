@@ -457,19 +457,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .build_conditional_branch(ok, success, error)
                 .llvm_ctx("materialize fallible reply")?;
             self.builder.position_at_end(success);
-            let layout = self
-                .module
-                .target
-                .layout(&handler.return_ty)
-                .ok_or_else(|| CodegenError::FailClosed("reply lacks its target layout".into()))?;
-            let value = self
-                .builder
-                .build_load(llvm_type(self.ctx, &layout.repr)?, reply, "ask.reply.value")
-                .llvm_ctx("take typed reply")?;
-            self.write_variant_value(self.slots[result.0 as usize], 0, &[value], glue.id)?;
-            self.builder
-                .build_unconditional_branch(done)
-                .llvm_ctx("finish successful reply")?;
+            // A `fails` handler replies with its complete `Result<R, E>`: the
+            // call's success arm is `R`, and the handler's own `Err(e)` becomes
+            // `ActorError.Failed(e)` here, at the only site that owns both.
+            let call_reply_ty = glue.variants[0]
+                .fields
+                .first()
+                .map(|field| field.ty.clone())
+                .unwrap_or(ResolvedTy::Unit);
+            if handler.return_ty == call_reply_ty {
+                let layout = self
+                    .module
+                    .target
+                    .layout(&handler.return_ty)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("reply lacks its target layout".into())
+                    })?;
+                let value = self
+                    .builder
+                    .build_load(llvm_type(self.ctx, &layout.repr)?, reply, "ask.reply.value")
+                    .llvm_ctx("take typed reply")?;
+                self.write_variant_value(self.slots[result.0 as usize], 0, &[value], glue.id)?;
+                self.builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("finish successful reply")?;
+            } else {
+                self.emit_declared_failure_reply(result, reply, handler, error_ty, glue.id, done)?;
+            }
         } else if completion {
             let success = self.ctx.append_basic_block(self.value, "ask.success");
             let ok = self
@@ -526,6 +540,92 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(done)
             .llvm_ctx("finish ask error")?;
         self.builder.position_at_end(done);
+        Ok(())
+    }
+
+    /// Unwrap a `fails` handler's `Result<R, E>` reply into the call envelope:
+    /// `Ok(r)` is the call's own `Ok`, and `Err(e)` is `ActorError.Failed(e)`.
+    fn emit_declared_failure_reply(
+        &self,
+        result: StorageId,
+        reply: PointerValue<'ctx>,
+        handler: &SemActorHandler,
+        error_ty: &ResolvedTy,
+        glue_id: hew_mir::physical::PhysicalVariantId,
+        done: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let error_glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *error_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("the call envelope lacks its variant recipe".into())
+            })?;
+        let wire_layout = self.value_emitter().variant_layout(&handler.return_ty)?;
+        let object = self
+            .value_emitter()
+            .variant_object_ptr(reply, wire_layout)?;
+        let tag = self.value_emitter().load_variant_tag(object, wire_layout)?;
+        let replied = self.ctx.append_basic_block(self.value, "ask.reply.ok");
+        let failed = self.ctx.append_basic_block(self.value, "ask.reply.failed");
+        let is_ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                tag.get_type().const_zero(),
+                "ask.reply.declared",
+            )
+            .llvm_ctx("classify a declared handler failure")?;
+        self.builder
+            .build_conditional_branch(is_ok, replied, failed)
+            .llvm_ctx("select the declared reply arm")?;
+        let payload_ptr = |emitter: &Self| -> CodegenResult<PointerValue<'ctx>> {
+            emitter
+                .value_emitter()
+                .variant_payload_ptr(object, wire_layout)
+        };
+        for (block, wire_variant, call_variant) in [(replied, 0_usize, 0_u32), (failed, 1, 1)] {
+            self.builder.position_at_end(block);
+            let payload_ty =
+                llvm_type(self.ctx, &wire_layout.variants[wire_variant].repr)?.into_struct_type();
+            let payload = self
+                .builder
+                .build_load(payload_ty, payload_ptr(self)?, "ask.reply.payload")
+                .llvm_ctx("read the declared reply payload")?
+                .into_struct_value();
+            let field = self
+                .builder
+                .build_extract_value(payload, 0, "ask.reply.field")
+                .llvm_ctx("take the declared reply field")?;
+            let value = if call_variant == 0 {
+                field
+            } else {
+                let object_ty = llvm_type(
+                    self.ctx,
+                    &self.value_emitter().variant_layout(error_ty)?.object.repr,
+                )?
+                .into_struct_type();
+                let scratch = self
+                    .builder
+                    .build_alloca(object_ty, "ask.failed")
+                    .llvm_ctx("allocate the declared failure envelope")?;
+                self.write_variant_value(scratch, 1, &[field], error_glue.id)?;
+                self.builder
+                    .build_load(object_ty, scratch, "ask.failed.value")
+                    .llvm_ctx("take the declared failure envelope")?
+            };
+            self.write_variant_value(
+                self.slots[result.0 as usize],
+                call_variant,
+                &[value],
+                glue_id,
+            )?;
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish the declared reply arm")?;
+        }
         Ok(())
     }
 }

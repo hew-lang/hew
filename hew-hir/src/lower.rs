@@ -15203,7 +15203,23 @@ impl LowerCtx {
                 &rf.span,
             )
         } else {
-            self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty)
+            let (state_bindings, params, mut body) =
+                self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
+            // A `fails` handler whose body falls off the end with unit returns
+            // the declared `Ok(())`, exactly as a `fails` fn does.
+            if let Some(annotation) = rf.return_type.as_ref().filter(|annotation| {
+                self.result_return_coercions
+                    .contains_key(&self.mk_key(&annotation.1))
+            }) {
+                let span = annotation.1.clone();
+                let value = self.make_unit_expr(span.clone());
+                body.tail = Some(Box::new(
+                    self.with_current_return_type(return_ty.clone(), |ctx| {
+                        ctx.wrap_tail_ok(value, &span)
+                    }),
+                ));
+            }
+            (state_bindings, params, body)
         };
         let state_guard = match self
             .actor_handler_state_guards
@@ -23135,6 +23151,12 @@ impl LowerCtx {
             // order only; it is not declaration-identity authority.
             if self.record_registry.contains_key(&qualified)
                 || self.source_type_identities.contains(&qualified)
+                // The actor delivery declarations are enums and records of
+                // `std/builtins.hew`; the source-identity scan above never sees
+                // that module, and every downstream stage looks them up by
+                // their `std.builtins` owner.
+                || (module_full_path == "std.builtins"
+                    && hew_types::actor_delivery::DECLARATIONS.contains(&name))
             {
                 return qualified;
             }

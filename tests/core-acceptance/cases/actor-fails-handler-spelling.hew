@@ -1,0 +1,74 @@
+// A `fails` handler spells failure the way every `fails` fn does: `return
+// error e`, `?` on a fallible call, and a bare success tail the compiler wraps.
+// A unit `fails` handler that falls off the end returns success the same way.
+fn half(n: i64) -> i64 fails string {
+    if n == 0 {
+        return error "cannot halve zero";
+    }
+    n / 2
+}
+
+actor Ledger {
+    var balance: i64 = 100,
+
+    receive fn withdraw(amount: i64) -> i64 fails string {
+        if amount > balance {
+            return error "insufficient funds";
+        }
+        balance = balance - amount;
+        balance
+    }
+
+    receive fn deposit_half(amount: i64) -> i64 fails string {
+        let added = half(amount)?;
+        balance = balance + added;
+        balance
+    }
+
+    receive fn note(amount: i64) -> () fails string {
+        if amount < 0 {
+            return error "a note cannot be negative";
+        }
+        balance = balance + amount;
+    }
+}
+
+
+fn main() {
+    let ledger = spawn Ledger();
+    match ledger.withdraw(30) {
+        .Ok(left) => println(left),
+        .Err(problem) => println(f"{problem}"),
+    }
+    match ledger.deposit_half(20) {
+        .Ok(left) => println(left),
+        .Err(problem) => println(f"{problem}"),
+    }
+    // The whole envelope renders through its own `Display`; the declared
+    // failure inside `Failed` renders as the handler wrote it.
+    match ledger.deposit_half(0) {
+        .Ok(left) => println(left),
+        .Err(problem) => match problem {
+            ActorError.Failed(reason) => println(f"{reason}"),
+            ActorError.Rejected(_) => println("rejected"),
+            ActorError.Trapped => println("trapped"),
+            ActorError.Dead => println("dead"),
+            ActorError.Timeout => println("timeout"),
+            ActorError.NodeNotRunning => println("node not running"),
+            ActorError.RoutingFailed => println("routing failed"),
+            ActorError.EncodeFailed => println("encode failed"),
+            ActorError.ConnectionDropped => println("connection dropped"),
+            ActorError.Partition => println("partition"),
+        },
+    }
+    match ledger.note(5) {
+        .Ok(_) => println("noted"),
+        .Err(problem) => println(f"{problem}"),
+    }
+    match ledger.note(-1) {
+        .Ok(_) => println("noted"),
+        .Err(problem) => println(f"{problem}"),
+    }
+    close(ledger);
+    println("closed");
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-fails-handler-spelling"
+intent = "A `fails` handler spells failure like every `fails` fn — `return error`, `?`, and an implicit success wrap on a value tail and on a unit body — and its envelope and declared failure both render through `Display`."
+source = "cases/actor-fails-handler-spelling.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "70\n80\ncannot halve zero\nnoted\nthe handler returned its declared error\nclosed\n"
+exit = 0

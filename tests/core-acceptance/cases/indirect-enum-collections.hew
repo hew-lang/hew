@@ -15,13 +15,11 @@ fn render(consume item: Item) -> string {
 /// Returns early with a live vector and map still in scope; both must release
 /// on that edge as well as on the ordinary one.
 fn first_tag(consume items: Vec<Item>) -> string {
-    var index = 0;
-    while index < items.len() {
-        match items[index] {
+    for item in items {
+        match item {
             .Tag(label) => return label,
             _ => {}
         }
-        index = index + 1;
     }
     "none"
 }

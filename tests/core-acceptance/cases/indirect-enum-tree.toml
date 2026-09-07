@@ -6,6 +6,6 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "((ab + 40) + (1 + 1))\n44\n10\nreleased\n"
+stdout = "ab\nab\n((ab + 40) + (1 + 1))\n44\n10\nreleased\n"
 stderr = ""
 exit = 0

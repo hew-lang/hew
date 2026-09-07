@@ -39,8 +39,21 @@ fn show(consume e: Expr) -> string {
     }
 }
 
+/// Borrows the tree instead of consuming it: the node behind the box must
+/// survive the match so the same value can be observed again and consumed
+/// afterwards.
+fn head_label(e: Expr) -> string {
+    match e {
+        .Name(label) => label,
+        .Add(left, _) => head_label(left),
+        _ => "?",
+    }
+}
+
 fn main() -> i64 {
     let tree = Expr.Add(leaf("ab", 40), Expr.Add(Expr.Num(1), Expr.Num(1)));
+    println(head_label(tree));
+    println(head_label(tree));
     println(show(tree));
     println(eval(Expr.Add(leaf("ab", 40), Expr.Add(Expr.Num(1), Expr.Num(1)))));
     var terms: Vec<Expr> = Vec.new();

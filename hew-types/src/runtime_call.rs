@@ -5102,7 +5102,10 @@ mod tests {
                         op: EncodingOp::ArrayPush,
                         ..
                     } if index == 1 => ConsumeVerdict::ProvenConsume,
-                    RuntimeCallFamily::Map(MapValueOp::Insert) if index <= 2 => {
+                    RuntimeCallFamily::Map(MapValueOp::Insert)
+                    | RuntimeCallFamily::Vector(VecValueOp::Slice)
+                        if index <= 2 =>
+                    {
                         ConsumeVerdict::ProvenBorrow
                     }
                     RuntimeCallFamily::Encoding {
@@ -5123,7 +5126,11 @@ mod tests {
                         SetValueOp::Contains | SetValueOp::Insert | SetValueOp::Remove,
                     )
                     | RuntimeCallFamily::Vector(
-                        VecValueOp::Index | VecValueOp::Get | VecValueOp::Set,
+                        VecValueOp::Index
+                        | VecValueOp::IndexBorrow
+                        | VecValueOp::Get
+                        | VecValueOp::Set
+                        | VecValueOp::SliceFrom,
                     ) if index == 1 => ConsumeVerdict::ProvenBorrow,
                     RuntimeCallFamily::HashMapInsertLayout if matches!(index, 1 | 2) => {
                         ConsumeVerdict::ProvenConsume

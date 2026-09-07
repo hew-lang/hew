@@ -104,9 +104,9 @@ impl GlobResultMethods for GlobResult {
 
 impl GlobResult {
     /// Release this glob result early.
-    fn close(res: GlobResult) {
+    fn close(consume self) {
         unsafe {
-            hew_glob_free(res.handle)
+            hew_glob_free(self.handle)
         };
     }
 }

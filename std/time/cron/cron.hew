@@ -115,9 +115,9 @@ impl ExprMethods for Expr {
 
 impl Expr {
     /// Release this parsed expression early.
-    fn close(expr: Expr) {
+    fn close(consume self) {
         unsafe {
-            hew_cron_free(expr.handle)
+            hew_cron_free(self.handle)
         };
     }
 }

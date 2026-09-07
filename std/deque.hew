@@ -83,9 +83,9 @@ impl DequeMethods for Deque {
 
 impl Deque {
     /// Release this deque early.
-    fn close(dq: Deque) {
+    fn close(consume self) {
         unsafe {
-            hew_deque_free(dq.handle)
+            hew_deque_free(self.handle)
         };
     }
 }

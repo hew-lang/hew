@@ -409,9 +409,9 @@ impl QUICEventMethods for QUICEvent {
 
 impl QUICEvent {
     /// Release this event early.
-    fn close(evt: QUICEvent) {
+    fn close(consume self) {
         unsafe {
-            hew_quic_event_free(evt.handle)
+            hew_quic_event_free(self.handle)
         };
     }
 }

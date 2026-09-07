@@ -109,9 +109,9 @@ impl Child {
     /// Resource close performs a non-blocking check first. If the child is
     /// still running, close kills it and waits for it to exit so leaked
     /// `Child` values do not leave OS processes or zombie handles behind.
-    fn close(child: Child) {
+    fn close(consume self) {
         unsafe {
-            hew_process_drop(child.handle)
+            hew_process_drop(self.handle)
         };
     }
 }

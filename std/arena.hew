@@ -60,7 +60,7 @@ type ArenaCloneGuard {
 }
 
 impl ArenaCloneGuard {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 /// A generational-index slotmap with O(1) slot bookkeeping.

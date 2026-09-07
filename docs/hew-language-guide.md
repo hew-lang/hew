@@ -3895,16 +3895,17 @@ test` — no warning, no error, it's simply never found. If a suite's pass
 ### Assertions: `assert`, `assert_eq`, `assert_ne`
 
 `assert(condition: bool)` panics when `condition` is `false`. `assert_eq(a,
-b)` and `assert_ne(a, b)` panic with a diff of the two values on failure —
-prefer them over `assert(a == b)` for the readable failure message. Both take
-`dyn Display` values, so a value has to be able to print itself to be compared
-this way — the same constraint `std.testing`'s generic `assert_eq<T: Eq +
-Display>` carries. `Option` and `Result` gain `Display` at v0.7.0, and until
-then a test compares one by matching on it:
+b)` and `assert_ne(a, b)` compare with the same equality `==` uses and panic
+with both values on failure — prefer them over `assert(a == b)` for the
+readable failure message. Both operands share one type `T: Eq + Display`, so a
+value has to be comparable and able to print itself. `Option` and `Result` gain
+`Display` at v0.7.0, and until then a test compares one by matching on it:
 
 ```
 ---- wrong_expectation_fails ----
-assertion failed: assert_eq(4, 5)
+assertion failed: left != right
+  left: 4
+  right: 5
 ```
 
 These are the same panic-based builtins used everywhere else in Hew

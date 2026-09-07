@@ -31,11 +31,12 @@ more sections in this document into normative status. Within edition
 **[Landed in v0.5; not deferred]**
 
 The v0.5 stdlib ships `std::channel::channel.new(capacity)` returning a
-typed `(Sender<T>, Receiver<T>)` pair. `await rx.recv()` in an execution
-context suspends worker-free and returns `Option<T>`; `rx.try_recv()` is
-non-suspending. A channel receive can also participate in `select` as
-`pat from rx.recv()`. Future channel work may still add new topology
-forms, but the bounded MPSC surface itself is no longer a future item.
+typed `(Sender<T>, Receiver<T>)` pair. `rx.recv()` is a plain suspending
+call that parks its execution context worker-free and returns `Option<T>`;
+`rx.try_recv()` is non-suspending. A channel receive can also participate
+in `select` as `pat from rx.recv()`. Future channel work may still add new
+topology forms, but the bounded MPSC surface itself is no longer a future
+item.
 
 ### 1.2 Cancellation tokens
 
@@ -54,14 +55,15 @@ authority beside the scope, and a token that can be held past its scope is a
 liveness fact the compiler cannot check. A caller who needs to preempt one
 computation gives it its own scope.
 
-### 1.3 Actor await and read-after-send barrier (former §4.10)
+### 1.3 Read-after-send barrier
 
-**[Target: v0.6 / needs more design]**
+**[Target: v0.7 / needs more design]**
 
-`await actor`, `await close(actor)`, and the "awaited read acts as a
-barrier" rule parse today but lack end-to-end implementation and have
-not been audited against the actor mailbox protocol's failure modes.
-Track under #1236.
+`await actor` and `await close(actor)` are normative (HEW-SPEC-2026 §4.10).
+The "awaited read acts as a barrier" rule that accompanied them in earlier
+drafts is not: it parses today but lacks end-to-end implementation and has
+not been audited against the actor mailbox protocol's failure modes. Track
+under #1236.
 
 ### 1.4 Deferred `select{}` arms: stream-next and task-await
 
@@ -82,20 +84,16 @@ for the shipped arms):
   owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`),
   and a bare `Stream<T>.recv()` is not yet ABI-wired in codegen. Returns
   once stream-handle binding lands.
-- **Task-await arm** (`<id> from await <task>`, binding `T` for
-  `Task<T>`). Deferred because there is no way to consume a bound task:
-  `fork name = expr;` parses and type-checks, but awaiting the resulting
-  `Task<T>` in a value position is refused at HIR
-  (`AwaitOutOfPosition`), so the binding reaches its scope exit unconsumed
-  and MIR refuses it. Returns with the `fork`/`Task` substrate.
+- **Task-await arm** (`<id> = await <task>`, binding `T` for `Task<T>`).
+  Deferred until the `fork`/`Task` substrate consumes a bound task in a
+  value position. Returns with that substrate.
 
 Both forms are rejected at **check** time today (the type checker
 restricts the arm set; codegen is not involved), so re-introducing them
 is purely additive.
 
-First-completion-wins is the task-await arm, not a construct of its own.
-`race` is not a reserved word and no `race { }` form is planned
-(HEW-SPEC-2026 §12).
+First-completion-wins is `race { ... }`, a construct of its own
+(HEW-SPEC-2026 §4.11.2), not a `select` arm.
 
 ### 1.5 Supervision extras beyond ask / restart / escalation
 
@@ -121,7 +119,7 @@ v0.8 with the rest of the supervision ergonomics work.
 `gen fn` functions compile and run, including parameterized forms with scalar
 parameters (e.g. `n: i64`) and fn-typed parameters. The LLVM coroutine
 machinery, `yield`, `.next()`, and `for x in generator()` are all live. A
-`gen fn` body may `await`; there is no `async gen fn` form, because the word
+`gen fn` body may suspend; there is no `async gen fn` form, because the word
 marked nothing (HEW-SPEC-2026 §4.12). `receive gen fn` on actors returning
 `Stream<Y>` backed by mailbox protocol (cross-actor streaming with natural
 backpressure) is live as well — the `receive_gen_fn_*` vertical-slice
@@ -161,6 +159,32 @@ declared restart classification cannot honour the attribute are
 unsettled and need design work alongside the broader supervision-extras
 surface (§1.5). Defer until a real workload demands a `@linear` actor
 field that is neither escalation-only nor `@resource`-backed.
+
+### 1.9 Runtime mechanisms the normative surface already assumes
+
+**[Target: v0.7]**
+
+Four runtime mechanisms are specified as language behaviour in
+HEW-SPEC-2026 and are not in the shipped runtime. They are listed here so
+the spec's promise and the build's behaviour are told apart, not to reopen
+the design:
+
+- **Safepoint preemption.** Compiler-inserted `cooperate` checks at function
+  entry and loop back-edges, so a computation that never suspends still
+  yields to the scheduler and still observes cancellation
+  (HEW-SPEC-2026 §4.3, §4.5, §4.8, §9.0). Until it lands, a non-suspending
+  loop runs to completion.
+- **Envelope-only delivery.** Every message, local or remote, travelling as
+  one envelope form rather than a local fast path beside the wire path.
+- **The wire identity field.** A node-identity field in the envelope header,
+  carried with a wire version bump (`docs/diagrams.md`, §7).
+- **`Pid<A>` runtime unification.** One actor-identity type at runtime, with
+  `RemotePid` reduced to the internal wire form it already is on the surface
+  (HEW-SPEC-2026 §3.4.3).
+
+Statechart observation — the machine surface reporting its transitions to an
+observer — is a fifth item, tracked with the machine statechart core rather
+than with the runtime work above.
 
 ---
 

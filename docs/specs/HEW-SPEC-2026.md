@@ -2400,10 +2400,22 @@ Written function types specify invocation and duplication guarantees:
 | `fn[once](...) -> T` | Consumes the callable | Not guaranteed |
 | `fn[once, clone](...) -> T` | Each copy is consumed by its call | Guaranteed |
 
+`suspends` is the fourth qualifier and occupies the same bracket. A written
+callable type is non-suspending unless it carries it: `fn[suspends](...) -> T`
+accepts a callable whose body may suspend, and `fn[once, suspends](...) -> T`
+combines the two. Suspension is the one qualifier that is inferred rather than
+declared on a named function or a closure literal; the bracket exists so a data
+boundary — a parameter, a return type, a field, an element type, an annotated
+binding — can state the fact. The rules are §4.0.
+
 Qualifiers are lowercase. `clone` refers to independent logical duplication,
 not bitwise copying or shared mutable state. Resource-bearing captures cannot
 claim it. Value coercion may weaken read-only invocation to mutable invocation
 to consuming invocation, and may forget `clone`; it cannot invent guarantees.
+A non-suspending callable coerces into a `fn[suspends]` slot; a callable whose
+body suspends does not coerce into a slot written without the qualifier, and
+the error is reported at the site that supplies the value, naming the call in
+the body that suspends.
 Parameter and result signatures remain invariant, and coercion cannot erase
 linear ownership duties. Unannotated expressions retain proved guarantees.
 Explicit annotations, assignments, arguments, returns and conditional joins
@@ -3145,8 +3157,8 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
-| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()` |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
+| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.set_timeout(d)`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `.set_timeout(d)`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
 | `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
 
 Handle types are opaque — their internal representation is not accessible.
@@ -3156,11 +3168,10 @@ binding is a second name for one resource, `is` compares them for identity, a
 method acts through the handle whether the binding is `let` or `var`, and the
 rules of §3.9.6 apply for holding one inside an actor.
 
-`net.Listener.accept()` and `net.Connection.read()`'s plain (non-`await`)
-forms block the calling thread; inside an actor receive handler this stalls
-the scheduler worker (`hew check`'s `BlockingCallInReceiveFn` warning) — use
-the `await` form there instead. The plain forms remain the intended shape for
-a `main()`-body call outside any receive handler.
+`net.Listener.accept()` and `net.Connection.read()` are plain suspending
+calls (§4.0): they park the calling execution context rather than blocking
+its thread, and they carry no `await`. A deadline on one of them is the
+socket's own `.set_timeout(d)`, not a wrapper around the call.
 
 #### 3.10.8 Regular Expressions
 
@@ -3498,6 +3509,64 @@ This section defines Hew's concurrency model within actors. Hew distinguishes be
 - **Inter-actor concurrency**: Actors communicate via asynchronous message passing (Section 2.1)
 - **Intra-actor concurrency**: Tasks execute cooperatively within a single actor using structured concurrency
 
+### 4.0 Suspension (normative)
+
+Suspension is an effect carried by callable types, not a colour on functions.
+A named function and a closure literal both infer the effect from their body:
+a body that reaches a suspending call suspends, and nothing in the signature
+records it. A plain call is written `f(x)` whether or not `f` suspends, and
+the caller inherits the effect. This is §4.2's principle applied to values —
+the same helper suspends one way when an actor calls it and another way when
+`main` does, and neither call site is spelled differently.
+
+A *written* callable type is the one place suspension is spelled. A callable
+type written without a qualifier is non-suspending; `fn[suspends]` declares a
+suspending one:
+
+<!-- doctest: skip -->
+
+```hew
+fn retry(times: i64, op: fn[suspends]() -> Result<i64, dyn Error>)
+    -> Result<i64, dyn Error>
+{
+    var last = op();
+    for _ in 1..times {
+        if last.is_ok() { return last; }
+        last = op();
+    }
+    last
+}
+```
+
+`suspends` sits in the same bracket as `var`, `once`, and `clone`, and
+composes with them (§3.8, callable qualifier table). A higher-order function
+that calls a `fn[suspends]` parameter suspends; a parameter does not make its
+owner effect-polymorphic.
+
+**Where it is written.** Data boundaries carry the qualifier: parameters,
+return types, fields, element types, and annotated bindings. Inference covers
+everything else.
+
+**Direction of flow.** A non-suspending callable flows into a suspending slot.
+The reverse is a type error at the site that supplies the value; the
+diagnostic names the call in the body that suspends and the slot's written
+type, and its fix-it adds the qualifier.
+
+**What suspends.** Waiting on an actor's reply, joining a task, receiving from
+a channel or a stream, accepting a connection, sleeping, and ordinary IO all
+suspend the calling execution context. Every one of them is a plain call:
+`sleep(1s)`, `fs.read(path)`, `rx.recv()`, `gen.next()`, and `for x in gen`
+carry no operator.
+
+**What `await` means.** `await` joins something that has its own life: a
+`Task<T>` (§4.4), an actor's reply, an actor's termination, or another
+actor's stream. `await` on any other operand is a diagnostic with a fix-it
+that deletes it; it is never a silent no-op.
+
+**Deferred bodies cannot suspend.** A `defer` body runs on an exit path with
+no context to park on. A suspending call inside one is rejected, and the
+diagnostic names the suspending call.
+
 ### 4.1 The Task Type
 
 A `Task<T>` represents a concurrent computation that will produce a value of type `T`. Tasks execute within their spawning actor's single-threaded context.
@@ -3544,49 +3613,29 @@ Task<T>
 
 ### 4.2 Scope: Structured Concurrency Boundary
 
-> **Partially implemented.** The shipped surface is
-> `scope { fork { call(); } }` in suspendable contexts (actor handlers,
-> closures, task entries), where the forked call takes no arguments and the
-> scope joins all children at its closing brace. The name-bound form
-> `fork name = call(...)` described below parses and type-checks; what is
-> missing is the consuming half — awaiting the bound `Task<T>` in a value
-> position is refused at HIR (`AwaitOutOfPosition`), so the task binding
-> reaches its scope exit unconsumed and MIR refuses it
-> (`E_MIR_CHECK`, `MustConsume`). Argument-bearing forks, sibling cancellation
-> on child failure, and the `?` propagation sugar are specified here but not
-> yet accepted. Each of these refuses with a named diagnostic rather than
-> miscompiling.
-
-> **Execution context (normative).** Every Hew function may suspend. There is
-> no suspending-function colour: a function is never marked as one, and a
-> `scope { fork .. }` block is legal wherever a statement is legal, `fn main`
-> included. What carries the difference is the execution context the call
-> runs on. `fn main` runs on the process main thread with an
-> `ExecutionContext` whose park and unpark are that thread's parker; an actor
-> handler keeps its coroutine context; a free function inherits its caller's
-> context, so the same helper suspends one way when an actor calls it and
-> another way when `main` does. One mechanism serves every awaitable, so a
-> new awaitable is a new readiness source rather than a new lowering.
->
-> At v0.6.0 `main` has no execution context yet. A suspension point (§4.3)
-> reached from `main`, or from a free function `main` calls, is refused with
-> `E_LIMIT_MAIN_CONTEXT` (Limitation, exit 3) rather than parked on a
-> contextless wait. The refusal names the two shapes that work today: host the
-> request loop in an actor and park `main` on its ask, or use `join {}` for a
-> fan-out from `main`. The context lands at v0.7.0 (hew-lang/hew#3195,
-> hew-lang/hew#3196).
+> **Execution context (normative).** Every Hew function may suspend, and no
+> function is marked as one (§4.0). What carries the difference is the
+> execution context the call runs on. `fn main` runs on the process main
+> thread with an `ExecutionContext` whose park and unpark are that thread's
+> parker; an actor handler keeps its coroutine context; a free function
+> inherits its caller's context, so the same helper suspends one way when an
+> actor calls it and another way when `main` does. One mechanism serves every
+> awaitable, so a new awaitable is a new readiness source rather than a new
+> lowering, and a `scope { .. }` block is legal wherever a statement is legal,
+> `fn main` included.
 
 A `scope` block creates a structured concurrency boundary. All child tasks
 forked within the block must complete before the block returns.
 
 **Syntax:**
 
+<!-- doctest: skip -->
+
 ```hew
 scope {
-    fork a = compute_a();   // child task: spawned + name-bound
-    fork b = compute_b();   // sibling child task
-    use_results(a?, b?);    // `?` propagates errors if a/b's return type is Result/Option;
-                            // the scope itself joins children on exit — no `await` needed.
+    let a = fork compute_a();   // child task: started, bound as Task<T>
+    let b = fork compute_b();   // sibling child task
+    use_results(await a, await b);
 }
 ```
 
@@ -3597,41 +3646,40 @@ scope {
 3. **Statement, not expression**: `scope { ... }` is a statement. It is not a
    `Primary` and may not appear where a value is expected: `let r = scope { .. }`
    is `E_SCOPE_IS_STATEMENT` (User), not a silent binding of `()`.
-   `scope` is the scope bracket; the `fork name = expr` children carry the values.
+   `scope` is the scope bracket; the `fork expr` children carry the values.
    `scope` and `fork` are not synonyms — keeping them separate prevents confusing the
    bracket role with the child-start role. Use `await` inside the scope body
-   to resolve child values, bind them to `let` or `var` bindings, and return them from the
-   enclosing function directly. The value-producing fan-out is `join { ... }`
-   (§4.11.2), which is an expression.
+   to join child values, bind them to `let` or `var` bindings, and return them from the
+   enclosing function directly. The value-producing fan-out is the batch form
+   `await fork [ .. ]` (§4.4).
 4. **Nested scopes**: `scope` blocks may be nested; each manages its own children.
 5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime
    cancels the remaining siblings at the next safepoint. The error surfaces via the `await`
    expression for that child: `?` on `await task` propagates `Err` to the enclosing function;
    an unhandled trap unwinds the scope and propagates to the enclosing context.
 
-> **Design note.** `scope` is the scope bracket; `fork name = expr` is the child-start verb.
+> **Design note.** `scope` is the scope bracket; `fork expr` is the child-start verb.
 > These are deliberately separate keywords so neither can be confused for the other. See the
 > Historical note in §4.9 for the earlier `scope |s| { s.spawn { … } }` surface.
 
 **Child form:**
 
-`fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
-`scope` block. `scope { ... }` opens the structured-concurrency block;
-`fork` is exclusively the child-start verb. Today the runnable child form is
-the block form `fork { call(); }` with a zero-argument callee; the name-bound
-form is accepted by the checker and blocked further down the pipeline, at the
-`await` that would consume the task (see the callout above).
-Outside a scope-block, a child-form `fork` is a `ForkOutsideScopeBlock`
-error.
+`fork expr` is an expression: it starts `expr` as a child task and yields a
+`Task<T>`, where `T` is the type of `expr`. Bind it with `let` to join it
+later, or leave it unbound to fire and forget. It is only legal dynamically
+inside a `scope` block, which is what bounds the child's lifetime; outside a
+scope-block a `fork` is a `ForkOutsideScopeBlock` error.
 
 ### 4.3 Spawning Child Tasks
+
+<!-- doctest: skip -->
 
 ```hew
 var result;
 scope {
-    fork a = compute_a();
-    fork b = compute_b();
-    result = combine(a?, b?);   // scope joins a and b on exit; `?` propagates Result/Option errors
+    let a = fork compute_a();
+    let b = fork compute_b();
+    result = combine((await a)?, (await b)?);
 };
 result
 ```
@@ -3639,13 +3687,13 @@ result
 **Syntax:**
 
 ```ebnf
-Scope     = "scope" Block ;                        (* structured-concurrency block *)
-ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a Scope block *)
+Scope     = "scope" [ "within" Expr ] Block ;      (* structured-concurrency block *)
+ForkChild = "fork" Expr ;                          (* child form, only inside a Scope block *)
 ```
 
-**`fork name = expr` — structured child task:**
+**`fork expr` — structured child task:**
 
-- Returns `Task<T>` where `T` is the type of `expr`.
+- Yields `Task<T>` where `T` is the type of `expr`.
 - Spawned task runs concurrently with its siblings.
 - Captured variables follow the same rules as actor sends and closures
   (move semantics by default; explicit `move` to force a moving capture).
@@ -3694,22 +3742,20 @@ safepoint before its body reaches a consuming or close call.
    Actor fields remain isolated from the child and cannot be captured as
    shared mutable state.
 
-4. **Task<T> handle escape.** A `Task<T>` handle bound by `fork name =
-   expr` is usable only within the lexical scope-block that introduced
-   it. The handle cannot be returned from the scope-block, stored in a
-   field, captured by a closure that outlives the block, nor moved into
-   a sibling child unless that sibling is itself a `fork` form inside
-   the same block. The rejection is structural: `Task<T>` is not a
-   nameable type at the source level (§4.1) and the handle has no
-   surface syntax to escape through.
+4. **Task<T> handle escape.** A `Task<T>` produced by `fork expr` is
+   usable only within the lexical scope-block that introduced it. The
+   handle cannot be returned from the scope-block, stored in a field,
+   captured by a closure that outlives the block, nor moved into a
+   sibling child unless that sibling is itself a `fork` form inside the
+   same block. A handle that reaches the block's closing brace unjoined
+   is joined there, like any other child.
 
-**`fork expr` — bare child form:**
+**Unbound `fork`:**
 
-A degenerate single-child form: `fork expr` evaluates `expr` as a child
-task. The enclosing scope block is still Unit-typed; to consume the child's
-result, bind it with `fork name = expr` and then `await name` inside the
-scope body, or simply fire-and-forget with the bare form when the value is
-not needed.
+`fork expr` may be written in statement position with its `Task<T>`
+discarded. The child still runs and the scope block still joins it on
+exit; discarding the handle only gives up the ability to observe its
+value or its error before that point.
 
 **Substrate (informative):**
 
@@ -3726,38 +3772,42 @@ edition — see "Historical note" at the end of §4.9.
 
 **Yield points (normative):**
 
-A child task MUST yield at:
-
-- `await` expressions — suspends until the awaited task or actor is ready.
-- compiler-inserted `cooperate` safepoints — reduction budget exhaustion;
-  the compiler inserts checks at function entry and loop back-edges.
-- IO operations — cancellation is observed at the syscall boundary.
-
-Yield points are also where cooperative cancellation is delivered (§4.5).
+A child task yields at every suspending call in its body: an `await`, a
+channel or stream receive, a listener accept, a `sleep`, and every IO
+operation. Yield points are where cooperative cancellation is delivered
+(§4.5), so cancellation is observed at the syscall boundary and at each
+join.
 
 **Suspension points (normative):**
 
-The suspension points of the language are a closed set: `await expr`,
-`await expr | after d`, `select`, a `scope { fork .. }` block, an
-`after(d) { }` scope deadline, a channel `recv`, a stream `recv`, a listener
-`accept`, and `sleep`. Each one suspends the execution context of the
-function it appears in (§4.2), and each one is legal in any function. In an
-actor handler, a task body, or a closure, the coroutine frame yields to the
-scheduler and the readiness source resumes it. In `fn main` the process main
-thread parks, and the reactor, the timer wheel, or a mailbox unparks it; no
-Hew scheduler worker waits on an OS condition variable on either path.
+Suspension is an inferred effect on calls (§4.0), not a closed set of
+spellings. A call suspends when the callable it names suspends; the
+suspending primitives are the actor ask, the task join, a channel or stream
+`recv`, a listener `accept`, `sleep`, `select`, and the IO surface. Each one
+suspends the execution context of the function it appears in (§4.2), and
+each one is legal in any function. In an actor handler, a task body, or a
+closure, the coroutine frame yields to the scheduler and the readiness
+source resumes it. In `fn main` the process main thread parks, and the
+reactor, the timer wheel, or a mailbox unparks it; no Hew scheduler worker
+waits on an OS condition variable on either path.
 
-At v0.6.0 only the coroutine half of that rule is implemented. Every
-suspension point in the set above is accepted in a suspendable context and
-refused with `E_LIMIT_MAIN_CONTEXT` when it is reached from `main` (§4.2).
+Compiler-inserted `cooperate` safepoints at function entry and loop
+back-edges are a further yield point in the intended runtime; they are not
+in the shipped scheduler and are targeted at v0.7.0 (HEW-FUTURE §1.9).
 
 ### 4.4 Awaiting Tasks
 
-The `await` operator blocks the current task until the awaited task completes, returning its result.
+`await` joins: it suspends the current execution context until the thing it
+names — a task, an actor's reply, an actor's termination, or another actor's
+stream — has finished its own life, and yields that thing's result. It is
+never written on a plain call (§4.0).
 
 **Syntax:**
 
+<!-- doctest: skip -->
+
 ```hew
+let task = fork calculate(input);
 let result = await task;
 ```
 
@@ -3797,26 +3847,62 @@ let value = (await task)?;
 
 > **Note:** Only traps (panics) propagate as unrecoverable. Cancellation is always catchable via the `Result` return type.
 
-**Examples:**
+**The four things `await` joins (normative):**
+
+| Operand              | Written                              | Yields                     |
+| -------------------- | ------------------------------------ | -------------------------- |
+| A task               | `await task`                         | the task's result          |
+| An actor's reply     | `await worker.compute(x)`            | `Result<R, AskError>`      |
+| An actor's end       | `await actor`, `await close(actor)`  | the termination outcome    |
+| Another actor's stream | `for await x in pid.stream()`      | each item as it arrives    |
+
+`await` on any other operand — a plain call, a value, a generator's `next()`
+— is a diagnostic whose fix-it deletes the word. A concurrent ask is written
+`fork worker.compute(x)`, which yields a `Task<Result<R, AskError>>` like any
+other fork.
+
+**Batch fork:** `fork` over a list or a tuple starts every operand and yields
+one task for the group. `fork [a(), b()]` is a `Task<Vec<T>>` when the
+operands share a type; `fork (a(), b())` is a task over the tuple of their
+result types. This is the value-producing fan-out.
+
+<!-- doctest: skip -->
 
 ```hew
-// Simple await — bind result before the scope, assign inside
+scope {
+    let both = fork [fetch_user(id1), fetch_user(id2)];
+    let users = await both;
+};
+```
+
+**Examples:**
+
+<!-- doctest: skip -->
+
+```hew
+// Simple join — bind result before the scope, assign inside
 var value;
 scope {
-    fork x = expensive_compute();
+    let x = fork expensive_compute();
     value = await x;
 };
 
-// Concurrent tasks with sequential await
+// Concurrent tasks joined in order
 var merged;
 scope {
-    fork a = fetch_user(id1);
-    fork b = fetch_user(id2);
+    let a = fork fetch_user(id1);
+    let b = fork fetch_user(id2);
 
-    // Both fetches run concurrently; await resolves them in order
+    // Both fetches run concurrently; await joins them in order
     let user1 = await a;
     let user2 = await b;
     merged = merge_users(user1, user2);
+};
+
+// The same fan-out as one batch fork
+var pair;
+scope {
+    pair = await fork (fetch_user(id1), fetch_user(id2));
 };
 merged
 ```
@@ -3843,8 +3929,14 @@ own body; cancellation is event-driven from child outcomes.
 The following points are safepoints where cancellation is checked automatically:
 
 - `await` expressions
-- compiler-inserted `cooperate` safepoints at function entry and loop back-edges
+- suspending calls: channel and stream receive, listener accept, `sleep`
 - IO operations (file read/write, network operations)
+
+Compiler-inserted `cooperate` safepoints at function entry and loop
+back-edges extend this set to computation that never suspends. They are
+targeted at v0.7.0 and are not in this build (HEW-FUTURE §1.9); until they
+land, a child that neither suspends nor performs IO does not observe
+cancellation.
 
 When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
 
@@ -3896,9 +3988,11 @@ Tasks can fail in two ways:
 When a child task returns a `Result`, errors can be handled directly by the
 awaiter inside the scope body:
 
+<!-- doctest: skip -->
+
 ```hew
 scope {
-    fork task = {
+    let task = fork {
         fallible_operation()?;
         Ok(value)
     };
@@ -3941,10 +4035,12 @@ This means a trap within a forked child inside a `receive fn` causes the entire 
 
 **Trap propagation example:**
 
+<!-- doctest: skip -->
+
 ```hew
 scope {
-    fork a = compute();        // Running
-    fork b = trap!("failed");  // Traps
+    let a = fork compute();        // Running
+    let b = fork trap!("failed");  // Traps
     // Task 'a' is cancelled
     // Fork-block traps
 }
@@ -3953,14 +4049,16 @@ scope {
 
 **Isolating failures with nested scope-blocks:**
 
+<!-- doctest: skip -->
+
 ```hew
 scope {
-    fork results = {
+    let results = fork {
         // Inner scope-block isolates failures; the fork child body is an
         // ordinary block (not a scope block) that can carry a value.
         var outcome: Result<Data, Error>;
         scope {
-            fork task = risky_operation();
+            let task = fork risky_operation();
             outcome = await task;   // captures Ok or Err
         };
         outcome                     // fork child returns the Result
@@ -4016,18 +4114,8 @@ actor's mutable state: each runs on its own OS thread, captured values
 move (or clone) across the boundary, and the actor's fields are not
 reachable from inside a child body.
 
-> **§4.8 design unsettled** — the dynamic-fork-in-loop
-> idiom shown below is illustrative only. The ratified `fork name = expr;`
-> shape requires a binding name per child; collecting handles into
-> `Vec<Task<T>>` contradicts the `Task<T>` non-nameability rule (§4.3),
-> and `await t` is not a primitive. The settled idiom is one of:
-> (a) `fork[]` array form yielding `[T; N]` on scope exit;
-> (b) a `scope_par_map(items, |x| f(x))` stdlib op;
-> (c) actor-mailbox accumulation via an anonymous `fork _ = …;`.
-> The example below demonstrates value capture without accumulating child
-> results; a collection-returning form remains pending ratification.
-
 <!-- doctest: skip -->
+
 ```hew
 actor DataProcessor {
     var cache: HashMap<string, Data> = HashMap.new(),
@@ -4038,24 +4126,29 @@ actor DataProcessor {
                 // The child receives an independent value. Actor fields
                 // such as `cache` are not in scope inside the child body.
                 let child_id = clone id;
-                fork _ = fetch_data(child_id);
+                fork fetch_data(child_id);
             }
         }
     }
 }
 ```
 
+A loop that starts a child per item and discards each `Task<T>` fans out
+without collecting; the scope block joins them all at its closing brace.
+When the results are wanted, the batch form `await fork [ .. ]` (§4.4)
+collects them.
+
 **Message-task interaction rules:**
 
 1. A `receive fn` handler executes on the actor's thread.
-2. Child tasks spawned by `fork name = expr` run on their own OS threads and are isolated from actor state.
+2. Child tasks started by `fork expr` run on their own OS threads and are isolated from actor state.
 3. The actor does not process the next message until the current handler (and all its forked children) complete.
 4. If a handler's child task traps, the actor may trap (per failure model).
 5. Data captured into a child body must be moved or cloned (no implicit sharing of actor state).
 
 **Yielding to the scheduler:**
 
-For long-running computations, compiler-inserted `cooperate` safepoints yield the actor to the runtime scheduler. The compiler inserts these checks automatically at function entry and loop back-edges based on a reduction budget (see §9.0). `cooperate` is not a source-level expression:
+For long-running computations, compiler-inserted `cooperate` safepoints yield the actor to the runtime scheduler. The compiler inserts these checks at function entry and loop back-edges based on a reduction budget (see §9.0). `cooperate` is never a source-level expression. This is the intended surface; the insertion pass is targeted at v0.7.0 and is not in this build (HEW-FUTURE §1.9), so today a computation loop that never suspends runs to completion before the actor yields:
 
 ```hew
 fn heavy_computation() {
@@ -4083,13 +4176,13 @@ fn heavy_computation() {
 Hew combines Go's lightweight spawn ergonomics with Erlang's actor
 isolation and Swift/Kotlin/Loom-grade structured concurrency:
 
-- **Like Go**: a pair of short keywords — `scope { ... }` for the scope boundary and `fork name = call(...)` for child-start — with no nursery/scope object to pass around.
+- **Like Go**: a pair of short keywords — `scope { ... }` for the scope boundary and `fork call(...)` for child-start — with no nursery/scope object to pass around.
 - **Like Erlang**: actors are isolated failure domains with supervisors; child tasks inside an actor cannot reach the actor's state.
 - **Like Swift / Kotlin / Loom**: every child has a known parent block, the first failure cancels siblings, and no child error is silently dropped — `?` propagates `ScopeError::primary`.
 
 **Historical note.**
 
-`scope { ... }` is the scope boundary; `fork name = call(...);` inside a
+`scope { ... }` is the scope boundary; `fork call(...)` inside a
 scope is the child-start verb. These are not synonyms, and no
 `s.launch / s.spawn / s.cancel` methods exist. Child execution runs on
 the OS-thread-per-task runtime (`hew-runtime/src/task_scope.rs`); the
@@ -4100,16 +4193,29 @@ spawn strategies is not user-visible.
 
 ### 4.10 Actor Await and Synchronization
 
-> See HEW-FUTURE.md §1.3 for actor await, `await close(actor)`, and the
-> read-after-send barrier — targeted for v0.6, gated on the I/O
-> subsystem (#1236) settling and a re-audit of the mailbox protocol's
-> failure modes.
+An actor has its own life, so it is one of the things `await` joins (§4.4).
 
-### 4.11 Select and Join Expressions
+- `await pid` joins the actor's termination and yields its exit outcome. It
+  does not stop the actor and does not join its lifetime to the caller's
+  task scope; it waits for an end the actor reaches on its own.
+- `await close(pid)` asks the actor to stop, then joins the same
+  termination. It is idempotent: closing an actor that has already stopped
+  returns the recorded outcome.
+- `await pid.method(args)` is the ask (§2.1.1) and yields
+  `Result<R, AskError>`.
+- `for await x in pid.stream()` consumes another actor's stream producer
+  (§4.12); `await` is what marks the pull as crossing an actor boundary.
+
+> See HEW-FUTURE.md §1.3 for the read-after-send barrier, which is the one
+> part of this section still deferred.
+
+### 4.11 Select and Race Expressions
 
 Hew provides two built-in concurrency expressions for coordinating
 multiple asynchronous operations. They are expressions — they produce
 values — and integrate with structured concurrency and the actor model.
+The all-of counterpart is not a third construct: waiting for every operand
+is batch `fork` (§4.4).
 
 #### 4.11.1 `select` Expression
 
@@ -4220,44 +4326,51 @@ usable first-class substrate in edition 2026 (see the note under
 "Canonical syntax" above). They are not silently lowered and they never
 reach codegen.
 
-#### 4.11.2 `join` Expression
+#### 4.11.2 `race` Expression
 
-The `join` expression runs all branches concurrently and waits for all to complete, collecting results into a tuple.
+`race { ... }` runs its operands concurrently and yields the first one to
+complete. Completion is completion: an operand that returns an ordinary
+`Err` wins the race exactly as an `Ok` does, because a result is a result.
+Every loser is cancelled and drained before the expression returns.
 
-**Static `join` (fixed number of branches):**
+<!-- doctest: skip -->
 
 ```hew
-let (a, b, c) = join {
-    actor1.compute(),
-    actor2.compute(),
-    actor3.compute(),
+let fastest = race {
+    primary.fetch(key),
+    replica.fetch(key),
 };
 ```
 
-Each branch must be an actor receive handler call with a return type. An explicit `await` is accepted but is redundant inside `join`.
+Operands are plain calls (§4.0). `await` is never written on a `race`
+operand; the `race` is what waits.
 
-**Type rules:**
+**Type rule:**
 
 ```
-join {
-    actor1.compute(),
-    actor2.compute(),
-    actor3.compute(),
-} : (T1, T2, T3)
-where actor1.compute(): T1, actor2.compute(): T2, actor3.compute(): T3
+race { e1, e2, ... } : T
+where e1: T, e2: T, ...
 ```
 
-Each branch may have a different result type. The result is a tuple of all branch results, in declaration order.
+All operands share one type and the expression has that type. There is no
+`Result` flattening: if the operands yield `Result<U, E>`, so does the
+`race`.
 
-Dynamic `join_all` remains reserved for future surface work; current Hew exposes static `join { ... }` for actor reply fan-out.
+**Loser cleanup.** A losing operand is cancelled by the same discipline the
+`select` table gives its form (§4.11.1): an in-flight ask is withdrawn from
+the target mailbox or its reply sink is tombstoned, a pending receive is
+withdrawn from the channel core, and a running child unwinds through its
+`defer` blocks. The `race` expression does not return until every loser has
+been drained, so no cancelled operand's effects arrive afterwards.
 
-**Error propagation:** If any branch in a `join` traps, the remaining branches are cancelled and the trap propagates to the enclosing scope.
+**Traps.** A trapping operand is not a completion. The remaining operands
+are cancelled and the trap propagates to the enclosing context.
 
-#### 4.11.3 `after` Timeout
+#### 4.11.3 `after` and Deadlines
 
-The `after` keyword is used in two contexts:
+`after` marks the timer arm of a `select`:
 
-**1. As an arm in `select` expressions** (see above):
+<!-- doctest: skip -->
 
 ```hew
 select {
@@ -4266,24 +4379,30 @@ select {
 };
 ```
 
-**2. As a timeout combinator with `|`** for individual await expressions:
+That is its only position. A deadline over a region of code is a `scope`
+with a `within` clause:
+
+<!-- doctest: skip -->
 
 ```hew
-let result = await counter.get_count() | after 1s;
-// result: Result<i32, Timeout>
+scope within 1s {
+    let count = fork counter.get_count();
+    total = await count;
+} handle failure {
+    total = 0;
+}
 ```
 
-The `| after` combinator wraps the result in `Result<T, Timeout>`:
+`scope within d { ... }` cancels its children when `d` elapses, by the
+ordinary scope cancellation path (§4.5), and the `handle failure` block
+runs on that outcome with the error bound by name if one is written. A
+single operation's own deadline belongs to the operation: socket and
+listener timeouts are parameters of the socket, not a wrapper around the
+call.
 
-- If the operation completes before the deadline, returns `Ok(value)`.
-- If the timeout expires first, the operation is cancelled and returns `Err(Timeout)`.
-
-**Type rule:**
-
-```
-(e | after d) : Result<T, Timeout>
-where e: Task<T>, d: Duration
-```
+There is no timeout combinator. `expr | after d` is not Hew syntax; the
+three shapes above are the whole surface, and `|` is only the bitwise
+operator (§12.2).
 
 #### 4.11.4 `scope`/`fork` and `select` Composition
 
@@ -4294,7 +4413,7 @@ diagnostic pointing at the offending position.
 | Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
 | -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `select {}` inside a `scope {}` body or child             | Legal           | The three `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
-| `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
+| `let r = fork select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the task's result type is the `select` expression's type.                                                                                  |
 | `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
 | `scope { ... }` as a `select` arm source                  | **Rejected**    | The three sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
 
@@ -4332,11 +4451,14 @@ with `Y`. The handle type is what the caller receives; a declaration that
 names it says the body yields handles. A generator yielding `i64` is declared
 `gen fn counter() -> i64`, and its `yield` operands are `i64`.
 
-There is no `async gen fn`. A plain `gen fn` body may `await`, is consumed by
+There is no `async gen fn`. A plain `gen fn` body may suspend, is consumed by
 `for`, and is consumed by `for await` when its producer is an actor, so the
 word marked nothing; `async` is not a keyword (§12) and `async gen fn` is
-`E_NO_ASYNC_GEN` (User) with a fix-it that deletes it. What `await` selects
-is the pull that crosses an actor boundary: `for` over a `Stream` is
+`E_NO_ASYNC_GEN` (User) with a fix-it that deletes it. `gen.next()` and
+`for x in gen` are plain calls: pulling from a generator you own is a call
+into your own frame, and it carries the generator's inferred suspension
+effect like any other call (§4.0). What `await` selects is the pull that
+crosses an actor boundary: `for` over a `Stream` is
 `E_FOR_STREAM_NEEDS_AWAIT` (User, fix-it adds the word) and `for await` over
 a generator or a collection is `E_AWAIT_NOT_STREAM` (User, fix-it drops it).
 
@@ -5792,7 +5914,7 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `join`, `after`, `from`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `from`, `await`, `await_restart` |
 | Wire | `reserved`, `optional`, `deprecated` |
 | Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
@@ -5810,26 +5932,29 @@ an ordinary name is legal everywhere else:
 | `emit` | a machine transition body's emit statement |
 | `pool` | a supervisor body's pool clause |
 | `events`, `emits`, `reenter`, `initial` | machine declaration headers and transition modifiers |
-| `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses |
+| `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses, and `within` a scope deadline (§4.11.3) |
+| `handle` | the error-recovery and scope-failure clause (§2.2.1, §4.11.3) |
+| `suspends` | the suspension qualifier in a written callable type (§4.0) |
 | `self`, `consume` | receiver and transfer positions (§3.6, §3.9) |
 | `clone` | the prefix-clone expression (§3.4.4) |
 | `resource`, `linear`, `opaque`, `wire`, `json`, `yaml` | attribute names (§12.6) |
 | `wired_to` | a supervisor child spec's sibling-handle clause (§5.1) |
 | `export` | the `#[export]` attribute name (§3.9.4, §12.6) |
 
-**Words that are not keywords.** `try`, `catch`, `race`, `cooperate`,
+**Words that are not keywords.** `try`, `catch`, `join`, `cooperate`,
 `foreign`, `super`, and `async` are ordinary identifiers. Each was reserved
 against a surface that either shipped under another spelling or was refused:
 
-- `async` marked nothing. Functions are colourless — every function may
-  suspend (§4.2, §4.3) and `await` marks a mailbox suspension point and
-  nothing else. `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
+- `async` marked nothing. Functions are colourless — suspension is inferred
+  from the body and written only on a callable type (§4.0), and `await`
+  joins something with its own life and nothing else. `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
   deletes the word, and `async gen fn` is `E_NO_ASYNC_GEN` (User) with the
   same fix-it (§4.12).
 - `try` and `catch` have no construct: fallible operations return `Result`
   and propagate with `?` (§2.2.1). `catch` never reached the parser at all.
-- `race` is refused permanently. First-completion-wins is `select` over
-  task-await arms, which returns with its substrate (HEW-FUTURE §1.4).
+- `join` is retired. Waiting for every operand is batch `fork`
+  (`await fork [ .. ]`, `await fork ( .. )`, §4.4), which needs no keyword
+  of its own.
 - `cooperate` names a compiler-inserted safepoint (§4.7, §9.0), not a
   source-level expression.
 - `foreign` is spelled `extern` (§3.9.1).
@@ -5846,7 +5971,7 @@ carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 (§3.2).
 
 > **Edition 2026 enforcement.** The lexer has not yet closed to this table.
-> `try`, `catch`, `race`, `cooperate`, `foreign`, `super`, `async`,
+> `try`, `catch`, `join`, `cooperate`, `foreign`, `super`, `async`,
 > `default`, `emit`, and `pool` are still lexed as reserved words, so
 > `docs/syntax-data.json` carries them and `let default = 1` is refused with
 > "`default` is a reserved word and cannot be used as a binding name". That
@@ -5971,8 +6096,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered)
-14. Timeout: `| after`
-15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
 > **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 
@@ -6031,21 +6155,25 @@ prints as `5000000000ns`).
 > Measure elapsed time through `std::time` until the `instant` substrate
 > lands.
 
-**Timeouts:**
+**Deadlines:**
 
-Duration values are required for timeout expressions (`| after`) and `select` timeouts:
+Duration values are required in the three deadline positions: a `select`
+timer arm, a `scope within d` block, and a socket's own timeout (§4.11.3).
+
+<!-- doctest: skip -->
 
 ```hew
-let result = await task | after 5s;        // Timeout after 5 seconds
+scope within 5s {
+    let task = fork calculate(input);
+    result = await task;
+} handle failure {
+    result = fallback;
+}
 ```
 
-`await task | after 5s` is a suspension point (§4.3), so the rule that governs
-it is the execution-context rule of §4.2 and not a rule about `after` itself:
-it is legal in any function, and it parks whichever context the call runs on.
-At v0.6.0 that context exists only inside an actor handler, a task body, or a
-closure; written in `main`, or in a free function `main` calls, the deadline
-form is `E_LIMIT_MAIN_CONTEXT` until `main` gains its execution context at
-v0.7.0.
+Each of these is a suspending region, so the rule that governs it is the
+execution-context rule of §4.2 and not a rule about `after` or `within`: it
+is legal in any function and parks whichever context the call runs on.
 
 ```ebnf
 DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;

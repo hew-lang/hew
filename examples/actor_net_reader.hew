@@ -22,5 +22,5 @@ fn main() {
     };
     let conn = listener.accept();
     let reader = spawn ServerReader(conn: conn);
-    reader.start(0);
+    let _ = reader.start(0);
 }

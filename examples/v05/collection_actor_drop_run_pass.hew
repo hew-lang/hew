@@ -47,7 +47,7 @@ fn main() {
     scores.push(20);
     scores.push(30);
     let holder = spawn CollectionHolder(counts: counts, scores: scores);
-    let r = await holder.ping();
+    let r = holder.ping();
     match r {
         .Ok(acked) => {
             if acked == 1 {

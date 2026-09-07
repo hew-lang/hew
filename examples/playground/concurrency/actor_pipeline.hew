@@ -11,15 +11,15 @@ actor Doubler {
 
 fn main() {
     let doubler = spawn Doubler;
-    let a = match await doubler.process(5) {
+    let a = match doubler.process(5) {
         .Ok(v) => v,
         .Err(_) => -1,
     };
-    let b = match await doubler.process(21) {
+    let b = match doubler.process(21) {
         .Ok(v) => v,
         .Err(_) => -1,
     };
-    let c = match await doubler.process(100) {
+    let c = match doubler.process(100) {
         .Ok(v) => v,
         .Err(_) => -1,
     };

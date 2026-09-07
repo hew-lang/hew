@@ -9,7 +9,7 @@ actor Counter {
 
 fn main() -> i64 {
     let c = spawn Counter(n: 0);
-    match await c.bump() {
+    match c.bump() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

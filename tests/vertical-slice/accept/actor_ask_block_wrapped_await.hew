@@ -1,8 +1,7 @@
-// Accept fixture: `match await { actor.method() }` — block-wrapped actor-ask
-// await.  The scrutinee must be typed as `Result<i64, AskError>` so that `Ok`
-// and `Err` arms are valid.  Before the fix the checker saw an `Expr::Block`
-// rather than `Expr::MethodCall` and fell through to the raw return type
-// (`i64`), producing "constructor pattern `Ok` cannot match non-enum type i64".
+// Accept fixture: `match actor.method() { ... }` — an actor ask is an ordinary
+// call, so the scrutinee must be typed `Result<i64, AskError>` and not the
+// handler's raw return type (`i64`, which would give "constructor pattern `Ok`
+// cannot match non-enum type i64").
 //
 // Stdout contract: `result: 10` (5 * 2).
 actor Doubler {
@@ -13,9 +12,7 @@ actor Doubler {
 
 fn main() {
     let doubler = spawn Doubler;
-    let r = match await {
-        doubler.process(5)
-    } {
+    let r = match doubler.process(5) {
         .Ok(v) => v,
         .Err(_) => -1,
     };

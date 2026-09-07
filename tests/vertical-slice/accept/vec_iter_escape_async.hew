@@ -20,7 +20,7 @@ pub fn main() -> i64 {
         v.push(2);
         v.iter()
     };
-    let _ = await e.ping();
+    let _ = e.ping();
     var sum: i64 = 0;
     for x in c {
         sum = sum + x;

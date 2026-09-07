@@ -25,6 +25,6 @@ fn main() {
     let log = actor |level: string, code: i64| {
         println(f"[{level}] code={code}");
     };
-    log("warn", 7);
+    let _ = log("warn", 7);
     sleep(200ms);
 }

@@ -14,7 +14,7 @@ fn main() {
     let local = Payload { tag: 1 };
     println(local.tag);
     let src = spawn rootreply.Source(seed: 2);
-    match await src.fetch() {
+    match src.fetch() {
         .Ok(p) => println(p.code),
         .Err(_) => println("err"),
     }

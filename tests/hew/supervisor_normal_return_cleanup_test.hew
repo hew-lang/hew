@@ -22,7 +22,7 @@ supervisor App {
 #[test]
 fn live_supervisor_does_not_block_test_runner_exit() {
     let sup = spawn App;
-    match await sup.first.get() {
+    match sup.first.get() {
         .Ok(n) => testing.assert_eq(n, 42),
         .Err(_) => testing.assert_true(false),
     }

@@ -118,53 +118,53 @@ fn main() {
     let empty_status: Vec<i64> = Vec.new();
     let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);
     // Register services
-    monitor.register("auth", auth);
-    monitor.register("api", api);
-    monitor.register("cache", cache);
+    let _ = monitor.register("auth", auth);
+    let _ = monitor.register("api", api);
+    let _ = monitor.register("cache", cache);
     sleep(30ms);
 
     // ── All healthy ──
     println("--- All services healthy ---");
-    monitor.check_all();
+    let _ = monitor.check_all();
     sleep(30ms);
-    match await monitor.report() {
+    match monitor.report() {
         .Ok(_) => {},
         .Err(_) => panic("[monitor] initial report ask failed"),
     }
     // ── Normal traffic ──
     println("");
     println("--- Normal traffic ---");
-    match await auth.handle(1) {
+    match auth.handle(1) {
         .Ok(_) => {},
         .Err(_) => panic("[health] auth request 1 ask failed"),
     }
-    match await api.handle(2) {
+    match api.handle(2) {
         .Ok(_) => {},
         .Err(_) => panic("[health] api request 2 ask failed"),
     }
-    match await cache.handle(3) {
+    match cache.handle(3) {
         .Ok(_) => {},
         .Err(_) => panic("[health] cache request 3 ask failed"),
     }
     // ── Make cache unhealthy ──
     println("");
     println("--- Cache goes down ---");
-    cache.set_unhealthy();
+    let _ = cache.set_unhealthy();
     sleep(30ms);
-    monitor.check_all();
+    let _ = monitor.check_all();
     sleep(600ms);
-    match await monitor.report() {
+    match monitor.report() {
         .Ok(_) => {},
         .Err(_) => panic("[monitor] degraded report ask failed"),
     }
     // ── Remaining services still serve traffic ──
     println("");
     println("--- Healthy services still operational ---");
-    match await auth.handle(4) {
+    match auth.handle(4) {
         .Ok(_) => {},
         .Err(_) => panic("[health] auth request 4 ask failed"),
     }
-    match await api.handle(5) {
+    match api.handle(5) {
         .Ok(_) => {},
         .Err(_) => panic("[health] api request 5 ask failed"),
     }

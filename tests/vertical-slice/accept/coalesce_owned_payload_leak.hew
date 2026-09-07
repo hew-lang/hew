@@ -32,11 +32,11 @@ fn main() -> i64 {
     let _ = worker.update(9, "three-three-three", 0ns);
     let _ = worker.update(9, "latest-payload", 0ns);
     sleep(350ms);
-    let count = match await worker.count() {
+    let count = match worker.count() {
         .Ok(value) => value,
         .Err(_) => -1,
     };
-    let length = match await worker.length() {
+    let length = match worker.length() {
         .Ok(value) => value,
         .Err(_) => -1,
     };

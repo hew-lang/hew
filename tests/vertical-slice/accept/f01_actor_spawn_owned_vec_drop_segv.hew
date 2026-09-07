@@ -47,8 +47,8 @@ actor TaskQueue {
 fn main() {
     let t: Vec<WorkItem> = Vec.new();
     let q = spawn TaskQueue(tasks: t);
-    q.enqueue(WorkItem { name: "only", priority: 1 });
-    let r = await q.remove_front();
+    let _ = q.enqueue(WorkItem { name: "only", priority: 1 });
+    let r = q.remove_front();
     match r {
         .Ok(n) => println(f"r={n}"),
         .Err(_) => println("err"),

@@ -19,18 +19,18 @@ fn main() -> i64 {
     let counter = spawn Counter(count: 0);
     let bump = |n: i64| {
         if n > 5 {
-            counter.increment(n);
+            let _ = counter.increment(n);
         } else {
             var i = 0;
             while i < n {
-                counter.increment(1);
+                let _ = counter.increment(1);
                 i = i + 1;
             }
         }
     };
     bump(39);
     bump(3);
-    match await counter.total() {
+    match counter.total() {
         .Ok(v) => v,
         .Err(_e) => 0,
     }

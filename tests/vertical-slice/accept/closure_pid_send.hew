@@ -20,10 +20,10 @@ actor Counter {
 
 fn main() -> i64 {
     let counter = spawn Counter(count: 0);
-    let bump = |n: i64| { counter.increment(n); };
+    let bump = |n: i64| { let _ = counter.increment(n); };
     bump(10);
     bump(32);
-    match await counter.total() {
+    match counter.total() {
         .Ok(v) => v,
         .Err(_e) => 0,
     }

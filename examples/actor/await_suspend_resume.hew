@@ -16,7 +16,7 @@ actor Worker {
 actor Coordinator {
     let worker: LocalPid<Worker>,
     receive fn run(n: i64) -> i64 {
-        let r = await worker.compute(n);
+        let r = worker.compute(n);
         match r {
             .Ok(v) => v,
             .Err(_) => -1,
@@ -27,7 +27,7 @@ actor Coordinator {
 fn main() {
     let w = spawn Worker(factor: 6);
     let c = spawn Coordinator(worker: w);
-    let r = await c.run(7);
+    let r = c.run(7);
     match r {
         .Ok(v) => println(f"result={v}"),
         .Err(_) => println("ask failed"),

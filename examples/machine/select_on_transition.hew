@@ -78,8 +78,8 @@ fn main() {
         .Err(err) => panic(f"channel.new failed: {err}"),
     };
     let obs = spawn Observer;
-    obs.watch(rx);
+    let _ = obs.watch(rx);
     let owner = spawn Owner;
-    owner.drive(tx);
+    let _ = owner.drive(tx);
     sleep(300ms);
 }

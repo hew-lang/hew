@@ -15,7 +15,7 @@ supervisor ImportedWorkerPool {
 #[test]
 fn imported_actor_is_a_supervised_child() {
     let sup = spawn ImportedWorkerPool;
-    match await sup.worker.identify() {
+    match sup.worker.identify() {
         .Ok(id) => testing.assert_eq(id, 17),
         .Err(_) => testing.assert_true(false),
     }

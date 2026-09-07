@@ -28,7 +28,7 @@ actor Sequencer {
 
 fn main() -> i64 {
     let s = spawn Sequencer(start: 0);
-    match await s.value() {
+    match s.value() {
         .Ok(v) => v,
         .Err(_e) => 0,
     }

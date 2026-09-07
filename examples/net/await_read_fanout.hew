@@ -43,7 +43,7 @@ fn main() {
     var i = 0;
     while i < READER_COUNT {
         let r = spawn Reader(id: i, port: "18078");
-        r.go(0);
+        let _ = r.go(0);
         i = i + 1;
     }
     var accepted = 0;

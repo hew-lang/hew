@@ -68,7 +68,7 @@ fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w1;
     // Confirm initial value before crash (proves init_state was applied).
-    match await w.get_value() {
+    match w.get_value() {
         .Err(_) => {
             return 0;
         },
@@ -79,7 +79,7 @@ fn main() -> i64 {
         },
     }
     // Crash the worker (fire-and-forget tell).
-    w.crash_me();
+    let _ = w.crash_me();
     // Wait for the supervisor to complete exactly one restart cycle.
     // Returns the restart count (>= 1) on success, 0 on timeout.
     let restarted = unsafe {
@@ -93,7 +93,7 @@ fn main() -> i64 {
     // A Transient result would emit hew_trap_with_code(206) and SIGTRAP.
     let w2 = sup.w1;
     // Restarted child has the original init value from HewChildSpec.
-    match await w2.get_value() {
+    match w2.get_value() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

@@ -31,6 +31,6 @@ actor Gate {
 fn main() -> i64 {
     let gate = spawn Gate;
     let outer = Outer { inner: Inner { ticket: Ticket { id: 1 } } };
-    let _ = await gate.accept(outer.inner.ticket);
+    let _ = gate.accept(outer.inner.ticket);
     return outer.inner.ticket.redeem();
 }

@@ -12,7 +12,7 @@ actor Sink {
 fn main() {
     let x = |v: i64| v * 2;
     let s = spawn Sink(hits: 0);
-    match await s.take(x) {
+    match s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),
         Result.Err(_) => println("err"),
     }

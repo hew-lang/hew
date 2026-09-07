@@ -32,6 +32,6 @@ actor Watcher {
 fn main() -> i64 {
     let target = spawn Target;
     let w = spawn Watcher;
-    w.watch(target);
+    let _ = w.watch(target);
     0
 }

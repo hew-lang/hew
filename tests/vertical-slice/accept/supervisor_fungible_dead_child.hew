@@ -51,12 +51,12 @@ fn main() -> i64 {
     var attempts: i64 = 0;
     var dead = false;
     while attempts < 30 && !dead {
-        let alive = match await w.get_value() {
+        let alive = match w.get_value() {
             .Ok(_) => true,
             .Err(_) => false,
         };
         if alive {
-            w.crash_me();
+            let _ = w.crash_me();
             sleep(120ms);
         } else {
             dead = true;
@@ -70,9 +70,9 @@ fn main() -> i64 {
     }
     sleep(200ms);
     // Tell to a permanently-dead child: dropped recoverably, NOT a trap.
-    w.tick();
+    let _ = w.tick();
     // Ask a permanently-dead child: recoverable Err, NOT a trap.
-    let sentinel = match await w.get_value() {
+    let sentinel = match w.get_value() {
         .Ok(_) => 3,
         .Err(_) => 9,
     };

@@ -25,7 +25,7 @@ fn main() -> i64 {
     // await_restart from main: contextless path, emits
     // hew_supervisor_restart_await_blocking (CallRuntimeAbi).
     let w2 = await_restart sup.w;
-    match await w2.ping() {
+    match w2.ping() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

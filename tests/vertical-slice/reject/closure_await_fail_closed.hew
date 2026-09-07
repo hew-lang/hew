@@ -13,7 +13,7 @@ actor Adder {
 fn main() {
     let adder = spawn Adder();
     let calculate = || {
-        match await adder.add(7, 8) {
+        match adder.add(7, 8) {
             .Ok(value) => value,
             .Err(_error) => 0,
         }

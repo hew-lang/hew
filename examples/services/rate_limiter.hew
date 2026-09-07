@@ -49,7 +49,7 @@ actor ApiWorker {
     var rejected: i64,
     receive fn handle_request(request_id: i64) {
         scope {
-            let allowed_r = await limiter.acquire();
+            let allowed_r = limiter.acquire();
             match allowed_r {
                 .Ok(v) => {
                     if v == 1 {
@@ -82,7 +82,7 @@ actor RefillTimer {
     receive fn start() {
         for i in 0 .. cycles {
             sleep(interval);
-            limiter.refill();
+            let _ = limiter.refill();
         }
         println("[timer] refill cycles complete");
     }
@@ -99,22 +99,21 @@ fn main() {
     let w2 = spawn ApiWorker(id: 2, limiter: limiter, accepted: 0, rejected: 0);
     // Start a refill timer: refill every 200ms, 3 cycles
     let timer = spawn RefillTimer(limiter: limiter, interval: 200ms, cycles: 3);
-    timer.start();
-
+    let _ = timer.start();
     // Burst: send 8 requests through 2 workers (only 5 tokens available)
     println("--- Burst: 8 requests, 5 tokens ---");
-    w1.handle_request(0);
-    w2.handle_request(1);
-    w1.handle_request(2);
-    w2.handle_request(3);
-    w1.handle_request(4);
-    w2.handle_request(5);
-    w1.handle_request(6);
-    w2.handle_request(7);
+    let _ = w1.handle_request(0);
+    let _ = w2.handle_request(1);
+    let _ = w1.handle_request(2);
+    let _ = w2.handle_request(3);
+    let _ = w1.handle_request(4);
+    let _ = w2.handle_request(5);
+    let _ = w1.handle_request(6);
+    let _ = w2.handle_request(7);
     sleep(100ms);
 
     // Check remaining tokens
-    let remaining_r = await limiter.available();
+    let remaining_r = limiter.available();
     match remaining_r {
         .Ok(n) => println(f"Tokens remaining after burst: {n}"),
         .Err(_) => println("Tokens remaining: err"),
@@ -124,24 +123,24 @@ fn main() {
     // Wait for refill, then send more
     println("--- After refill ---");
     sleep(250ms);
-    let after_refill_r = await limiter.available();
+    let after_refill_r = limiter.available();
     match after_refill_r {
         .Ok(n) => println(f"Tokens after refill: {n}"),
         .Err(_) => println("Tokens after refill: err"),
     }
-    w1.handle_request(100);
-    w2.handle_request(101);
-    w1.handle_request(102);
+    let _ = w1.handle_request(100);
+    let _ = w2.handle_request(101);
+    let _ = w1.handle_request(102);
     sleep(100ms);
     println("");
 
     // Final stats
     println("--- Worker stats ---");
-    match await w1.stats() {
+    match w1.stats() {
         .Ok(_) => {},
         .Err(_) => panic("[rate-limiter] worker 1 stats ask failed"),
     }
-    match await w2.stats() {
+    match w2.stats() {
         .Ok(_) => {},
         .Err(_) => panic("[rate-limiter] worker 2 stats ask failed"),
     }

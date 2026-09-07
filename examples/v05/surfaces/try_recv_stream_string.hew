@@ -58,5 +58,5 @@ fn main() {
     // drains the mailbox to quiescence. A trailing print from `main` would be
     // ordered against the handler only by a sleep, which is not an edge.
     let t = spawn TryRecvStrings;
-    t.run(0);
+    let _ = t.run(0);
 }

@@ -17,7 +17,7 @@ actor Echo {
     // to send an `ack` back — a dead or garbled pid would not route.
     receive fn hear(p: LocalPid<Pinger>) {
         println("echo: heard pinger");
-        p.ack();
+        let _ = p.ack();
     }
 }
 
@@ -26,7 +26,7 @@ actor Pinger {
 
     receive fn ping() {
         // `this` is the Pinger's own `LocalPid<Pinger>` — the single message arg.
-        echo.hear(this);
+        let _ = echo.hear(this);
     }
 
     receive fn ack() {
@@ -37,7 +37,7 @@ actor Pinger {
 fn main() {
     let e = spawn Echo();
     let p = spawn Pinger(echo: e);
-    p.ping();
+    let _ = p.ping();
     // Every printed line is produced by the ping -> hear -> ack chain, which is
     // ordered by its own sends; runtime shutdown drains it to quiescence. A
     // trailing print from `main` here would be ordered against that chain only

@@ -81,7 +81,7 @@ fn main() {
     // + 2.5 s for the ask/tell round-trips + 5 s headroom = 98 s.  Use 120 s to be
     // safe; the harness kills the server after the client exits anyway.
     sleep(2m);
-    let n = await kv.count();
+    let n = kv.count();
     match n {
         .Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
         .Err(_) => println("[kv-server] count ask failed"),

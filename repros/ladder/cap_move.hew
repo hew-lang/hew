@@ -4,6 +4,6 @@ fn main() {
     let w = actor move |x: i64| {
         println(v.len() + x);
     };
-    w.send(1);
+    let _ = w.send(1);
     println(v.len());
 }

@@ -24,11 +24,11 @@ fn open(path: string) -> Stream<string> {
 
 fn main() {
     let counter = spawn Counter(journal: open("resource-read.bin"));
-    match await counter.increment(2) {
+    match counter.increment(2) {
         .Ok(total) => println(total),
         .Err(_) => panic("increment failed"),
     }
-    match await counter.increment(3) {
+    match counter.increment(3) {
         .Ok(total) => println(total),
         .Err(_) => panic("increment failed"),
     }

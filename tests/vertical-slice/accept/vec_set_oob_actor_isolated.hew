@@ -33,9 +33,9 @@ supervisor VecSetSupervisor {
 fn main() -> i64 {
     let sup = spawn VecSetSupervisor;
     let worker = sup.worker;
-    worker.boom();
+    let _ = worker.boom();
     let restarted = await_restart sup.worker;
-    match await restarted.alive() {
+    match restarted.alive() {
         .Ok(v) => v,
         .Err(_) => 1,
     }

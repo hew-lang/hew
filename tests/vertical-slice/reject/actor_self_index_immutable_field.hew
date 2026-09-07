@@ -12,5 +12,5 @@ actor Bag {
 
 fn main() {
     let bag = spawn Bag(items: Vec.new());
-    bag.poke();
+    let _ = bag.poke();
 }

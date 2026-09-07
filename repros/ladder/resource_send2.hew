@@ -9,6 +9,6 @@ actor Holder {
 fn main() {
     let h = spawn Holder();
     let c = Conn { fd: 1 };
-    h.take(c);
+    let _ = h.take(c);
     println(f"after {c.fd}");
 }

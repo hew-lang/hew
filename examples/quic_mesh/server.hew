@@ -43,7 +43,7 @@ fn main() {
 
     // Keep alive to serve remote messages.
     sleep(5s);
-    let final_count = await counter.get_count();
+    let final_count = counter.get_count();
     match final_count {
         .Ok(n) => println(f"[server] final count: {n}"),
         .Err(_) => println("[server] failed to get count"),

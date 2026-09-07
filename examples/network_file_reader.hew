@@ -41,8 +41,8 @@ fn main() {
     let printer = spawn Printer;
     let fib5 = fibonacci(5);
     let fib10 = fibonacci(10);
-    printer.print_message(fib5);
-    printer.print_message(fib10);
+    let _ = printer.print_message(fib5);
+    let _ = printer.print_message(fib10);
     sleep(50ms);
     println("=== Done ===");
 }

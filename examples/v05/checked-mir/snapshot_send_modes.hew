@@ -12,7 +12,7 @@ fn main() {
     let text = "shared";
     let boxed = Boxed { payload: [2, 3] };
     let last = "last";
-    sink.take(n, text, boxed, last);
+    let _ = sink.take(n, text, boxed, last);
     println(text);
     boxed.payload.push(4);
 }

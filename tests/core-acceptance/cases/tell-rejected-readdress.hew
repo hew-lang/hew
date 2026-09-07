@@ -1,0 +1,66 @@
+// A refused submission hands the whole message back intact. `retry()`
+// resubmits it to the same target and `to(other)` readdresses it, neither
+// opening the payload — an owned string with an embedded NUL, so any loss or
+// C-string truncation would show in the delivered length.
+//
+// The full mailbox is deterministic without a worker-count assumption: `fill`
+// runs inside `Sink`, so nothing can drain `Sink`'s own queue while it holds
+// the actor. Two self-sends fill the capacity-two mailbox and the third is
+// refused. `fill` is an ask, so `main` resumes only after it has returned and
+// its queued work is ordered ahead of the counting asks.
+actor Sink {
+    mailbox 2 overflow fail,
+    var count: i64 = 0,
+    var last: string = "",
+
+    receive fn take(payload: string) {
+        count = count + 1;
+        last = payload;
+    }
+
+    receive fn total() -> i64 { count }
+
+    receive fn tail_len() -> i64 { last.len() }
+
+    receive fn fill(me: LocalPid<Sink>, backup: LocalPid<Sink>) -> i64 {
+        let _ = me.take(tagged("one"));
+        let _ = me.take(tagged("two"));
+        match me.take(tagged("three")) {
+            .Ok(_) => println("UNEXPECTED_ACCEPT"),
+            .Err(rejected) => match rejected.message.retry() {
+                .Ok(_) => println("UNEXPECTED_RETRY_ACCEPT"),
+                .Err(again) => match again.message.to(backup) {
+                    .Ok(_) => println("readdressed"),
+                    .Err(_) => println("READDRESS_FAILED"),
+                },
+            },
+        }
+        0
+    }
+}
+
+fn tagged(name: string) -> string {
+    name + "\u{0}tail"
+}
+
+fn count_of(label: string, sink: LocalPid<Sink>) {
+    match sink.total() {
+        .Ok(n) => println(f"{label} {n}"),
+        .Err(_) => panic("count ask failed"),
+    }
+}
+
+fn main() {
+    let sink = spawn Sink();
+    let backup = spawn Sink();
+    match sink.fill(sink, backup) {
+        .Ok(_) => {},
+        .Err(_) => panic("fill ask failed"),
+    }
+    count_of("sink", sink);
+    count_of("backup", backup);
+    match backup.tail_len() {
+        .Ok(n) => println(f"payload {n}"),
+        .Err(_) => panic("payload ask failed"),
+    }
+}

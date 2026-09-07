@@ -49,18 +49,18 @@ actor Registry {
 
 fn main() {
     let registry = spawn Registry;
-    let first = await registry.drain_total();
+    let first = registry.drain_total();
     match first {
         .Ok(total) => println(total),
         .Err(_) => println(-1),
     }
-    let drained = await registry.drain_total();
+    let drained = registry.drain_total();
     match drained {
         .Ok(total) => println(total),
         .Err(_) => println(-1),
     }
-    registry.refill();
-    let count = await registry.plugin_count();
+    let _ = registry.refill();
+    let count = registry.plugin_count();
     match count {
         .Ok(n) => println(n),
         .Err(_) => println(-1),

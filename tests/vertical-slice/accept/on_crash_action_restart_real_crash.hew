@@ -65,12 +65,12 @@ fn main() -> i64 {
     // Crash the child (fire-and-forget tell, processed in mailbox order). The
     // supervisor fires Worker__on_crash on the real trap; the hook clones +
     // reads info.message and returns Restart.
-    w.boom();
+    let _ = w.boom();
     // Suspend until the restarted child's slot is Live again, then re-fetch it.
     // This only completes if on_crash returned Restart AND the runtime survived
     // the crash-message clone/drop without aborting.
     let w2 = await_restart sup.w;
-    match await w2.get() {
+    match w2.get() {
         .Ok(n) => n, // 43 — on_crash mutated the restart template from 42.
         .Err(_) => 1,
     }

@@ -18,7 +18,7 @@ actor Busy {
 
 actor Stopper {
     receive fn stop_tree(sup: LocalPid<App>, ready: channel.Sender<i64>) {
-        sup.busy.work(1);
+        let _ = sup.busy.work(1);
         supervisor_stop(sup);
         ready.send(42);
         let _ = unsafe { usleep(200000) };
@@ -39,7 +39,7 @@ fn main() -> i64 {
         .Ok(pair) => pair,
         .Err(_) => return 1,
     };
-    sup.stopper.stop_tree(sup, ready_tx);
+    let _ = sup.stopper.stop_tree(sup, ready_tx);
     match ready_rx.recv() {
         .Some(n) => n,
         .None => 1,

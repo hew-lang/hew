@@ -33,9 +33,9 @@ actor TestSink {
 
 fn main() {
     let sink = spawn TestSink(total: 0);
-    sink.accept_sender(Sender { x: 20 });
-    sink.accept_receiver(Receiver { y: 22 });
-    let sum = await sink.sum();
+    let _ = sink.accept_sender(Sender { x: 20 });
+    let _ = sink.accept_receiver(Receiver { y: 22 });
+    let sum = sink.sum();
     match sum {
         .Ok(v) => println(f"sum {v}"),
         .Err(_) => println("sum failed"),

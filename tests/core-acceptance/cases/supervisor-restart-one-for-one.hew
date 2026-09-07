@@ -19,14 +19,14 @@ supervisor App(label: string) {
 fn main() {
     let app = spawn App(label: "keeper");
     let worker = app.worker;
-    let _ = send worker.bump();
-    match await worker.read() {
+    let _ = worker.bump();
+    match worker.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    let _ = send worker.boom();
+    let _ = worker.boom();
     let replacement = await_restart app.worker;
-    match await replacement.read() {
+    match replacement.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }

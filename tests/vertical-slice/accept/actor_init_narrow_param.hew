@@ -22,7 +22,7 @@ actor NarrowInit {
 
 fn main() -> i64 {
     let handle = spawn NarrowInit(a: 100, b: 20, c: 3);
-    match await handle.sum() {
+    match handle.sum() {
         .Ok(v) => v,
         .Err(_e) => -1,
     }

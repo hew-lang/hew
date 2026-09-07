@@ -43,5 +43,5 @@ actor Driver {
 fn main() {
     let worker = spawn RejectingWorker;
     let driver = spawn Driver;
-    driver.run(worker);
+    let _ = driver.run(worker);
 }

@@ -33,7 +33,7 @@ fn main() {
     for await reading in sensor.readings(3) {
         println(f"reading: {reading}");
     }
-    sensor.calibrate(1000);
+    let _ = sensor.calibrate(1000);
     for await reading in sensor.readings(3) {
         println(f"reading: {reading}");
     }

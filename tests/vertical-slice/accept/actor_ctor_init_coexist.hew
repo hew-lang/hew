@@ -17,7 +17,7 @@ actor Calc {
 fn main() -> i64 {
     // `count` and `base` are state fields; `multiplier` is an init() param.
     let calc = spawn Calc(multiplier: 2, count: 5, base: 100);
-    match await calc.total() {
+    match calc.total() {
         .Ok(v) => v,
         .Err(_e) => -1,
     }

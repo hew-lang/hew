@@ -49,7 +49,7 @@ fn main() -> i64 {
                 Result.Err(_) => 20,
             };
             if send_code == 0 {
-                let total = match await worker.total() {
+                let total = match worker.total() {
                     .Ok(v) => v,
                     .Err(_e) => -1,
                 };

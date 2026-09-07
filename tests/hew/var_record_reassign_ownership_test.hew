@@ -215,17 +215,17 @@ actor Swapper {
 fn _test_actor_record_state_reassign_accumulates_exact() {
     let a = spawn RecAcc;
     for i in 0 .. 12 {
-        a.bump();
+        let _ = a.bump();
     }
-    match await a.report() {
+    match a.report() {
         .Ok(x) => testing.assert_eq(x, 12012),
         .Err(_) => testing.assert_true(false),
     }
-    match await a.at(0) {
+    match a.at(0) {
         .Ok(x) => testing.assert_eq(x, 0),
         .Err(_) => testing.assert_true(false),
     }
-    match await a.at(11) {
+    match a.at(11) {
         .Ok(x) => testing.assert_eq(x, 11),
         .Err(_) => testing.assert_true(false),
     }
@@ -238,15 +238,15 @@ fn _test_actor_record_state_reassign_accumulates_exact() {
 fn _test_actor_record_state_fresh_reset_is_exact() {
     let a = spawn RecAcc;
     for i in 0 .. 5 {
-        a.bump();
+        let _ = a.bump();
     }
-    a.reset();
-    a.bump();
-    match await a.report() {
+    let _ = a.reset();
+    let _ = a.bump();
+    match a.report() {
         .Ok(x) => testing.assert_eq(x, 1001),
         .Err(_) => testing.assert_true(false),
     }
-    match await a.at(0) {
+    match a.at(0) {
         .Ok(x) => testing.assert_eq(x, 0),
         .Err(_) => testing.assert_true(false),
     }
@@ -258,9 +258,9 @@ fn _test_actor_record_state_fresh_reset_is_exact() {
 fn _test_actor_vec_state_reassign_accumulates_exact() {
     let b = spawn VecAcc;
     for i in 0 .. 12 {
-        b.bump(i);
+        let _ = b.bump(i);
     }
-    match await b.checksum() {
+    match b.checksum() {
         .Ok(x) => testing.assert_eq(x, 6612),
         .Err(_) => testing.assert_true(false),
     }
@@ -272,11 +272,11 @@ fn _test_actor_vec_state_reassign_accumulates_exact() {
 #[test]
 fn _test_actor_record_state_field_swap_is_exact() {
     let s = spawn Swapper;
-    s.seed();
-    s.flip();
-    s.flip();
-    s.flip();
-    match await s.probe() {
+    let _ = s.seed();
+    let _ = s.flip();
+    let _ = s.flip();
+    let _ = s.flip();
+    match s.probe() {
         .Ok(x) => testing.assert_eq(x, 21),
         .Err(_) => testing.assert_true(false),
     }

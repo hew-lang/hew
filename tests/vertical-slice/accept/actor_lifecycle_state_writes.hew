@@ -40,8 +40,8 @@ actor LifecycleWriter {
 
 fn main() -> i64 {
     let writer = spawn LifecycleWriter;
-    writer.replace();
-    match await writer.current() {
+    let _ = writer.replace();
+    match writer.current() {
         .Ok(value) => value,
         .Err(_) => 0,
     }

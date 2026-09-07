@@ -95,26 +95,26 @@ fn main() {
     let cache = cache_mgr.cache;
     // Normal operation
     println("--- Normal Operation ---");
-    w1.process(100);
+    let _ = w1.process(100);
     sleep(20ms);
-    w2.process(200);
+    let _ = w2.process(200);
     sleep(20ms);
-    cache.store(42);
+    let _ = cache.store(42);
     sleep(30ms);
 
     // Worker crashes — inner supervisor restarts it
     println("");
     println("--- Worker Crash (handled by WorkerPool) ---");
-    w1.fail();
+    let _ = w1.fail();
     sleep(500ms);
 
     // Fresh worker is operational
     let w1b = workers_sup.w1;
-    w1b.process(101);
+    let _ = w1b.process(101);
     sleep(20ms);
 
     // Cache is unaffected (different subtree)
-    cache.store(99);
+    let _ = cache.store(99);
     sleep(30ms);
     println("");
     println("Tree structure preserved. Crash isolation works across subtrees.");

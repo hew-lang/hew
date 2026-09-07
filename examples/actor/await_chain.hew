@@ -18,7 +18,7 @@ actor Mid {
     // leaf(5) = 15; step doubles -> 30; run adds 1 -> 31.
     let bottom: LocalPid<Bottom>,
     receive fn step(n: i64) -> i64 {
-        let r = await bottom.leaf(n);
+        let r = bottom.leaf(n);
         match r {
             .Ok(v) => v * 2,
             .Err(_) => -1,
@@ -29,7 +29,7 @@ actor Mid {
 actor Top {
     let mid: LocalPid<Mid>,
     receive fn run(n: i64) -> i64 {
-        let r = await mid.step(n);
+        let r = mid.step(n);
         match r {
             .Ok(v) => v + 1,
             .Err(_) => -1,
@@ -41,7 +41,7 @@ fn main() {
     let b = spawn Bottom(base: 10);
     let m = spawn Mid(bottom: b);
     let t = spawn Top(mid: m);
-    let r = await t.run(5);
+    let r = t.run(5);
     match r {
         .Ok(v) => println(f"result={v}"),
         .Err(_) => println("chain failed"),

@@ -30,7 +30,7 @@ actor TestSink {
 fn main() {
     let sink = spawn TestSink;
     let holder = Holder { sock: Socket { fd: 7 }, count: 3, name: "held" };
-    match await sink.take(holder.sock) {
+    match sink.take(holder.sock) {
         .Ok(fd) => println(f"fd={fd}"),
         .Err(_) => println("take failed"),
     }

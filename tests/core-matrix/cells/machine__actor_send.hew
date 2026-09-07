@@ -25,7 +25,7 @@ fn main() {
     var x = Zero;
     x.step(.Inc);
     let s = spawn Sink(hits: 0);
-    match await s.take(x) {
+    match s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),
         Result.Err(_) => println("err"),
     }

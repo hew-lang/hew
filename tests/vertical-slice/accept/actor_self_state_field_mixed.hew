@@ -33,10 +33,10 @@ actor Tally {
 
 fn main() -> i64 {
     let tally = spawn Tally(seed: 1);
-    tally.record(true);
-    tally.record(true);
-    tally.record(false);
-    match await tally.total() {
+    let _ = tally.record(true);
+    let _ = tally.record(true);
+    let _ = tally.record(false);
+    match tally.total() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

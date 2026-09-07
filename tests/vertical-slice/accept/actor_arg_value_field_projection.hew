@@ -24,15 +24,15 @@ fn main() {
     let sink = spawn TestSink;
     let items: Vec<i64> = [4, 5];
     let holder = Holder { count: 3, name: "held", items: items };
-    match await sink.take_scalar(holder.count) {
+    match sink.take_scalar(holder.count) {
         .Ok(v) => println(f"scalar={v}"),
         .Err(_) => println("scalar failed"),
     }
-    match await sink.take_string(holder.name) {
+    match sink.take_string(holder.name) {
         .Ok(v) => println(f"string={v}"),
         .Err(_) => println("string failed"),
     }
-    match await sink.take_vec(holder.items) {
+    match sink.take_vec(holder.items) {
         .Ok(v) => println(f"vec={v}"),
         .Err(_) => println("vec failed"),
     }

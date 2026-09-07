@@ -40,7 +40,7 @@ actor ChatRoom {
     receive fn broadcast(sender_name: string, msg: string) {
         for i in 0 .. names.len() {
             if names[i] != sender_name {
-                handlers[i].deliver(msg);
+                let _ = handlers[i].deliver(msg);
             }
         }
     }
@@ -60,10 +60,10 @@ actor ClientHandler {
             match conn.try_read_string() {
                 .Ok(data) => {
                     if data.is_empty() {
-                        room.unregister(name);
+                        let _ = room.unregister(name);
                         running = false;
                     } else if data.contains("__HEW_TCP_DISCONNECT__") {
-                        room.unregister(name);
+                        let _ = room.unregister(name);
                         match conn.write_string("__HEW_TCP_DISCONNECT__") {
                             .Ok(_) => {},
                             .Err(_) => println("[server] disconnect write failed"),
@@ -74,12 +74,12 @@ actor ClientHandler {
                         println(line);
                         // ChatRoom uses the default unbounded mailbox, so this unit
                         // send has no SendError result to discard or handle.
-                        room.broadcast(name, line);
+                        let _ = room.broadcast(name, line);
                     }
                 },
                 .Err(_) => {
                     println("[server] client read failed");
-                    room.unregister(name);
+                    let _ = room.unregister(name);
                     running = false;
                 },
             }
@@ -119,8 +119,8 @@ fn main() {
         let conn = listener.accept();
         let handler = spawn ClientHandler(conn: conn, name: f"client-{next_id}", room: room);
         // The default unbounded mailbox makes this a lossless unit send.
-        room.register(handler, f"client-{next_id}");
-        handler.start(0);
+        let _ = room.register(handler, f"client-{next_id}");
+        let _ = handler.start(0);
         next_id = next_id + 1;
     }
 }

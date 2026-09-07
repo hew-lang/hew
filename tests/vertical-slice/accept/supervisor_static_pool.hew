@@ -38,7 +38,7 @@ fn main() -> i64 {
     // [i] round-trips to each member (Live → its id 7; OOB would trap). Reaching
     // all three proves N distinct Live members were spawned + registered.
     let m0 = sup.workers[0];
-    match await m0.id() {
+    match m0.id() {
         .Ok(v) => {
             total = total + v;
         },
@@ -47,7 +47,7 @@ fn main() -> i64 {
         },
     }
     let m1 = sup.workers[1];
-    match await m1.id() {
+    match m1.id() {
         .Ok(v) => {
             total = total + v;
         },
@@ -56,7 +56,7 @@ fn main() -> i64 {
         },
     }
     let m2 = sup.workers[2];
-    match await m2.id() {
+    match m2.id() {
         .Ok(v) => {
             total = total + v;
         },

@@ -30,6 +30,6 @@ actor _Worker {
 
 fn main() -> i64 {
     let w = spawn _Worker;
-    w.run();
+    let _ = w.run();
     0
 }

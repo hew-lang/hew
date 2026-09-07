@@ -1,0 +1,10 @@
+[[case]]
+id = "tell-rejected-readdress"
+intent = "A refused submission returns the whole message; `retry()` resubmits it to the same target and `to(other)` readdresses it, both preserving an owned payload with an embedded NUL."
+source = "cases/tell-rejected-readdress.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "readdressed\nsink 2\nbackup 1\npayload 10\n"
+exit = 0

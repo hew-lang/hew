@@ -23,12 +23,12 @@ actor TestSink {
 
 fn main() {
     let s = spawn TestSink(total: 0);
-    s.process("first", 5);
-    s.process("second", 7);
+    let _ = s.process("first", 5);
+    let _ = s.process("second", 7);
     let left = "alpha";
     let right = "beta";
-    s.note(left, right);
-    let r = await s.fence();
+    let _ = s.note(left, right);
+    let r = s.fence();
     match r {
         .Ok(v) => println(f"fence total={v}"),
         .Err(_) => println("fence failed"),

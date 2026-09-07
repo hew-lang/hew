@@ -37,7 +37,7 @@ fn main() -> i64 {
     // Let every accepted message finish processing (well past the 4-5 * 20ms
     // it would take even in the worst accepted-batch case).
     sleep(1s);
-    let result = await w.report();
+    let result = w.report();
     let final_count = match result {
         .Ok(value) => value,
         .Err(_) => -1,

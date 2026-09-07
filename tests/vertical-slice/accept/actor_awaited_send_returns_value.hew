@@ -16,7 +16,7 @@ actor Doubler {
 
 fn main() -> i64 {
     let d = spawn Doubler;
-    match await d.send(21) {
+    match d.send(21) {
         .Ok(v) => v,
         .Err(_) => 0,
     }

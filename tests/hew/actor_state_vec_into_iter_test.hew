@@ -77,12 +77,12 @@ actor StrHolder {
 #[test]
 fn test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec() {
     let h = spawn DynHolder;
-    let first = await h.drain_format("m1");
+    let first = h.drain_format("m1");
     match first {
         .Ok(n) => testing.assert_eq(n, 2),
         .Err(_) => testing.assert_eq(0, 1),
     }
-    let second = await h.drain_format("m2");
+    let second = h.drain_format("m2");
     match second {
         .Ok(n) => testing.assert_eq(n, 0),
         .Err(_) => testing.assert_eq(0, 2),
@@ -92,18 +92,18 @@ fn test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec() {
 #[test]
 fn test_push_into_drained_dyn_state_field_lands_in_valid_vec() {
     let h = spawn DynHolder;
-    let first = await h.drain_format("m1");
+    let first = h.drain_format("m1");
     match first {
         .Ok(n) => testing.assert_eq(n, 2),
         .Err(_) => testing.assert_eq(0, 1),
     }
-    h.refill();
-    let count = await h.plugin_count();
+    let _ = h.refill();
+    let count = h.plugin_count();
     match count {
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_eq(0, 2),
     }
-    let third = await h.drain_format("m3");
+    let third = h.drain_format("m3");
     match third {
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_eq(0, 3),
@@ -113,12 +113,12 @@ fn test_push_into_drained_dyn_state_field_lands_in_valid_vec() {
 #[test]
 fn test_second_dispatch_after_string_state_drain_terminates() {
     let h = spawn StrHolder;
-    let first = await h.drain_count();
+    let first = h.drain_count();
     match first {
         .Ok(n) => testing.assert_eq(n, 2),
         .Err(_) => testing.assert_eq(0, 1),
     }
-    let second = await h.drain_count();
+    let second = h.drain_count();
     match second {
         .Ok(n) => testing.assert_eq(n, 0),
         .Err(_) => testing.assert_eq(0, 2),

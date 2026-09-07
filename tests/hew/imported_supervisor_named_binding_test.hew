@@ -22,13 +22,13 @@ supervisor AliasedPool {
 #[test]
 fn named_and_aliased_actors_run_as_supervised_children() {
     let direct = spawn DirectPool;
-    match await direct.worker.identify() {
+    match direct.worker.identify() {
         .Ok(id) => testing.assert_eq(id, 31),
         .Err(_) => testing.assert_true(false),
     }
     supervisor_stop(direct);
     let aliased = spawn AliasedPool;
-    match await aliased.worker.identify() {
+    match aliased.worker.identify() {
         .Ok(id) => testing.assert_eq(id, 47),
         .Err(_) => testing.assert_true(false),
     }

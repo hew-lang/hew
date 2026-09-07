@@ -49,13 +49,13 @@ actor Ledger {
 
 fn main() {
     let ledger = spawn Ledger(count: 0, label: "new", items: Vec.new(), origin: Point { x: 3, y: 4 });
-    ledger.record(4);
-    ledger.record(2);
-    match await ledger.name() {
+    let _ = ledger.record(4);
+    let _ = ledger.record(2);
+    match ledger.name() {
         .Ok(line) => println(line),
         .Err(_) => println("ask failed"),
     }
-    match await ledger.tally() {
+    match ledger.tally() {
         .Ok(total) => println(total),
         .Err(_) => println("ask failed"),
     }

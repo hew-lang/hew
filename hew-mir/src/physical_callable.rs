@@ -1,8 +1,8 @@
 //! Physical construction, receiver and capture-storage contracts.
 
 use super::{
-    required_layout, semantic_type_facts, storage, ArgumentTransfer, BTreeSet, CallResult,
-    CallUnwind, CallableId, ClosureId, FlowState, FunctionLowerer, InitState, OwnKind,
+    param_carrier, required_layout, semantic_type_facts, storage, ArgumentTransfer, BTreeSet,
+    CallResult, CallUnwind, CallableId, ClosureId, FlowState, FunctionLowerer, InitState, OwnKind,
     ParamCarrier, PhysicalCallSignature, PhysicalClosure, PhysicalError, PhysicalFunction,
     PhysicalModule, PhysicalOp, PhysicalParam, PhysicalRepr, PhysicalTerminator, ResolvedTy,
     SemParamPassing, SemTerminator, StorageId, StorageOrigin,
@@ -354,6 +354,76 @@ pub(super) fn verify_capture_return(
 }
 
 impl FunctionLowerer<'_> {
+    /// Realize one semantic signature's argument ABI.
+    fn call_params(
+        &self,
+        signature: &hew_sir::SemSignature,
+    ) -> Result<Vec<PhysicalParam>, PhysicalError> {
+        signature
+            .params
+            .iter()
+            .map(|param| {
+                let layout = required_layout(self.target, &param.ty)?.clone();
+                Ok(PhysicalParam {
+                    ty: param.ty.clone(),
+                    passing: param.passing,
+                    carrier: param_carrier(param.passing, &layout),
+                    layout,
+                })
+            })
+            .collect()
+    }
+
+    /// Realize a vtable dispatch: the receiver rides a pointer into the
+    /// erased box, and the rest of the ABI is the slot's own signature.
+    pub(super) fn lower_dyn_call(
+        &self,
+        call: &SemTerminator,
+    ) -> Result<PhysicalTerminator, PhysicalError> {
+        let SemTerminator::DynCall {
+            receiver,
+            slot,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } = call
+        else {
+            unreachable!()
+        };
+        Ok(PhysicalTerminator::DynCall {
+            receiver: self.argument_transfer(receiver.operand.value, receiver.decision)?,
+            slot: *slot,
+            signature: PhysicalCallSignature {
+                params: self.call_params(signature)?,
+                return_ty: signature.return_ty.clone(),
+                return_layout: if matches!(
+                    signature.return_ty,
+                    ResolvedTy::Unit | ResolvedTy::Never
+                ) {
+                    None
+                } else {
+                    Some(required_layout(self.target, &signature.return_ty)?.clone())
+                },
+            },
+            args: self.argument_transfers(args)?,
+            result: match result {
+                CallResult::Unit | CallResult::Never => None,
+                CallResult::Value(value) => Some(self.value(value.id)?),
+            },
+            normal: normal
+                .as_ref()
+                .map(|edge| self.lower_edge(edge))
+                .transpose()?,
+            unwind: match unwind {
+                CallUnwind::NotApplicable => None,
+                CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
+            },
+        })
+    }
+
     pub(super) fn lower_indirect_call(
         &self,
         call: &SemTerminator,
@@ -371,26 +441,7 @@ impl FunctionLowerer<'_> {
             unreachable!()
         };
 
-        let params = signature
-            .params
-            .iter()
-            .map(|param| {
-                let layout = required_layout(self.target, &param.ty)?.clone();
-                let carrier = if param.passing == SemParamPassing::BorrowMut
-                    || matches!(layout.repr, PhysicalRepr::Struct(_))
-                {
-                    ParamCarrier::Indirect
-                } else {
-                    ParamCarrier::Direct
-                };
-                Ok(PhysicalParam {
-                    ty: param.ty.clone(),
-                    passing: param.passing,
-                    layout,
-                    carrier,
-                })
-            })
-            .collect::<Result<Vec<_>, PhysicalError>>()?;
+        let params = self.call_params(signature)?;
         Ok(PhysicalTerminator::IndirectCall {
             callee: self.argument_transfer(callee.operand.value, callee.decision)?,
             signature: PhysicalCallSignature {
@@ -441,6 +492,106 @@ pub(super) fn verify_callable_coerce(
     Ok(())
 }
 
+/// The erasure's storage agrees with the table it names on both sides.
+fn verify_dyn_make(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    dest: StorageId,
+    vtable: super::PhysicalVtableId,
+    source: StorageId,
+) -> Result<(), PhysicalError> {
+    let table = module
+        .vtables
+        .get(vtable.0 as usize)
+        .filter(|table| table.id == vtable)
+        .ok_or_else(|| PhysicalError::new("erasure names no realized dispatch table"))?;
+    let dest = storage(function, dest)?;
+    let source = storage(function, source)?;
+    if dest.ty != table.dyn_ty
+        || dest.own != OwnKind::Owned
+        || source.ty != table.concrete_ty
+        || source.own != OwnKind::Owned
+    {
+        return Err(PhysicalError::new(
+            "physical erasure disagrees with its dispatch table's types or ownership",
+        ));
+    }
+    Ok(())
+}
+
+/// The erased dispatch boundary agrees with every table that reaches it.
+pub(super) fn verify_dyn_call(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    receiver: ArgumentTransfer,
+    slot: u32,
+    signature: &PhysicalCallSignature,
+    args: &[ArgumentTransfer],
+    result: Option<StorageId>,
+) -> Result<(), PhysicalError> {
+    let source = match receiver {
+        ArgumentTransfer::Borrow(id)
+        | ArgumentTransfer::BorrowMut(id)
+        | ArgumentTransfer::Move(id)
+        | ArgumentTransfer::Clone { source: id, .. } => id,
+    };
+    let receiver_storage = storage(function, source)?;
+    if !matches!(receiver_storage.ty, ResolvedTy::TraitObject { .. }) {
+        return Err(PhysicalError::new(
+            "physical dynamic dispatch requires a trait-object receiver",
+        ));
+    }
+    let mut reached = 0usize;
+    for table in module
+        .vtables
+        .iter()
+        .filter(|table| table.dyn_ty == receiver_storage.ty)
+    {
+        reached += 1;
+        let published = table
+            .slots
+            .iter()
+            .find(|published| published.slot == slot)
+            .ok_or_else(|| {
+                PhysicalError::new(format!(
+                    "realized table for `{}` publishes no slot {slot}",
+                    table.concrete_ty.user_facing()
+                ))
+            })?;
+        if &published.signature != signature {
+            return Err(PhysicalError::new(format!(
+                "physical dispatch of slot {slot} differs from the ABI `{}` was erased under",
+                table.concrete_ty.user_facing()
+            )));
+        }
+    }
+    if reached == 0 {
+        return Err(PhysicalError::new(
+            "physical dynamic dispatch has no realized dispatch table",
+        ));
+    }
+    if args.len() != signature.params.len() {
+        return Err(PhysicalError::new(
+            "physical dynamic dispatch argument count differs from its signature",
+        ));
+    }
+    match (result, signature.return_layout.as_ref()) {
+        (None, None) => Ok(()),
+        (Some(result), Some(layout)) => {
+            let result = storage(function, result)?;
+            if &result.layout != layout || result.ty != signature.return_ty {
+                return Err(PhysicalError::new(
+                    "physical dynamic dispatch result differs from its signature",
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(PhysicalError::new(
+            "physical dynamic dispatch result presence differs from its signature",
+        )),
+    }
+}
+
 pub(super) fn verify_operation(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -458,6 +609,11 @@ pub(super) fn verify_operation(
         PhysicalOp::CallableCoerce { dest, source } => {
             verify_callable_coerce(module, function, *dest, *source)
         }
+        PhysicalOp::DynMake {
+            dest,
+            vtable,
+            source,
+        } => verify_dyn_make(module, function, *dest, *vtable, *source),
         _ => unreachable!("only callable construction operations are dispatched"),
     }
 }

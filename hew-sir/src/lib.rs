@@ -50,7 +50,8 @@ pub use model::{
     SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
     SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
     SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantShape,
-    SirInstanceKey, SuccessorSlot, UseSite, ValueDef, ValueId, VariantShapeId,
+    SemVtable, SemVtableId, SemVtableSlot, SirInstanceKey, SuccessorSlot, UseSite, ValueDef,
+    ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,

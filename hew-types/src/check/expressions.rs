@@ -2768,13 +2768,7 @@ impl Checker {
     fn record_dyn_index_method_call(&mut self, bound: &crate::ty::TraitObjectBound, span: &Span) {
         let trait_name = bound.trait_name.as_str();
         let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
-        let Some(trait_info) = self.trait_defs.get(&trait_lookup_key).cloned() else {
-            return;
-        };
-        let Some(method_idx) = trait_info
-            .methods
-            .iter()
-            .position(|method| method.name == "at")
+        let Some((slot, _, declaring_spelling)) = self.dyn_vtable_slot_for_method(trait_name, "at")
         else {
             return;
         };
@@ -2786,9 +2780,8 @@ impl Checker {
             return;
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
-        let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
         let target = self
-            .trait_method_call_target_ids(trait_name, "at")
+            .trait_method_call_target_ids(&declaring_spelling, "at")
             .map_or_else(
                 || crate::check::dispatch::CallTarget::Unsupported {
                     reason: format!(

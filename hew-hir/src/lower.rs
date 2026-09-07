@@ -5864,28 +5864,30 @@ pub fn lower_program_with_mono_cap(
     // `Display::fmt` target from its generated boundary adapter. That edge has
     // no source call expression, so it must enter the same monomorphisation
     // registry explicitly or a generic impl body is never materialized.
-    if let Some((display, type_args)) =
+    if let Some((declaration, type_args)) =
         entry_exit_plan
             .as_ref()
             .and_then(|plan| match &plan.action {
-                hew_types::EntryExitAction::Result { display, .. } => match &display.instance {
-                    hew_types::EntryCallableInstance::Generic { type_args } => {
-                        Some((display, type_args))
-                    }
-                    hew_types::EntryCallableInstance::Declared => None,
+                hew_types::EntryExitAction::Result { display, .. } => match display {
+                    hew_types::EntryDisplayTarget::Declared {
+                        declaration,
+                        instance: hew_types::EntryCallableInstance::Generic { type_args },
+                    } => Some((declaration, type_args)),
+                    // A concrete target needs no specialization, and an erased
+                    // one dispatches through a vtable slot rather than a body.
+                    hew_types::EntryDisplayTarget::Declared { .. }
+                    | hew_types::EntryDisplayTarget::DynSlot { .. } => None,
                 },
                 hew_types::EntryExitAction::Unit | hew_types::EntryExitAction::Integer(_) => None,
             })
     {
         if let Some(function) = items.iter().find_map(|item| match item {
-            HirItem::Function(function) if function.declaration == display.declaration => {
-                Some(function)
-            }
+            HirItem::Function(function) if &function.declaration == declaration => Some(function),
             _ => None,
         }) {
             let key = MonoKey {
                 origin: function.id,
-                declaration: display.declaration.clone(),
+                declaration: declaration.clone(),
                 linker_symbol: function.name.clone(),
                 type_args: type_args.clone(),
             };

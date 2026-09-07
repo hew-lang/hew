@@ -78,6 +78,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::StreamSend { .. }
                     | PhysicalTerminator::ValueClose { .. }
                     | PhysicalTerminator::IndirectCall { .. }
+                    | PhysicalTerminator::DynCall { .. }
                     | PhysicalTerminator::NativeIo { .. }
                     | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::TaskSelect { .. }

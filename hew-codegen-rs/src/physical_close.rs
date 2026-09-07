@@ -165,7 +165,10 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                     self.visit_close_variant(slot, glue, variant, context)?;
                 }
             }
-            DestroyAction::StringRelease
+            // A trait object's release is a synchronous vtable drop slot; it
+            // owns no cooperative child to close.
+            DestroyAction::TraitObject
+            | DestroyAction::StringRelease
             | DestroyAction::BytesRelease
             | DestroyAction::Encoding(_) => {}
         }

@@ -440,6 +440,43 @@ pub struct SemAggregateShape {
     pub fields: Vec<SemAggregateField>,
 }
 
+/// Module-local identity of one demanded `(dyn Trait, concrete type)` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemVtableId(pub u32);
+
+/// One dispatchable slot of a demanded trait-object table.
+///
+/// `slot` is the checker's index (`3 + declaration order`, past the runtime's
+/// `drop_in_place`/`size_of`/`align_of` prefix). SIR never recomputes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemVtableSlot {
+    pub slot: u32,
+    /// The trait that declares the method, for diagnostics only.
+    pub trait_name: String,
+    pub method_name: String,
+    /// The exact implementation this concrete type contributes.
+    pub callee: CallableId,
+    /// How the erased receiver crosses the dispatch boundary.
+    pub receiver: SemParamPassing,
+    /// The dispatch signature, excluding the receiver.
+    pub signature: SemSignature,
+}
+
+/// Exact semantic dispatch table for one erasure of a concrete type.
+///
+/// One table per `(dyn Trait, concrete type)`: the coercion site names the
+/// concrete type, and every dispatch on the resulting value reads a slot by
+/// index. Physical MIR realizes the table; SIR decides which implementations
+/// fill it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemVtable {
+    pub id: SemVtableId,
+    pub dyn_ty: ResolvedTy,
+    pub concrete_ty: ResolvedTy,
+    /// Slots in emitted order; `slots[i].slot == 3 + i`.
+    pub slots: Vec<SemVtableSlot>,
+}
+
 /// Module-local identity of one demanded concrete enum shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VariantShapeId(pub u32);
@@ -634,6 +671,8 @@ pub struct SemModule {
     /// declaration path or emitted symbol.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
+    /// Demanded trait-object dispatch tables in module-local ID order.
+    pub vtables: Vec<SemVtable>,
     /// Concrete named aggregate shapes mentioned by demanded SIR bodies, in
     /// module-local ID order. Tuple shapes remain structural in `ResolvedTy`.
     pub aggregate_shapes: Vec<SemAggregateShape>,
@@ -661,6 +700,15 @@ impl SemModule {
         self.callables
             .get(usize::try_from(id.0).ok()?)
             .filter(|callable| callable.id == id)
+    }
+
+    /// Resolve a dispatch table only when its ID agrees with the canonical
+    /// table position.
+    #[must_use]
+    pub fn vtable(&self, id: SemVtableId) -> Option<&SemVtable> {
+        self.vtables
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|vtable| vtable.id == id)
     }
 
     /// Resolve a record shape only when its ID agrees with the canonical table
@@ -1017,6 +1065,14 @@ pub enum SemOpKind {
         closure: ClosureId,
         fields: Vec<Operand>,
     },
+    /// Erase one owned concrete value into a trait object.
+    ///
+    /// The operand transfers into the object; the result owns the erased
+    /// value and releases it through the table's drop slot.
+    DynMake {
+        vtable: SemVtableId,
+        value: Operand,
+    },
     /// Transfer a callable while weakening only its proved capabilities.
     CallableCoerce {
         source: Operand,
@@ -1292,6 +1348,7 @@ impl SemOpKind {
                 callable: value, ..
             }
             | Self::CallableCoerce { source: value }
+            | Self::DynMake { value, .. }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
@@ -1381,6 +1438,7 @@ impl SemOpKind {
                 callable: value, ..
             }
             | Self::CallableCoerce { source: value }
+            | Self::DynMake { value, .. }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
@@ -1416,6 +1474,7 @@ impl SemOpKind {
             | Self::FunctionMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
+            | Self::DynMake { .. }
             | Self::ConstI64(..)
             | Self::ConstBool(..)
             | Self::TupleMake { .. }
@@ -1485,6 +1544,7 @@ impl SemOpKind {
             | Self::StreamPipe { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
+            | Self::DynMake { .. }
             | Self::CopyValue { .. }
             | Self::DestroyValue { .. }
             | Self::BeginBorrow { .. }
@@ -1542,6 +1602,7 @@ impl SemOpKind {
                 | Self::StreamPipe { .. }
                 | Self::ClosureMake { .. }
                 | Self::CallableCoerce { .. }
+                | Self::DynMake { .. }
                 | Self::DestroyValue { .. }
                 | Self::Move { .. }
                 | Self::Fork { .. }
@@ -1655,6 +1716,21 @@ pub enum SemTerminator {
         normal: Option<Edge>,
         unwind: CallUnwind,
     },
+    /// Dispatch one trait method through an erased receiver's vtable slot.
+    ///
+    /// The receiver occupies boundary operand slot zero, followed by the
+    /// source arguments. `slot` is the checker's index; no stage recomputes
+    /// it. The normal edge is absent exactly for a Never result.
+    DynCall {
+        id: OpId,
+        receiver: BoundaryOperand,
+        slot: u32,
+        signature: SemSignature,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Option<Edge>,
+        unwind: CallUnwind,
+    },
     /// Execute the exact checker-selected value method from the module's
     /// capability table. Arguments borrow values; the scalar result exists
     /// only on the normal edge. The cleanup edge owns a propagated fault.
@@ -1760,7 +1836,12 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::IndirectCall { callee, args, .. } => {
+            Self::IndirectCall { callee, args, .. }
+            | Self::DynCall {
+                receiver: callee,
+                args,
+                ..
+            } => {
                 for (index, argument) in std::iter::once(callee).chain(args).enumerate() {
                     visit(
                         OperandSlot(
@@ -1815,6 +1896,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::DynCall {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::ValueCall {
                 result: CallResult::Value(result),
                 ..
@@ -1855,6 +1940,10 @@ impl SemTerminator {
                 result: CallResult::Unit | CallResult::Never,
                 ..
             }
+            | Self::DynCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
             | Self::ValueCall {
                 result: CallResult::Unit | CallResult::Never,
                 ..
@@ -1885,11 +1974,15 @@ impl SemTerminator {
         reason = "exhaustive terminator operand visitor"
     )]
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
-        let argument_start = if let Self::IndirectCall { callee, .. } = self {
-            visit(OperandSlot(0), &callee.operand);
-            1
-        } else {
-            0
+        let argument_start = match self {
+            Self::IndirectCall { callee, .. }
+            | Self::DynCall {
+                receiver: callee, ..
+            } => {
+                visit(OperandSlot(0), &callee.operand);
+                1
+            }
+            _ => 0,
         };
         match self {
             Self::EnterDefer { body: edge, .. }
@@ -1965,6 +2058,12 @@ impl SemTerminator {
                 normal,
                 unwind,
                 ..
+            }
+            | Self::DynCall {
+                args,
+                normal,
+                unwind,
+                ..
             } => {
                 visit_call_operands(args, normal.as_ref(), unwind, argument_start, visit);
             }
@@ -2029,11 +2128,15 @@ impl SemTerminator {
         reason = "exhaustive terminator operand visitor"
     )]
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
-        let argument_start = if let Self::IndirectCall { callee, .. } = self {
-            visit(OperandSlot(0), &mut callee.operand);
-            1
-        } else {
-            0
+        let argument_start = match self {
+            Self::IndirectCall { callee, .. }
+            | Self::DynCall {
+                receiver: callee, ..
+            } => {
+                visit(OperandSlot(0), &mut callee.operand);
+                1
+            }
+            _ => 0,
         };
         match self {
             Self::EnterDefer { body: edge, .. }
@@ -2105,6 +2208,12 @@ impl SemTerminator {
                 ..
             }
             | Self::IndirectCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::DynCall {
                 args,
                 normal,
                 unwind,
@@ -2223,7 +2332,9 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::Call { normal, unwind, .. } | Self::IndirectCall { normal, unwind, .. } => {
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => {
                 if let Some(normal) = normal {
                     visit(SuccessorSlot(0), normal);
                 }
@@ -2316,7 +2427,9 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::Call { normal, unwind, .. } | Self::IndirectCall { normal, unwind, .. } => {
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => {
                 if let Some(normal) = normal {
                     visit(SuccessorSlot(0), normal);
                 }
@@ -2389,16 +2502,16 @@ impl SemTerminator {
             Self::SwitchVariant { arms, .. } => arms
                 .get(usize::try_from(slot.0).ok()?)
                 .map(|arm| &arm.target),
-            Self::Call { normal, unwind, .. } | Self::IndirectCall { normal, unwind, .. } => {
-                match slot.0 {
-                    0 => normal.as_ref(),
-                    1 => match unwind {
-                        CallUnwind::NotApplicable => None,
-                        CallUnwind::Cleanup(edge) => Some(edge),
-                    },
-                    _ => None,
-                }
-            }
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => match slot.0 {
+                0 => normal.as_ref(),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
             Self::RtCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => match slot.0 {
@@ -2473,16 +2586,16 @@ impl SemTerminator {
             Self::SwitchVariant { arms, .. } => arms
                 .get_mut(usize::try_from(slot.0).ok()?)
                 .map(|arm| &mut arm.target),
-            Self::Call { normal, unwind, .. } | Self::IndirectCall { normal, unwind, .. } => {
-                match slot.0 {
-                    0 => normal.as_mut(),
-                    1 => match unwind {
-                        CallUnwind::NotApplicable => None,
-                        CallUnwind::Cleanup(edge) => Some(edge),
-                    },
-                    _ => None,
-                }
-            }
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => match slot.0 {
+                0 => normal.as_mut(),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
             Self::RtCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => match slot.0 {
@@ -2571,12 +2684,13 @@ impl SemTerminator {
             }
             Self::CheckedBinary { .. } => "checked-binary failure-edge argument",
             Self::IndirectCall { .. } if slot.0 == 0 => "indirect callee",
-            Self::IndirectCall { args, .. }
+            Self::DynCall { .. } if slot.0 == 0 => "dynamic dispatch receiver",
+            Self::IndirectCall { args, .. } | Self::DynCall { args, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot <= args.len()) =>
             {
                 "call argument"
             }
-            Self::IndirectCall { args, normal, .. }
+            Self::IndirectCall { args, normal, .. } | Self::DynCall { args, normal, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| {
                     slot <= args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
                 }) =>
@@ -2610,7 +2724,8 @@ impl SemTerminator {
             | Self::RtCall { .. }
             | Self::ActorCall { .. }
             | Self::ValueCall { .. }
-            | Self::IndirectCall { .. } => "call unwind-edge argument",
+            | Self::IndirectCall { .. }
+            | Self::DynCall { .. } => "call unwind-edge argument",
             Self::Suspend { inputs, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < inputs.len()) =>
             {

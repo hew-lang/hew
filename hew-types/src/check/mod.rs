@@ -1188,6 +1188,31 @@ impl Checker {
                     ));
                     return None;
                 }
+                // An erased entry error renders through its vtable rather
+                // than a concrete declaration: the slot the coercion site
+                // published is the whole realization.
+                if let Ty::TraitObject { traits } = &error_ty {
+                    let slot = traits.iter().find_map(|bound| {
+                        self.dyn_vtable_slot_for_method(&bound.trait_name, "fmt")
+                            .map(|(slot, _, _)| slot)
+                    });
+                    let Some(slot) = slot else {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::BoundsNotSatisfied,
+                            span.clone(),
+                            format!(
+                                "process entry error type `{}` publishes no Display vtable slot",
+                                error_ty.user_facing()
+                            ),
+                        ));
+                        return None;
+                    };
+                    return Some(EntryExitAction::Result {
+                        result_ty: resolved_return_type?,
+                        error_ty: ResolvedTy::from_ty(&error_ty).ok()?,
+                        display: EntryDisplayTarget::DynSlot { slot },
+                    });
+                }
                 let Some((display_declaration, display_signature_key)) =
                     self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
                 else {
@@ -1225,7 +1250,7 @@ impl Checker {
                 Some(EntryExitAction::Result {
                     result_ty: resolved_return_type?,
                     error_ty: resolved_error_ty,
-                    display: EntryDisplayTarget {
+                    display: EntryDisplayTarget::Declared {
                         declaration: display_declaration,
                         instance,
                     },

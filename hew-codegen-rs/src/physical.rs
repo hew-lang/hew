@@ -40,6 +40,8 @@ mod tasks;
 
 #[path = "physical_close.rs"]
 mod close;
+#[path = "physical_dyn.rs"]
+mod dyn_object;
 #[path = "physical_host.rs"]
 mod host;
 
@@ -606,7 +608,11 @@ fn primitive_repr(
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
         ResolvedTy::String | ResolvedTy::CancellationToken => PhysicalRepr::Pointer,
-        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => PhysicalRepr::Struct(vec![
+        // A trait object is the runtime's two-word `HewTraitObject`:
+        // the boxed value and its dispatch table.
+        ResolvedTy::Function { .. }
+        | ResolvedTy::Closure { .. }
+        | ResolvedTy::TraitObject { .. } => PhysicalRepr::Struct(vec![
             pointer_layout(ctx, target)?,
             pointer_layout(ctx, target)?,
         ]),
@@ -1204,6 +1210,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     .llvm_ctx("release resource owner")?;
                 Ok(())
             }
+            DestroyAction::TraitObject => self.destroy_trait_object(value),
             DestroyAction::Callable => {
                 let slot =
                     self.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "callable.drop.slot")?;
@@ -1231,6 +1238,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         .into_pointer_value(),
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
+                    | DestroyAction::TraitObject
                     | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
@@ -1247,6 +1255,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     DestroyAction::BytesRelease => "hew_bytes_drop",
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
+                    | DestroyAction::TraitObject
                     | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
@@ -1714,6 +1723,7 @@ fn build_module_with_host<'ctx>(
     emitter.emit_generator_descriptors()?;
     emitter.emit_stream_descriptors()?;
     emitter.emit_environment_descriptors()?;
+    emitter.emit_vtables()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
     emitter.emit_actor_descriptors()?;
@@ -2310,6 +2320,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 closure,
                 fields,
             } => self.emit_closure_make(*dest, *closure, fields),
+            PhysicalOp::DynMake {
+                dest,
+                vtable,
+                source,
+            } => self.emit_dyn_make(*dest, *vtable, *source),
             PhysicalOp::CallableCoerce { dest, source } => {
                 let value = self.load(*source, "callable.coerce")?;
                 self.store(*dest, value)?;
@@ -3137,6 +3152,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.initialize_active_fault(trap_code(*kind))?;
                 self.emit_edge(cleanup)
             }
+            PhysicalTerminator::DynCall {
+                receiver,
+                slot,
+                signature,
+                args,
+                result,
+                normal,
+                unwind,
+            } => self.emit_dyn_call(
+                *receiver,
+                *slot,
+                signature,
+                args,
+                *result,
+                normal.as_ref(),
+                unwind.as_ref(),
+            ),
             PhysicalTerminator::IndirectCall {
                 callee,
                 signature,
@@ -6909,6 +6941,7 @@ mod tests {
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
+            vtables: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![callable],
             generic_templates: vec![],
@@ -7095,6 +7128,7 @@ mod tests {
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
+            vtables: Vec::new(),
             callables: vec![callable],
             generic_templates: vec![],
             root_unit_callables: vec![CallableId(0)],

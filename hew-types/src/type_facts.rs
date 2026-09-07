@@ -1219,7 +1219,7 @@ mod tests {
                     }],
                 },
                 ValueClass::PersistentShare,
-                CloneKind::Retain,
+                CloneKind::None,
             ),
             (
                 closure_over(vec![ResolvedTy::I64]),

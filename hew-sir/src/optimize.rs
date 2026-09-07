@@ -70,6 +70,7 @@ pub fn canonicalize_module_constant_cfg(
         &candidate.closures,
         &candidate.actors,
         &candidate.supervisors,
+        &candidate.vtables,
     );
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
@@ -128,6 +129,7 @@ fn canonicalize_verified_function(
             | SemTerminator::ActorCall { .. }
             | SemTerminator::ValueCall { .. }
             | SemTerminator::IndirectCall { .. }
+            | SemTerminator::DynCall { .. }
             | SemTerminator::Goto(_)
             | SemTerminator::Trap { .. }
             | SemTerminator::EnterDefer { .. }

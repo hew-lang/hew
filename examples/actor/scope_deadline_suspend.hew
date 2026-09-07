@@ -1,31 +1,22 @@
-// cut-task-sleep — `scope { } after(d) { body }` with a NON-EMPTY timeout body
-// suspends the actor instead of spawning a per-deadline OS thread.
-//
-// `Worker.guarded` runs a `scope { fork ... }` whose child sleeps a fixed time,
-// racing an `after(d) { ... }` deadline. The non-empty timeout body is the proof
-// surface: when the deadline wins it runs the recovery body (sets `fired`); when
-// the scope completes first the body is skipped. The SuspendingScopeDeadline
-// arbiter arms the deadline on the global timer wheel and wires the scope's
-// child-join as the completion arm; the first-ready one-shot CAS decides the
-// winner and resumes the actor — the worker is freed for the wait, never pinned
-// on a per-deadline thread.
-//
-// A regression that runs the body on the success path, skips it on the timeout
-// path, or fails to free the worker (HEW_WORKERS=1 deadlocks) prints the wrong
-// line. The exact stdout is asserted under both pools.
+// A scope deadline cancels and drains its child before entering recovery.
+// Successful work skips recovery. Both waits suspend the actor so another
+// task can run even with HEW_WORKERS=1.
 actor Worker {
     var fired: i64 = 0,
 
     // The scoped child sleeps 500ms; the deadline is 20ms, so the deadline wins
     // and the recovery body runs (fired = 7).
     receive fn timeout_wins() -> i64 {
-        scope {
-            fork {
-                nap_long();
-            };
-            after(20ms) {
-                fired = 7;
-            };
+        scope within 20ms {
+            let child = fork nap_long();
+            await child;
+        } handle failure {
+            match failure {
+                .Deadline { message } => {
+                    fired = 7;
+                },
+                .Fault { message } => panic(message),
+            }
         };
         return fired;
     }
@@ -33,24 +24,27 @@ actor Worker {
     // The scoped child sleeps 10ms; the deadline is 200ms, so the scope completes
     // first and the body is skipped (fired stays 0).
     receive fn work_wins() -> i64 {
-        scope {
-            fork {
-                nap_short();
-            };
-            after(200ms) {
-                fired = 7;
-            };
+        scope within 200ms {
+            let child = fork nap_short();
+            await child;
+        } handle failure {
+            match failure {
+                .Deadline { message } => {
+                    fired = 7;
+                },
+                .Fault { message } => panic(message),
+            }
         };
         return fired;
     }
 }
 
 fn nap_long() {
-    sleep(500ms);
+    await sleep(500ms);
 }
 
 fn nap_short() {
-    sleep(10ms);
+    await sleep(10ms);
 }
 
 fn main() {

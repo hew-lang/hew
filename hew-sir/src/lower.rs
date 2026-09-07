@@ -1388,6 +1388,26 @@ impl<'a> InstanceService<'a> {
                 callable.0
             )
         })?;
+        if let CallableInstance::Closure(id) = callable_meta.instance {
+            let closure = self
+                .closures
+                .get(id.0 as usize)
+                .ok_or_else(|| "closure body has no enclosing callable".to_string())?;
+            let (expression, substitution) = self
+                .closure_sources
+                .get(id.0 as usize)
+                .ok_or_else(|| "closure body has no checked literal source".to_string())?;
+            // A closure inherits the source of its exact enclosing callable.
+            // Actor handlers have synthesized HIR functions outside the
+            // ordinary item table; nested closures must retain that source too.
+            let parent = self.input_for_callable(closure.instance.enclosing)?;
+            return Ok(LoweringInput {
+                function: parent.function,
+                callable: callable_meta,
+                substitution: substitution.clone(),
+                source: BodySource::Closure(expression.clone()),
+            });
+        }
         if let SemCallableKind::HewActor(actor) = callable_meta.kind {
             let (function, state_bindings) = self
                 .actor_sources
@@ -1414,12 +1434,7 @@ impl<'a> InstanceService<'a> {
                 )
             })?;
         let substitution = match &callable_meta.instance {
-            CallableInstance::Closure(id) => self
-                .closure_sources
-                .get(id.0 as usize)
-                .ok_or_else(|| "closure body has no checked literal source".to_string())?
-                .1
-                .clone(),
+            CallableInstance::Closure(_) => unreachable!("closure inputs are resolved above"),
             CallableInstance::Monomorphic => {
                 if !function.type_params.is_empty() {
                     return Err(format!(
@@ -1441,16 +1456,11 @@ impl<'a> InstanceService<'a> {
                 TypeSubstitution::for_instance(function, &key.type_args)?
             }
         };
-        let source = if let CallableInstance::Closure(id) = callable_meta.instance {
-            BodySource::Closure(self.closure_sources[id.0 as usize].0.clone())
-        } else {
-            BodySource::Function
-        };
         Ok(LoweringInput {
             function: Cow::Borrowed(function),
             callable: callable_meta,
             substitution,
-            source,
+            source: BodySource::Function,
         })
     }
 

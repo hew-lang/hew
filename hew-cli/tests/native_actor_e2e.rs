@@ -5,6 +5,43 @@ mod support;
 use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
+#[test]
+fn actor_scope_deadlines_retain_their_closure_source() {
+    run_actor(
+        include_str!("../../examples/actor/scope_deadline_suspend.hew"),
+        "timeout=7\nwork=0\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn nested_actor_closures_retain_captured_values() {
+    run_actor(
+        r#"
+actor Worker {
+    receive fn work(text: string) -> string {
+        let outer = || {
+            let inner = || text + " nested";
+            inner()
+        };
+        outer()
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    match await worker.work("kept") {
+        .Ok(text) => println(text),
+        .Err(_) => panic("actor closure failed"),
+    }
+}
+"#,
+        "kept nested\n",
+        0,
+        "",
+    );
+}
+
 fn run_actor(source: &str, expected: &str, status: i32, diagnostic: &str) {
     require_codegen();
     let dir = tempdir();

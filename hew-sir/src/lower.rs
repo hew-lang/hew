@@ -4858,38 +4858,61 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )?
                 .ok_or_else(|| "string index must produce a SIR value".to_string())
             }
-            // `s[a..b]` / `s[a..]` over `string` (W3 collections-sugar S2).
-            // Only the two forms with an explicit `start` lower here; the
-            // open-start forms (`s[..b]`, `s[..]`) are not yet produced by
-            // any exercised source program and fall through to the
-            // catch-all "unsupported HIR expression kind" error below, same
-            // as an unlowered `Vec<T>`/`bytes` range-slice today.
+            // `x[a..b]` / `x[a..]` / `x[..b]` / `x[..]` over `string`, `bytes`
+            // and `Vec<T>`. An absent start is the literal zero; an absent end
+            // routes to the receiver's own open-ended family so the container
+            // expression is evaluated exactly once.
             HirExprKind::Slice {
                 container,
-                start: Some(start),
-                end: Some(end),
+                start,
+                end,
                 inclusive: false,
-            } if self.ty(&container.ty) == ResolvedTy::String => self
-                .lower_runtime_operation(
-                    expr,
-                    hew_types::RuntimeCallFamily::StringSliceCodepoints,
-                    &[container.as_ref(), start.as_ref(), end.as_ref()],
-                    true,
-                )?
-                .ok_or_else(|| "string slice must produce a SIR value".to_string()),
-            HirExprKind::Slice {
-                container,
-                start: Some(start),
-                end: None,
-                inclusive: false,
-            } if self.ty(&container.ty) == ResolvedTy::String => self
-                .lower_runtime_operation(
-                    expr,
-                    hew_types::RuntimeCallFamily::StringSliceCodepointsFrom,
-                    &[container.as_ref(), start.as_ref()],
-                    true,
-                )?
-                .ok_or_else(|| "string slice must produce a SIR value".to_string()),
+            } => {
+                let container_ty = self.ty(&container.ty);
+                let (ranged, open) = if container_ty == ResolvedTy::String {
+                    (
+                        hew_types::RuntimeCallFamily::StringSliceCodepoints,
+                        hew_types::RuntimeCallFamily::StringSliceCodepointsFrom,
+                    )
+                } else if container_ty == ResolvedTy::Bytes {
+                    (
+                        hew_types::RuntimeCallFamily::BytesSlice,
+                        hew_types::RuntimeCallFamily::BytesSliceFrom,
+                    )
+                } else if matches!(
+                    collection_type_arguments(&container_ty),
+                    Some((hew_types::BuiltinType::Vec, _))
+                ) {
+                    (
+                        hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Slice),
+                        hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::SliceFrom),
+                    )
+                } else {
+                    return Err(format!(
+                        "`{}` has no ownership-SIR range-slice operation",
+                        container_ty.user_facing()
+                    ));
+                };
+                let mut zero = (**container).clone();
+                zero.ty = ResolvedTy::I64;
+                zero.kind = HirExprKind::Literal(HirLiteral::Integer(0));
+                let start: &HirExpr = start.as_deref().unwrap_or(&zero);
+                match end {
+                    Some(end) => self.lower_runtime_operation(
+                        expr,
+                        ranged,
+                        &[container.as_ref(), start, end.as_ref()],
+                        true,
+                    )?,
+                    None => self.lower_runtime_operation(
+                        expr,
+                        open,
+                        &[container.as_ref(), start],
+                        true,
+                    )?,
+                }
+                .ok_or_else(|| "range slice must produce a SIR value".to_string())
+            }
             HirExprKind::Block(block) => self
                 .lower_scoped_block(block, binding_use)?
                 .map(|value| value.value)

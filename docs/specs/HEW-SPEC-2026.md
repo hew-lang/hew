@@ -3225,6 +3225,19 @@ and the aliases in `std.fmt` that shadowed them again. `s.len()`,
 second name for any of them. A type renders itself through `Display`
 (§3.10.2), never through a per-type `to_string` builtin.
 
+**Indexing and slicing (normative).** `string`, `bytes` and `Vec<T>` share one
+index and range-slice surface. `s[i]` reads the `i`th codepoint of a string,
+the `i`th byte of a `bytes` value, and the `i`th element of a vector.
+`x[a..b]`, `x[a..]`, `x[..b]` and `x[..]` select a range: a string slice is a
+fresh owned string of codepoints, a bytes slice is an independent handle onto
+the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each
+selected element. An index or endpoint outside the value reports
+`IndexOutOfBounds` and releases the live owners on the way out. Because a Vec
+slice copies its elements, a vector whose element type has no clone — a
+`#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
+generator — cannot be range-sliced; `into_iter()` moves those elements out
+instead.
+
 #### 3.10.6 Prelude (Automatically Imported)
 
 The following are automatically available in every Hew module:

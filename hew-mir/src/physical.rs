@@ -520,6 +520,8 @@ pub enum PhysicalVectorOp {
     Set,
     Pop { result: PhysicalAggregateId },
     Clear,
+    Slice,
+    SliceFrom,
 }
 
 impl PhysicalVectorOp {
@@ -533,6 +535,8 @@ impl PhysicalVectorOp {
             Self::Set => VecValueOp::Set,
             Self::Pop { .. } => VecValueOp::Pop,
             Self::Clear => VecValueOp::Clear,
+            Self::Slice => VecValueOp::Slice,
+            Self::SliceFrom => VecValueOp::SliceFrom,
         }
     }
 }
@@ -880,6 +884,8 @@ pub enum PhysicalRuntimeAction {
     BytesNew,
     BytesLen,
     BytesIndex,
+    BytesSlice,
+    BytesSliceFrom,
     BytesPushOwned,
     Vector {
         operation: PhysicalVectorOp,
@@ -935,6 +941,8 @@ impl PhysicalRuntimeAction {
             Self::BytesNew => RuntimeCallFamily::BytesNew,
             Self::BytesLen => RuntimeCallFamily::BytesLen,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
+            Self::BytesSlice => RuntimeCallFamily::BytesSlice,
+            Self::BytesSliceFrom => RuntimeCallFamily::BytesSliceFrom,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
             Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
             Self::Map { operation, .. } => RuntimeCallFamily::Map(operation.semantic_op()),
@@ -2259,6 +2267,8 @@ fn physical_runtime_action(
         RuntimeCallFamily::BytesNew => PhysicalRuntimeAction::BytesNew,
         RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
         RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
+        RuntimeCallFamily::BytesSlice => PhysicalRuntimeAction::BytesSlice,
+        RuntimeCallFamily::BytesSliceFrom => PhysicalRuntimeAction::BytesSliceFrom,
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
         _ => {
             return Err(PhysicalError::new(format!(
@@ -3417,6 +3427,8 @@ impl FunctionLowerer<'_> {
                     result: self.aggregate_id(&value.ty)?,
                 },
                 VecValueOp::Clear => PhysicalVectorOp::Clear,
+                VecValueOp::Slice => PhysicalVectorOp::Slice,
+                VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
             };
             return Ok(PhysicalRuntimeAction::Vector { operation, glue });
         }
@@ -7081,7 +7093,10 @@ fn verify_vector_call(
     let glue = vector_glue(module, id)?;
     if matches!(
         operation,
-        PhysicalVectorOp::Index | PhysicalVectorOp::Get { .. }
+        PhysicalVectorOp::Index
+            | PhysicalVectorOp::Get { .. }
+            | PhysicalVectorOp::Slice
+            | PhysicalVectorOp::SliceFrom
     ) && glue.element.clone.is_none()
     {
         return Err(PhysicalError::new(
@@ -7133,6 +7148,13 @@ fn verify_vector_call(
         | PhysicalVectorOp::Push
         | PhysicalVectorOp::Set
         | PhysicalVectorOp::Clear => {}
+        PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {
+            if result != &glue.ty {
+                return Err(PhysicalError::new(
+                    "physical vector slice result is not its own vector type",
+                ));
+            }
+        }
     }
     Ok(())
 }

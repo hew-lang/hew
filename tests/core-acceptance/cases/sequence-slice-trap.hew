@@ -1,0 +1,9 @@
+// A past-end Vec slice reports IndexOutOfBounds and releases the live owner
+// before the process exits; nothing after the slice runs.
+fn main() -> i64 {
+    let live_owner = "slice-cleanup".to_upper();
+    let numbers = [1, 2, 3];
+    numbers[1..5];
+    println(live_owner);
+    0
+}

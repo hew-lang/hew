@@ -1226,6 +1226,33 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice(
     }
 }
 
+/// Write `src[start..end)` into `out` as an independently droppable
+/// `BytesTriple`.
+///
+/// This is the entry the compiler emits for `b[a..b]`, `b[a..]`, `b[..b]` and
+/// `b[..]`. It exists alongside [`hew_bytes_slice`] because generated code
+/// passes and receives byte triples through pointers rather than by value.
+/// Bounds are proved by the caller's own guard before this is reached; the
+/// checks in [`hew_bytes_slice`] remain as defence in depth.
+///
+/// # Safety
+///
+/// `src` and `out` must be valid, suitably aligned `BytesTriple` pointers, and
+/// `src` must describe a live bytes allocation.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_bytes_slice_owned(
+    src: *const BytesTriple,
+    start: i64,
+    end: i64,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: the caller guarantees both pointers address valid triples.
+    unsafe {
+        let source = &*src;
+        *out = hew_bytes_slice(source.ptr, source.offset, source.len, start, end);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

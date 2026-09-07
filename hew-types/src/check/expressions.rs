@@ -2526,7 +2526,14 @@ impl Checker {
                     builtin: Some(BuiltinType::Vec),
                     args,
                     ..
-                } if !args.is_empty() => obj_ty.clone(),
+                } if !args.is_empty() => {
+                    let element = args[0].clone();
+                    if self.validate_vec_slice_element_clone_type(&element, span) {
+                        obj_ty.clone()
+                    } else {
+                        Ty::Error
+                    }
+                }
                 // W3 collections-sugar S2: `s[a..b]` over `string` returns a
                 // fresh owned `string`. Codepoint-bounds slice, O(n), panic on
                 // invalid bounds. Endpoints are i64 (validated above).

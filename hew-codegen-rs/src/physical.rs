@@ -4314,6 +4314,34 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
+            PhysicalRuntimeAction::BytesSlice => {
+                return self.emit_bytes_slice(
+                    source(0)?,
+                    source(1)?,
+                    Some(source(2)?),
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical bytes slice lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
+            PhysicalRuntimeAction::BytesSliceFrom => {
+                return self.emit_bytes_slice(
+                    source(0)?,
+                    source(1)?,
+                    None,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical bytes slice lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
             PhysicalRuntimeAction::BytesPushOwned => {
                 let function = get_or_declare_external(
                     self.llvm,
@@ -4530,6 +4558,80 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .llvm_ctx("load independent vector element")?;
                     self.write_variant_value(self.slots[result.0 as usize], 0, &[element], option)?;
                 }
+            }
+            PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {
+                let length_fn = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_len",
+                    i64_ty.fn_type(&[pointer.into()], false),
+                )?;
+                let length = self
+                    .runtime_call_value(length_fn, &[vector.into()], "vector.slice.length")?
+                    .into_int_value();
+                let start = self
+                    .load(source(1)?, "vector.slice.start")?
+                    .into_int_value();
+                let end = if operation == PhysicalVectorOp::Slice {
+                    self.load(source(2)?, "vector.slice.end")?.into_int_value()
+                } else {
+                    length
+                };
+                let start_negative = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        start,
+                        i64_ty.const_zero(),
+                        "vector.slice.start.negative",
+                    )
+                    .llvm_ctx("guard negative vector slice start")?;
+                let end_negative = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        end,
+                        i64_ty.const_zero(),
+                        "vector.slice.end.negative",
+                    )
+                    .llvm_ctx("guard negative vector slice end")?;
+                let inverted = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, start, end, "vector.slice.inverted")
+                    .llvm_ctx("guard inverted vector slice range")?;
+                let past_end = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, end, length, "vector.slice.past.end")
+                    .llvm_ctx("guard vector slice upper bound")?;
+                let out_of_bounds = self
+                    .builder
+                    .build_or(start_negative, end_negative, "vector.slice.bounds.a")
+                    .and_then(|a| self.builder.build_or(a, inverted, "vector.slice.bounds.b"))
+                    .and_then(|b| {
+                        self.builder
+                            .build_or(b, past_end, "vector.slice.bounds.condition")
+                    })
+                    .llvm_ctx("combine vector slice guards")?;
+                let safe = self.ctx.append_basic_block(self.value, "vector.slice.safe");
+                let failed = self
+                    .ctx
+                    .append_basic_block(self.value, "vector.slice.failure");
+                self.builder
+                    .build_conditional_branch(out_of_bounds, failed, safe)
+                    .llvm_ctx("branch around fallible vector slice call")?;
+                self.builder.position_at_end(failed);
+                self.emit_edge(failure()?)?;
+                self.builder.position_at_end(safe);
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_slice_range_owned",
+                    pointer.fn_type(&[pointer.into(), i64_ty.into(), i64_ty.into()], false),
+                )?;
+                let sliced = self.runtime_call_value(
+                    function,
+                    &[vector.into(), start.into(), end.into()],
+                    "vector.slice",
+                )?;
+                self.store(result, sliced)?;
             }
             PhysicalVectorOp::Pop { result: tuple } => {
                 values.aggregate_glue(tuple)?;
@@ -5379,6 +5481,109 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     /// `s[a..b]` — codepoint range-slice on `string` (`0 <= start <= end <=
     /// len`, matching [`Self::emit_string_index`]'s MIR-level bounds proof).
+    /// `b[a..b]` and its open-ended forms. The bounds guard lives here, like
+    /// [`Self::emit_bytes_index`], so a violation reports through the canonical
+    /// `Trap { IndexOutOfBounds }` edge instead of the runtime's abort path.
+    /// An absent end bound is the receiver's own length.
+    fn emit_bytes_slice(
+        &self,
+        bytes: StorageId,
+        start: StorageId,
+        end: Option<StorageId>,
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let i64_ty = self.ctx.i64_type();
+        let value = self.load(bytes, "bytes.slice.value")?.into_struct_value();
+        let len = self
+            .builder
+            .build_extract_value(value, 2, "bytes.slice.length")
+            .llvm_ctx("extract bytes slice length")?
+            .into_int_value();
+        let len64 = self
+            .builder
+            .build_int_z_extend(len, i64_ty, "bytes.slice.length.i64")
+            .llvm_ctx("widen bytes slice length")?;
+        let start_value = self.load(start, "bytes.slice.start")?.into_int_value();
+        let end_value = match end {
+            Some(end) => self.load(end, "bytes.slice.end")?.into_int_value(),
+            None => len64,
+        };
+        let start_negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                start_value,
+                i64_ty.const_zero(),
+                "bytes.slice.start.negative",
+            )
+            .llvm_ctx("guard negative bytes slice start")?;
+        let end_negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                end_value,
+                i64_ty.const_zero(),
+                "bytes.slice.end.negative",
+            )
+            .llvm_ctx("guard negative bytes slice end")?;
+        let inverted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                start_value,
+                end_value,
+                "bytes.slice.inverted",
+            )
+            .llvm_ctx("guard inverted bytes slice range")?;
+        let past_end = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, end_value, len64, "bytes.slice.past.end")
+            .llvm_ctx("guard bytes slice upper bound")?;
+        let out_of_bounds = self
+            .builder
+            .build_or(start_negative, end_negative, "bytes.slice.bounds.a")
+            .and_then(|a| self.builder.build_or(a, inverted, "bytes.slice.bounds.b"))
+            .and_then(|b| {
+                self.builder
+                    .build_or(b, past_end, "bytes.slice.bounds.condition")
+            })
+            .llvm_ctx("combine bytes slice guards")?;
+        let safe = self.ctx.append_basic_block(self.value, "bytes.slice.safe");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "bytes.slice.failure");
+        self.builder
+            .build_conditional_branch(out_of_bounds, failed, safe)
+            .llvm_ctx("branch around fallible bytes slice call")?;
+
+        self.builder.position_at_end(failed);
+        self.emit_edge(failure)?;
+
+        self.builder.position_at_end(safe);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_bytes_slice_owned",
+            self.ctx.void_type().fn_type(
+                &[ptr.into(), i64_ty.into(), i64_ty.into(), ptr.into()],
+                false,
+            ),
+        )?;
+        self.runtime_call_void(
+            function,
+            &[
+                self.slots[bytes.0 as usize].into(),
+                start_value.into(),
+                end_value.into(),
+                self.slots[result.0 as usize].into(),
+            ],
+            "bytes.slice",
+        )?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
     fn emit_string_slice_codepoints(
         &self,
         text: StorageId,

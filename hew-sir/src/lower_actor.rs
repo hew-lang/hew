@@ -524,6 +524,14 @@ impl Builder<'_, '_> {
                 };
                 Ok((boundary, vec![(**receiver).clone()], vec![0]))
             }
+            HirExprKind::ActorSelf => {
+                let actor = self.service.require_actor(&self.ty(&expression.ty))?;
+                Ok((
+                    crate::ActorOperation::SelfHandle(actor),
+                    Vec::new(),
+                    Vec::new(),
+                ))
+            }
             HirExprKind::Spawn { args, .. }
                 if super::supervisor::declaration(
                     self.service.module,

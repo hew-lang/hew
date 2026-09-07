@@ -1,5 +1,5 @@
 // Accept: a single-argument actor receive handler whose ONLY parameter is a
-// process-local pid payload (`LocalPid<T>`). The caller passes `this` — its own
+// process-local pid payload (`LocalPid<T>`). The caller passes `self` — its own
 // pid — as the sole message argument; the handler then uses the received pid to
 // route a reply back, proving the pid arrives live and routable.
 //
@@ -25,8 +25,8 @@ actor Pinger {
     var echo: LocalPid<Echo>,
 
     receive fn ping() {
-        // `this` is the Pinger's own `LocalPid<Pinger>` — the single message arg.
-        let _ = echo.hear(this);
+        // `self` is the Pinger's own `LocalPid<Pinger>` — the single message arg.
+        let _ = echo.hear(self);
     }
 
     receive fn ack() {

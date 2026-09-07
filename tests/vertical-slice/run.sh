@@ -1707,20 +1707,18 @@ expect_check_fail_error_count \
     1 \
     "actor_self_unknown_field"
 
-# `self` reaches state only through a field: the bare receiver is not a value.
-# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/actor_self_bare_receiver.hew" \
-    '`self` names actor state only through a field' \
-    "actor_self_bare_receiver"
-
-# The receiver is scoped to actor bodies: outside one, `self` is still an
-# undefined name and the diagnostic still points at a named receiver param.
+# `self` is scoped to actor bodies: outside one it is still an undefined name,
+# in a field position and in a value position alike. The value-position row is
+# the negative control for the actor-body rule, where `self` IS a value.
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/self_outside_actor_or_impl.hew" \
-    '`self` is not a valid identifier in Hew' \
+    "\`self\` is the actor's own handle and exists only inside an actor body" \
     "self_outside_actor_or_impl"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/self_value_outside_actor.hew" \
+    "\`self\` is the actor's own handle and exists only inside an actor body" \
+    "self_value_outside_actor"
 
 # Mutability and the consume obligation are keyed on the binding the target is
 # rooted in, and the receiver is not a binding. Both rejections must fire on

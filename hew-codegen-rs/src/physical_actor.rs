@@ -773,6 +773,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> CodegenResult<()> {
         let id = match &operation {
             ActorOperation::Spawn(id)
+            | ActorOperation::SelfHandle(id)
             | ActorOperation::Close(id)
             | ActorOperation::AwaitClosed(id)
             | ActorOperation::StreamStart { actor: id, .. }
@@ -840,6 +841,27 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.ctx.i32_type().const_zero()
             }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
+            ActorOperation::SelfHandle(_) => {
+                let result = result.ok_or_else(|| {
+                    CodegenError::FailClosed("`self` requires its actor handle result".into())
+                })?;
+                let target = TargetData::create(&self.module.target.data_layout);
+                let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+                let token = coro::external(
+                    self.llvm,
+                    "hew_actor_self_token",
+                    size_ty.fn_type(&[], false),
+                )?;
+                let value = self
+                    .builder
+                    .build_call(token, &[], "self.token")
+                    .llvm_ctx("read the running actor's own handle")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("self handle returned void".into()))?;
+                self.store(result, value)?;
+                self.ctx.i32_type().const_zero()
+            }
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
             | ActorOperation::SupervisorAwaitRestart { .. }

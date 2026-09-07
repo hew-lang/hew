@@ -167,14 +167,9 @@ impl Checker {
         let prev_tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
         // chained binary operators) don't overflow.
-        let previous_await = self.inside_await_expr;
-        self.inside_await_expr = self
-            .suspension_operands
-            .contains(&SpanKey::in_module(span, self.current_module_idx));
         let result = stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
             self.synthesize_inner(expr, span)
         });
-        self.inside_await_expr = previous_await;
         self.tail_ok_armed = prev_tail_ok_armed;
         self.publish_checked_expression(expr, span, result)
     }
@@ -444,7 +439,6 @@ impl Checker {
             // Types with no clone path fail closed downstream with the existing
             // clone diagnostic.
             Expr::Clone(operand) => self.check_method_call(operand, "clone", &[], span),
-            Expr::Send(operand) => self.check_actor_submission(operand, span),
 
             // Call
             Expr::Call {
@@ -2837,14 +2831,10 @@ impl Checker {
         if matches!(ty, Ty::Error) {
             return;
         }
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        let replies = matches!(
-            self.actor_method_dispatch.get(&key),
-            Some(ActorMethodKind::Ask { .. })
-        ) || matches!(
-            self.method_call_rewrites.get(&key),
-            Some(MethodCallRewrite::RemoteActorAsk)
-        ) || self.submission_suspends(span)
+        // An actor ask is an ordinary call: it waits on its own and needs no
+        // `await`, exactly like any other suspending call (U383). `fork` is how
+        // an ask runs concurrently, and `await` then joins that task.
+        let replies = self.submission_suspends(span)
             || matches!(expr, Expr::Call { function, .. }
             if matches!(
                 self.callee_value_type(function).map(|ty| self.subst.resolve(&ty)),
@@ -2857,10 +2847,7 @@ impl Checker {
         if replies {
             return;
         }
-        if matches!(
-            expr,
-            Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
-        ) {
+        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
             self.errors.push(TypeError {
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::InvalidOperation,
@@ -6809,7 +6796,6 @@ impl Checker {
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
-            | Expr::Send(_)
             | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Identifier(_)

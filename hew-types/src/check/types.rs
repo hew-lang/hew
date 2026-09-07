@@ -3046,8 +3046,6 @@ pub struct Checker {
     /// Set to `true` for the duration of synthesizing the inner expression of
     /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
     /// distinguish an actor ask under `await` (valid) from an actor ask without
-    /// `await` (rejected: requires explicit `await`).
-    pub(super) inside_await_expr: bool,
     /// Only these operand calls are explicitly awaited or forked.
     pub(super) suspension_operands: HashSet<SpanKey>,
     pub(super) prepared_select_tasks: Vec<PreparedSelectTask>,
@@ -3913,7 +3911,6 @@ impl Checker {
             inferred_lambda_returns: None,
             current_fails: false,
             in_generator: false,
-            inside_await_expr: false,
             suspension_operands: HashSet::new(),
             prepared_select_tasks: Vec::new(),
             loop_depth: 0,

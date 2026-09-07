@@ -3029,26 +3029,6 @@ impl Checker {
                         },
                     );
                     self.enforce_actor_method_send_args(args);
-                    // Ask-without-await guard: if this receive fn returns a value
-                    // (ask-shaped), is not a generator (those use `for await`, not
-                    // bare `await`), and the call is not directly under `await`,
-                    // reject it with a clear diagnostic pointing at the fix.
-                    let resolved_ty = self.subst.resolve(&ty);
-                    let is_ask_shaped = !matches!(resolved_ty, Ty::Unit)
-                        && !self.receive_generator_methods.contains(&method_key);
-                    if is_ask_shaped && !self.inside_await_expr {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "actor ask `{name}.{method_name}` requires `await`; \
-                                 write `let v = await ref.{method_name}(...)?` \
-                                 or `match await ref.{method_name}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
-                            ),
-                        );
-                        // Still record the dispatch so HIR/MIR have a sane entry; the
-                        // type checker already emitted the error so this is recovery.
-                    }
                     return self.record_actor_method_dispatch(span, method_key, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
@@ -8638,24 +8618,6 @@ impl Checker {
                                 actor_name: actor_identity.clone(),
                             },
                         );
-                        // Ask-without-await guard: ask-shaped receive fn must be
-                        // awaited. Generator methods (`receive gen fn`) use `for
-                        // await` at the call site and are exempt from this guard.
-                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
-                        if !matches!(resolved_ret, Ty::Unit)
-                            && !self.receive_generator_methods.contains(&method_key)
-                            && !self.inside_await_expr
-                        {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!(
-                                    "actor ask `{actor_identity}.{method}` requires `await`; \
-                                     write `let v = await ref.{method}(...)?` \
-                                     or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
-                                ),
-                            );
-                        }
                         let call_ty = self.record_actor_method_dispatch(
                             span,
                             method_key,
@@ -9453,25 +9415,7 @@ impl Checker {
                         // per-arg alias-vs-copy decision so the fail-closed
                         // codegen consumer does not have to guess.
                         self.enforce_actor_method_send_args(args);
-                        // Ask-without-await guard: an ask-shaped receive fn
-                        // (non-unit return, non-generator) must be invoked under
-                        // `await`. Mirrors the `LocalPid` arm.
                         let method_key = format!("{name}::{method}");
-                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
-                        if !matches!(resolved_ret, Ty::Unit)
-                            && !self.receive_generator_methods.contains(&method_key)
-                            && !self.inside_await_expr
-                        {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!(
-                                    "actor ask `{name}.{method}` requires `await`; \
-                                     write `let v = await ref.{method}(...)?` \
-                                     or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
-                                ),
-                            );
-                        }
                         // Record the dispatch discriminator (Fire vs Ask). This
                         // also marks the span as already-rewritten below, so the
                         // synchronous `RewriteToFunction` path is skipped and the

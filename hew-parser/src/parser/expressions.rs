@@ -284,12 +284,7 @@ impl Parser<'_> {
         }
 
         // Prefix operators
-        let mut lhs = if self.peek_is_value_prefix("send") {
-            self.advance()?;
-            let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
-            let end = operand.1.end;
-            (Expr::Send(Box::new(operand)), start..end)
-        } else if self.peek_is_value_prefix("clone") {
+        let mut lhs = if self.peek_is_value_prefix("clone") {
             // Contextual `clone <operand>` duplication prefix. `clone` is not a
             // reserved word — it is also a method/free-fn name — so it only acts
             // as the prefix when it sits in operator position immediately

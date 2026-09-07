@@ -145,7 +145,7 @@ actor Worker {
 }
 fn main() {
     let worker = spawn Worker();
-    let direct = await worker.value();
+    let direct = worker.value();
     let child = fork worker.value();
     let joined = await child;
     let checked = fork worker.checked();
@@ -170,7 +170,7 @@ fn main() {
     );
     for (expression, expected) in [
         ("worker.value()", reply.clone()),
-        ("await worker.value()", reply.clone()),
+        ("worker.value()", reply.clone()),
         (
             "fork worker.value()",
             crate::Ty::Task(Box::new(reply.clone())),
@@ -866,7 +866,7 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
             .collect::<Vec<_>>(),
         vec!["`await` waits on a task, an actor reply or an actor's close; `i64` is none of these"]
     );
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = await worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); await close(worker); }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); await close(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.warnings.is_empty(), "{:?}", output.warnings);
 }

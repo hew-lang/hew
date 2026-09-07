@@ -856,8 +856,8 @@ fn snapshot_send_to_actor_twice_is_valid() {
         fn main() {
             let s = spawn SnapshotSink(val: 0);
             let h = Payload { data: "hello" };
-            s.consume(h);
-            s.consume(h);
+            let _ = s.consume(h);
+            let _ = s.consume(h);
         }
     "#,
     );

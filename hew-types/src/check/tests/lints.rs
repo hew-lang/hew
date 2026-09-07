@@ -1230,20 +1230,16 @@ fn needless_range_loop_flags_index_access() {
 fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
     let (errors, warnings) = parse_and_check(
         r"
-        actor Client {
-            receive fn deliver() {}
-        }
-
-        fn broadcast(clients: Vec<LocalPid<Client>>) {
-            for i in 0..clients.len() {
-                clients[i].deliver();
+        fn drain(inputs: Vec<Stream<i64>>) {
+            for i in 0..inputs.len() {
+                let _ = inputs[i];
             }
         }
         ",
     );
     assert!(
         errors.is_empty(),
-        "the indexed LocalPid broadcast must type-check: {errors:?}"
+        "the indexed stream walk must type-check: {errors:?}"
     );
     assert_eq!(
         count_needless_range_loop(&warnings),

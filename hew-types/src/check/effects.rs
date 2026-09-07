@@ -510,12 +510,7 @@ impl Checker {
             || self.dyn_trait_method_calls.contains_key(&key)
             || self.actor_method_dispatch.contains_key(&key)
             || self.actor_delivery_calls.contains_key(&key);
-        if checked_invocation
-            && matches!(
-                expr,
-                Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
-            )
-        {
+        if checked_invocation && matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
             let (callee, name) = match expr {
                 Expr::Call { function, .. } => (
                     self.callee_value_type(function),
@@ -573,10 +568,7 @@ impl Checker {
     fn record_intrinsic_suspension(&mut self, expr: &Expr) {
         let witness = match expr {
             Expr::Await(inner)
-                if !matches!(
-                    inner.0,
-                    Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Send(_)
-                ) =>
+                if !matches!(inner.0, Expr::Call { .. } | Expr::MethodCall { .. }) =>
             {
                 "await"
             }

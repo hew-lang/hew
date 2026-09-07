@@ -17,7 +17,7 @@ actor Holder {
 
 fn main() {
     let holder = spawn Holder(value: Rc.new(1));
-    let _ = await holder.count();
+    let _ = holder.count();
 }
 ",
     );
@@ -40,7 +40,7 @@ actor Holder {
 
 fn main() {
     let holder = spawn Holder(value: 1);
-    let _ = await holder.get();
+    let _ = holder.get();
 }
 ",
     );
@@ -260,7 +260,7 @@ fn main() {
 fn pid_call_to_receive_fn_still_dispatches() {
     let output = check_source(
         "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n\
-         fn main() { let d = spawn Doubler; _ = await d.process(5); }",
+         fn main() { let d = spawn Doubler; _ = d.process(5); }",
     );
     assert!(
         output.errors.is_empty(),

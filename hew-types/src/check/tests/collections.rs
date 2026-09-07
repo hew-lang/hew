@@ -2560,7 +2560,7 @@ fn local_pid_actor_dispatch_uses_builtin_discriminator() {
 
         fn main() {
             let worker = spawn Worker;
-            worker.ping();
+            let _ = worker.ping();
         }
         ",
     );
@@ -2654,12 +2654,9 @@ fn turbofish_arity_mismatch_is_rejected() {
 }
 
 #[test]
-fn block_wrapped_await_actor_ask_types_as_result() {
-    // `await { actor.method() }` — the method call is wrapped in a bare block
-    // whose trailing expression is the method call. The checker must unwrap the
-    // block and recognise the ask, returning `Result<i64, AskError>` rather than
-    // the raw method return type `i64`.  Before the fix this produced a
-    // "constructor pattern `Ok` cannot match non-enum type `i64`" error.
+fn actor_ask_in_match_types_as_result() {
+    // Regression guard: an actor ask is an ordinary call and must resolve to
+    // `Result<i64, AskError>` so that `Ok`/`Err` arms type-check.
     let output = check_source(
         r"
         actor Doubler {
@@ -2670,7 +2667,7 @@ fn block_wrapped_await_actor_ask_types_as_result() {
 
         fn main() {
             let doubler = spawn Doubler;
-            let r = match await { doubler.process(5) } {
+            let r = match doubler.process(5) {
                 .Ok(v) => v,
                 .Err(_) => -1,
             };
@@ -2680,36 +2677,7 @@ fn block_wrapped_await_actor_ask_types_as_result() {
 
     assert!(
         output.errors.is_empty(),
-        "block-wrapped actor-ask await must type-check without errors; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn bare_await_actor_ask_in_match_still_types_as_result() {
-    // Regression guard: the bare form `await actor.method()` must continue
-    // to resolve to `Result<i64, AskError>` so that `Ok`/`Err` arms type-check.
-    let output = check_source(
-        r"
-        actor Doubler {
-            receive fn process(n: i64) -> i64 {
-                n * 2
-            }
-        }
-
-        fn main() {
-            let doubler = spawn Doubler;
-            let r = match await doubler.process(5) {
-                .Ok(v) => v,
-                .Err(_) => -1,
-            };
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "bare actor-ask await in match must type-check without errors; got: {:?}",
+        "an actor ask in match must type-check without errors; got: {:?}",
         output.errors
     );
 }
@@ -2739,7 +2707,7 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
         }
         fn main() {
             let db = spawn Db;
-            let r = await db.query("SELECT 1");
+            let r = db.query("SELECT 1");
             r.free();
         }
         "#,
@@ -2795,7 +2763,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
         }
         fn main() {
             let d = spawn Doubler;
-            let r = await d.process(5);
+            let r = d.process(5);
             let ok: bool = r.is_ok();
             let v = r.expect("the value is present");
         }

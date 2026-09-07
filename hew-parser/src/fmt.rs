@@ -2321,7 +2321,6 @@ impl<'a> Formatter<'a> {
             }
             Expr::Unary { operand, .. }
             | Expr::ReturnError(operand)
-            | Expr::Send(operand)
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
@@ -2883,7 +2882,6 @@ impl<'a> Formatter<'a> {
                 | Expr::Handle { .. }
                 | Expr::ReturnError(_)
                 | Expr::Unary { .. }
-                | Expr::Send(_)
                 | Expr::Clone(_)
                 | Expr::Range { .. }
                 | Expr::Is { .. }
@@ -3069,10 +3067,6 @@ impl<'a> Formatter<'a> {
             }
             Expr::Clone(operand) => {
                 self.write("clone ");
-                self.format_expr(&operand.0);
-            }
-            Expr::Send(operand) => {
-                self.write("send ");
                 self.format_expr(&operand.0);
             }
             Expr::Tuple(elems) => {

@@ -224,8 +224,8 @@ impl<'src> Parser<'src> {
     /// Whether the current position is a contextual `clone <operand>` prefix.
     ///
     /// Recognize a contextual value prefix followed by an operand. Method and
-    /// function uses keep their ordinary spelling: `x.send()` and `send(x)`
-    /// remain calls, while `send x.message()` submits the description.
+    /// function uses keep their ordinary spelling: `x.clone()` and `clone(x)`
+    /// remain calls, while `clone x.field` duplicates the postfix chain.
     pub(crate) fn peek_is_value_prefix(&self, prefix: &str) -> bool {
         matches!(self.peek(), Some(Token::Identifier(name)) if *name == prefix)
             && self

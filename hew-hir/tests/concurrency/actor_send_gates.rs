@@ -14,8 +14,8 @@
 //! What remains here:
 //! - Type-checker rejects anonymous `.send()` on actors with no `send` handler.
 //! - Type-checker rejects anonymous `.send()` on actors with only a non-send handler.
-//! - `await actor.compute(msg)` (ask form, user-named handler) compiles clean.
-//! - `await actor.send(msg)` (user `receive fn send` → ask under `await`) compiles clean.
+//! - `actor.compute(msg)` (ask form, user-named handler) compiles clean.
+//! - `actor.send(msg)` (user `receive fn send` → ask) compiles clean.
 //! - Bare `actor.send(msg)` for user `receive fn send` returning non-unit is
 //!   rejected at type-check (ask requires `await`).
 //! - Lambda-actor `.send()` (`Duplex<Msg, Reply>`) compiles clean.
@@ -180,13 +180,13 @@ fn actor_ask_non_unit_handler_accepted() {
 
         fn main() {
             let c = spawn Calculator(total: 0);
-            let _ = await c.compute(3);
+            let _ = c.compute(3);
         }
         ",
     );
     assert!(
         output.diagnostics.is_empty(),
-        "ask-form (`await c.compute(...)`) must lower cleanly; got: {:#?}",
+        "ask-form (`c.compute(...)`) must lower cleanly; got: {:#?}",
         output.diagnostics
     );
 }
@@ -194,7 +194,7 @@ fn actor_ask_non_unit_handler_accepted() {
 #[test]
 fn awaited_send_non_unit_handler_accepted() {
     // A user `receive fn send(...) -> T` invoked as an ask via
-    // `await ref.send(...)` — correct shape.
+    // `ref.send(...)` — correct shape.
     let output = lower_clean(
         r"
         actor Doubler {
@@ -205,7 +205,7 @@ fn awaited_send_non_unit_handler_accepted() {
 
         fn main() -> i64 {
             let d = spawn Doubler;
-            match await d.send(21) {
+            match d.send(21) {
                 .Ok(v) => v,
                 .Err(_) => 0,
             }

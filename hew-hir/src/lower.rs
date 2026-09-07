@@ -10057,10 +10057,7 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
             scan_expr_for_private_refs(&left.0, pf, out);
             scan_expr_for_private_refs(&right.0, pf, out);
         }
-        Expr::Unary { operand, .. }
-        | Expr::ReturnError(operand)
-        | Expr::Send(operand)
-        | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
         Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
@@ -17751,8 +17748,10 @@ impl LowerCtx {
                         .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                         .collect(),
                 ),
-                (ActorDeliveryCall::Submit { .. }, Expr::Send(message)) => {
-                    (self.lower_expr(message, IntentKind::Consume), Vec::new())
+                (ActorDeliveryCall::Submit { .. }, Expr::MethodCall { receiver, args, .. })
+                    if args.is_empty() =>
+                {
+                    (self.lower_expr(receiver, IntentKind::Consume), Vec::new())
                 }
                 _ => {
                     return self.unsupported_expr(
@@ -17765,6 +17764,43 @@ impl LowerCtx {
                 return self.unsupported_expr(span, "actor delivery operation has no checked type");
             };
             self.try_register_enum_instantiation_ty(&ty, &span);
+            // `.to(actor)` readdresses AND resubmits in one call: the
+            // readdressed description is an internal temporary that never
+            // reaches a binding, so it is built and submitted here.
+            if let ActorDeliveryCall::Readdress { policy, .. } = operation {
+                let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+                    return self.unsupported_expr(
+                        span,
+                        "readdressed submission has no checked message type",
+                    );
+                };
+                let readdressed = HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
+                    ty: message_ty,
+                    intent: IntentKind::Consume,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(receiver),
+                        args,
+                        operation,
+                    },
+                    span: span.clone(),
+                };
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(readdressed),
+                        args: Vec::new(),
+                        operation: ActorDeliveryCall::Submit { policy },
+                    },
+                    span,
+                };
+            }
             return HirExpr {
                 node: self.ids.node(),
                 site,
@@ -18784,10 +18820,6 @@ impl LowerCtx {
             // `synthesize` `Expr::Clone`), so this routes through the same
             // copy-path selection and fail-closed `CloneNotYetSupported`
             // diagnostic as `<operand>.clone()`.
-            Expr::Send(_) => {
-                return self
-                    .unsupported_expr(span, "send has no checker-selected delivery operation")
-            }
             Expr::Clone(operand) => {
                 self.lower_method_call(operand, "clone", &[], span.clone(), site)
             }
@@ -19492,6 +19524,29 @@ impl LowerCtx {
     }
 
     /// Preserve the checked call result separately from the raw actor reply ABI.
+    /// The addressed description a submission consumes, read out of the
+    /// checked `Result<Delivery, SendFailure<M>>` the call site carries.
+    fn submitted_message_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
+        let ResolvedTy::Named {
+            builtin: Some(BuiltinType::Result),
+            args,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        let [_, ResolvedTy::Named { name, args, .. }] = args.as_slice() else {
+            return None;
+        };
+        if name != hew_types::actor_delivery::FAILURE_TYPE {
+            return None;
+        }
+        let [message] = args.as_slice() else {
+            return None;
+        };
+        Some(message.clone())
+    }
+
     fn checked_actor_ask_result_ty(&mut self, span: &Span, method_id: &str) -> Option<ResolvedTy> {
         let result = self
             .expr_types
@@ -25885,18 +25940,45 @@ impl LowerCtx {
                     let Some(ty) = self.checker_expr_ty_if_present(&span) else {
                         return (
                             HirExprKind::Unsupported(
-                                "message description has no checked type".into(),
+                                "message submission has no checked type".into(),
                             ),
                             ResolvedTy::Unit,
                         );
                     };
-                    (
-                        HirExprKind::ActorMessage {
+                    // The call IS the send: a `receive fn` without a reply
+                    // builds its addressed description and submits it at the
+                    // same site. The description is an internal temporary.
+                    let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+                        return (
+                            HirExprKind::Unsupported(
+                                "message submission has no checked message type".into(),
+                            ),
+                            ResolvedTy::Unit,
+                        );
+                    };
+                    self.try_register_enum_instantiation_ty(&ty, &span);
+                    let message = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
+                        ty: message_ty,
+                        intent: IntentKind::Consume,
+                        kind: HirExprKind::ActorMessage {
                             receiver: Box::new(lowered_receiver),
                             method_id,
                             args: lowered_args,
                             policy,
                             argument_order,
+                        },
+                        span: span.clone(),
+                    };
+                    (
+                        HirExprKind::ActorDelivery {
+                            receiver: Box::new(message),
+                            args: Vec::new(),
+                            operation: hew_types::actor_delivery::ActorDeliveryCall::Submit {
+                                policy,
+                            },
                         },
                         ty,
                     )
@@ -36557,7 +36639,7 @@ impl Widget {
 
             fn main() {
                 let db = spawn Db(n: 0);
-                match await db.query("SELECT 1") {
+                match db.query("SELECT 1") {
                     .Ok(r) => println(f"handle={r.handle}"),
                     .Err(_) => println("ask failed"),
                 }

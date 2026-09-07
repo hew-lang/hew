@@ -108,7 +108,7 @@ fn actor_send_snapshot_does_not_suggest_clone() {
             var xs: Vec<i64> = Vec.new();
             xs.push(1);
             let sink = spawn SnapshotSink(id: 0);
-            sink.take(xs);
+            let _ = sink.take(xs);
             println(xs.len());
         }
     ";

@@ -827,7 +827,7 @@ fn block_wrapped_actor_await_preserves_checked_reply() {
         actor Worker { receive fn process(value: i64) -> i64 { value + 1 } }
         fn main() {
             let worker = spawn Worker;
-            let reply = await { worker.process(41) };
+            let reply = worker.process(41);
             let value: i64 = match reply { .Ok(value) => value, .Err(_) => 0, };
         }
     ",

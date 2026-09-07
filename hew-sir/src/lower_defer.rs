@@ -114,11 +114,11 @@ impl Builder<'_, '_> {
         !self.defer_bodies.is_empty()
     }
 
-    pub(super) fn check_deferred_loop_exit(&self) -> Result<(), String> {
+    pub(super) fn check_deferred_loop_exit(&self, target_depth: usize) -> Result<(), String> {
         if self
             .defer_bodies
             .last()
-            .is_some_and(|body| self.loops.len() <= body.loop_depth)
+            .is_some_and(|body| target_depth < body.loop_depth)
         {
             return Err("break or continue cannot escape a deferred body".into());
         }

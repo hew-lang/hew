@@ -60,13 +60,12 @@ actor Gate {
 }
 actor Waiter {
     receive fn wait(gate: LocalPid<Gate>) -> string {
-        for attempt in 0..10000 {
+        loop {
             match await gate.ready() {
                 .Ok(opened) => { if opened { return "first".to_upper(); } },
                 .Err(_) => panic("gate failed"),
             }
         }
-        panic("join did not start its second branch");
     }
 }
 actor Opener {

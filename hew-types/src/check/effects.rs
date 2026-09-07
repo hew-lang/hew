@@ -181,6 +181,79 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
+    /// Record owning task inputs after invocation checking has resolved their
+    /// types and consumption. Rechecking expressions here would repeat moves.
+    pub(super) fn record_fork_call_inputs(&mut self, branch: &Spanned<Expr>) {
+        match &branch.0 {
+            Expr::Call { function, args, .. } => {
+                if let Some(ty) = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&function.1, self.current_module_idx))
+                    .cloned()
+                    .or_else(|| match &function.0 {
+                        Expr::Identifier(name) => {
+                            self.env.lookup_ref(name).map(|binding| binding.ty.clone())
+                        }
+                        _ => None,
+                    })
+                {
+                    self.check_fork_transfer(&function.0, &function.1, &ty);
+                }
+                for arg in args {
+                    let (expr, span) = arg.expr();
+                    if let Some(ty) = self
+                        .expr_types
+                        .get(&SpanKey::in_module(span, self.current_module_idx))
+                        .cloned()
+                    {
+                        self.check_fork_transfer(expr, span, &ty);
+                    }
+                }
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let key = SpanKey::in_module(&branch.1, self.current_module_idx);
+                if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
+                    self.method_call_rewrites.get(&key).cloned()
+                {
+                    let field = Expr::FieldAccess {
+                        object: receiver.clone(),
+                        field: method.clone(),
+                    };
+                    self.check_fork_transfer(&field, &branch.1, &field_ty.to_ty());
+                } else if !matches!(
+                    self.method_call_receiver_kinds.get(&key),
+                    Some(
+                        super::MethodCallReceiverKind::ModuleBinding { .. }
+                            | super::MethodCallReceiverKind::EnumConstructorPath { .. }
+                    )
+                ) {
+                    if let Some(ty) = self
+                        .expr_types
+                        .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
+                        .cloned()
+                    {
+                        self.check_fork_transfer(&receiver.0, &receiver.1, &ty);
+                    }
+                }
+                for arg in args {
+                    let (expr, span) = arg.expr();
+                    if let Some(ty) = self
+                        .expr_types
+                        .get(&SpanKey::in_module(span, self.current_module_idx))
+                        .cloned()
+                    {
+                        self.check_fork_transfer(expr, span, &ty);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &crate::Ty) {
         let ty = self.subst.resolve(ty);
         let origin = self.infer_expression_callable_origin(expr, span);

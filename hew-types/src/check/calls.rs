@@ -2643,95 +2643,53 @@ impl Checker {
         span: &Span,
         construct: &str,
     ) -> Ty {
-        // NEW-4: a `pat from rx.recv()` select/join arm over a std/channel
-        // `Receiver<T>`. Recognised before the actor-ask shape: the receiver is
-        // a channel handle (not an actor), and `recv` resolves to `Option<T>`
-        // with a recorded runtime rewrite (hew_channel_recv_layout), exactly as an
-        // awaited `rx.recv()`. The select substrate polls the channel core for
-        // readiness and binds `Option<T>` on the winning edge.
-        if let Expr::MethodCall {
-            receiver, method, ..
-        } = expr
-        {
-            if method == "recv" {
-                let recv_ty = {
-                    let ty = self.synthesize(&receiver.0, &receiver.1);
-                    self.subst.resolve(&ty)
-                };
-                if matches!(
-                    &recv_ty,
-                    Ty::Named {
-                        builtin: Some(crate::BuiltinType::Receiver),
+        let (call, call_span) = match expr {
+            Expr::Await(inner) => (&inner.0, &inner.1),
+            _ => (expr, span),
+        };
+        if !matches!(call, Expr::MethodCall { .. }) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("{construct} must be actor.method(args) or a channel receive"),
+            );
+            return Ty::Error;
+        }
+        let key = SpanKey::in_module(call_span, self.current_module_idx);
+        self.suspension_operands.insert(key.clone());
+        // Join authorizes suspension at this invocation. Check its receiver and
+        // arguments once, then consume the resulting dispatch and transfer facts.
+        let previous = self.inside_await_expr;
+        self.inside_await_expr = true;
+        let ty = self.synthesize(call, call_span);
+        self.inside_await_expr = previous;
+        let ty = self.subst.resolve(&ty);
+        if ty == Ty::Error {
+            return ty;
+        }
+        if matches!(
+            self.actor_method_dispatch.get(&key),
+            Some(ActorMethodKind::Ask { .. })
+        ) || matches!(
+            self.method_call_rewrites.get(&key),
+            Some(
+                MethodCallRewrite::RemoteActorAsk
+                    | MethodCallRewrite::RewriteToFunction {
+                        target: CallTarget::Runtime(
+                            crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout,
+                        ),
                         ..
                     }
-                ) {
-                    let prev = self.inside_await_expr;
-                    self.inside_await_expr = true;
-                    let synthesized = self.synthesize(expr, span);
-                    self.inside_await_expr = prev;
-                    return self.subst.resolve(&synthesized);
-                }
-            }
+            )
+        ) {
+            return ty;
         }
-
-        let (method_expr, method_span, receiver_expr, receiver_span) = match expr {
-            Expr::MethodCall { receiver, .. } => (expr, span, &receiver.0, &receiver.1),
-            Expr::Await(inner) => {
-                if let Expr::MethodCall { receiver, .. } = &inner.0 {
-                    (&inner.0, &inner.1, &receiver.0, &receiver.1)
-                } else {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!("{construct} must be actor.method(args)"),
-                    );
-                    return Ty::Error;
-                }
-            }
-            _ => {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!("{construct} must be actor.method(args)"),
-                );
-                return Ty::Error;
-            }
-        };
-
-        let receiver_ty = {
-            let ty = self.synthesize(receiver_expr, receiver_span);
-            self.subst.resolve(&ty)
-        };
-        if receiver_ty.as_actor_handle().is_none() {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!("{construct} must be actor.method(args)"),
-            );
-            return Ty::Error;
-        }
-
-        let ty = {
-            // Treat the method call inside a select arm or join as if it is
-            // under `await` so the ask-without-await guard does not fire here.
-            // Select / join sources are the select-flavoured equivalent of
-            // awaited asks — the caller is the concurrency construct itself.
-            let prev = self.inside_await_expr;
-            self.inside_await_expr = true;
-            let synthesized = self.synthesize(method_expr, method_span);
-            self.inside_await_expr = prev;
-            self.subst.resolve(&synthesized)
-        };
-        if ty == Ty::Unit {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!("{construct} requires a receive handler with a return type"),
-            );
-            return Ty::Error;
-        }
-
-        ty
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!("{construct} must be actor.method(args) or a channel receive"),
+        );
+        Ty::Error
     }
 
     /// Validates that a `Receiver<T>` element type is resolved and supported for

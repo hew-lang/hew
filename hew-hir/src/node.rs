@@ -1737,20 +1737,6 @@ pub enum HirExprKind {
     /// other surface shape is rejected with `SelectArmNotSealedForm`
     /// during lowering.
     Select(HirSelect),
-    /// `join { a.m(...), b.n(...) }` — the wait-ALL sibling of `select`.
-    ///
-    /// Every branch is an actor-ask issued concurrently; the construct
-    /// waits for ALL branches to reply and binds a tuple of the per-branch
-    /// reply values in declaration order. The construct's static type
-    /// (`HirExpr::ty`) is the tuple of branch reply types (or the single
-    /// reply type when there is exactly one branch), as the checker
-    /// records it via `expr_types`.
-    ///
-    /// Per HEW-SPEC-2026 §4.11.2 a branch trap cancels the remaining
-    /// branches and the trap propagates to the enclosing scope. Any branch
-    /// that is not an actor method call is rejected at lowering with
-    /// `JoinBranchNotActorAsk`.
-    Join(HirJoin),
     /// `actor |params| { body }` — a lambda-actor literal. Produces a
     /// `Duplex<Msg, Reply>` handle at runtime that addresses the
     /// spawned actor's message queue (the surface call syntax dispatches
@@ -2874,31 +2860,6 @@ pub enum HirSelectArmKind {
     /// `after <duration-expr> => body`. The arm fires when the
     /// deadline elapses; the body runs with no binding.
     AfterTimer { duration: Box<HirExpr> },
-}
-
-/// Lowered `join { ... }` expression — the wait-ALL sibling of
-/// [`HirSelect`]. Each branch is an actor-ask issued concurrently; the
-/// construct waits for every branch to reply and materialises a tuple of
-/// the per-branch reply values in declaration order. See
-/// [`HirJoinBranch`] for the per-branch shape.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirJoin {
-    pub branches: Vec<HirJoinBranch>,
-}
-
-/// One branch of a `join { ... }` expression: a single actor-ask
-/// (`<actor-expr>.<method>(<args>)`). `reply_ty` is the
-/// checker-authoritative reply type for this branch, harvested from the
-/// `actor_method_dispatch` table exactly as `select`'s `ActorAsk` binding
-/// type is. MIR's `Terminator::Join` producer allocates a reply slot per
-/// branch and writes the branch's reply into the result tuple's matching
-/// element.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirJoinBranch {
-    pub actor: Box<HirExpr>,
-    pub method: String,
-    pub args: Vec<HirExpr>,
-    pub reply_ty: ResolvedTy,
 }
 
 #[derive(Debug, Clone, PartialEq)]

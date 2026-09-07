@@ -2831,74 +2831,7 @@ impl Checker {
                 }
                 let ret_ty = self.synthesize(&child.0, &child.1);
                 for branch in children {
-                    match &branch.0 {
-                        Expr::Call { function, args, .. } => {
-                            if let Some(ty) = self
-                                .expr_types
-                                .get(&SpanKey::in_module(&function.1, self.current_module_idx))
-                                .cloned()
-                                .or_else(|| match &function.0 {
-                                    Expr::Identifier(name) => {
-                                        self.env.lookup_ref(name).map(|binding| binding.ty.clone())
-                                    }
-                                    _ => None,
-                                })
-                            {
-                                self.check_fork_transfer(&function.0, &function.1, &ty);
-                            }
-                            for arg in args {
-                                let (expr, span) = arg.expr();
-                                if let Some(ty) = self
-                                    .expr_types
-                                    .get(&SpanKey::in_module(span, self.current_module_idx))
-                                    .cloned()
-                                {
-                                    self.check_fork_transfer(expr, span, &ty);
-                                }
-                            }
-                        }
-                        Expr::MethodCall {
-                            receiver,
-                            method,
-                            args,
-                        } => {
-                            let key = SpanKey::in_module(&branch.1, self.current_module_idx);
-                            if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
-                                self.method_call_rewrites.get(&key).cloned()
-                            {
-                                let field = Expr::FieldAccess {
-                                    object: receiver.clone(),
-                                    field: method.clone(),
-                                };
-                                self.check_fork_transfer(&field, &branch.1, &field_ty.to_ty());
-                            } else if !matches!(
-                                self.method_call_receiver_kinds.get(&key),
-                                Some(
-                                    super::MethodCallReceiverKind::ModuleBinding { .. }
-                                        | super::MethodCallReceiverKind::EnumConstructorPath { .. }
-                                )
-                            ) {
-                                if let Some(ty) = self
-                                    .expr_types
-                                    .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
-                                    .cloned()
-                                {
-                                    self.check_fork_transfer(&receiver.0, &receiver.1, &ty);
-                                }
-                            }
-                            for arg in args {
-                                let (expr, span) = arg.expr();
-                                if let Some(ty) = self
-                                    .expr_types
-                                    .get(&SpanKey::in_module(span, self.current_module_idx))
-                                    .cloned()
-                                {
-                                    self.check_fork_transfer(expr, span, &ty);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+                    self.record_fork_call_inputs(branch);
                 }
                 Ty::Task(Box::new(ret_ty))
             }
@@ -3230,14 +3163,24 @@ impl Checker {
                 result_ty.unwrap_or(Ty::Unit)
             }
             Expr::Join(exprs) => {
-                let types: Vec<Ty> = exprs
-                    .iter()
-                    .map(|(e, s)| {
-                        self.synthesize_actor_concurrency_source(e, s, "join expression element")
-                    })
-                    .collect();
+                let mut types = Vec::with_capacity(exprs.len());
+                for branch in exprs {
+                    let ty = self.synthesize_actor_concurrency_source(
+                        &branch.0,
+                        &branch.1,
+                        "join expression element",
+                    );
+                    if ty != Ty::Error {
+                        let call = match &branch.0 {
+                            Expr::Await(inner) => inner.as_ref(),
+                            _ => branch,
+                        };
+                        self.record_fork_call_inputs(call);
+                    }
+                    types.push(ty);
+                }
                 if types.len() == 1 {
-                    types[0].clone()
+                    types.remove(0)
                 } else {
                     Ty::Tuple(types)
                 }

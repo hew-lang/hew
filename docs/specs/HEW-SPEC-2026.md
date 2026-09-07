@@ -3067,7 +3067,7 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 **Bracket indexing** — a `HashMap<K, V>` supports `m[k]` subscript syntax keyed
 by the same `K: Hash + Eq` bound every HashMap method enforces. A read `m[k]`
 returns the bare value `V`, and traps at runtime
-(`hew: trap in main context: IndexOutOfBounds`, exit 1) when the key is
+(`hew: failure: IndexOutOfBounds (205)`, exit 1) when the key is
 absent — it is NOT sugar for `m.get(k)`. Use `m.get(k)`, which returns
 `Option<V>`, whenever the key may be missing. An assignment `m[k] = v` inserts
 or overwrites the entry (sugar for `m.insert(k, v)`). Indexing with a key of

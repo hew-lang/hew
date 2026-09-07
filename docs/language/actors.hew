@@ -3,7 +3,7 @@
 //! Actors own mutable state and process one mailbox message at a time.
 //! Declare handlers with `receive fn`; a handler with no return type is a
 //! fire-and-forget send, while a handler returning `R` is an ask whose call
-//! returns `Result<R, AskError>` after `await`.
+//! returns `Result<R, ActorError>` after `await`.
 //!
 //! ## Declaration, spawn, local dispatch, and ask
 //!

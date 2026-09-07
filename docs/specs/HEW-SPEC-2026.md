@@ -2539,6 +2539,89 @@ help: or annotate the lambda parameters directly
 
 ---
 
+#### 3.8.6 Generic Actors and Supervisors
+
+Actors and supervisors take type parameters like records. An instantiation is
+keyed by its concrete type arguments: state layout, `init`, handlers, hooks,
+methods, mailbox message types and reply types are monomorphized per
+instantiation, and `LocalPid<Latest<i64>>` and `LocalPid<Latest<string>>` are
+distinct handle types. Two instantiations never share a dispatch table, a
+mailbox protocol or a restart budget.
+
+```hew
+actor Latest<T> {
+    var value: Option<T> = .None,
+    receive fn put(next: T) { value = .Some(next); }
+    receive fn get() -> Option<T> { value }
+}
+
+fn main() {
+    let numbers = spawn Latest<i64>();
+    let names = spawn Latest<string>();
+    send numbers.put(41)?;
+    send names.put("hew")?;
+    println(f"{(await numbers.get())?.expect("set")} {(await names.get())?.expect("set")}");
+    await close(numbers);
+    await close(names);
+}
+```
+
+`spawn Latest<i64>()` instantiates explicitly. When the init arguments fix the
+parameters, they are inferred the way record type arguments are:
+
+```hew
+actor Cache<K: Hash + Eq, V: Clone> {
+    var entries: HashMap<K, V>,
+    var hits: i64 = 0,
+    receive fn insert(key: K, value: V) { entries.insert(key, value); }
+    receive fn lookup(key: K) -> Option<V> {
+        let found = entries.get(key);
+        if found.is_some() { hits = hits + 1; }
+        found
+    }
+}
+
+fn main() {
+    var seed: HashMap<string, i64> = HashMap.new();
+    seed.insert("answer", 42);
+    let cache = spawn Cache(entries: seed);   // K = string, V = i64
+    match (await cache.lookup("answer"))? {
+        .Some(v) => println(v),
+        .None => println("miss"),
+    }
+    await close(cache);
+}
+```
+
+Bounds on actor parameters are ordinary bounds. A type argument that cannot
+cross an actor boundary (an `Rc<T>`, a borrowed view) is refused at the
+instantiation site, naming the argument and the bound it fails, never at a
+later send. A message to the wrong instantiation is a type error at the send
+or ask site.
+
+A supervisor may be generic; its child specs name the instantiated actor, so a
+restarted child is the same instantiation and `pool.worker` is
+`ChildRef<Worker<Job>>`:
+
+```hew
+actor Worker<Job: Send> {
+    var done: i64 = 0,
+    receive fn run(job: Job) -> i64 { done = done + 1; done }
+}
+
+supervisor Pool<Job: Send> {
+    strategy: one_for_one,
+    intensity: 3 within 10s,
+    child worker: Worker<Job>(done: 0),
+}
+
+fn main() {
+    let pool = spawn Pool<string>;
+    println((await pool.worker.run("parse"))?);
+    await close(pool);
+}
+```
+
 ### 3.9 Foreign Function Interface (FFI)
 
 > **Partially implemented.** `extern "C"` blocks, unsafe foreign calls,

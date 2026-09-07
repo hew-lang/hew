@@ -92,7 +92,7 @@ Rules:
 Stopping is a method, and it has one signature. Inside an actor body `self`
 is the actor handle, and `self.stop()` finishes the current handler, runs the
 `#[on(stop)]` hook, and stops the actor. From outside, `pid.stop()` on a
-`LocalPid<A>` requests the same stop and returns `()`. It is idempotent: a
+`Pid<A>` requests the same stop and returns `()`. It is idempotent: a
 `stop()` addressed to an actor that has already stopped or crashed is a
 no-op, not an error, so a caller that must know whether it was the one to end
 the actor takes a monitor instead. There is no free-function `stop`, and
@@ -120,9 +120,41 @@ after the stop has latched reports `SendError.Dead` (§5.6).
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-Named actor `receive fn` methods are called directly — there is no `.send()` or `.ask()` call site. The distinguishing axes are the callee's signature and its actor's declared mailbox policy. A `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). A `receive fn` without a return type is fire-and-forget: at v0.6.0 its call has type `()` for an unbounded mailbox or bounded `block` mailbox, and `Result<(), SendError>` for a `drop_new`, `drop_old`, `fail`, or `coalesce` mailbox — a split the frozen rule of §5.6 closes by widening every send to `Result<(), SendError>`. Because `LocalPid<T>` preserves the actor's nominal identity, this policy-sensitive result is visible in the handle's inferred method surface without adding a caller-side send keyword.
+**One actor identity (normative).** `Pid<A>` names an actor, local or remote.
+There is no second surface handle for a remote actor: `RemotePid` is the wire
+form the runtime uses to carry an identity between nodes, not a type a program
+writes. `ChildRef<A>` stays distinct because it names a supervised *role*
+rather than an incarnation, and re-resolves on every call (§5.6).
 
-The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has the policy-derived type above. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
+**Submission and reply.** A `receive fn` with a return type `R` is asked;
+`await <pid>.<method>(<args>)` joins its reply and has type
+`Result<R, AskError>`, and `fork <pid>.<method>(<args>)` starts the same ask
+as a `Task<Result<R, AskError>>`. A `receive fn` without a return type is
+submitted: `send <pid>.<method>(<args>)` is a message-submission expression
+whose value is the typed delivery outcome, `Result<(), SendError>`. `send`
+describes a message; it does not call the handler locally, and its completion
+means accepted, not processed and not durable.
+
+The outcome composes like any other `Result`: propagate it with `?`, recover
+from it with `handle`, or discard it deliberately. Discarding it by accident
+is not available — a statement-position send or ask whose result is dropped is
+`E_SEND_RESULT_DROPPED`, whose fix-it writes `_ = pid.m()` (§5.6). There is no
+lint tier: an unbounded mailbox reports `SendError.Dead` for a dead target
+exactly as a policy-sensitive one does, so every send has something to say.
+
+**Mailbox policy at the sender.** `policy(worker, on_full: .Wait)` yields an
+immutable typed view of the same actor and mailbox. It mutates nothing and
+grants no authority over other senders' work; it selects what *this* sender
+does when the mailbox is full. The default is `.Reject`, which fails
+immediately and hands the unaccepted payload back — transferred resources
+included — so the caller can retry, redirect, or discard. `.Wait` parks until
+the message is accepted, cancelled, closed, or timed out, and is the one
+policy under which a submission suspends. `.DropNewest` drops the submitted
+message and reports that disposition distinctly. Coalescing requires the
+actor's own mailbox support for its key policy (§6.3). Capacity and queue-wide
+eviction belong to the actor and its supervisor, never to a sender view.
+
+The token `ask` does not appear at actor call sites: `await` is the ask marker and `send` the submission marker. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
 If the receiving handler faults before replying, the ask resolves to
 `.Err(AskError.HandlerTrapped)`. The receiving actor retains ownership of the
@@ -134,7 +166,7 @@ cancellation still follows the caller's own cancellation and cleanup edges.
 actor Counter {
     var count: i64 = 0,
 
-    // Fire-and-forget: no return type, caller does not await
+    // Submission: no return type, caller writes `send`
     receive fn increment(n: i64) {
         count += n;
     }
@@ -153,18 +185,20 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → fire-and-forget. The caller does not use `await`. At v0.6.0 unbounded and bounded-`block` calls return `()` and policy-sensitive calls return `Result<(), SendError>`; §5.6's frozen rule widens all four to `Result<(), SendError>` (see *Fire-and-forget delivery*, below).
-- **`receive fn` with return type** → request-response. The call produces `R` and waits for the reply. Inside `select`/`join`, the actor call is treated as an implicit concurrent reply source; writing `await` there is accepted but redundant.
+- **`receive fn` without return type** → submission. The caller writes `send`, and the expression's value is `Result<(), SendError>` whatever the mailbox policy.
+- **`receive fn` with return type** → request-response. `await` joins the reply and produces `Result<R, AskError>`. Inside a `select` arm the ask is the arm's source, so the arm's `from` clause is what waits and no `await` is written there.
 
 **Calling named actors:**
+
+<!-- doctest: skip -->
 
 ```hew
 let counter = spawn Counter(count: 0);
 
-// Fire-and-forget: no return type, no await needed
-counter.increment(10);
+// Submission: no return type, typed delivery outcome
+send counter.increment(10)?;
 
-// Request-response: has return type, requires await
+// Request-response: has return type, joined with await
 let n = await counter.get();
 ```
 
@@ -177,14 +211,14 @@ Lambda actors receive messages via call-syntax. Named actors expose typed receiv
 let worker = actor |msg: i64| { println(msg * 2); };
 worker.send(42);                // fire-and-forget
 
-// Named actor: use the receive method
-counter.increment(10);
+// Named actor: `send` submits, and the outcome is not discardable
+_ = send counter.increment(10);
 ```
 
 **Message payloads (normative):**
 
 A `receive fn` parameter is a **value** (snapshotted on send, §3.4.4), a **pid
-handle** (`LocalPid`, `RemotePid`, `ChildRef` — copied, both sides address the
+handle** (`Pid`, `ChildRef` — copied, both sides address the
 one actor), or an **opaque or resource handle** on a local send. A handle
 payload is a move: the send consumes it and the sender's binding is dead
 afterwards (`E_USE_AFTER_SEND`, §3.9.6). Such a handle may also be an actor's
@@ -334,7 +368,7 @@ ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Cou
 **Type system:**
 
 A lambda actor expression evaluates to a `LambdaPid<M, R>` handle — a PID-like
-handle in the same family as `LocalPid` / `RemotePid` ("a pid you ask, `M` in →
+handle in the same family as `Pid` ("a pid you ask, `M` in →
 `R` out"), where:
 
 - `M` is the message type (from the parameter list: a single param's type, a
@@ -356,8 +390,8 @@ separate receive.
 **Spawning:**
 
 ```hew
-// Named actor spawn returns LocalPid<ActorType>
-let counter: LocalPid<Counter> = spawn Counter(count: 0);
+// Named actor spawn returns Pid<ActorType>
+let counter: Pid<Counter> = spawn Counter(count: 0);
 
 // Lambda actor expression returns LambdaPid<M, R>
 let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // send
@@ -520,61 +554,17 @@ an absent value becomes an error, through methods the caller writes:
 | --- | --- |
 | `Result<T, E>.map_err(f)` | `f: fn(E) -> F` applied to the `Err` payload, yielding `Result<T, F>` |
 | `Option<T>.ok_or(e)` | `Some(v)` becomes `Ok(v)`; `None` becomes `Err(e)` |
-| `Result<T, E>.expect(msg)` | the `Ok` payload, or a trap carrying `msg` |
-| `Result<T, E>.unwrap()` | the `Ok` payload, or a trap naming the error |
+| `Result<T, E>.expect(reason)` | the `Ok` payload, or a trap carrying `reason` |
+
+`expect(reason)` is the one deliberate crash-on-failure form. There is no
+`unwrap()`: a crash whose message is the error text tells a reader what
+happened but never why the author expected it not to. `expect` requires the
+reason, so an invariant assertion is written as one.
 
 **`main` returning a `Result`.** `fn main() -> Result<(), E>` requires
 `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr using the
 error's `Display` text and exits with `user_code` 1 (§5.8). On `Ok(())` it
 exits 0.
-
-### 2.2.2 Bind-and-Propagate Sugar (`let r? = expr`)
-
-The `?`-suffix on a `let` binding is syntactic sugar for placing `?` on the
-right-hand side:
-
-```
-let r? = expr;          ≡  let r = expr?;
-let r?: T = expr;       ≡  let r: T = expr?;
-```
-
-**Rules:**
-
-- The binding name must be a simple identifier. Complex patterns such as
-  `let (a, b)? = …` or `let Some(x)? = …` are not valid — the sugar requires
-  a single name to anchor the unwrapped value.
-- An initialiser is required. `let r?;` with no `= expr` is a parse error.
-- The expression `expr` must evaluate to `Result<T, E>` or `Option<T>`.
-  Any other type is a type error (`InvalidOperation`), identical to the
-  diagnostic produced by a bare `expr?` on a non-Result/Option expression.
-- The enclosing function must return `Result<_, E>` or `Option<_>` with the
-  same error type, or with `dyn Error` (§2.2.1). If it does not, the checker
-  reports the same "`?` cannot be used in a function returning …`" diagnostic
-  as for bare `?`.
-- The type annotation `T` in `let r?: T = expr` describes the *unwrapped*
-  Ok-payload (type of `r` after propagation), not the Result itself — the
-  same convention as `let r: T = expr?;`.
-
-**Desugaring is canonical.** The form `let r = expr?;` is the lowered
-representation. A formatter may rewrite `let r? = expr;` to the desugared
-form; both representations carry identical semantics.
-
-**Motivation.** The common `let x = (await call())?;` pattern requires
-disambiguating parentheses because `await call()?` would parse as
-`await (call()?)`, yielding a doubly-wrapped type. The sugar eliminates the
-paren cluster and places the propagation marker next to the binding name,
-where the reader's eye is focused:
-
-```hew
-// Before
-let reply = (await server.compute(input))?;
-
-// After
-let reply? = await server.compute(input);
-```
-
-Both `let r? = expr;` and `let r = expr?;` remain valid; existing code is
-unaffected.
 
 ---
 
@@ -596,7 +586,7 @@ to use `type`.
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
-- **Actor references**: `LocalPid<A>` is sendable.
+- **Actor references**: `Pid<A>` is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
 #### Variant spelling (normative)
@@ -678,7 +668,7 @@ A value may cross an actor boundary only if it satisfies **Send**.
 - the value is a value type (integers, floats, bool, char), or
 - the value is **owned** and transferred (move) with no remaining aliases, or
 - the value is `Frozen` (deeply immutable), or
-- the value is an actor reference (`LocalPid<A>`)
+- the value is an actor reference (`Pid<A>`)
 
 This is the central compile-time guarantee: **no data races without locks**, aligning with capability-based actor safety in Pony. ([tutorial.ponylang.io][1])
 
@@ -692,7 +682,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ---------------------------------- | ------------------------------------------ |
 | Value types (i32, f64, bool, char, isize, usize) | Always `Send`                |
 | `string`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
-| `LocalPid<A>`                      | Always `Send`                              |
+| `Pid<A>`                      | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
 | `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
 | `Vec<T>`                           | `T` is `Send`                              |
@@ -719,7 +709,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ----------------------------- | ----------------------------------------- |
 | Value types                   | Always `Frozen`                           |
 | `string`                      | NOT `Frozen` (mutable content)            |
-| `LocalPid<A>`                 | Always `Frozen` (identity reference only) |
+| `Pid<A>`                 | Always `Frozen` (identity reference only) |
 | `type S` where all field types are `Frozen` | `Frozen` (recursive over field types) |
 | `type S` where any field type is not `Frozen` | NOT `Frozen`                        |
 | `enum E`                      | All variant payloads are `Frozen`         |
@@ -875,7 +865,7 @@ value closes.
 | --- | --- | --- | --- | --- | --- |
 | value | scalars, `string`, `bytes`, records, enums, tuples, arrays, `Vec`, `HashMap`, `HashSet`, `dyn Trait` objects | a second value: copy-on-write, `==` structural | a snapshot; a `dyn Trait` value is sendable only when its concrete type is `#[wire]` (`E_LIMIT_DYN_SEND`, Limitation, until the object-type work lands) | `E_IS_VALUE_TYPE` (User) | none |
 | `#[linear]` value | user types marked `#[linear]` | a move: `a` is consumed | a move, the same wall | `E_IS_VALUE_TYPE` | must be consumed by a `consume self` method before scope exit; no drop glue |
-| pid handle | `LocalPid`, `RemotePid`, `ChildRef` | a second name for one actor | the pid is copied; both sides address the same actor | identity | none; an actor stops |
+| pid handle | `Pid`, `ChildRef` | a second name for one actor | the pid is copied; both sides address the same actor | identity | none; an actor stops |
 | counted handle | `Rc`, `Weak`, `LambdaPid` | a second name; the count rises (a `LambdaPid` copy is a refcounted retain) | refused: an actor's heap is its own (`E_OPAQUE_MESSAGE_PAYLOAD`, User) | identity | the count falls; drop glue releases the last (for `LambdaPid`, the last release drops the captured environment) |
 | opaque handle | plain `#[opaque]` types (channel `Sender`/`Receiver`) | a second name for one resource; methods act on the resource | local: a move, and the sender's binding is dead (`E_USE_AFTER_SEND`, User, §3.9.6); remote: `E_OPAQUE_MESSAGE_PAYLOAD` (User) | identity | `close(consume self)` where the type declares it |
 | resource handle | `#[resource]` wrappers (`http.Server`, `http.Request`, `Deque`, `Arena`, `process.Child`, `Semaphore`, `regex.Pattern`, `MonitorRef`, `json.Value`) and `Stream`/`Sink` (move-only, §6.5) | a move: `a` is dead, and a later use is the consume wall | local: a move; remote: `E_OPAQUE_MESSAGE_PAYLOAD` | identity | drop glue closes at scope exit, or `close(consume self)` early |
@@ -917,15 +907,15 @@ actor Handler {
 }
 
 actor Forwarder {
-    receive fn forward(message: Message, target: LocalPid<Handler>) {
-        target.process(message);  // target receives a snapshot of message
+    receive fn forward(message: Message, target: Pid<Handler>) {
+        _ = send target.process(message);  // target receives a snapshot of message
     }
 }
 
 fn main() {
     let handler = spawn Handler();
     let forwarder = spawn Forwarder();
-    forwarder.forward(Message { body: "hello" }, handler);
+    _ = send forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
 
@@ -972,9 +962,9 @@ actor Handler {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: LocalPid<Handler>, second: LocalPid<Handler>) {
-        first.process(message);
-        second.process(message);   // message still valid — each send snapshots
+    receive fn broadcast(message: Message, first: Pid<Handler>, second: Pid<Handler>) {
+        _ = send first.process(message);
+        _ = send second.process(message);   // message still valid — each send snapshots
     }
 }
 
@@ -982,7 +972,7 @@ fn main() {
     let first = spawn Handler();
     let second = spawn Handler();
     let broadcaster = spawn Broadcaster();
-    broadcaster.broadcast(Message { body: "hello" }, first, second);
+    _ = send broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 
 // Lambda actor .send() uses the same snapshot-on-send rule.
@@ -1065,10 +1055,10 @@ passed, and mutation inside an actor needs no annotation beyond `var`.
 
 ```hew
 actor Example {
-    receive fn bad_examples(other: LocalPid<Other>) {
+    receive fn bad_examples(other: Pid<Other>) {
         // Sending a non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
-        other.process(local_handle);  // compile error: RawPointer is not Send
+        _ = send other.process(local_handle);  // compile error: RawPointer is not Send
 
         // Capturing non-Send value - ERROR
         let worker = actor |x: i64| {
@@ -1147,7 +1137,7 @@ match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
     },
     .Err(_err) => println(f"listen failed: {http.listen_error()}"),
 }
-let content = fs.read("config.toml").unwrap();
+let content = fs.read("config.toml").expect("config.toml must be readable");
 let exists = fs.exists("output.txt");       // Returns bool
 let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
@@ -1367,7 +1357,7 @@ impl PointRenderer for Point {
   - Value types (integers, floats, bool, char)
   - Owned types transferred by move
   - `Frozen` types (deeply immutable)
-  - `LocalPid<A>`
+  - `Pid<A>`
 
 - `Sync` - Type is safe to share across concurrent actors without synchronisation. Derived structurally from field types; the compiler determines this automatically. A type is `Sync` if all its fields are `Sync`. Value types are always `Sync`; mutable containers (`Vec<T>`, `HashMap<K,V>`) are not.
 
@@ -1457,6 +1447,10 @@ is refused with "requires a mutable binding receiver" and the `let`→`var`
 fix-it (§3.2). A `consume self` method takes the value: any later use of the
 binding is a use-after-consume diagnostic.
 
+The consuming receiver's keyword is one word. `consuming self` is refused with
+a fix-it that rewrites it to `consume self`, so the receiver position and the
+consuming-parameter position (`consume x: T`, §3.9) read the same.
+
 > **Limitation at edition 2026 (`E_LIMIT_INHERENT_VAR_SELF`, Limitation
 > channel).** On a **user type**, `var self` is available on trait methods but
 > refused on an inherent `impl` method, because an inherent method receives the
@@ -1482,7 +1476,7 @@ actor Counter {
 ```
 
 Inside an actor body, `self` is the **actor handle**: a read-only value of type
-`LocalPid<Self>` naming the enclosing actor. This is the one meaning `self`
+`Pid<Self>` naming the enclosing actor. This is the one meaning `self`
 carries in an actor body — it is not a prefix for fields, and `self.count` is
 not how actor state is read.
 
@@ -1561,9 +1555,9 @@ actor Receiver {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: LocalPid<Receiver>, second: LocalPid<Receiver>) {
-        first.accept(message.clone());
-        second.accept(message.clone());
+    receive fn broadcast(message: Message, first: Pid<Receiver>, second: Pid<Receiver>) {
+        _ = send first.accept(message.clone());
+        _ = send second.accept(message.clone());
     }
 }
 
@@ -1571,7 +1565,7 @@ fn main() {
     let first = spawn Receiver();
     let second = spawn Receiver();
     let broadcaster = spawn Broadcaster();
-    broadcaster.broadcast(Message { body: "hello" }, first, second);
+    _ = send broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -1661,15 +1655,15 @@ actor Handler {
 }
 
 actor Forwarder {
-    receive fn forward(message: Message, target: LocalPid<Handler>) {
-        target.process(message);  // target receives a snapshot; message stays valid
+    receive fn forward(message: Message, target: Pid<Handler>) {
+        _ = send target.process(message);  // target receives a snapshot; message stays valid
     }
 }
 
 fn main() {
     let handler = spawn Handler();
     let forwarder = spawn Forwarder();
-    forwarder.forward(Message { body: "hello" }, handler);
+    _ = send forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
 
@@ -1686,7 +1680,7 @@ trait Send {}  // Marker trait — no methods
 - The value is a value type (integers, floats, bool, char)
 - The value is owned and transferred by move with no remaining aliases
 - The value is `Frozen` (deeply immutable)
-- The value is a `LocalPid<A>`
+- The value is a `Pid<A>`
 - The value is a type/enum where all fields/variants satisfy `Send`
 
 > **Implementation note:** `Send` means send-admissible; the runtime selects the send mechanism based on the value's admissibility class (immutable-shareable → alias-shared by retain; mutable collections → deep-copied; `iso`/Linear → ownership move, P6). The `Send` marker tells the compiler that a type's structure is send-admissible; it does **not** mandate a particular runtime copy strategy. User-defined types do NOT need to implement `Send` explicitly — the compiler derives it automatically based on field types.
@@ -2212,9 +2206,9 @@ actor Receiver {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: LocalPid<Receiver>, second: LocalPid<Receiver>) {
-        first.accept(message.clone());
-        second.accept(message.clone());
+    receive fn broadcast(message: Message, first: Pid<Receiver>, second: Pid<Receiver>) {
+        _ = send first.accept(message.clone());
+        _ = send second.accept(message.clone());
     }
 }
 
@@ -2222,7 +2216,7 @@ fn main() {
     let first = spawn Receiver();
     let second = spawn Receiver();
     let broadcaster = spawn Broadcaster();
-    broadcaster.broadcast(Message { body: "hello" }, first, second);
+    _ = send broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -2310,13 +2304,13 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 
 ```hew
 // Error: T might not be Send
-receive fn forward_unsafe<T>(message: T, target: LocalPid<Handler<T>>) {
-    target.process(message);    // Compile error: T not bounded by Send
+receive fn forward_unsafe<T>(message: T, target: Pid<Handler<T>>) {
+    _ = send target.process(message);    // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
-receive fn forward<T: Send>(message: T, target: LocalPid<Handler<T>>) {
-    target.process(message);    // OK: T: Send verified at instantiation
+receive fn forward<T: Send>(message: T, target: Pid<Handler<T>>) {
+    _ = send target.process(message);    // OK: T: Send verified at instantiation
 }
 ```
 
@@ -2743,7 +2737,7 @@ This is a rule, not a limitation: a handle that is still live at the send cannot
 be snapshotted, because there is nothing to snapshot but the resource itself.
 It is the fourth wall of the ownership model, and it applies to handles only.
 
-A handle is never `#[wire]`, so sending one to a `RemotePid` stays
+A handle is never `#[wire]`, so sending one to a remote `Pid` stays
 `E_OPAQUE_MESSAGE_PAYLOAD` (User): a remote payload must be CBOR-serializable
 and a handle has no serializable layout.
 
@@ -2878,8 +2872,8 @@ failure in the type system or not at all. Three rules cover the whole surface:
 
 1. **Fallible is `Result<T, E>` with `E: Error`.** The bare name carries the
    `Result`; there is no `try_`-prefixed twin beside it. A caller that wants a
-   crash on failure writes `unwrap()` or `expect(msg)` at the call site, where
-   the decision is visible.
+   crash on failure writes `expect(reason)` at the call site, where the
+   decision and its reason are both visible.
 2. **Absence is `Option<T>`.** A lookup that can miss returns `None`, never a
    zero value, an empty string, or a designated "not found" variant of the
    success type.
@@ -4585,7 +4579,7 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 A `child` declaration whose target is itself a supervisor with children is
 implemented end-to-end. Dotted access to a nested supervisor (`root.sub`)
-returns a fully typed `LocalPid<Sub>` through
+returns a fully typed `Pid<Sub>` through
 `hew_supervisor_nested_get`. Chained actor access (`root.sub.worker`) then
 produces the leaf's stable `ChildRef<Worker>` through the same representation
 as a direct supervised actor.
@@ -4621,10 +4615,10 @@ fn main() {
 
     // Access children by declared name
     let w = pool.worker1;              // ChildRef<Worker>
-    w.tick();
+    _ = send w.tick();
 
     let w2 = pool.worker2;             // ChildRef<Worker>
-    w2.tick();
+    _ = send w2.tick();
 
     supervisor_stop(pool);              // Graceful shutdown
 }
@@ -5790,7 +5784,7 @@ in the type system:
   `Node.shutdown()` stays `()`.
 
 **The registry knows the actor's type (normative).**
-`Node.register(name, pid: LocalPid<A>) -> Result<(), RegisterError>` records
+`Node.register(name, pid: Pid<A>) -> Result<(), RegisterError>` records
 `A`'s declaration identity beside the location, and `Node.lookup<A>(name)`
 compares the two, answering `Err(LookupError.TypeMismatch)` when they
 disagree. Without that record a lookup's type argument is the reader's wish and
@@ -5799,7 +5793,7 @@ the handle it produces is an unchecked cast.
 `Node.register` is the one registration verb: it registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
 `Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
-Result<LocalPid<A>, LookupError>` is the local view of the same registry, and
+Result<Pid<A>, LookupError>` is the local view of the same registry, and
 carries the same identity comparison.
 
 **Shipped cross-node surface:**
@@ -5914,7 +5908,7 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `from`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `from`, `send`, `await`, `await_restart` |
 | Wire | `reserved`, `optional`, `deprecated` |
 | Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
@@ -5934,6 +5928,7 @@ an ordinary name is legal everywhere else:
 | `events`, `emits`, `reenter`, `initial` | machine declaration headers and transition modifiers |
 | `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses, and `within` a scope deadline (§4.11.3) |
 | `handle` | the error-recovery and scope-failure clause (§2.2.1, §4.11.3) |
+| `policy`, `on_full` | a sender's mailbox-policy view (§2.1.1) |
 | `suspends` | the suspension qualifier in a written callable type (§4.0) |
 | `self`, `consume` | receiver and transfer positions (§3.6, §3.9) |
 | `clone` | the prefix-clone expression (§3.4.4) |
@@ -5977,9 +5972,8 @@ carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 > "`default` is a reserved word and cannot be used as a binding name". That
 > is a defect against this table, not a second reading of it
 > (hew-lang/hew#3262). `this` is absent from the table because the receiver
-> rule deletes it from the language; §3.6 still carries its actor
-> self-reference text and the lexer still reserves it, and the receiver
-> change removes both (hew-lang/hew#3075).
+> rule deletes it from the language; the lexer still reserves it, and the
+> receiver change removes that reservation (hew-lang/hew#3075).
 
 ### 12.1 Built-in Numeric Types
 

@@ -5195,3 +5195,72 @@ fn impl_target_type_arguments_still_need_the_declared_bound() {
         output.errors
     );
 }
+
+/// `Display` is satisfied by an impl, never derived structurally from a type's
+/// parts. Granting it to `Vec<i64>` sent `println([1, 2])` into HIR with no
+/// `fmt` symbol to call, which surfaced as an internal compiler error.
+#[test]
+fn display_is_satisfied_only_where_an_impl_exists() {
+    for renderable in [
+        "println(42)",
+        "println(\"hi\")",
+        "println(true)",
+        "assert_eq(1, 1)",
+    ] {
+        let output = check_source(&format!("fn main() {{ {renderable}; }}"));
+        assert!(
+            output.errors.is_empty(),
+            "{renderable} has a shipped Display impl: {:?}",
+            output.errors
+        );
+    }
+
+    for unrenderable in ["println([1, 2])", "assert_eq([1, 2], [1, 2])"] {
+        let output = check_source(&format!("fn main() {{ {unrenderable}; }}"));
+        let hit = output
+            .errors
+            .iter()
+            .find(|e| e.message.contains("does not implement trait `Display`"))
+            .unwrap_or_else(|| panic!("{unrenderable}: {:?}", output.errors));
+        assert!(
+            hit.message.contains("Vec<i64>"),
+            "the diagnostic must name the type: {}",
+            hit.message
+        );
+        assert!(
+            hit.suggestions
+                .iter()
+                .any(|s| s.contains("impl Display for Vec<i64>")),
+            "the diagnostic must suggest the impl: {:?}",
+            hit.suggestions
+        );
+    }
+}
+
+/// A user impl is what makes a type renderable, so declaring one admits the
+/// same call the bare record is refused for.
+#[test]
+fn a_user_display_impl_satisfies_the_bound() {
+    const POINT: &str = "type Point { x: i64, y: i64 }";
+    let refused = check_source(&format!(
+        "{POINT} fn main() {{ println(Point {{ x: 1, y: 2 }}); }}"
+    ));
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|e| e.message.contains("does not implement trait `Display`")),
+        "a record with no impl must be refused: {:?}",
+        refused.errors
+    );
+
+    let accepted = check_source(&format!(
+        "{POINT} impl Display for Point {{ fn fmt(p: Point) -> string {{ f\"({{p.x}}, {{p.y}})\" }} }} \
+         fn main() {{ println(Point {{ x: 1, y: 2 }}); }}"
+    ));
+    assert!(
+        accepted.errors.is_empty(),
+        "a user impl satisfies the bound: {:?}",
+        accepted.errors
+    );
+}

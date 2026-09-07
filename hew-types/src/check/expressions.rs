@@ -195,7 +195,7 @@ impl Checker {
         }
     }
 
-    fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
+    pub(super) fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::String) {
             return Some(resolved);

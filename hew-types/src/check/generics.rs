@@ -633,7 +633,17 @@ impl Checker {
                 "type `{}` does not implement trait `{bound_display}` required by `{param_name}`",
                 resolved_arg.user_facing()
             );
-            let suggestions = self.diagnose_bound_failure_suggestions(resolved_arg, bound);
+            // A Display bound fails because nothing renders the type, so name
+            // the impl the program is missing rather than its absent methods.
+            let suggestions = if MarkerTrait::from_name(bound) == Some(MarkerTrait::Display) {
+                vec![format!(
+                    "write `impl {bound_display} for {} {{ fn fmt(...) -> string {{ ... }} }}`, \
+                     or render the parts that already have one",
+                    resolved_arg.user_facing()
+                )]
+            } else {
+                self.diagnose_bound_failure_suggestions(resolved_arg, bound)
+            };
             self.report_error_with_suggestions(
                 TypeErrorKind::BoundsNotSatisfied,
                 span,
@@ -1099,6 +1109,19 @@ impl Checker {
     }
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
+        // One authority decides Display: the impl lookup f-string interpolation
+        // already uses. The structural marker derivation would grant it to
+        // `Vec<i64>`, tuples and records, none of which have an impl for HIR to
+        // call, so `println([1, 2])` reached lowering with no symbol.
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Display) {
+            // An unresolved or already-errored type says nothing about Display;
+            // reporting it here would cascade a second diagnostic onto the
+            // first failure (`require_display_impl` guards the same way).
+            if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
+                return true;
+            }
+            return self.display_impl_type(ty).is_some();
+        }
         if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
             && !Self::ty_mentions_type_params(
                 ty,

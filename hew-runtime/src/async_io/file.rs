@@ -147,17 +147,20 @@ pub unsafe extern "C" fn hew_async_file_write_string(
 /// prevents the write; cancellation during an OS write does not roll it back.
 ///
 /// # Safety
-/// `path` and `data` are live borrowed Hew values for this call. The bytes
-/// carrier's nonempty region is readable. `waker` is null or a valid borrowed
+/// `path` is a live borrowed Hew string. `data` is null or a live borrowed
+/// bytes carrier whose nonempty region is readable. `waker` is null or a valid borrowed
 /// descriptor, and the current runtime outlives submission.
 #[no_mangle]
 pub unsafe extern "C" fn hew_async_file_write(
     path: *const HewString,
-    data: BytesTriple,
+    data: *const BytesTriple,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: path is borrowed for this call and copied before queue admission.
     let request = unsafe { owned_path(path) }.and_then(|path| {
+        // SAFETY: a non-null carrier is borrowed for the immediate input copy.
+        let data = unsafe { data.as_ref() }
+            .ok_or_else(|| IoFailure::invalid("file contents carrier is null"))?;
         if data.len != 0 && data.ptr.is_null() {
             return Err(IoFailure::invalid(
                 "nonempty file contents have a null buffer",

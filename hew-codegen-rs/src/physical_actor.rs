@@ -140,12 +140,22 @@ fn allocate<'ctx>(
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
-    pub(super) fn emit_actor_runtime_start(
+    fn needs_process_runtime(&self) -> bool {
+        !self.module.actors.is_empty()
+            || self
+                .module
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| matches!(block.terminator, PhysicalTerminator::NativeIo { .. }))
+    }
+
+    pub(super) fn emit_process_runtime_start(
         &self,
         builder: &Builder<'ctx>,
         wrapper: FunctionValue<'ctx>,
     ) -> CodegenResult<()> {
-        if self.module.actors.is_empty() {
+        if !self.needs_process_runtime() {
             return Ok(());
         }
         let start = get_or_declare_external(
@@ -155,7 +165,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         )?;
         let status = builder
             .build_call(start, &[], "runtime.start")
-            .llvm_ctx("start required actor runtime")?
+            .llvm_ctx("start required process runtime")?
             .try_as_basic_value()
             .basic()
             .unwrap()
@@ -181,12 +191,12 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    pub(super) fn emit_actor_runtime_finish(
+    pub(super) fn emit_process_runtime_finish(
         &self,
         builder: &Builder<'ctx>,
         status: IntValue<'ctx>,
     ) -> CodegenResult<IntValue<'ctx>> {
-        if self.module.actors.is_empty() {
+        if !self.needs_process_runtime() {
             return Ok(status);
         }
         let finish = get_or_declare_external(
@@ -198,7 +208,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         )?;
         builder
             .build_call(finish, &[status.into()], "runtime.finish")
-            .llvm_ctx("drain actor work and finish process runtime")?
+            .llvm_ctx("drain work and finish process runtime")?
             .try_as_basic_value()
             .basic()
             .map(BasicValueEnum::into_int_value)

@@ -54,7 +54,20 @@ pub enum AsyncIoLoan {
     UntilQuiescent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    Default,
+)]
 pub enum AsyncIoOp {
     #[default]
     FileReadBytes,

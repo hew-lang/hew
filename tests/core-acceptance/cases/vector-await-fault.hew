@@ -1,0 +1,18 @@
+// A child that faults while the join is in flight aborts the program: the
+// remaining handles in the vector, and the vector itself, are released on the
+// fault path rather than leaked or joined.
+fn slow(n: i64) -> i64 {
+    sleep(n * 1ms);
+    n
+}
+
+fn boom() -> i64 {
+    panic("boom");
+    0
+}
+
+fn main() {
+    let tasks = [fork slow(20), fork boom(), fork slow(5)];
+    let values = await tasks;
+    println(values.len());
+}

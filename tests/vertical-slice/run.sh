@@ -428,11 +428,24 @@ grep -qF -- \
     "${reject_output}"
 echo "PASS borrow_type_outside_extern (reject)"
 
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
-grep -qe '-> string' "${accept_output}"
+# `--dump-mir raw` (retired) used to confirm the literal `-> string`/`-> i64`
+# return-type text in the MIR dump; physical MIR's structured (Debug) dump
+# has no equivalent single-line signature text, so these now prove the
+# return-typed value by observed execution instead.
+run_accept_expect_stdout "string_return"
 
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/01-arith.hew" >"${accept_output}"
-grep -qe '-> i64' "${accept_output}"
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/01-arith.hew" >"${accept_output}" 2>&1
+arith01_bin="${ROOT}/.tmp/compile-out/01-arith"
+if "${arith01_bin}" >>"${accept_output}" 2>&1; then
+    arith01_status=0
+else
+    arith01_status=$?
+fi
+if [[ "${arith01_status}" -ne 7 ]]; then
+    echo "expected 01-arith fixture to exit 7, got ${arith01_status}" >&2
+    cat "${accept_output}" >&2
+    exit 1
+fi
 
 "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
 arith_bin="${ROOT}/.tmp/compile-out/arith_call"
@@ -2284,8 +2297,10 @@ echo "PASS on_down_hook_missing_import (reject)"
 #   2. Binary exits 42, proving codegen routed the spawn through
 #      hew_actor_spawn_opts (arena_cap_bytes=65536) without breaking
 #      actor functionality.
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
-grep -q 'max_heap=65536' "${accept_output}"
+#   (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text for
+#   `max_heap=65536` directly; that check is gone, so this row now only
+#   proves the annotation's effect by observed execution.)
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "actor_max_heap_basic" 42
 
 # `#[max_heap(N)]` wire-through — supervisor child path:
@@ -2295,8 +2310,10 @@ run_accept_expect_status "actor_max_heap_basic" 42
 #      into HewChildSpec.arena_cap_bytes.
 #   2. Binary exits 42, proving the supervisor bootstrap path is
 #      unaffected.
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
-grep -q 'max_heap=131072' "${accept_output}"
+#   (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text for
+#   `max_heap=131072` directly; that check is gone, so this row now only
+#   proves the annotation's effect by observed execution.)
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "supervisor_max_heap" 42
 
 # declared mailbox capacity + overflow policy must genuinely bound the
@@ -2309,8 +2326,10 @@ run_accept_expect_status "supervisor_max_heap" 42
 #      processed-count, because the EXACT number accepted before the queue
 #      fills is a scheduling race — the invariant under test is strictly
 #      "fewer than the flood count" (before the fix: processed == 20).
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/mailbox_bounded_drop_new.hew" >"${accept_output}" 2>&1
-grep -q 'mailbox_capacity=4 overflow=DropNew' "${accept_output}"
+#   (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text for
+#   `mailbox_capacity=4 overflow=DropNew` directly; that check is gone, so
+#   this row now only proves the annotation's effect by observed execution.)
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/mailbox_bounded_drop_new.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "mailbox_bounded_drop_new" 0
 
 # A lossy actor send is Result-typed, reports the exact drop, and cannot be
@@ -3602,15 +3621,17 @@ run_accept_expect_stdout "gen_fn_fn_typed_param"
 # local plus a gated `drop` before the reassignment; the closure invoke shim /
 # generator body emitted neither, leaking the prior string). Both fixtures
 # exit 0 either way -- the leak is silent, not a crash -- so the MIR dump grep
-# for the now-present guard-flag/drop shape is the load-bearing assertion,
+# for the now-present guard-flag/drop shape was the load-bearing assertion,
 # not just the exit-code check.
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/closure_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
-grep -q 'drop _2 ty=string fn=release(hew_string_drop)' "${accept_output}"
-grep -q 'drop _3 ty=string fn=release(hew_string_drop)' "${accept_output}"
+#   (`--dump-mir raw`, retired, carried that grep as `drop _N ty=string
+#   fn=release(hew_string_drop)` text; physical MIR's structured Debug dump
+#   has no equivalent single-line text to grep for the same per-local
+#   guard-flag shape, so the silent-leak coverage these two rows added is
+#   lost -- only the exit-code check remains.)
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/closure_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "closure_consume_reassign_overwrite_release" 0
 
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/gen_fn_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
-grep -q 'drop _3 ty=string fn=release(hew_string_drop)' "${accept_output}"
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/gen_fn_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
 run_accept_expect_status "gen_fn_consume_reassign_overwrite_release" 0
 
 # Reject: a generator that captures a closure-with-env must still fail closed
@@ -4591,11 +4612,16 @@ expect_check_fail_contains \
 # Accept fixture: `scope { fork { worker(); } }` inside an actor handler
 # must:
 #   1. typecheck cleanly (`hew check` exits 0).
-#   2. produce a RawMirFunction whose instruction stream contains the
-#      canonical TaskScope* and TaskNew runtime-call families.
-#   3. NOT mention the legacy hew_scope_* family anywhere in the dump.
-#   4. compile and run end-to-end now that W4.010 synthesizes a TaskEntry
+#   2. compile and run end-to-end now that W4.010 synthesizes a TaskEntry
 #      adapter for the free-function task body.
+#
+# (`--dump-mir raw`, retired, used to grep the mid-pipeline MIR text and
+# confirm the TaskScope*/TaskNew runtime-call family was present and the
+# legacy hew_scope_* family was gone; `--dump-mir physical` cannot lower
+# this fixture yet -- "a scope result cannot retain a scoped task handle" is
+# a known limitation of the new pipeline (see AGENTS.md v0.6.0 row) -- so
+# that ABI-family assertion is lost here. Only the typecheck and end-to-end
+# execution checks remain.)
 w2006_fixture="${ROOT}/tests/vertical-slice/accept/w2006_scope_spawn.hew"
 
 "${HEW}" check "${w2006_fixture}" >"${accept_output}" 2>&1
@@ -4604,34 +4630,6 @@ grep -q ": OK$" "${accept_output}" || {
     cat "${accept_output}" >&2
     exit 1
 }
-
-"${HEW}" compile --dump-mir raw "${w2006_fixture}" >"${accept_output}" 2>&1
-grep -qF 'hew_task_scope_new()' "${accept_output}" || {
-    echo "W2.006: MIR dump must contain hew_task_scope_new runtime call" >&2
-    cat "${accept_output}" >&2
-    exit 1
-}
-grep -qF 'hew_task_scope_spawn(' "${accept_output}" || {
-    echo "W2.006: MIR dump must contain hew_task_scope_spawn runtime call" >&2
-    cat "${accept_output}" >&2
-    exit 1
-}
-grep -qF 'hew_task_new()' "${accept_output}" || {
-    echo "W2.006: MIR dump must contain hew_task_new runtime call (preceding hew_task_scope_spawn)" >&2
-    cat "${accept_output}" >&2
-    exit 1
-}
-grep -qF 'hew_task_scope_destroy(' "${accept_output}" || {
-    echo "W2.006: MIR dump must contain hew_task_scope_destroy runtime call" >&2
-    cat "${accept_output}" >&2
-    exit 1
-}
-# Legacy ABI must be fully removed.
-if grep -qE 'hew_scope_(spawn|new|create|free|destroy|cancel|is_cancelled|wait_all)' "${accept_output}"; then
-    echo "W2.006: legacy hew_scope_* symbol leaked into MIR dump — removal incomplete" >&2
-    cat "${accept_output}" >&2
-    exit 1
-fi
 
 run_accept_expect_status "w2006_scope_spawn" 0
 

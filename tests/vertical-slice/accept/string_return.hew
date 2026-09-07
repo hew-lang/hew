@@ -1,4 +1,8 @@
-fn main() -> string {
+fn greeting() -> string {
   let s = "hello";
   return s;
+}
+
+fn main() {
+  println(greeting());
 }

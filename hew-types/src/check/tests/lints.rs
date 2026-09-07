@@ -32,7 +32,7 @@ fn raii_handle_bindings_suppress_unused_lint_but_plain_still_warns() {
     let source = "\
 #[resource]\n\
 type Guard { id: i64, }\n\
-impl Guard { fn close(g: Guard) { } }\n\
+impl Guard { fn close(consume self) { } }\n\
 fn open() -> Guard { Guard { id: 1 } }\n\
 #[linear]\n\
 type Txn { id: i64, }\n\

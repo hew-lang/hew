@@ -7357,6 +7357,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let projected = self
                 .owned_projection(place)?
                 .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            // A transform takes its receiver, which a live element loan of the
+            // same owner forbids. Refusing here names the source construct
+            // instead of leaving it to the ownership verifier.
+            let (root, _) = crate::projection::place_path(&self.places, projected)?;
+            for loan in self.scope_loans.clone() {
+                if self.value_borrow_root(loan)? == root {
+                    return Err(
+                        "E_OWN_CONSUME_BORROWED: this collection is borrowed by a live element \
+                         loan; the loop or read holding it must end before the collection is \
+                         mutated or drained"
+                            .to_string(),
+                    );
+                }
+            }
             transformed_projection = Some(projected);
             let source = self.emit_typed(
                 provenance.clone(),

@@ -5152,26 +5152,6 @@ fn define(
     Ok(())
 }
 
-/// Uninitialize every loan whose owner chain reaches `source`.
-fn invalidate_dependent_loans(
-    function: &PhysicalFunction,
-    state: &mut FlowState,
-    source: StorageId,
-) {
-    let dependents: Vec<StorageId> = function
-        .storage
-        .iter()
-        .filter(|slot| {
-            slot.borrow_parent
-                .is_some_and(|parent| callable::depends_on(function, parent, source))
-        })
-        .map(|slot| slot.id)
-        .collect();
-    for slot in dependents {
-        invalidate_storage(function, state, slot);
-    }
-}
-
 fn require_no_live_borrows(
     function: &PhysicalFunction,
     state: &FlowState,
@@ -5374,9 +5354,6 @@ fn apply_operation(
         }
         PhysicalOp::EndBorrow { source } => {
             initialized(function, state, *source, block, "end-borrow")?;
-            // A loan derived from this one ends with it: the alias it named is
-            // exactly the region this borrow held open.
-            invalidate_dependent_loans(function, state, *source);
             require_no_live_borrows(function, state, *source)?;
             invalidate_storage(function, state, *source);
         }

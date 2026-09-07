@@ -8158,6 +8158,25 @@ impl Checker {
         let trait_name = &trait_bound.name;
         let identity = self.resolve_trait_conformance_identity(trait_name);
         let Some((required, known)) = self.trait_required_and_known_methods(&identity) else {
+            // D429: no declaration in scope defines this trait, so there is no
+            // method set to check the impl against. Accepting it would register
+            // the impl's methods under a contract that does not exist.
+            //
+            // Marker traits (`Eq`, `Hash`, `Copy`, ...) carry no declared
+            // method set, so a missing `trait_defs` entry is their normal
+            // state and says nothing about whether the name resolves.
+            let leaf = trait_name.rsplit('.').next().unwrap_or(trait_name);
+            if crate::traits::MarkerTrait::from_name(leaf).is_some() {
+                return;
+            }
+            self.report_error(
+                TypeErrorKind::UnknownTraitInImpl {
+                    trait_name: trait_name.clone(),
+                    type_name: type_name.to_string(),
+                },
+                impl_span,
+                format!("cannot find trait `{trait_name}` in this scope"),
+            );
             return;
         };
 

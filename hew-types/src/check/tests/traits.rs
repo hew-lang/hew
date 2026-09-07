@@ -3034,3 +3034,69 @@ fn record_field_marker_derivation_expands_top_level_alias() {
 //   - `body_cast_infer_hole_fails_closed`: unresolvable `as _` cast target
 //   - `body_let_annotation_infer_resolves_cleanly`: resolvable `let y: _ = 42`
 //   - `body_lambda_infer_param_hole_fails_closed`: unresolvable lambda `|x: _|`
+
+// ── D429: an impl block naming a trait that does not exist ────────────────────
+
+#[test]
+fn impl_of_undeclared_trait_is_rejected() {
+    let parsed = hew_parser::parse(
+        r"
+        type Point { x: i64, }
+        impl Nonexistent for Point {
+            fn shift(pt: Point) -> i64 { pt.x }
+        }
+        fn main() { let p = Point { x: 1 }; let _ = p.shift(); }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::UnknownTraitInImpl { trait_name, type_name }
+                if trait_name == "Nonexistent" && type_name == "Point"
+        )),
+        "an impl of an undeclared trait must be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_of_marker_trait_without_declared_methods_is_accepted() {
+    // Negative control for the check above: marker traits (`Eq`, `Hash`, ...)
+    // declare no method set, so their absence from `trait_defs` must not be
+    // read as an undeclared trait.
+    let parsed = hew_parser::parse(
+        r"
+        type Key { id: i64, }
+        impl Eq for Key {
+            fn eq(left: Key, right: Key) -> bool { left.id == right.id }
+        }
+        fn main() {
+            let a = Key { id: 1 };
+            let b = Key { id: 1 };
+            let _ = a.eq(b);
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::UnknownTraitInImpl { .. })),
+        "`impl Eq` must not be reported as an undeclared trait: {:?}",
+        output.errors
+    );
+}

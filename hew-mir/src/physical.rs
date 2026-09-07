@@ -72,7 +72,7 @@ use hew_sir::{
 };
 pub use hew_sir::{
     BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, ResourceCarrier,
-    SemParamPassing, TaskScopeId, TrapKind,
+    ResourceRelease, SemParamPassing, TaskScopeId, TrapKind,
 };
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
@@ -1760,7 +1760,15 @@ fn collect_inventory_type(
             collect_inventory_type(module, inventory, yielded);
             collect_inventory_type(module, inventory, returned);
         }
-        return;
+        // A record resource is released by its own `close`, and inside that
+        // body its members drop directly, so it needs the aggregate glue as
+        // well as the release. Every other resource is a bare handle.
+        if !matches!(
+            module.resources.get(ty),
+            Some(hew_sir::ResourceRelease::RecordClose { .. })
+        ) {
+            return;
+        }
     }
     if let ResolvedTy::Closure { captures, .. } = ty {
         for capture in captures {
@@ -3108,7 +3116,32 @@ impl FunctionLowerer<'_> {
         })
     }
 
+    /// Inside a record resource's own `close`, the receiver is already being
+    /// released: its members drop directly. Selecting the release again would
+    /// re-enter `close`.
+    fn releases_members_of(&self, ty: &ResolvedTy) -> bool {
+        matches!(
+            self.module.resources.get(ty),
+            Some(hew_sir::ResourceRelease::RecordClose { close, .. })
+                if *close == self.function.callable
+        )
+    }
+
     fn destroy_action(&self, ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
+        if self.releases_members_of(ty) {
+            return self
+                .glue_ids
+                .aggregates
+                .get(ty)
+                .copied()
+                .map(DestroyAction::Aggregate)
+                .ok_or_else(|| {
+                    PhysicalError::new(format!(
+                        "record resource `{}` has no member glue for its own close body",
+                        ty.user_facing()
+                    ))
+                });
+        }
         destroy_action_for_type(ty, self.glue_ids).ok_or_else(|| {
             PhysicalError::new(format!(
                 "physical destroy action for `{}` is not implemented",
@@ -3327,9 +3360,36 @@ fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
             semantic_type_facts(module, &resource.ty)?,
         )
         .map_err(PhysicalError::new)?;
+        if let hew_sir::ResourceRelease::RecordClose { lifecycle, close } = &resource.release {
+            let callable = module
+                .callables
+                .get(close.0 as usize)
+                .ok_or_else(|| PhysicalError::new("record release names no admitted callable"))?;
+            if callable.declaration != lifecycle.close_declaration
+                || callable.params.len() != 1
+                || callable.params[0].ty != resource.ty
+                || callable.return_ty != ResolvedTy::Unit
+            {
+                return Err(PhysicalError::new(
+                    "record release callable does not consume one exact owner and return unit",
+                ));
+            }
+            if !matches!(
+                required_layout(&module.target, &resource.ty)?.repr,
+                PhysicalRepr::Struct(_)
+            ) {
+                return Err(PhysicalError::new(
+                    "record release requires its exact field-bearing layout",
+                ));
+            }
+            continue;
+        }
         let expected = match resource.release.carrier().map_err(PhysicalError::new)? {
             hew_sir::ResourceCarrier::Pointer => PhysicalRepr::Pointer,
             hew_sir::ResourceCarrier::I32 => PhysicalRepr::Integer { bits: 32 },
+            hew_sir::ResourceCarrier::Record => {
+                unreachable!("record releases are verified above")
+            }
         };
         if required_layout(&module.target, &resource.ty)?.repr != expected {
             return Err(PhysicalError::new(

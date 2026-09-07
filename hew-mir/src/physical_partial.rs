@@ -80,6 +80,17 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    /// Whether an owner is a record resource, released whole by its `close`.
+    pub(super) fn released_whole(&self, owner: hew_sir::OwnerRoot) -> Result<bool, PhysicalError> {
+        let storage = self.owner_storage(owner)?;
+        Ok(matches!(
+            self.module
+                .resources
+                .get(&self.storage[storage.0 as usize].ty),
+            Some(hew_sir::ResourceRelease::RecordClose { .. })
+        ))
+    }
+
     fn owner_storage(&self, owner: hew_sir::OwnerRoot) -> Result<StorageId, PhysicalError> {
         match owner {
             hew_sir::OwnerRoot::Value(value) => self.value(value),
@@ -99,7 +110,12 @@ impl FunctionLowerer<'_> {
                     })?;
                     Ok(PhysicalPlaceLeaf {
                         storage: self.place(*place)?,
-                        destroy: if projection.recipe.own == OwnKind::Owned {
+                        // A field of a record resource is a read through
+                        // its owner: the owner's `close` is the only release.
+                        destroy: if projection.recipe.own == OwnKind::Owned
+                            && (projection.path.is_empty()
+                                || !self.released_whole(projection.root)?)
+                        {
                             Some(self.destroy_action(&projection.recipe.ty)?)
                         } else {
                             None
@@ -159,6 +175,18 @@ pub(super) fn verify_storage(
     function: &PhysicalFunction,
 ) -> Result<(), PhysicalError> {
     let entries = &function.place_storage;
+    // A record resource is released whole by its own `close`, so a read of one
+    // of its fields owns nothing: that storage carries no content partition.
+    let released_whole = |entry: &PhysicalPlaceStorage| -> Result<bool, PhysicalError> {
+        let root_ty = &storage(function, entry.root)?.ty;
+        Ok(module.resources.iter().any(|resource| {
+            &resource.ty == root_ty
+                && matches!(
+                    resource.release,
+                    hew_sir::ResourceRelease::RecordClose { .. }
+                )
+        }))
+    };
     let mut paths = BTreeMap::new();
     for (&id, entry) in entries {
         let slot = storage(function, id)?;
@@ -198,7 +226,8 @@ pub(super) fn verify_storage(
             ty = &field.ty;
             own = field.own;
         }
-        if ty != &slot.ty || own != slot.own || entry.leaves.is_empty() {
+        let field_of_record = released_whole(entry)? && !entry.path.is_empty();
+        if ty != &slot.ty || own != slot.own || (entry.leaves.is_empty() && !field_of_record) {
             return Err(PhysicalError::new(
                 "aggregate storage path or leaf recipe differs from its slot",
             ));
@@ -216,6 +245,11 @@ pub(super) fn verify_storage(
         }
     }
     for entry in entries.values() {
+        // A record resource is released whole, so a read of one of its fields
+        // does not oblige the other fields to have their own storage.
+        if released_whole(entry)? {
+            continue;
+        }
         if let Some((last, parent)) = entry.path.split_last() {
             if !paths.contains_key(&(entry.root, parent.to_vec())) {
                 return Err(PhysicalError::new(
@@ -249,6 +283,31 @@ fn verify_partitions(
     // Revalidate the supplied physical partition against the checked paths.
     // This verifies storage coverage; it does not choose field lifetimes.
     for entry in entries.values() {
+        // A record resource is one content: its own release covers it, and a
+        // read of one of its fields adds nothing to that partition.
+        let released_whole = {
+            let root_ty = &storage(function, entry.root)?.ty;
+            module.resources.iter().any(|resource| {
+                &resource.ty == root_ty
+                    && matches!(
+                        resource.release,
+                        hew_sir::ResourceRelease::RecordClose { .. }
+                    )
+            })
+        };
+        if released_whole {
+            let covered = if entry.path.is_empty() {
+                entry.leaves.len() == 1 && entry.leaves[0].storage == entry.root
+            } else {
+                entry.leaves.is_empty()
+            };
+            if !covered {
+                return Err(PhysicalError::new(
+                    "record resource storage carries a leaf partition",
+                ));
+            }
+            continue;
+        }
         let mut expected: Vec<_> = entries
             .iter()
             .filter(|(_, candidate)| {

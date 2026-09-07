@@ -264,16 +264,6 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                 members: Vec::new(),
             });
         };
-        if marker != DeclarationMarker::None {
-            return Some(DeclaredType {
-                builtin: None,
-                marker,
-                is_opaque,
-                type_params: definition.type_params.clone(),
-                members: Vec::new(),
-            });
-        }
-
         let mut member_tys: Vec<Ty> = Vec::new();
         if definition.field_order.is_empty() {
             let mut names: Vec<&String> = definition.fields.keys().collect();
@@ -323,8 +313,21 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         for ty in member_tys {
             // A member the boundary cannot render leaves the whole declaration
             // unclassifiable: an aggregate over the members that happened to
-            // convert would be a guess.
-            let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
+            // convert would be a guess. A marked declaration's class comes
+            // from its marker, not its members, so it keeps its row with no
+            // members instead - consumers that need the fields refuse there.
+            let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+                if marker == DeclarationMarker::None {
+                    return None;
+                }
+                return Some(DeclaredType {
+                    builtin: None,
+                    marker,
+                    is_opaque,
+                    type_params: definition.type_params.clone(),
+                    members: Vec::new(),
+                });
+            };
             let resolved = resolve_member_ty(resolved, module_prefix, self.type_defs, &|name| {
                 self.is_opaque_type(name)
             });

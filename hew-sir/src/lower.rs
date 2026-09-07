@@ -581,6 +581,9 @@ struct InstanceService<'a> {
     /// generic definitions, so SIR does not accumulate an unrelated second
     /// template inventory.
     used_templates: std::collections::HashSet<GenericTemplateId>,
+    /// How many published aggregate shapes have already been scanned for a
+    /// `#[resource]` record whose `close` body drop glue will call.
+    scanned_record_closes: usize,
     pending: VecDeque<CallableId>,
     functions: Vec<SemFunction>,
     aggregate_shapes: Vec<SemAggregateShape>,
@@ -595,13 +598,15 @@ struct InstanceService<'a> {
 
 /// Resolve one concrete record through the canonical checker type service.
 fn concrete_record_fields(
+    module: &HirModule,
     facts: &TypeFactService,
     aggregate_ty: &ResolvedTy,
 ) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
     if matches!(
         facts.declaration_marker(aggregate_ty)?,
         hew_types::DeclarationMarker::Resource | hew_types::DeclarationMarker::Linear
-    ) {
+    ) && crate::resource::record_resource_lifecycle(module, aggregate_ty).is_none()
+    {
         return Err(format!(
             "`{}` declares a resource cleanup boundary without an admitted release recipe",
             aggregate_ty.user_facing()
@@ -625,6 +630,7 @@ fn require_type_facts(facts: &mut TypeFactService, ty: &ResolvedTy) -> Result<()
 }
 
 fn require_aggregate_shape(
+    module: &HirModule,
     facts: &mut TypeFactService,
     shapes: &mut Vec<SemAggregateShape>,
     shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
@@ -640,7 +646,7 @@ fn require_aggregate_shape(
     if let Some(id) = shapes_by_type.get(aggregate_ty).copied() {
         return Ok(AggregateShapeRef::Record(id));
     }
-    let (instance, fields) = concrete_record_fields(facts, aggregate_ty)?;
+    let (instance, fields) = concrete_record_fields(module, facts, aggregate_ty)?;
     for field in &fields {
         require_type_facts(facts, &field.ty)?;
     }
@@ -993,10 +999,14 @@ fn require_type_shapes(
                     .flat_map(|variant| &variant.fields)
                     .map(|field| field.ty.clone()),
             );
-        } else if is_concrete_aggregate_type(facts, &ty) {
-            if let AggregateShapeRef::Record(id) =
-                require_aggregate_shape(facts, aggregate_shapes, aggregate_shapes_by_type, &ty)?
-            {
+        } else if is_concrete_aggregate_type(module, facts, &ty) {
+            if let AggregateShapeRef::Record(id) = require_aggregate_shape(
+                module,
+                facts,
+                aggregate_shapes,
+                aggregate_shapes_by_type,
+                &ty,
+            )? {
                 pending.extend(
                     aggregate_shapes[id.0 as usize]
                         .fields
@@ -1043,6 +1053,7 @@ impl<'a> InstanceService<'a> {
             closure_sources: Vec::new(),
             entry_adapter: None,
             used_templates: std::collections::HashSet::new(),
+            scanned_record_closes: 0,
             pending: VecDeque::new(),
             functions: Vec::new(),
             aggregate_shapes,
@@ -1178,6 +1189,7 @@ impl<'a> InstanceService<'a> {
         aggregate_ty: &ResolvedTy,
     ) -> Result<AggregateShapeRef, String> {
         require_aggregate_shape(
+            self.module,
             &mut self.checked_facts,
             &mut self.aggregate_shapes,
             &mut self.aggregate_shapes_by_type,
@@ -1443,8 +1455,45 @@ impl<'a> InstanceService<'a> {
         self.pending.push_back(callable);
     }
 
+    /// Demand the `close` body of every newly admitted `#[resource]` record.
+    ///
+    /// Drop glue is the only caller of a record's `close`, so the demand
+    /// cannot arrive through the call graph: admitting the type is what
+    /// obliges the module to carry its release.
+    fn demand_record_closes(&mut self) {
+        let mut closes = Vec::new();
+        while self.scanned_record_closes < self.aggregate_shapes.len() {
+            let index = self.scanned_record_closes;
+            self.scanned_record_closes += 1;
+            let shape = &self.aggregate_shapes[index];
+            if shape.marker != hew_types::DeclarationMarker::Resource {
+                continue;
+            }
+            let Some(lifecycle) =
+                crate::resource::record_resource_lifecycle(self.module, &shape.aggregate_ty)
+            else {
+                continue;
+            };
+            if let Some(id) = self
+                .table
+                .monomorphic_by_declaration
+                .get(&lifecycle.close_declaration)
+                .copied()
+            {
+                closes.push(id);
+            }
+        }
+        for id in closes {
+            self.request_body(id);
+        }
+    }
+
     fn lower_pending(&mut self) {
-        while let Some(callable) = self.pending.pop_front() {
+        loop {
+            self.demand_record_closes();
+            let Some(callable) = self.pending.pop_front() else {
+                break;
+            };
             if self.state(callable) != Some(CallableState::Queued) {
                 continue;
             }
@@ -1931,13 +1980,37 @@ impl<'a> InstanceService<'a> {
             &aggregate_shapes,
             &variant_shapes,
         );
-        let resources = type_facts
+        let mut resources: BTreeMap<ResolvedTy, crate::ResourceRelease> = type_facts
             .keys()
             .filter_map(|key| {
                 crate::resource::resource_release_from_hir(module, &key.0)
                     .map(|release| (key.0.clone(), release))
             })
             .collect();
+        // A record resource's release is a semantic callable, so it is
+        // published here, where the resolved callable table is in hand. A
+        // lifecycle whose close body never reached demand publishes no
+        // release: the type then has no value contract at all rather than a
+        // release nothing can execute.
+        for key in type_facts.keys() {
+            let Some(lifecycle) = crate::resource::record_resource_lifecycle(module, &key.0) else {
+                continue;
+            };
+            let Some(close) = table
+                .monomorphic_by_declaration
+                .get(&lifecycle.close_declaration)
+                .copied()
+            else {
+                continue;
+            };
+            resources.insert(
+                key.0.clone(),
+                crate::ResourceRelease::RecordClose {
+                    lifecycle: Box::new(lifecycle.clone()),
+                    close,
+                },
+            );
+        }
         SemModule {
             actors,
             supervisors,
@@ -2222,8 +2295,12 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
 }
 
-fn is_concrete_aggregate_type(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Tuple(_)) || concrete_record_fields(facts, ty).is_ok()
+fn is_concrete_aggregate_type(
+    module: &HirModule,
+    facts: &TypeFactService,
+    ty: &ResolvedTy,
+) -> bool {
+    matches!(ty, ResolvedTy::Tuple(_)) || concrete_record_fields(module, facts, ty).is_ok()
 }
 
 fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
@@ -2234,7 +2311,7 @@ fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &Res
     is_initial_call_value(ty)
         || actor::declaration(module, ty).is_some()
         || supervisor::declaration(module, ty).is_some()
-        || is_concrete_aggregate_type(facts, ty)
+        || is_concrete_aggregate_type(module, facts, ty)
         || is_concrete_variant_type(module, ty)
 }
 

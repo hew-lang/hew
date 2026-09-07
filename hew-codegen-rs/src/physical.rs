@@ -181,6 +181,9 @@ fn physical_target_for_parts<'a>(
         {
             hew_mir::physical::ResourceCarrier::Pointer => PhysicalRepr::Pointer,
             hew_mir::physical::ResourceCarrier::I32 => PhysicalRepr::Integer { bits: 32 },
+            // A record resource carries its own fields; the ordinary
+            // aggregate walk below realizes its layout.
+            hew_mir::physical::ResourceCarrier::Record => continue,
         };
         let (size, align) = measure_layout(&data, llvm_type(&ctx, &repr)?);
         target.insert_layout(resource.ty.clone(), PhysicalLayout { size, align, repr });
@@ -772,6 +775,90 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         Ok(())
     }
 
+    /// Release a `#[resource]` record by calling the program's own `close`.
+    ///
+    /// `close` is an ordinary private callable, so it uses the private ABI:
+    /// its arguments, then the caller's fault slot, returning a status. Drop
+    /// glue has no unwind successor to carry a failure into, so a failing
+    /// release traps: continuing would leave the value half-released with no
+    /// owner able to observe it.
+    fn emit_record_close(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        close: CallableId,
+    ) -> CodegenResult<()> {
+        let callee = callable(self.module, close)?;
+        let function = self
+            .llvm
+            .get_function(&emitted_symbol(self.module, callee))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("record release has no emitted close body".into())
+            })?;
+        let parameter = callee.params.first().ok_or_else(|| {
+            CodegenError::FailClosed("record release close takes no receiver".into())
+        })?;
+        let receiver: BasicMetadataValueEnum<'ctx> = match parameter.carrier {
+            ParamCarrier::Direct => value.into(),
+            ParamCarrier::Indirect => {
+                let slot = self.entry_scratch(
+                    llvm_type(self.ctx, &parameter.layout.repr)?,
+                    "record.close.receiver",
+                )?;
+                self.builder
+                    .build_store(slot, value)
+                    .llvm_ctx("stage record release receiver")?;
+                slot.into()
+            }
+        };
+        let fault = self.entry_scratch(
+            self.ctx.ptr_type(AddressSpace::default()).into(),
+            "record.close.fault",
+        )?;
+        self.builder
+            .build_store(
+                fault,
+                self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .llvm_ctx("clear record release fault slot")?;
+        let status = self
+            .builder
+            .build_call(function, &[receiver, fault.into()], "record.close.status")
+            .llvm_ctx("call record release")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("record release returned no status".into()))?
+            .into_int_value();
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "record.close.ok",
+            )
+            .llvm_ctx("compare record release status")?;
+        let released = self.ctx.append_basic_block(self.value, "record.close.done");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "record.close.failed");
+        self.builder
+            .build_conditional_branch(ok, released, failed)
+            .llvm_ctx("branch on record release status")?;
+        self.builder.position_at_end(failed);
+        let trap = Intrinsic::find("llvm.trap")
+            .ok_or_else(|| CodegenError::FailClosed("LLVM trap intrinsic is unavailable".into()))?
+            .get_declaration(self.llvm, &[])
+            .ok_or_else(|| CodegenError::FailClosed("LLVM trap declaration failed".into()))?;
+        self.builder
+            .build_call(trap, &[], "record.close.trap")
+            .llvm_ctx("emit failing record release trap")?;
+        self.builder
+            .build_unreachable()
+            .llvm_ctx("terminate failing record release")?;
+        self.builder.position_at_end(released);
+        Ok(())
+    }
+
     fn clone_loaded_value(
         &self,
         value: BasicValueEnum<'ctx>,
@@ -927,6 +1014,11 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 let resource = self.module.resources.get(id.0 as usize).ok_or_else(|| {
                     CodegenError::FailClosed("resource drop lacks its verified contract".into())
                 })?;
+                if let hew_mir::physical::ResourceRelease::RecordClose { close, .. } =
+                    &resource.release
+                {
+                    return self.emit_record_close(value, *close);
+                }
                 let family = resource
                     .release
                     .runtime_family()

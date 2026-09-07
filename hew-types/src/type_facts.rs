@@ -687,8 +687,9 @@ impl TypeFactService {
                 })
                 .collect());
         }
-        // Marker class rows intentionally omit members because their ownership
-        // class is immediate. Equality and hashing still inspect their fields.
+        // A marked declaration keeps no members when one of them could not be
+        // rendered at the boundary: its class came from the marker anyway.
+        // Equality and hashing still inspect the declaration's own fields.
         let definition =
             self.context
                 .type_defs

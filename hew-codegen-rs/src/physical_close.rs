@@ -57,6 +57,15 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         match action {
             DestroyAction::Resource(id) => {
+                // A record resource releases through its own `close` body,
+                // which is an ordinary synchronous call with no cooperative
+                // child of its own.
+                if matches!(
+                    self.module.resources[id.0 as usize].release,
+                    hew_mir::physical::ResourceRelease::RecordClose { .. }
+                ) {
+                    return Ok(());
+                }
                 if self.module.resources[id.0 as usize]
                     .release
                     .runtime_family()

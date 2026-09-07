@@ -192,7 +192,7 @@ fn test_actor_self_unknown_field_reports_against_state() {
 }
 
 #[test]
-fn test_actor_bare_self_uses_actor_guidance() {
+fn test_actor_bare_self_is_the_actor_handle() {
     let output = typecheck(
         r"
         actor Counter {
@@ -207,24 +207,12 @@ fn test_actor_bare_self_uses_actor_guidance() {
         fn main() {}
     ",
     );
-    let self_error = output
-        .errors
-        .iter()
-        .find(|e| e.message.contains("`self`"))
-        .expect("expected an error mentioning `self`");
     assert!(
-        self_error.message.contains("self.count"),
-        "actor `self` guidance should point at the field spelling: {:?}",
-        output.errors
-    );
-    assert!(
-        self_error.message.contains("`this`"),
-        "actor `self` guidance should mention `this`: {:?}",
-        output.errors
-    );
-    assert!(
-        !self_error.message.contains("named receiver parameter"),
-        "actor `self` guidance should not use trait/impl receiver advice: {:?}",
+        output
+            .errors
+            .iter()
+            .all(|error| !error.message.contains("`self`")),
+        "bare `self` names the actor handle, not an error: {:?}",
         output.errors
     );
 }

@@ -35,7 +35,7 @@ fn run_multiplier(factor: i64, value: i64) {
         .Ok(_) => {},
         .Err(_) => panic("multiplier actor rejected its input"),
     }
-    worker.close();
+    await worker.close();
     return;
 }
 
@@ -48,7 +48,7 @@ fn run_string_processor(tag: string, value: i64) {
         .Ok(_) => {},
         .Err(_) => panic("string processor actor rejected its input"),
     }
-    worker.close();
+    await worker.close();
     return;
 }
 
@@ -71,7 +71,7 @@ fn run_conditional_processor(check_even: bool, first: i64, second: i64) {
         .Ok(_) => {},
         .Err(_) => panic("conditional actor rejected its second input"),
     }
-    worker.close();
+    await worker.close();
     return;
 }
 
@@ -87,6 +87,6 @@ fn run_factory_maker(base: i64, offset: i64) {
         .Ok(_) => {},
         .Err(_) => panic("factory actor rejected its input"),
     }
-    worker.close();
+    await worker.close();
     return;
 }

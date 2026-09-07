@@ -127,9 +127,9 @@ fn option_of_value_aggregate_supports_private_replacement() {
     assert_check_clean(concat!(
         "type Account { balance: i64, }\n",
         "fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {\n",
-        r#"    let current = acc.expect("the account is present");"# "\n",
+        "    let current = acc.expect(\"the account is present\");\n",
         "    acc = Some(Account { balance: current.balance - amount });\n",
-        r#"    return acc.expect("the account is present").balance;"# "\n",
+        "    return acc.expect(\"the account is present\").balance;\n",
         "}\n",
     ));
 }
@@ -276,20 +276,13 @@ fn bytes_param_root_replacement_is_not_flagged() {
 }
 
 #[test]
-fn inherent_mutable_receiver_still_requires_a_trait_contract() {
-    let (errors, _) = parse_and_check(concat!(
+fn inherent_mutable_receiver_is_accepted() {
+    // One receiver token carries every mode: `var self` mutates on an
+    // inherent impl exactly as it does through a trait contract.
+    assert_check_clean(concat!(
         "type Counter { count: i64, }\n",
         "impl Counter { fn bump(var self) -> i64 { self.count = self.count + 1; return self.count; } }\n",
     ));
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::MutabilityError
-                && error
-                    .message
-                    .contains("`var self` on an inherent impl method")),
-        "{errors:?}"
-    );
 }
 
 #[test]

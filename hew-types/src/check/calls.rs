@@ -968,39 +968,25 @@ impl Checker {
     /// Await-suspending forms must be filtered before calling this helper.
     ///
     /// Actor receive functions run synchronously on scheduler worker threads.
-    /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread
-    /// for the duration of the wait, preventing other actors from being
-    /// scheduled and potentially causing deadlocks when all worker threads
-    /// are occupied by blocked receive handlers.
+    /// A blocking call (e.g. `read`, `accept`) will stall that thread for the
+    /// duration of the wait, preventing other actors from being scheduled and
+    /// potentially causing deadlocks when all worker threads are occupied by
+    /// blocked receive handlers.
     ///
     /// `op_desc` should be a short human-readable label such as
-    /// `"Receiver::recv"` or `"net.Connection::read"`.
-    pub(super) fn warn_if_blocking_in_receive_fn(&mut self, op_desc: &str, span: &Span) {
-        self.warn_if_blocking_in_receive_fn_with_fix(op_desc, span, None);
-    }
-
-    /// Same warning as [`Self::warn_if_blocking_in_receive_fn`], with an
-    /// optional caller-supplied `(remedy clause, suggestion)` pair in place
-    /// of the generic "send it as a message" text. `warn_if_blocking_handle_method`
-    /// uses this to point `accept`/`read` at their already-shipping `await`
-    /// forms instead of the generic redesign-your-actor advice — those two
-    /// ops have a direct, drop-in suspending replacement; most other
-    /// blocking calls (e.g. `Receiver::recv`) do not.
+    /// `"net.Connection::read"`. Warn naming the remedy the caller supplies. `warn_if_blocking_handle_method` points `accept`/`read`
+    /// at their suspending forms; those two ops have a direct, drop-in
+    /// replacement.
     fn warn_if_blocking_in_receive_fn_with_fix(
         &mut self,
         op_desc: &str,
         span: &Span,
-        fix: Option<(&str, String)>,
+        remedy_clause: &str,
+        suggestion: String,
     ) {
         if !self.in_receive_fn {
             return;
         }
-        let (remedy_clause, suggestion) = fix.unwrap_or((
-            "consider passing the value in via a message instead",
-            "send the blocking work to a dedicated actor or async task and \
-             deliver the result as a message"
-                .to_string(),
-        ));
         self.warnings.push(TypeError {
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::BlockingCallInReceiveFn,
@@ -1030,19 +1016,16 @@ impl Checker {
             ("http.Server" | crate::stdlib::STD_NET_LISTENER, "accept")
                 | (crate::stdlib::STD_NET_CONNECTION, "read")
         ) {
-            let suggestion = "use the suspending form instead: `await` the call (e.g. \
-                 `await listener.accept()` or `await conn.read()`) — it parks the \
-                 actor on the reactor instead of blocking the worker thread, so \
-                 the scheduler worker stays free and the process can shut down \
-                 promptly; see examples/net/http_await_service.hew"
+            let suggestion = "call the suspending form on a connection opened inside the \
+                 handler — it parks the actor on the reactor instead of blocking the \
+                 worker thread, so the scheduler worker stays free and the process can \
+                 shut down promptly; see examples/net/http_await_service.hew"
                 .to_string();
             self.warn_if_blocking_in_receive_fn_with_fix(
                 &format!("{type_name}.{method}"),
                 span,
-                Some((
-                    "use the suspending `await` form instead of the blocking call",
-                    suggestion,
-                )),
+                "use the suspending form instead of the blocking call",
+                suggestion,
             );
         }
     }

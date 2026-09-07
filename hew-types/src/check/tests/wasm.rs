@@ -286,7 +286,7 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn receive_fn_await_channel_recv_does_not_warn_blocking() {
+    fn receive_fn_channel_recv_does_not_warn_blocking() {
         let source = concat!(
             "import std.channel.channel;\n",
             "actor Worker {\n",
@@ -294,7 +294,7 @@ mod wasm_rejects {
             "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "        tx.send(\"hello\");\n",
             "        tx.close();\n",
-            "        let _ = await rx.recv();\n",
+            "        let _ = rx.recv();\n",
             "        rx.close();\n",
             "    }\n",
             "}\n",
@@ -313,7 +313,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
-            "awaited receive-fn recv fixture should type-check cleanly: {:?}",
+            "receive-fn recv fixture should type-check cleanly: {:?}",
             output.errors
         );
         assert!(
@@ -321,7 +321,7 @@ mod wasm_rejects {
                 .warnings
                 .iter()
                 .any(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn),
-            "await rx.recv() suspends and must not warn as blocking: {:?}",
+            "rx.recv() suspends and must not warn as blocking: {:?}",
             output.warnings
         );
     }

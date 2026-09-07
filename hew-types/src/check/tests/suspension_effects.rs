@@ -45,14 +45,14 @@ fn deferred_pure_scopes_inherit_contents_without_admitting_suspension() {
         Some(&SuspensionEffect::Never)
     );
     for body in [
-        "scope { await sleep(1ms); }",
+        "scope { sleep(1ms); }",
         "scope { sleep(1ms); }",
         "scope { let child = fork { 1 }; }",
         "scope { let child = fork pure(); }",
         "scope { work(); }",
         "scope within 1ms { pure(); }",
     ] {
-        let output = check_source(&format!("fn pure() -> i64 {{ 1 }} fn work() {{ await sleep(1ms); }} fn main() {{ defer {{ {body}; }} }}"));
+        let output = check_source(&format!("fn pure() -> i64 {{ 1 }} fn work() {{ sleep(1ms); }} fn main() {{ defer {{ {body}; }} }}"));
         assert!(
             output
                 .errors
@@ -67,17 +67,17 @@ fn deferred_pure_scopes_inherit_contents_without_admitting_suspension() {
 #[test]
 fn lazy_generator_creators_do_not_inherit_deferred_body_effects() {
     let source = r"
-gen fn delayed() -> i64 { await sleep(1ms); yield 1; }
+gen fn delayed() -> i64 { sleep(1ms); yield 1; }
 fn create() { let unused = delayed(); }
-fn create_block() { let unused = gen { await sleep(1ms); yield 1; }; }
+fn create_block() { let unused = gen { sleep(1ms); yield 1; }; }
 fn consume() { for value in delayed() { println(value); } }
 fn main() {
     create();
     create_block();
     let factory = delayed;
     var values = factory();
-    let step = await values.next();
-    await consume();
+    let step = values.next();
+    consume();
 }
 ";
     let output = check_source(source);
@@ -126,7 +126,7 @@ fn main() {
 
 #[test]
 fn deferred_generator_iteration_cannot_suspend() {
-    let output = check_source("gen fn delayed() -> i64 { await sleep(1ms); yield 1; } fn main() { defer { for value in delayed() { println(value); } } }");
+    let output = check_source("gen fn delayed() -> i64 { sleep(1ms); yield 1; } fn main() { defer { for value in delayed() { println(value); } } }");
     assert!(
         output.errors.iter().any(|error| error
             .message
@@ -156,7 +156,7 @@ fn main() {
     let values_joined = await values;
     let selected = select { value = await worker.value() => value };
     let callback = actor |n: i64| -> i64 { n };
-    let callback_direct = await callback(1);
+    let callback_direct = callback(1);
     let callback_child = fork callback(2);
     let callback_joined = await callback_child;
 }
@@ -193,7 +193,7 @@ fn main() {
             "select { value = await worker.value() => value }",
             reply.clone(),
         ),
-        ("await callback(1)", reply.clone()),
+        ("callback(1)", reply.clone()),
         ("fork callback(2)", crate::Ty::Task(Box::new(reply.clone()))),
         ("await callback_child", reply),
     ] {
@@ -443,7 +443,7 @@ fn fork_promotes_borrowed_value_parameters_into_owning_captures() {
             && fact.is_send
             && fact.is_sync
             && fact.acquisition == crate::ClosureCaptureAcquisition::Snapshot));
-    let output = check_source("fn launch(value: string) { let task = fork { await sleep(1ms); println(value); }; println(value); } fn main() {}");
+    let output = check_source("fn launch(value: string) { let task = fork { sleep(1ms); println(value); }; println(value); } fn main() {}");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
         .closure_capture_facts
@@ -539,7 +539,7 @@ fn plain_calls_inherit_suspension_transparently() {
 }
 #[test]
 fn recursive_effects_follow_checked_calls() {
-    let output = check_source("fn a(n: i64) -> i64 { if n == 0 { let t = fork { 1 }; return await t; } await b(n - 1) } fn b(n: i64) -> i64 { await a(n) } fn main() { let x = await b(2); }");
+    let output = check_source("fn a(n: i64) -> i64 { if n == 0 { let t = fork { 1 }; return await t; } b(n - 1) } fn b(n: i64) -> i64 { a(n) } fn main() { let x = b(2); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(
         output
@@ -696,14 +696,13 @@ fn collection_callbacks_use_their_own_effect() {
 }
 #[test]
 fn named_callback_arguments_follow_parameter_identity() {
-    let output = check_source("fn invoke(f: fn(i64) -> i64, x: i64) -> i64 { await f(x) } fn pure(x: i64) -> i64 { x } fn main() { let value = invoke(x: 1, f: pure); }");
+    let output = check_source("fn invoke(f: fn(i64) -> i64, x: i64) -> i64 { f(x) } fn pure(x: i64) -> i64 { x } fn main() { let value = invoke(x: 1, f: pure); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
 fn named_actor_handlers_publish_body_effects() {
-    let output =
-        check_source("actor Worker { receive fn run() { await sleep(1ms); } } fn main() {}");
+    let output = check_source("actor Worker { receive fn run() { sleep(1ms); } } fn main() {}");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
         .suspension_effects
@@ -778,23 +777,24 @@ fn distinct_closures_join_into_a_written_type_with_obligations() {
 }
 
 #[test]
-fn each_closure_literal_has_its_own_type() {
-    let output = check_source("fn main() { var f = || 1; f = || 2; }");
+fn reassigning_a_closure_binding_joins_it_to_the_shape_both_hold() {
+    // Each closure literal has its own type; an inferred `var` binding widens
+    // to the callable shape both literals satisfy, so no annotation is needed.
+    let output = check_source("fn main() { var f = || 1; f = || 2; let value = f(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output =
+        check_source("fn main() { var f: fn() -> i64 = || 1; f = || 2; let value = f(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    // A closure of a different shape has no join to widen to.
+    let output = check_source("fn main() { var f = || 1; f = |n: i64| n; }");
     let error = output
         .errors
         .first()
-        .expect("a second closure literal needs a written type");
+        .expect("a closure of another shape has no shared type");
     assert_eq!(
         error.message,
         "type mismatch: each closure literal has its own type"
     );
-    assert_eq!(
-        error.suggestions,
-        vec!["write the binding type as `fn[clone]() -> i64` to hold either closure".to_string()]
-    );
-    let output =
-        check_source("fn main() { var f: fn() -> i64 = || 1; f = || 2; let value = f(); }");
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
@@ -837,22 +837,24 @@ fn deferred_bodies_name_the_suspending_call() {
 }
 
 #[test]
-fn await_on_a_plain_call_warns_and_await_on_a_value_is_rejected() {
+fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
     let source = "fn work() -> i64 { sleep(1ms); 1 } fn main() { let x = await work(); }";
     let output = check_source(source);
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let warning = output.warnings.first().expect("redundant await warns");
-    assert_eq!(&source[warning.span.clone()], "work()");
+    let error = output.errors.first().expect("redundant await is refused");
+    assert_eq!(&source[error.span.clone()], "work()");
     assert_eq!(
-        warning.message,
+        error.message,
         "`await` on a plain call adds nothing: the call suspends on its own"
     );
     assert_eq!(
-        warning.suggestions,
+        error.suggestions,
         vec!["call it directly, or fork it to run concurrently".to_string()]
     );
+    let plain = source.replace("await ", "");
+    let output = check_source(&plain);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
-        call_effects(&output, source, "work()"),
+        call_effects(&output, &plain, "work()"),
         vec![SuspensionEffect::MaySuspend]
     );
     let output = check_source("fn main() { let n: i64 = 1; let x = await n; }");
@@ -864,7 +866,7 @@ fn await_on_a_plain_call_warns_and_await_on_a_value_is_rejected() {
             .collect::<Vec<_>>(),
         vec!["`await` waits on a task, an actor reply or an actor's close; `i64` is none of these"]
     );
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = await worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = await callback(1); await close(worker); }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = await worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); await close(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.warnings.is_empty(), "{:?}", output.warnings);
 }

@@ -2820,6 +2820,24 @@ impl Checker {
         );
     }
 
+    /// Whether the receiver expression is an actor handle, as the checker
+    /// recorded it. Used to keep `await handle.close()` awaitable.
+    fn actor_handle_receiver(&self, receiver: &Spanned<Expr>) -> bool {
+        let key = SpanKey::in_module(&receiver.1, self.current_module_idx);
+        self.expr_types
+            .get(&key)
+            .map(|ty| self.subst.resolve(ty))
+            .is_some_and(|ty| {
+                matches!(
+                    ty,
+                    Ty::Named {
+                        builtin: Some(builtin),
+                        ..
+                    } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::ActorDispatchLocal)
+                )
+            })
+    }
+
     /// `await` waits on something with its own life: a task, an actor reply
     /// or an actor's close. A plain call suspends the caller on its own, so
     /// `await` adds nothing there; anything else is not awaitable.
@@ -2839,7 +2857,11 @@ impl Checker {
             if matches!(
                 self.callee_value_type(function).map(|ty| self.subst.resolve(&ty)),
                 Some(Ty::Named { builtin: Some(crate::BuiltinType::LambdaPid), .. })
-            ));
+            ))
+            // `handle.close()` is the method spelling of `close(handle)`:
+            // awaiting it waits for the actor's end, not for a plain call.
+            || matches!(expr, Expr::MethodCall { receiver, method, .. }
+            if method == "close" && self.actor_handle_receiver(receiver));
         if replies {
             return;
         }

@@ -422,7 +422,11 @@ machine Conflict {
 #[test]
 fn reject_effect_parity_exit_conflict() {
     // Transition body and source exit block both write the same field.
-    // Uses `self.val` — the machine-body receiver spelling.
+    //
+    // HIR sees a machine declaration only when machine normalization refused
+    // it — a normalized machine is replaced by its expansion — so the
+    // `on Move: Target => Target` body deliberately writes a field `Target`
+    // does not declare, keeping the declaration in front of this check.
     let src = r"
 machine ExitConflict {
     events {
@@ -444,7 +448,10 @@ machine ExitConflict {
         Target
     }
     on Reset: Target => Source,
-    on Move: Target => Target,
+    on Move: Target => Target {
+        self.val = 7;
+        Target
+    }
     on Reset: Source => Source,
 }
 ";

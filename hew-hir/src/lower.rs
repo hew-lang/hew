@@ -36325,6 +36325,10 @@ impl Widget {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one source program per format keeps the identity assertions side by side"
+    )]
     fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() {
         for (format, builtin) in [
             ("json", BuiltinType::JsonValue),

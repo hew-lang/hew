@@ -9284,9 +9284,6 @@ impl Checker {
                         ) else {
                             return Ty::Error;
                         };
-                        if !self.inside_await_expr {
-                            self.warn_if_blocking_in_receive_fn("Receiver.recv", span);
-                        }
                         if matches!(resolved_inner, Ty::Var(_)) {
                             // No argument to unify against — the return-type
                             // constraint (e.g. `let v: int = rx.recv()`) is

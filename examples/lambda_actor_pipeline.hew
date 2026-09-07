@@ -75,11 +75,11 @@ fn main() {
         .Err(_) => panic("complex pipeline rejected input 9"),
     }
     sleep(100ms);
-    adder.close();
-    doubler.close();
-    printer.close();
-    incrementer.close();
-    squarer.close();
-    formatter.close();
+    await adder.close();
+    await doubler.close();
+    await printer.close();
+    await incrementer.close();
+    await squarer.close();
+    await formatter.close();
     println("=== Pipeline Done ===");
 }

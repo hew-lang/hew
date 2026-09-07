@@ -663,7 +663,7 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 
 #[test]
 fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
-    // `this is Worker` inside a `Worker` receive fn: `this: LocalPid<Worker>`
+    // `self is Worker` inside a `Worker` receive fn: `self: LocalPid<Worker>`
     // never equals the bare `Worker` type pattern, so the checker reports the
     // Mismatch this test's name promises, not the static-tautology warning.
     let output = common::typecheck_isolated(
@@ -671,7 +671,7 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
             actor Worker {
                 let _id: i64,
                 receive fn ping() -> bool {
-                    this is Worker
+                    self is Worker
                 }
             }
 

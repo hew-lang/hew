@@ -15,5 +15,5 @@ fn main() {
         .Ok(_) => {},
         .Err(_) => panic("failed to send 15"),
     }
-    worker.close();
+    await worker.close();
 }

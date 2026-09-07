@@ -2984,7 +2984,7 @@ fn smtp_one_shot_helpers_typecheck() {
                 "to@example.com",
                 "Subject",
                 "Body",
-            ).unwrap();
+            ).expect("send succeeds");
             smtp.send_html(
                 "smtp.example.com",
                 587,
@@ -2994,7 +2994,7 @@ fn smtp_one_shot_helpers_typecheck() {
                 "to@example.com",
                 "Subject",
                 "<h1>Hello</h1>",
-            ).unwrap();
+            ).expect("send_html succeeds");
         }
         "#,
     );
@@ -3093,7 +3093,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
                 "to@example.com",
                 "Subject",
                 "Body",
-            ).unwrap();
+            ).expect("send succeeds");
         }
         "#,
     );
@@ -5803,7 +5803,7 @@ fn deferred_channel_unresolved_inner_fails_closed() {
     );
 }
 
-/// NEW-7: `await stream.recv()` over a `Stream<bytes>` typechecks cleanly — the
+/// NEW-7: `stream.recv()` over a `Stream<bytes>` typechecks cleanly — the
 /// canonical suspending consumer surface.
 #[test]
 fn await_stream_recv_bytes_typechecks() {
@@ -5821,7 +5821,7 @@ fn await_stream_recv_bytes_typechecks() {
          \x20       let pair = unsafe { hew_stream_channel(4) };\n\
          \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
          \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       let item = await input.recv();\n\
+         \x20       let item = input.recv();\n\
          \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
@@ -5829,14 +5829,14 @@ fn await_stream_recv_bytes_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "await stream.recv() over Stream<bytes> should typecheck cleanly, got: {:#?}",
+        "stream.recv() over Stream<bytes> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
 /// NEW-7 widened: an `i64` element rides the element-layout witness — the
 /// suspend lowering is no longer bound to string/bytes, so
-/// `await stream.recv()` over `Stream<i64>` typechecks cleanly.
+/// `stream.recv()` over `Stream<i64>` typechecks cleanly.
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
@@ -5853,7 +5853,7 @@ fn await_stream_recv_int_element_admitted() {
          \x20       let pair = unsafe { hew_stream_channel(4) };\n\
          \x20       let input = unsafe { hew_stream_pair_stream_i64(pair) };\n\
          \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       let item = await input.recv();\n\
+         \x20       let item = input.recv();\n\
          \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
@@ -5861,7 +5861,7 @@ fn await_stream_recv_int_element_admitted() {
     );
     assert!(
         output.errors.is_empty(),
-        "await stream.recv() over Stream<i64> must be admitted by the \
+        "stream.recv() over Stream<i64> must be admitted by the \
          element-layout witness, got: {:#?}",
         output.errors
     );

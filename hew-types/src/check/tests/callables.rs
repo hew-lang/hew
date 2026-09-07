@@ -920,7 +920,7 @@ fn borrowed_mutable_callable_loop_replacement_cannot_hide_zero_iterations() {
 
 #[test]
 fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
-    let output = check_source("type Holder { next: fn[var]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { await holder.next(); }");
+    let output = check_source("type Holder { next: fn[var]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }");
     assert!(
         output
             .errors
@@ -929,7 +929,7 @@ fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
         "{:?}",
         output.errors
     );
-    let output = check_source("type Holder { next: fn[var, clone]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { await holder.next(); }");
+    let output = check_source("type Holder { next: fn[var, clone]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 

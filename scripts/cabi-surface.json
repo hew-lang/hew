@@ -65,6 +65,51 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_ask_wait_free( *mut HewNativeAsk)",
+        "wasm32-wasip1": "fn hew_actor_ask_wait_free( *mut HewNativeAsk)"
+      },
+      "symbol": "hew_actor_ask_wait_free"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_ask_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *mut c_void, *const HewWaker, ) -> *mut HewNativeAsk",
+        "wasm32-wasip1": "fn hew_actor_ask_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *mut c_void, *const HewWaker, ) -> *mut HewNativeAsk"
+      },
+      "symbol": "hew_actor_ask_wait_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_ask_wait_poll( *mut HewNativeAsk) -> i32",
+        "wasm32-wasip1": "fn hew_actor_ask_wait_poll( *mut HewNativeAsk) -> i32"
+      },
+      "symbol": "hew_actor_ask_wait_poll"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",

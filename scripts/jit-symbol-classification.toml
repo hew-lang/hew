@@ -1300,6 +1300,9 @@ stable-stdlib = [
 codegen-stable = [
   # Verified native compiler/runtime protocol entry points.
   "hew_actor_ask_submit_native",
+  "hew_actor_ask_wait_free",
+  "hew_actor_ask_wait_new",
+  "hew_actor_ask_wait_poll",
   "hew_actor_close_native",
   "hew_actor_coro_set_fault",
   "hew_actor_coro_state_new",

@@ -26,7 +26,7 @@
 //!     worker.fail();
 //!     sleep(50ms);
 //!     let replacement = app.worker;
-//!     match await replacement.read() {
+//!     match replacement.read() {
 //!         .Ok(value) => println(value),
 //!         .Err(_) => println("read failed"),
 //!     }

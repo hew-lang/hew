@@ -18,7 +18,7 @@
 //!     let c = spawn Counter(count: 0);
 //!     c.increment(10);
 //!     c.increment(20);
-//!     let result = await c.total();
+//!     let result = c.total();
 //!     match result {
 //!         .Ok(value) => println(f"total={value}"),
 //!         .Err(_) => println("ask failed"),
@@ -81,7 +81,7 @@
 //! ## Actor-to-actor dispatch
 //!
 //! Store the dependency as `LocalPid<Worker>`, spawn it before its consumer,
-//! and await its handler from the consumer:
+//! and call its handler from the consumer:
 //!
 //! ```hew
 //! actor Worker {
@@ -91,7 +91,7 @@
 //! actor Coordinator {
 //!     let worker: LocalPid<Worker>;
 //!     receive fn run(n: i64) -> i64 {
-//!         let reply = await worker.compute(n);
+//!         let reply = worker.compute(n);
 //!         match reply {
 //!             .Ok(value) => value,
 //!             .Err(_) => -1,
@@ -101,7 +101,7 @@
 //! fn main() {
 //!     let worker = spawn Worker(factor: 6);
 //!     let coordinator = spawn Coordinator(worker: worker);
-//!     match await coordinator.run(7) {
+//!     match coordinator.run(7) {
 //!         .Ok(value) => println(value),
 //!         .Err(_) => println("failed"),
 //!     }

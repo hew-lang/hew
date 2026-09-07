@@ -426,7 +426,7 @@ let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // ask
 worker.send(42);
 
 // Named actor request-response
-let result = await counter.get();
+let result = counter.get();
 ```
 
 **Integration with `scope` blocks (normative):**
@@ -2572,7 +2572,7 @@ fn main() {
     let names = spawn Latest<string>();
     numbers.put(41)?;
     names.put("hew")?;
-    println(f"{(await numbers.get())?.expect("set")} {(await names.get())?.expect("set")}");
+    println(f"{(numbers.get())?.expect("set")} {(names.get())?.expect("set")}");
     close(numbers);
     close(names);
 }
@@ -2597,7 +2597,7 @@ fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
     let cache = spawn Cache(entries: seed);   // K = string, V = i64
-    match (await cache.lookup("answer"))? {
+    match (cache.lookup("answer"))? {
         .Some(v) => println(v),
         .None => println("miss"),
     }
@@ -2629,7 +2629,7 @@ supervisor Pool<Job: Send> {
 
 fn main() {
     let pool = spawn Pool<string>;
-    println((await pool.worker.run("parse"))?);
+    println((pool.worker.run("parse"))?);
     supervisor_stop(pool);
 }
 ```

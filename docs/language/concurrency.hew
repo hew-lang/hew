@@ -25,7 +25,7 @@
 //!
 //! fn main() {
 //!     let totals = spawn Totals;
-//!     match await totals.combined() {
+//!     match totals.combined() {
 //!         .Ok(value) => println(f"{value}"),
 //!         .Err(_) => println("ask failed"),
 //!     }

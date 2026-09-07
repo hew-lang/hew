@@ -39,6 +39,9 @@ mod select;
 #[path = "lower_scalar_match.rs"]
 mod scalar_match;
 
+#[path = "lower_aggregate_match.rs"]
+mod aggregate_match;
+
 #[path = "lower_loops.rs"]
 mod loops;
 
@@ -5273,6 +5276,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             )
         {
             return self.lower_scalar_match(whole, scrutinee_expr, source_arms);
+        }
+        if source_arms.iter().any(|arm| {
+            matches!(
+                arm.predicate,
+                HirMatchArmPredicate::RecordProject { .. }
+                    | HirMatchArmPredicate::TupleProject { .. }
+            )
+        }) {
+            return self.lower_aggregate_match(whole, scrutinee_expr, source_arms);
         }
         let enum_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.service.require_variant_shape(&enum_ty)?;

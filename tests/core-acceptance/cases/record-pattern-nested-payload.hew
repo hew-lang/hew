@@ -1,6 +1,7 @@
 //! A record pattern nested inside an enum payload. The owned `label` moves
-//! into the arm's binding while its sibling `unit` stays readable, and the
-//! record scrutinee itself is still live after the match.
+//! into the arm's binding while its owned sibling is released by the arm's
+//! cleanup set, and a record scrutinee stays readable after an arm moves one
+//! of its fields out.
 
 type Sample {
     label: string,
@@ -19,23 +20,39 @@ fn make(text: string) -> Signal {
     })
 }
 
-fn main() -> i64 {
-    let taken = match make("a") {
+fn both(signal: Signal) -> string {
+    match signal {
         .Reading(Sample { label: label, unit: unit }) => string_concat(label, string_concat(" ", unit)),
         .Silence => "silent",
-    };
-    println(taken);
+    }
+}
+
+fn only_label(signal: Signal) -> string {
+    match signal {
+        .Reading(Sample { label: label, unit: _ }) => label,
+        .Silence => "silent",
+    }
+}
+
+fn main() -> i64 {
+    println(both(make("a")));
+
+    var i: i64 = 0;
+    var last = "";
+    while i < 10000 {
+        last = only_label(make("b"));
+        i = i + 1;
+    }
+    println(last);
 
     let sample = Sample {
-        label: string_concat("label-", "b"),
-        unit: string_concat("unit-", "b"),
+        label: string_concat("label-", "c"),
+        unit: string_concat("unit-", "c"),
     };
     let moved = match sample {
         Sample { label: label, unit: _ } => label,
     };
     println(moved);
     println(sample.unit);
-
-    println(match make("c") { .Reading(Sample { label: _, unit: _ }) => "reading", .Silence => "silence" });
     0
 }

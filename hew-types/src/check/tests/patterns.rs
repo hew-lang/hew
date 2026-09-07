@@ -1285,6 +1285,58 @@ fn main() -> i64 {
     );
 }
 
+/// A named record destructure inside tuple-variant payload position is
+/// admitted: HIR binds the aggregate slot to a temp and destructures it, the
+/// same route the tuple case takes.
+#[test]
+fn constructor_payload_record_destructure_is_accepted() {
+    let output = check_source(
+        r"
+type Point { x: i64, y: i64 }
+enum Shape { At(Point), Nowhere }
+fn main() -> i64 {
+    let s = Shape.At(Point { x: 1, y: 2 });
+    match s {
+        Shape.At(Point { x: a, y: b }) => a,
+        Shape.Nowhere => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "record-in-payload destructure must be accepted and exhaustiveness-credited \
+         without an extra catch-all arm; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Shorthand `{ a, b }` in payload position has no HIR destructure route, so it
+/// stays refused. Negative control for the named-record acceptance above.
+#[test]
+fn constructor_payload_record_shorthand_is_refused() {
+    let output = check_source(
+        r"
+type Point { x: i64, y: i64 }
+enum Shape { At(Point), Nowhere }
+fn main() -> i64 {
+    let s = Shape.At(Point { x: 1, y: 2 });
+    match s {
+        Shape.At({ x, y }) => x,
+        Shape.Nowhere => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { kind_label, .. }
+                if kind_label == "record destructure"
+        )),
+        "shorthand record payload subpattern must stay refused; got errors: {:#?}",
+        output.errors
+    );
+}
+
 /// Binding and wildcard payload subpatterns must remain accepted.
 /// Guards against the rejection being too broad.
 #[test]

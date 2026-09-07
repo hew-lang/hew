@@ -1,27 +1,40 @@
 //! An ordered record pattern chain: literal field tests select the arm, the
 //! last arm binds the remaining shape, and each candidate leaves the
-//! scrutinee whole for the next one.
+//! scrutinee whole for the next one. Covers an owned-string field test (which
+//! compares under a borrow) and an all-scalar tuple, which has no aggregate
+//! storage to destructure.
 
 type Reading {
     code: i64,
     label: string,
 }
 
-fn make(code: i64) -> Reading {
-    Reading { code: code, label: string_concat("reading-", "x") }
+fn make(code: i64, label: string) -> Reading {
+    Reading { code: code, label: string_concat("reading-", label) }
 }
 
 fn describe(r: Reading) -> string {
     match r {
         Reading { code: 0, label: _ } => "zero",
         Reading { code: 1, label: label } => label,
+        Reading { code: _, label: "reading-tagged" } => "tagged",
         Reading { code: _, label: _ } => "other",
     }
 }
 
+fn pick(point: (i64, i64)) -> i64 {
+    match point {
+        (0, y) => y,
+        (x, _) => x,
+    }
+}
+
 fn main() -> i64 {
-    println(describe(make(0)));
-    println(describe(make(1)));
-    println(describe(make(7)));
+    println(describe(make(0, "a")));
+    println(describe(make(1, "b")));
+    println(describe(make(7, "tagged")));
+    println(describe(make(7, "c")));
+    println(pick((0, 9)));
+    println(pick((4, 9)));
     0
 }

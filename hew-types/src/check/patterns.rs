@@ -108,14 +108,15 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // yet added the resolution guard (false-accept rather than false-reject).
         Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
         // Plain binding (bare identifier), wildcard, literal predicates, and
-        // aggregate payload destructures are supported or deferred to the call
-        // site; HIR binds an aggregate slot to a temp and destructures it.
+        // named aggregate payload destructures are supported or deferred to the
+        // call site; HIR binds the aggregate slot to a temp and destructures it.
+        // Shorthand `{ a, b }` has no such HIR route, so it stays refused.
         Pattern::Wildcard
         | Pattern::Literal(_)
         | Pattern::Tuple(_)
         | Pattern::Struct { .. }
-        | Pattern::RecordShorthand { .. }
         | Pattern::Identifier(_) => None,
+        Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Constructor { .. } | Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
             Some("nested constructor")
         }

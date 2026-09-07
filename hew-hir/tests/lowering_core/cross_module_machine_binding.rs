@@ -151,9 +151,11 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
 
     // The imported machine's state enum must be re-emitted so MIR sees the
     // layout the ctor above refers to.
-    let state_enum_present = output.module.items.iter().any(
-        |item| matches!(item, HirItem::TypeDecl(decl) if decl.name == "std.machines.toggle.Toggle"),
-    );
+    let state_enum_present = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::TypeDecl(decl) if decl.name == "Toggle"));
     assert!(
         state_enum_present,
         "expected the imported machine's state enum re-emitted as a `HirItem::TypeDecl`, \

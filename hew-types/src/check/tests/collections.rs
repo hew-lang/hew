@@ -3152,12 +3152,9 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
-        output
-            .machine_method_dispatch
-            .values()
-            .any(|dispatch| matches!(dispatch, MachineMethodKind::Step { machine_name } if machine_name == "MachineState")),
-        "user machine named MachineState must still register as a nominal machine: {:?}",
-        output.machine_method_dispatch
+        output.type_defs.contains_key("MachineState"),
+        "user machine named MachineState must still register as a nominal type: {:?}",
+        output.type_defs.keys().collect::<Vec<_>>()
     );
     assert_eq!(
         Ty::normalize_named("MachineState".to_string(), vec![]),

@@ -2108,7 +2108,6 @@ impl Checker {
                     self.insert_opt_type_param_names(method.type_params.as_ref());
                 }
             }
-            Item::Machine(md) => self.insert_type_param_names(&md.type_params),
             Item::Actor(ad) => {
                 self.insert_type_param_names(&ad.type_params);
                 for receive_fn in &ad.receive_fns {
@@ -2152,13 +2151,6 @@ impl Checker {
             }
             Item::Record(rd) => {
                 self.declared_nominal_type_names.insert(rd.name.clone());
-            }
-            Item::Machine(md) => {
-                self.declared_nominal_type_names.insert(md.name.clone());
-                // The checker synthesises a `<Machine>Event` companion type for
-                // every machine; it is a writable type spelling in user code.
-                self.declared_nominal_type_names
-                    .insert(format!("{}Event", md.name));
             }
             _ => {}
         }
@@ -2516,7 +2508,6 @@ impl Checker {
                     for (item_idx, (item, _)) in module.items.iter().enumerate() {
                         let declared = match item {
                             Item::TypeDecl(td) => Some(td.name.clone()),
-                            Item::Machine(md) => Some(md.name.clone()),
                             _ => None,
                         };
                         if let (Some(name), Some(source)) = (
@@ -2531,7 +2522,7 @@ impl Checker {
                                 .insert(name);
                         }
                     }
-                    for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    for (item_idx, (item, _item_span)) in module.items.iter().enumerate() {
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or_default();
@@ -2564,12 +2555,6 @@ impl Checker {
                             // spans here would cause false duplicate-definition
                             // errors when the import path later registers the same
                             // machine. Idempotency guard matches `pre_register_type_decl`.
-                            Item::Machine(md) => {
-                                let identity = format!("{module_name}.{}", md.name);
-                                if !self.type_defs.contains_key(&identity) {
-                                    self.register_machine_decl(md, item_span);
-                                }
-                            }
                             _ => {}
                         }
                     }
@@ -2731,14 +2716,6 @@ impl Checker {
                         crate::check::types::SupervisorChildren { statics, pools },
                     );
                 }
-                Item::Machine(md) => {
-                    if !self.register_machine_type_namespace_names(None, &md.name, span) {
-                        continue;
-                    }
-                    self.register_machine_decl(md, span);
-                    self.local_type_defs.insert(md.name.clone());
-                    self.source_type_defs.insert(md.name.clone());
-                }
                 Item::Record(rd) => {
                     if !self.register_type_namespace_name(None, &rd.name, span) {
                         continue;
@@ -2747,9 +2724,12 @@ impl Checker {
                     self.local_type_defs.insert(rd.name.clone());
                     self.source_type_defs.insert(rd.name.clone());
                 }
+                // Machines are normalized into ordinary declarations before
+                // registration runs.
                 Item::Import(_)
                 | Item::Const(_)
                 | Item::Impl(_)
+                | Item::Machine(_)
                 | Item::Function(_)
                 | Item::ExternBlock(_) => {}
             }
@@ -2780,13 +2760,6 @@ impl Checker {
                 Item::Record(rd) => {
                     self.local_type_defs.insert(rd.name.clone());
                     self.source_type_defs.insert(rd.name.clone());
-                }
-                Item::Machine(md) => {
-                    self.local_type_defs.insert(md.name.clone());
-                    self.source_type_defs.insert(md.name.clone());
-                    let event_type_name = format!("{}Event", md.name);
-                    self.local_type_defs.insert(event_type_name.clone());
-                    self.source_type_defs.insert(event_type_name);
                 }
                 _ => {}
             }
@@ -2979,13 +2952,6 @@ impl Checker {
                 Item::Record(rd) => {
                     self.local_type_defs.insert(rd.name.clone());
                     self.source_type_defs.insert(rd.name.clone());
-                }
-                Item::Machine(md) => {
-                    self.local_type_defs.insert(md.name.clone());
-                    self.source_type_defs.insert(md.name.clone());
-                    let event_type_name = format!("{}Event", md.name);
-                    self.local_type_defs.insert(event_type_name.clone());
-                    self.source_type_defs.insert(event_type_name);
                 }
                 Item::Actor(ad) => {
                     self.source_type_defs.insert(ad.name.clone());
@@ -4644,408 +4610,6 @@ impl Checker {
         }
     }
 
-    fn report_machine_transition_forbidden_exprs(
-        &mut self,
-        machine_name: &str,
-        transition: &hew_parser::ast::MachineTransition,
-    ) -> bool {
-        let mut hits = Vec::new();
-        Self::collect_machine_transition_forbidden_exprs(
-            &transition.body.0,
-            &transition.body.1,
-            &mut hits,
-        );
-        for (kind, span, label) in &hits {
-            let message = match kind {
-                TypeErrorKind::GenBlockInMachineTransition => format!(
-                    "`gen {{ }}` blocks are forbidden inside \
-                     machine `{machine_name}` transition `{}`: {} -> {}; transition bodies \
-                     must be pure and cannot suspend",
-                    transition.event_name, transition.source_state, transition.target_state
-                ),
-                TypeErrorKind::AwaitInMachineTransition => format!(
-                    "`{label}` is forbidden inside machine \
-                     `{machine_name}` transition `{}`: {} -> {}; transition bodies must be pure \
-                     and cannot suspend",
-                    transition.event_name, transition.source_state, transition.target_state
-                ),
-                _ => unreachable!("machine transition purity scanner only emits its own kinds"),
-            };
-            self.report_error(kind.clone(), span, message);
-        }
-        !hits.is_empty()
-    }
-
-    fn collect_machine_transition_forbidden_block(
-        block: &Block,
-        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
-    ) {
-        for (stmt, span) in &block.stmts {
-            Self::collect_machine_transition_forbidden_stmt(stmt, span, hits);
-        }
-        if let Some(expr) = &block.trailing_expr {
-            Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "fail-closed transition purity scanner must cover every AST expression shape"
-    )]
-    fn collect_machine_transition_forbidden_stmt(
-        stmt: &Stmt,
-        span: &Span,
-        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
-    ) {
-        match stmt {
-            Stmt::Let { value, .. }
-            | Stmt::Var { value, .. }
-            | Stmt::Break { value, .. }
-            | Stmt::Return(value) => {
-                if let Some((expr, expr_span)) = value {
-                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
-                }
-            }
-            Stmt::Assign { target, value, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
-                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
-            }
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
-                Self::collect_machine_transition_forbidden_block(then_block, hits);
-                if let Some(else_block) = else_block {
-                    if let Some(if_stmt) = &else_block.if_stmt {
-                        Self::collect_machine_transition_forbidden_stmt(
-                            &if_stmt.0, &if_stmt.1, hits,
-                        );
-                    }
-                    if let Some(block) = &else_block.block {
-                        Self::collect_machine_transition_forbidden_block(block, hits);
-                    }
-                }
-            }
-            Stmt::IfLet {
-                expr,
-                body,
-                else_body,
-                ..
-            } => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-                Self::collect_machine_transition_forbidden_block(body, hits);
-                if let Some(block) = else_body {
-                    Self::collect_machine_transition_forbidden_block(block, hits);
-                }
-            }
-            Stmt::Match { scrutinee, arms } => {
-                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
-                for arm in arms {
-                    if let Some((guard, guard_span)) = &arm.guard {
-                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
-                    }
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &arm.body.0,
-                        &arm.body.1,
-                        hits,
-                    );
-                }
-            }
-            Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
-                Self::collect_machine_transition_forbidden_block(body, hits);
-            }
-            Stmt::For {
-                is_await,
-                iterable,
-                body,
-                ..
-            } => {
-                if *is_await {
-                    hits.push((
-                        TypeErrorKind::AwaitInMachineTransition,
-                        span.clone(),
-                        "for await",
-                    ));
-                }
-                Self::collect_machine_transition_forbidden_exprs(&iterable.0, &iterable.1, hits);
-                Self::collect_machine_transition_forbidden_block(body, hits);
-            }
-            Stmt::WhileLet { expr, body, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-                Self::collect_machine_transition_forbidden_block(body, hits);
-            }
-            Stmt::Defer(expr) => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-            }
-            Stmt::Expression(expr) => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-            }
-            Stmt::Continue { .. } => {}
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "fail-closed transition purity scanner must cover every AST expression shape"
-    )]
-    fn collect_machine_transition_forbidden_exprs(
-        expr: &Expr,
-        span: &Span,
-        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
-    ) {
-        match expr {
-            Expr::GenBlock { body } => {
-                hits.push((
-                    TypeErrorKind::GenBlockInMachineTransition,
-                    span.clone(),
-                    "gen",
-                ));
-                Self::collect_machine_transition_forbidden_block(body, hits);
-            }
-            Expr::Await(inner) => {
-                hits.push((
-                    TypeErrorKind::AwaitInMachineTransition,
-                    span.clone(),
-                    "await",
-                ));
-                Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
-            }
-            // `await_restart` is a cooperative suspension point, forbidden in a
-            // machine transition for the same reason as `await`.
-            Expr::AwaitRestart(inner) => {
-                hits.push((
-                    TypeErrorKind::AwaitInMachineTransition,
-                    span.clone(),
-                    "await_restart",
-                ));
-                Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
-            }
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
-            | Expr::Handle {
-                operand: left,
-                body: right,
-                ..
-            }
-            | Expr::Is {
-                lhs: left,
-                rhs: right,
-            } => {
-                Self::collect_machine_transition_forbidden_exprs(&left.0, &left.1, hits);
-                Self::collect_machine_transition_forbidden_exprs(&right.0, &right.1, hits);
-            }
-            Expr::Unary { operand, .. }
-            | Expr::ReturnError(operand)
-            | Expr::Send(operand)
-            | Expr::Clone(operand)
-            | Expr::ForkChild { expr: operand, .. }
-            | Expr::PostfixTry(operand)
-            | Expr::Yield(Some(operand))
-            | Expr::Return(Some(operand)) => {
-                Self::collect_machine_transition_forbidden_exprs(&operand.0, &operand.1, hits);
-            }
-            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
-                for (expr, expr_span) in exprs {
-                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
-                }
-            }
-            Expr::ArrayRepeat { value, count } => {
-                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
-                Self::collect_machine_transition_forbidden_exprs(&count.0, &count.1, hits);
-            }
-            Expr::MapLiteral { entries } => {
-                for ((key, key_span), (value, value_span)) in entries {
-                    Self::collect_machine_transition_forbidden_exprs(key, key_span, hits);
-                    Self::collect_machine_transition_forbidden_exprs(value, value_span, hits);
-                }
-            }
-            Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
-                Self::collect_machine_transition_forbidden_block(block, hits);
-            }
-            Expr::UnsafeBlock(block) => {
-                Self::collect_machine_transition_forbidden_block(block, hits);
-            }
-            Expr::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
-                Self::collect_machine_transition_forbidden_exprs(
-                    &then_block.0,
-                    &then_block.1,
-                    hits,
-                );
-                if let Some(else_block) = else_block {
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &else_block.0,
-                        &else_block.1,
-                        hits,
-                    );
-                }
-            }
-            Expr::IfLet {
-                expr,
-                body,
-                else_body,
-                ..
-            } => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-                Self::collect_machine_transition_forbidden_block(body, hits);
-                if let Some(block) = else_body {
-                    Self::collect_machine_transition_forbidden_block(block, hits);
-                }
-            }
-            Expr::Match { scrutinee, arms } => {
-                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
-                for arm in arms {
-                    if let Some((guard, guard_span)) = &arm.guard {
-                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
-                    }
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &arm.body.0,
-                        &arm.body.1,
-                        hits,
-                    );
-                }
-            }
-            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&body.0, &body.1, hits);
-            }
-            Expr::Spawn { target, args, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
-                for (_, (arg, arg_span)) in args {
-                    Self::collect_machine_transition_forbidden_exprs(arg, arg_span, hits);
-                }
-            }
-            Expr::ScopeDeadline { duration, body } => {
-                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
-                Self::collect_machine_transition_forbidden_block(body, hits);
-            }
-            Expr::InterpolatedString(parts) => {
-                for part in parts {
-                    if let StringPart::Expr((expr, expr_span))
-                    | StringPart::StructuralExpr((expr, expr_span)) = part
-                    {
-                        Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
-                    }
-                }
-            }
-            Expr::Call { function, args, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&function.0, &function.1, hits);
-                for arg in args {
-                    let (arg_expr, arg_span) = arg.expr();
-                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
-                }
-            }
-            Expr::MethodCall { receiver, args, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&receiver.0, &receiver.1, hits);
-                for arg in args {
-                    let (arg_expr, arg_span) = arg.expr();
-                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
-                }
-            }
-            Expr::StructInit { fields, base, .. } => {
-                for (_, (field, field_span)) in fields {
-                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
-                }
-                if let Some(base) = base {
-                    Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
-                }
-            }
-            Expr::ContextVariant(context) => {
-                if let Some(record) = &context.record {
-                    for (_, (field, field_span)) in &record.fields {
-                        Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
-                    }
-                    if let Some(base) = &record.base {
-                        Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
-                    }
-                }
-            }
-            Expr::GenericApplySuffix { target, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
-            }
-            Expr::RecordInitSuffix {
-                target,
-                fields,
-                base,
-            } => {
-                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
-                for (_, (field, field_span)) in fields {
-                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
-                }
-                if let Some(base) = base {
-                    Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
-                }
-            }
-            Expr::Select { arms, timeout } => {
-                for arm in arms {
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &arm.source.0,
-                        &arm.source.1,
-                        hits,
-                    );
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &arm.body.0,
-                        &arm.body.1,
-                        hits,
-                    );
-                }
-                if let Some(timeout) = timeout {
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &timeout.duration.0,
-                        &timeout.duration.1,
-                        hits,
-                    );
-                    Self::collect_machine_transition_forbidden_exprs(
-                        &timeout.body.0,
-                        &timeout.body.1,
-                        hits,
-                    );
-                }
-            }
-            Expr::Timeout { expr, duration } => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
-            }
-            Expr::FieldAccess { object, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
-            }
-            Expr::Index { object, index } => {
-                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
-                Self::collect_machine_transition_forbidden_exprs(&index.0, &index.1, hits);
-            }
-            Expr::Cast { expr, .. } => {
-                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
-            }
-            Expr::Range { start, end, .. } => {
-                if let Some(start) = start {
-                    Self::collect_machine_transition_forbidden_exprs(&start.0, &start.1, hits);
-                }
-                if let Some(end) = end {
-                    Self::collect_machine_transition_forbidden_exprs(&end.0, &end.1, hits);
-                }
-            }
-            Expr::MachineEmit { fields, .. } => {
-                for (_, (field, field_span)) in fields {
-                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
-                }
-            }
-            Expr::Literal(_)
-            | Expr::Identifier(_)
-            | Expr::QualifiedAssoc(_)
-            | Expr::Yield(None)
-            | Expr::Return(None)
-            | Expr::This
-            | Expr::RegexLiteral(_)
-            | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_) => {}
-        }
-    }
-
     /// Validate that no trait bound in the given type parameters or
     /// where-clause carries positional type arguments (e.g. `T: Eq<U>`).
     /// Such forms are not valid in Hew — the checker cannot enforce
@@ -5117,103 +4681,6 @@ impl Checker {
         );
     }
 
-    /// Validate that every trait named in a machine's generic bounds resolves
-    /// to a registered trait. Emits `UndefinedType` at the machine decl span
-    /// for any unknown name. Called from `check_machine_exhaustiveness`,
-    /// after Pass 2 has populated `trait_defs` for all in-scope traits.
-    ///
-    /// Walks both inline `<T: Trait>` bounds (via `md.type_params`) and
-    /// `where T: Trait` clause predicates (via `md.where_clause`). The
-    /// where-clause arm also verifies the predicate's left-hand side
-    /// names one of the machine's own declared type parameters — a
-    /// `where Foo: Trait` for an undeclared `Foo` is a closed user
-    /// error (`UndefinedType` at the predicate span) rather than a
-    /// silently-ignored predicate.
-    pub(super) fn validate_machine_type_param_bounds(&mut self, md: &MachineDecl, span: &Span) {
-        for param in &md.type_params {
-            for bound in &param.bounds {
-                if self.is_known_trait(&bound.name) {
-                    continue;
-                }
-                let similar = crate::error::find_similar(
-                    &bound.name,
-                    self.trait_defs.keys().map(String::as_str),
-                );
-                self.report_error_with_suggestions(
-                    TypeErrorKind::UndefinedType,
-                    span,
-                    format!(
-                        "unknown trait `{bound}` in bound on type parameter `{param_name}` of machine `{machine}`",
-                        bound = bound.name,
-                        param_name = param.name,
-                        machine = md.name,
-                    ),
-                    similar,
-                );
-            }
-        }
-
-        let Some(where_clause) = md.where_clause.as_ref() else {
-            return;
-        };
-        let declared_params: std::collections::HashSet<&str> =
-            md.type_params.iter().map(|p| p.name.as_str()).collect();
-        for predicate in &where_clause.predicates {
-            // Left-hand side of the predicate must name one of the
-            // machine's declared type params. `where Foo: Resource`
-            // for a `Foo` that isn't in `<…>` is a user error.
-            let lhs_name = match &predicate.ty.0 {
-                hew_parser::ast::TypeExpr::Named { name, type_args } if type_args.is_none() => {
-                    Some(name.as_str())
-                }
-                _ => None,
-            };
-            match lhs_name {
-                Some(name) if declared_params.contains(name) => {}
-                Some(name) => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::UndefinedType,
-                        predicate.ty.1.clone(),
-                        format!(
-                            "where-clause predicate references `{name}` which is not a declared type parameter of machine `{machine}`",
-                            machine = md.name,
-                        ),
-                    ));
-                }
-                None => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::UndefinedType,
-                        predicate.ty.1.clone(),
-                        format!(
-                            "where-clause predicate on machine `{machine}` must name a single type parameter",
-                            machine = md.name,
-                        ),
-                    ));
-                }
-            }
-            for bound in &predicate.bounds {
-                if self.is_known_trait(&bound.name) {
-                    continue;
-                }
-                let similar = crate::error::find_similar(
-                    &bound.name,
-                    self.trait_defs.keys().map(String::as_str),
-                );
-                let lhs_label = lhs_name.unwrap_or("<predicate>");
-                self.report_error_with_suggestions(
-                    TypeErrorKind::UndefinedType,
-                    &predicate.ty.1,
-                    format!(
-                        "unknown trait `{bound}` in where-clause bound on `{lhs_label}` of machine `{machine}`",
-                        bound = bound.name,
-                        machine = md.name,
-                    ),
-                    similar,
-                );
-            }
-        }
-    }
-
     /// Resolve a trait-bound name against the registered trait table,
     /// accepting both unqualified and module-qualified forms.
     pub(super) fn is_known_trait(&self, name: &str) -> bool {
@@ -5229,314 +4696,6 @@ impl Checker {
             }
         }
         false
-    }
-
-    /// Check that the machine's state × event matrix is fully covered.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "exhaustiveness checking requires many validation steps"
-    )]
-    pub(super) fn check_machine_exhaustiveness(&mut self, md: &MachineDecl, span: &Span) {
-        self.validate_machine_type_param_bounds(md, span);
-        let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
-        let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
-
-        // Fix 4: Enforce minimum cardinality
-        if md.states.len() < 2 {
-            self.errors.push(TypeError::new(
-                TypeErrorKind::MachineExhaustivenessError,
-                span.clone(),
-                format!("machine `{}` must declare at least 2 states", md.name),
-            ));
-        }
-        if md.events.is_empty() {
-            self.errors.push(TypeError::new(
-                TypeErrorKind::MachineExhaustivenessError,
-                span.clone(),
-                format!("machine `{}` must declare at least 1 event", md.name),
-            ));
-        }
-
-        // Build coverage: track explicit (state, event) pairs and wildcard events
-        let mut covered: HashSet<(String, String)> = HashSet::new();
-        let mut wildcard_events: HashSet<String> = HashSet::new();
-
-        for transition in &md.transitions {
-            let transition_has_forbidden_expr =
-                self.report_machine_transition_forbidden_exprs(&md.name, transition);
-
-            // Fix 2: Reject unknown event names
-            if !event_names.contains(&transition.event_name.as_str()) {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::MachineExhaustivenessError,
-                    span.clone(),
-                    format!(
-                        "machine `{}`: transition references unknown event `{}`",
-                        md.name, transition.event_name
-                    ),
-                ));
-            }
-
-            // Fix 1: Reject unknown source/target state names
-            if transition.source_state != "_"
-                && !state_names.contains(&transition.source_state.as_str())
-            {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::MachineExhaustivenessError,
-                    span.clone(),
-                    format!(
-                        "machine `{}`: transition references unknown state `{}`",
-                        md.name, transition.source_state
-                    ),
-                ));
-            }
-            if transition.target_state != "_"
-                && !state_names.contains(&transition.target_state.as_str())
-            {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::MachineExhaustivenessError,
-                    span.clone(),
-                    format!(
-                        "machine `{}`: transition references unknown state `{}`",
-                        md.name, transition.target_state
-                    ),
-                ));
-            }
-
-            if transition.source_state == "_" {
-                // Fix 3: Reject duplicate wildcard transitions for same event
-                if wildcard_events.contains(&transition.event_name) {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::MachineExhaustivenessError,
-                        span.clone(),
-                        format!(
-                            "machine `{}`: duplicate wildcard transition for event `{}`",
-                            md.name, transition.event_name
-                        ),
-                    ));
-                }
-                wildcard_events.insert(transition.event_name.clone());
-            } else {
-                let key = (
-                    transition.source_state.clone(),
-                    transition.event_name.clone(),
-                );
-                // Fix 5: Reject duplicate explicit transitions (unless guarded)
-                if covered.contains(&key) && transition.guard.is_none() {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::MachineExhaustivenessError,
-                        span.clone(),
-                        format!(
-                            "machine `{}`: duplicate transition for event `{}` in state `{}`",
-                            md.name, transition.event_name, transition.source_state
-                        ),
-                    ));
-                }
-                covered.insert(key);
-            }
-
-            // Push the machine's declared generic-param bounds so that
-            // `type_param_carries_bound` / resolver projection inside the
-            // transition body see `T: Resource` and recognise `T` as
-            // satisfying its bound. Pops at the end of this iteration's
-            // body block.
-            let mut machine_scope_holes = Vec::new();
-            let machine_bounds_scope = self.collect_type_param_scope_with_assoc_bindings(
-                Some(&md.type_params),
-                md.where_clause.as_ref(),
-                &mut machine_scope_holes,
-            );
-            let pushed_machine_bounds = !machine_bounds_scope.bounds.is_empty();
-            if pushed_machine_bounds {
-                self.current_type_param_bounds.push(machine_bounds_scope);
-            }
-
-            // Fix 6: Transition body validation with source-state field scoping.
-            // Bind `state` as the machine type, and track the source state so
-            // that `state.field` access resolves correctly for payload states.
-            // (`state` rather than `self` to avoid confusion with actor self)
-            self.env.push_scope();
-            // Bind `state` as the machine self-type, preserving generic args
-            // so that field access on generic machines resolves correctly.
-            let transition_machine_args: Vec<Ty> = md
-                .type_params
-                .iter()
-                .map(|param| Ty::Named {
-                    builtin: None,
-                    name: param.name.clone(),
-                    args: vec![],
-                })
-                .collect();
-            self.env.define(
-                "state".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: md.name.clone(),
-                    args: transition_machine_args,
-                },
-                false,
-            );
-            // Bind `event` as the event companion enum type so that
-            // `event.field` resolves for events with payload fields.
-            let event_type_name = format!("{}Event", md.name);
-            self.env.define(
-                "event".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: event_type_name,
-                    args: md
-                        .type_params
-                        .iter()
-                        .map(|param| Ty::Named {
-                            builtin: None,
-                            name: param.name.clone(),
-                            args: vec![],
-                        })
-                        .collect(),
-                },
-                false,
-            );
-            if transition.source_state == "_" {
-                self.current_machine_transition = Some((
-                    md.name.clone(),
-                    "_".to_string(),
-                    transition.event_name.clone(),
-                ));
-            } else {
-                self.current_machine_transition = Some((
-                    md.name.clone(),
-                    transition.source_state.clone(),
-                    transition.event_name.clone(),
-                ));
-            }
-            // Type-check guard expression if present
-            if let Some((guard_expr, guard_span)) = &transition.guard {
-                self.check_against(guard_expr, guard_span, &Ty::Bool);
-            }
-            if !transition_has_forbidden_expr {
-                // Check the transition body against the machine type so that the
-                // expected-type context flows into struct-variant pre-seeding
-                // (expressions.rs enum-struct-variant arm).  Without an expected
-                // type, `synthesize` cannot seed the type-params for generic
-                // machines and bare state constructors like `Faulted { error: … }`
-                // fail to resolve when the state has a generic field.
-                // Name the machine by its declaration identity, not its bare
-                // spelling: inside an imported module the bare `type_defs` row
-                // is retired once the canonical owner is published, so a bare
-                // expected type left the contextual `.Variant` arm with no
-                // reachable enum-or-machine definition.
-                let expected_machine_ty = Ty::Named {
-                    builtin: None,
-                    name: self.declaration_identity(&md.name),
-                    args: md
-                        .type_params
-                        .iter()
-                        .map(|param| Ty::Named {
-                            builtin: None,
-                            name: param.name.clone(),
-                            args: vec![],
-                        })
-                        .collect(),
-                };
-                self.check_expr_with_expected(
-                    &transition.body.0,
-                    &transition.body.1,
-                    &expected_machine_ty,
-                );
-            }
-            self.current_machine_transition = None;
-            self.env.pop_scope();
-            if pushed_machine_bounds {
-                self.current_type_param_bounds.pop();
-            }
-        }
-
-        // Check state entry/exit lifecycle blocks.
-        //
-        // Scope: `state` (the machine value) is in scope; `event` is NOT
-        // bound here — entry/exit are state lifecycle hooks, not transition
-        // event scopes.  Referencing `event` inside an entry/exit block is
-        // therefore an undefined-variable error, which is the intended
-        // fail-closed behaviour.
-        for state in &md.states {
-            let has_lifecycle = state.entry.is_some() || state.exit.is_some();
-            if !has_lifecycle {
-                continue;
-            }
-
-            // Push generic-param bounds so that type-param-bound resolution
-            // inside a lifecycle block mirrors what transition bodies see.
-            let mut machine_scope_holes = Vec::new();
-            let machine_bounds_scope = self.collect_type_param_scope_with_assoc_bindings(
-                Some(&md.type_params),
-                md.where_clause.as_ref(),
-                &mut machine_scope_holes,
-            );
-            let pushed_machine_bounds = !machine_bounds_scope.bounds.is_empty();
-            if pushed_machine_bounds {
-                self.current_type_param_bounds.push(machine_bounds_scope);
-            }
-
-            self.env.push_scope();
-            // Bind `state` as the machine self-type — identical binding to
-            // the one used inside transition bodies, so that field access on
-            // payload states resolves correctly.
-            let machine_args: Vec<Ty> = md
-                .type_params
-                .iter()
-                .map(|param| Ty::Named {
-                    builtin: None,
-                    name: param.name.clone(),
-                    args: vec![],
-                })
-                .collect();
-            self.env.define(
-                "state".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: md.name.clone(),
-                    args: machine_args,
-                },
-                false,
-            );
-            // NOTE: `event` is deliberately NOT bound here.
-            let previous_lifecycle = self
-                .current_machine_lifecycle
-                .replace((md.name.clone(), state.name.clone()));
-
-            if let Some(entry_block) = &state.entry {
-                // Entry blocks are statement-sequences; their trailing value
-                // (if any) is discarded — we check without an expected type.
-                self.check_block(entry_block, None);
-            }
-            if let Some(exit_block) = &state.exit {
-                self.check_block(exit_block, None);
-            }
-
-            self.current_machine_lifecycle = previous_lifecycle;
-            self.env.pop_scope();
-            if pushed_machine_bounds {
-                self.current_type_param_bounds.pop();
-            }
-        }
-
-        // Check that every (state, event) pair is covered
-        // If has_default is true, unhandled pairs default to self-transition
-        for state in &state_names {
-            for event in &event_names {
-                let key = (state.to_string(), event.to_string());
-                if !covered.contains(&key) && !wildcard_events.contains(*event) && !md.has_default {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::MachineExhaustivenessError,
-                        span.clone(),
-                        format!(
-                            "machine `{}`: state `{}` does not handle event `{}`",
-                            md.name, state, event
-                        ),
-                    ));
-                }
-            }
-        }
     }
 
     pub(super) fn register_actor_decl(&mut self, ad: &ActorDecl) {
@@ -11755,19 +10914,9 @@ impl Checker {
             // members resolve, so `pub type ScopeError<E> { primary: E; }`
             // reports `unknown type E` against the module's own source.
             self.collect_item_type_param_names(item);
-            match item {
-                Item::TypeDecl(td) => {
-                    self.local_type_defs.insert(td.name.clone());
-                    self.source_type_defs.insert(td.name.clone());
-                }
-                Item::Machine(md) => {
-                    self.local_type_defs.insert(md.name.clone());
-                    self.source_type_defs.insert(md.name.clone());
-                    let event_type_name = format!("{}Event", md.name);
-                    self.local_type_defs.insert(event_type_name.clone());
-                    self.source_type_defs.insert(event_type_name);
-                }
-                _ => {}
+            if let Item::TypeDecl(td) = item {
+                self.local_type_defs.insert(td.name.clone());
+                self.source_type_defs.insert(td.name.clone());
             }
         }
 
@@ -12808,19 +11957,9 @@ impl Checker {
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            match item {
-                Item::TypeDecl(td) => {
-                    self.local_type_defs.insert(td.name.clone());
-                    self.source_type_defs.insert(td.name.clone());
-                }
-                Item::Machine(md) => {
-                    self.local_type_defs.insert(md.name.clone());
-                    self.source_type_defs.insert(md.name.clone());
-                    let event_type_name = format!("{}Event", md.name);
-                    self.local_type_defs.insert(event_type_name.clone());
-                    self.source_type_defs.insert(event_type_name);
-                }
-                _ => {}
+            if let Item::TypeDecl(td) = item {
+                self.local_type_defs.insert(td.name.clone());
+                self.source_type_defs.insert(td.name.clone());
             }
         }
 

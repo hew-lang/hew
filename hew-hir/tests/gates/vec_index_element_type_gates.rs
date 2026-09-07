@@ -340,6 +340,7 @@ fn vec_index_in_machine_transition_guard_rejected() {
             state Idle,
             state Done,
             on Go: Idle => .Done when make_byteses()[0].is_empty() { .Done }
+            on Go: Idle => .Idle,
             on Go: Done => .Done,
             on Reset: Done => .Idle,
             on Reset: Idle => .Idle,

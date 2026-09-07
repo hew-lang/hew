@@ -1312,8 +1312,11 @@ fn foo(s: Shape) -> i64 {
 
 // ── Generic machine transition-body inference (Lane B S8 prerequisite) ────
 
+/// MACHINE-SPEC, "Implementation scope": composite state evaluation is not
+/// yet admitted by the ordinary evaluator, so the form is refused rather than
+/// lowered.
 #[test]
-fn composite_machine_transition_accepts_contextual_target() {
+fn composite_machine_transition_is_refused() {
     let output = check_source(
         r"
         machine Connection {
@@ -1333,8 +1336,11 @@ fn composite_machine_transition_accepts_contextual_target() {
         ",
     );
     assert!(
-        output.errors.is_empty(),
-        "contextual composite transition targets must type-check: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("composite states")),
+        "expected the documented composite-state refusal: {:#?}",
         output.errors
     );
 }
@@ -1457,10 +1463,10 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
                 .Closed
             }
             on OpenDoor: Opened => .Opened {
-                state
+                Door.Opened { handle: event.id }
             }
             on CloseDoor: Closed => .Closed {
-                state
+                .Closed
             }
         }
         fn main() {}

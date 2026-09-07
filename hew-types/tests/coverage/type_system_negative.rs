@@ -1010,10 +1010,12 @@ fn nonexhaustive_match_enum_missing_variant() {
     );
 }
 
-// ── 16. MachineExhaustivenessError — fewer than 2 states ────────────
+// ── 16. MachineExhaustivenessError — no declared state ──────────────
 
+// MACHINE-SPEC, "Declaration and use": a declaration requires at least one
+// state and one input event.
 #[test]
-fn machine_exhaustiveness_too_few_states() {
+fn machine_exhaustiveness_no_states() {
     let output = typecheck(
         r"
         machine Broken {
@@ -1021,8 +1023,7 @@ fn machine_exhaustiveness_too_few_states() {
                 Ping,
             }
 
-            state Only,
-            on Ping: Only => Only,
+            on Ping: _ => _ { state }
         }
         fn main() {}
     ",
@@ -1032,7 +1033,7 @@ fn machine_exhaustiveness_too_few_states() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
-        "Expected MachineExhaustivenessError for < 2 states, got errors: {:?}",
+        "Expected MachineExhaustivenessError for a machine with no state, got errors: {:?}",
         output.errors
     );
 }

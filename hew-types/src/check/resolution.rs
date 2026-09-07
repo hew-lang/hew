@@ -1811,23 +1811,6 @@ impl Checker {
                         }
                     }
                 }
-                Item::Machine(md) => {
-                    let event_type_name = format!("{}Event", md.name);
-                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &md.name)
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
-                        || lookup_scoped_item(
-                            &self.type_def_inference_holes,
-                            module_name,
-                            &event_type_name,
-                        )
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
-                    {
-                        self.errors.push(TypeError::inference_failed(
-                            span.clone(),
-                            &format!("machine `{}`", md.name),
-                        ));
-                    }
-                }
                 Item::ExternBlock(eb) => {
                     for function in &eb.functions {
                         if lookup_scoped_item(
@@ -1894,7 +1877,11 @@ impl Checker {
                 // Record declarations carry no function-signature holes (only
                 // type-def inference holes, which `register_record_decl` records
                 // via `record_type_def_inference_holes`).  No action needed here.
-                Item::Import(_) | Item::Const(_) | Item::Supervisor(_) | Item::Record(_) => {}
+                Item::Import(_)
+                | Item::Const(_)
+                | Item::Supervisor(_)
+                | Item::Machine(_)
+                | Item::Record(_) => {}
             }
         }
 

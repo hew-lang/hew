@@ -44,12 +44,6 @@ impl Checker {
             }
             Item::Const(cd) => self.check_const(cd, span),
             Item::Impl(id) => self.check_impl(id, span),
-            Item::Machine(md) => {
-                if !crate::ty::is_reserved_type_name(&md.name) {
-                    self.check_machine_exhaustiveness(md, span);
-                    self.check_machine_state_resource_payloads(&md.name, span);
-                }
-            }
             Item::Trait(td) => {
                 if !crate::ty::is_reserved_type_name(&td.name) {
                     self.check_trait_defaults(td);
@@ -59,10 +53,13 @@ impl Checker {
             // and require no second-pass body checking.  Record declarations
             // specifically are registered by `register_record_decl`; they have
             // no method bodies, variants, or wire attributes in v0.5.
+            // Machines are normalized into ordinary declarations before this
+            // pass runs, so no machine declaration reaches item checking.
             Item::Record(_)
             | Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
+            | Item::Machine(_)
             | Item::ExternBlock(_) => {}
             Item::Supervisor(sd) => self.check_supervisor(sd, span),
         }

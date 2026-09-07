@@ -522,6 +522,26 @@ impl Builder {
         if !machine.const_params.is_empty() || !machine.composite_groups.is_empty() {
             return Err(self.error("ordinary machine evaluation does not yet admit const parameters or composite states"));
         }
+        // The generated declarations carry the machine's where clause, so a
+        // predicate naming anything but a declared parameter would reach HIR
+        // as an unlowerable impl shape instead of a machine diagnostic.
+        for predicate in machine
+            .where_clause
+            .iter()
+            .flat_map(|clause| &clause.predicates)
+        {
+            let declared = matches!(
+                &predicate.ty.0,
+                TypeExpr::Named { name, type_args: None }
+                    if machine.type_params.iter().any(|param| param.name == *name)
+            );
+            if !declared {
+                return Err(self.error(format!(
+                    "where-clause predicate on machine `{}` must name a declared type parameter",
+                    machine.name
+                )));
+            }
+        }
         for transition in &machine.transitions {
             if !machine
                 .events

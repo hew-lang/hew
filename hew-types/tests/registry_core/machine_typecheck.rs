@@ -2089,32 +2089,31 @@ trait Resource {
     fn close(self);
 }
 
-machine Bogus<T> where U: Resource {
+machine Bogus where U: Resource {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start,
+        Stop,
     }
 
     state Idle,
-    state Active { handle: T, },
+    state Active,
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Start: Idle => .Active { .Active }
     on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
 ";
     let output = typecheck_isolated(source);
-    let undef: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::UndefinedType)
-        .collect();
     assert!(
-        undef.iter().any(|e| e.message.contains('U')
-            && e.message.contains("not a declared type parameter")),
-        "where-clause on undeclared param must fail closed with descriptive UndefinedType, got: {:?}",
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::MachineExhaustivenessError
+                && error
+                    .message
+                    .contains("must name a declared type parameter")
+        }),
+        "a where-clause predicate on an undeclared name must fail closed, got: {:?}",
         output.errors
     );
 }

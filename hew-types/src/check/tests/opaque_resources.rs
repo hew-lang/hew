@@ -1246,9 +1246,8 @@ fn machine_state_resource_payload_rejects() {
     ));
     assert!(
         errors.iter().any(|e| {
-            e.message.contains("machine `Gate` state `Opened`")
-                && e.message.contains("`Tok`")
-                && e.message.contains("rejected rather than leaking")
+            e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("not demonstrably pure")
         }),
         "a resource in a machine state payload must be rejected: {errors:?}"
     );
@@ -1273,9 +1272,10 @@ fn machine_state_resource_payload_rejects_transitively() {
         "fn main() { var h = Closed; h.step(.Open); }\n",
     ));
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("machine `Gate` state `Opened`")),
+        errors.iter().any(|e| {
+            e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("not demonstrably pure")
+        }),
         "a record-wrapped resource in a machine state must be rejected: {errors:?}"
     );
 }

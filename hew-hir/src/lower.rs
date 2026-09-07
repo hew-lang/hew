@@ -18708,13 +18708,13 @@ impl LowerCtx {
                 // wired the inner method call to `hew_sink_write_bytes`. Strip the
                 // `await` and lower the inner send directly (unit); the MIR
                 // `SuspendingStreamSend` suspends on a full ring. Statement
-                // position only (unit value), like `await actor.close()`.
+                // position only (unit value), like `actor.close()`.
                 if self.is_stream_send_await(&self.mk_key(&inner.1)) {
                     let source = self.lower_expr(inner, intent);
                     return self.subsumed_value(site, &span, intent, source);
                 }
-                // `await actor.close()` — lambda-actor (Duplex) close is awaitable
-                // in statement position at any scope depth.  The checker-resolved
+                // `actor.close()` — lambda-actor (Duplex) close is admitted in
+                // statement position at any scope depth.  The checker-resolved
                 // descriptor's family classifies as `AsyncSuspendKind::DuplexClose`
                 // (`hew_duplex_close`); the `await` is stripped and the inner close
                 // call is lowered directly.

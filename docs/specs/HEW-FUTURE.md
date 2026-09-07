@@ -328,7 +328,40 @@ surface.
 
 ---
 
-## 5. Long-horizon
+## 5. Declarative macros (adopted design, U386)
+
+Adopted 2026-09-07 as the v1 design; implemented as its own lane after the
+native cutover PR is open. The full text with examples is
+`hew-orchestration/plans/macros-v1.md`.
+
+- `macro name { (pattern) => expr { .. }; (pattern) => items { .. }; }`
+  at module level; `pub macro` exports. Invocation is `name!(..)` in
+  expression or item position, qualified by the dotted module path. Macros
+  have their own namespace.
+- Patterns match parsed syntax through fragments `ident`, `expr`, `ty`,
+  `pat`, `block` and `literal`, literal tokens, and repetition `$( .. ),*`,
+  `$( .. ),+`, `$( .. )?` without nesting. No token fragment. The follow-set
+  rule for `expr`, `ty` and `pat` fragments is checked at definition.
+- Rules are tried in order; the first complete match wins, and a type error
+  in the expansion never falls back to another rule.
+- Hygiene: identifiers carry a syntax context; template-introduced bindings
+  get fresh identities from the resolver; template references resolve in the
+  defining module; captured syntax keeps the caller's context. Expansion
+  does not evaluate arguments. Template-written `return`, `break`,
+  `continue` and `?` cannot escape the template.
+- Expansion precedes every semantic check; generated code gets ordinary
+  type, suspension, ownership and actor-isolation checks. Limits: depth 64,
+  1 M generated nodes per outermost invocation. No file, network, type
+  inspection or compile-time execution.
+- Tooling: `hew tool expand`, LSP show-expansion and generated-symbol
+  navigation, formatter treats macro bodies as token trees, grammar sync for
+  `macro`, `!(` and `$`.
+- Not planned: procedural macros, derive and reflection. `Eq`, `Ord`,
+  `PartialOrd` and `Hash` already derive structurally (HEW-SPEC-2026 §3.8),
+  so no derive attribute exists (D438). Idea only: a structural inspect
+  rendering for debugging output, distinct from `Display`.
+
+## 6. Long-horizon
 
 ### 5.1 Self-hosting roadmap
 

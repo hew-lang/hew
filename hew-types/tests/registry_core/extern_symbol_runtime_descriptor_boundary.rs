@@ -65,15 +65,17 @@ fn function_rewrite_for(output: &TypeCheckOutput, symbol: &str) -> Option<(SpanK
 }
 
 #[test]
-fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
+fn canonical_stdlib_time_method_carries_its_typed_descriptor() {
     // `duration.hours()` is declared in stdlib via
-    // `#[extern_symbol(hew_duration_hours)]`, and `hew_duration_hours` IS a
-    // catalog entry (`RuntimeCallFamily::DurationHours`). The collision is the
-    // whole point: descriptor must still be `None`.
+    // `#[extern_symbol(hew_duration_hours)]` and is a canonical stdlib extern
+    // signature, so the checker resolves it to `RuntimeCallFamily::DurationHours`
+    // and records the typed descriptor the final path needs. The join is on the
+    // exact declaration identity, its trusted stdlib provenance and its checked
+    // signature — never on the symbol spelling, which the lookalike test below
+    // holds to account.
     assert!(
         RuntimeCallFamily::from_c_symbol("hew_duration_hours").is_some(),
-        "precondition: `hew_duration_hours` must be a RuntimeCallFamily catalog \
-         name for this collision test to be meaningful",
+        "precondition: `hew_duration_hours` must be a RuntimeCallFamily catalog name",
     );
 
     let output = typecheck(
@@ -92,12 +94,11 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
     );
 
     match descriptor_present_for(&output, "hew_duration_hours") {
-        Some(true) => panic!(
-            "checker-output-boundary violation: the #[extern_symbol] method \
-             `duration.hours()` was reclassified into a typed runtime descriptor \
-             because its symbol collides with RuntimeCallFamily::DurationHours",
+        Some(true) => { /* correct: the canonical stdlib method is typed */ }
+        Some(false) => panic!(
+            "`duration.hours()` lost its typed runtime descriptor; the final path \
+             refuses a stdlib extern with no runtime family",
         ),
-        Some(false) => { /* correct: open-set extern symbol carries no descriptor */ }
         None => panic!(
             "expected a RewriteToFunction recorded for `hew_duration_hours`; \
              rewrites: {:#?}",

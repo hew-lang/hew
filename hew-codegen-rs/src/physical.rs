@@ -3978,6 +3978,61 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("widen string predicate result")?;
                 self.store(dest, truth.into())?;
             }
+            PhysicalRuntimeAction::TimeScalar(family) => {
+                // The semantic contract is the one authority for how many
+                // arguments cross and whether the result is a predicate; the
+                // C ABI carries every operand as `i64` and every predicate as
+                // `i32`.
+                let contract = family.semantic_contract().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "time family `{family:?}` has no semantic contract"
+                    ))
+                })?;
+                let i64_ty = self.ctx.i64_type();
+                let predicate = matches!(
+                    contract.result,
+                    hew_types::runtime_call::RuntimeResultEffect::BitCopy(
+                        hew_types::runtime_call::RuntimeValueKind::Bool
+                    )
+                );
+                let return_type = if predicate {
+                    self.ctx.i32_type()
+                } else {
+                    i64_ty
+                };
+                let function = get_or_declare_external(
+                    self.llvm,
+                    family.c_symbol(),
+                    return_type.fn_type(&vec![i64_ty.into(); contract.arguments.len()], false),
+                )?;
+                let arguments = (0..contract.arguments.len())
+                    .map(|index| Ok(self.load(source(index)?, "time.argument")?.into()))
+                    .collect::<CodegenResult<Vec<_>>>()?;
+                let value = self
+                    .runtime_call_value(function, &arguments, "time.scalar")?
+                    .into_int_value();
+                let dest = required_result()?;
+                if predicate {
+                    let truth = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            value,
+                            return_type.const_zero(),
+                            "time.predicate.truth",
+                        )
+                        .llvm_ctx("normalize time predicate")?;
+                    let bool_ty =
+                        llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
+                    let truth = self
+                        .builder
+                        .build_int_z_extend(truth, bool_ty, "time.predicate.bool")
+                        .llvm_ctx("widen time predicate result")?;
+                    self.store(dest, truth.into())?;
+                } else {
+                    self.store(dest, value.into())?;
+                }
+            }
             PhysicalRuntimeAction::StringToBytesOwned => {
                 let function = get_or_declare_external(
                     self.llvm,

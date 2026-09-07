@@ -1,0 +1,32 @@
+// `duration` and `instant` on the final path: every scalar accessor lowers
+// through its runtime family, and the monotonic clock is read directly. The
+// elapsed-time assertions are bounded rather than exact so the case stays
+// deterministic under the instrumented safety profile.
+fn main() {
+    let a = 250ms;
+    let b = 1s;
+    let zero = 0ms;
+
+    println(a.nanos());
+    println(a.micros());
+    println(a.millis());
+    println(b.secs());
+    println(b.mins());
+    println(b.hours());
+    println(zero.is_zero());
+    println(a.is_zero());
+
+    println((a + b).millis());
+    println((b - a).millis());
+    println((a - b).abs().millis());
+    println(a < b);
+
+    let start = instant.now();
+    sleep(20ms);
+    let waited = start.elapsed();
+    println(waited.millis() >= 20);
+    println(waited.secs() < 5);
+
+    let later = instant.now();
+    println(later.duration_since(start).millis() >= 20);
+}

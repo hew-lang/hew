@@ -709,7 +709,8 @@ pub const CATALOG: &[BuiltinEntry] = &[
     ),
     // Receiver-method rewrite targets for the `impl duration` methods declared
     // in `std/builtins.hew`. The checker's `Ty::Duration` dispatch arm records a
-    // `RewriteToFunction { c_symbol: "hew_duration_*", descriptor: None }`; HIR
+    // `RewriteToFunction` carrying the typed `RuntimeCallFamily::Duration*`
+    // descriptor (the canonical stdlib extern signature table admits it); HIR
     // resolves that callee through the seeded `fn_registry`, so each runtime
     // symbol needs a catalog row here to be resolvable. `duration` is i64-backed:
     // the receiver is modelled as the single `I64` param so codegen's

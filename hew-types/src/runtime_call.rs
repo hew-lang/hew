@@ -147,6 +147,10 @@ pub enum RuntimeValueKind {
     Char,
     String,
     Bytes,
+    /// A nanosecond span. Distinct from `I64` at the semantic boundary; the C
+    /// ABI carries it as `i64`. `instant` has no kind of its own - it resolves
+    /// to `I64` before SIR sees it (`ResolvedTy::from_ty`).
+    Duration,
     /// The signature's receiver, constrained by canonical builtin identity.
     Receiver(BuiltinType),
     /// One type argument from the signature's canonical collection receiver.
@@ -172,6 +176,7 @@ impl RuntimeValueKind {
                 | (Self::Char, ResolvedTy::Char)
                 | (Self::String, ResolvedTy::String)
                 | (Self::Bytes, ResolvedTy::Bytes)
+                | (Self::Duration, ResolvedTy::Duration)
         )
     }
 
@@ -203,6 +208,7 @@ impl RuntimeValueKind {
             Self::Char => ResolvedTy::Char,
             Self::String => ResolvedTy::String,
             Self::Bytes => ResolvedTy::Bytes,
+            Self::Duration => ResolvedTy::Duration,
             Self::Receiver(expected) => {
                 let receiver = receiver?;
                 let actual = runtime_receiver_builtin(receiver)?;
@@ -1790,6 +1796,8 @@ pub enum CanonicalExternTy {
     OptionI64,
     OptionChar,
     VecString,
+    Duration,
+    Instant,
 }
 
 impl CanonicalExternTy {
@@ -1802,6 +1810,15 @@ impl CanonicalExternTy {
             Self::Bool => matches!(ty, crate::Ty::Bool),
             Self::String => matches!(ty, crate::Ty::String),
             Self::Unit => matches!(ty, crate::Ty::Unit),
+            Self::Duration => matches!(ty, crate::Ty::Duration),
+            Self::Instant => matches!(
+                ty,
+                crate::Ty::Named {
+                    builtin: Some(crate::BuiltinType::Instant),
+                    args,
+                    ..
+                } if args.is_empty()
+            ),
             Self::VecString => matches!(
                 ty,
                 crate::Ty::Named {
@@ -1860,11 +1877,95 @@ const I64: &[CanonicalExternTy] = &[CanonicalExternTy::I64];
 const I64_U8: &[CanonicalExternTy] = &[CanonicalExternTy::I64, CanonicalExternTy::U8];
 const BYTES: &[CanonicalExternTy] = &[CanonicalExternTy::Bytes];
 const STRING: &[CanonicalExternTy] = &[CanonicalExternTy::String];
+const INSTANT: &[CanonicalExternTy] = &[CanonicalExternTy::Instant];
 
 /// Complete source-declaration authority for compiler-lowered stdlib extern
 /// bridges. A new method fails closed until it is added here with an exact Hew
 /// signature, trusted source module, and admitted runtime family.
 const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
+    // The `impl duration` / `impl instant` methods in `std/builtins.hew`. Both
+    // receivers are i64-backed scalars, so every one of these is a bit-copied
+    // scalar operation with no ownership consequence.
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::nanos",
+        symbol: "hew_duration_nanos",
+        family: Some(RuntimeCallFamily::DurationNanos),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::micros",
+        symbol: "hew_duration_micros",
+        family: Some(RuntimeCallFamily::DurationMicros),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::millis",
+        symbol: "hew_duration_millis",
+        family: Some(RuntimeCallFamily::DurationMillis),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::secs",
+        symbol: "hew_duration_secs",
+        family: Some(RuntimeCallFamily::DurationSecs),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::mins",
+        symbol: "hew_duration_mins",
+        family: Some(RuntimeCallFamily::DurationMins),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::hours",
+        symbol: "hew_duration_hours",
+        family: Some(RuntimeCallFamily::DurationHours),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::abs",
+        symbol: "hew_duration_abs",
+        family: Some(RuntimeCallFamily::DurationAbs),
+        params: EMPTY,
+        result: CanonicalExternTy::Duration,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "duration::is_zero",
+        symbol: "hew_duration_is_zero",
+        family: Some(RuntimeCallFamily::DurationIsZero),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "instant::elapsed",
+        symbol: "hew_instant_elapsed",
+        family: Some(RuntimeCallFamily::InstantElapsed),
+        params: EMPTY,
+        result: CanonicalExternTy::Duration,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "instant::duration_since",
+        symbol: "hew_instant_duration_since",
+        family: Some(RuntimeCallFamily::InstantDurationSince),
+        params: INSTANT,
+        result: CanonicalExternTy::Duration,
+    },
     CanonicalStdlibExternSignature {
         module: "std.io",
         signature_key: "bytes::append",
@@ -2172,6 +2273,53 @@ impl RuntimeCallFamily {
         } else {
             contract.matches_signature(params, result)
         }
+    }
+
+    /// Time is scalar arithmetic over the runtime's monotonic clock: every one
+    /// of these copies its operands in and bit-copies one scalar out, with no
+    /// ownership consequence. `duration` has its own semantic value kind;
+    /// `instant` is already `ResolvedTy::I64` by the time SIR sees it, so it
+    /// needs none.
+    const fn time_semantic_contract(self) -> Option<RuntimeSemanticContract> {
+        use RuntimeArgumentEffect::Copy;
+        use RuntimeResultEffect::BitCopy;
+        use RuntimeValueKind::{Bool, Duration, I64};
+
+        const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
+        const DURATION_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: Duration,
+            effect: Copy,
+        }];
+        const INSTANT_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: I64,
+            effect: Copy,
+        }];
+        const INSTANT_PAIR_COPY: &[RuntimeArgumentContract] = &[INSTANT_COPY[0], INSTANT_COPY[0]];
+
+        Some(match self {
+            Self::InstantNow => runtime_semantic_contract(&[], BitCopy(I64), NO_FAILURES),
+            Self::InstantElapsed => {
+                runtime_semantic_contract(INSTANT_COPY, BitCopy(Duration), NO_FAILURES)
+            }
+            Self::InstantDurationSince => {
+                runtime_semantic_contract(INSTANT_PAIR_COPY, BitCopy(Duration), NO_FAILURES)
+            }
+            Self::DurationNanos
+            | Self::DurationMicros
+            | Self::DurationMillis
+            | Self::DurationSecs
+            | Self::DurationMins
+            | Self::DurationHours => {
+                runtime_semantic_contract(DURATION_COPY, BitCopy(I64), NO_FAILURES)
+            }
+            Self::DurationAbs => {
+                runtime_semantic_contract(DURATION_COPY, BitCopy(Duration), NO_FAILURES)
+            }
+            Self::DurationIsZero => {
+                runtime_semantic_contract(DURATION_COPY, BitCopy(Bool), NO_FAILURES)
+            }
+            _ => return None,
+        })
     }
 
     #[expect(
@@ -3736,6 +3884,11 @@ impl RuntimeCallFamily {
     /// Exact semantic operation contract currently admitted by ownership SIR.
     /// Families outside this deliberately small surface fail closed.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat per-family contract table reads more clearly as one match \
+                  than split across helper functions"
+    )]
     pub const fn semantic_contract(self) -> Option<RuntimeSemanticContract> {
         use RuntimeArgumentEffect::{Borrow, Copy, Move};
         use RuntimeResultEffect::{BitCopy, FreshOwned, Never, Unit, UpdatedReceiver};
@@ -3767,6 +3920,10 @@ impl RuntimeCallFamily {
         }
 
         if let Some(contract) = self.text_variant_semantic_contract() {
+            return Some(contract);
+        }
+
+        if let Some(contract) = self.time_semantic_contract() {
             return Some(contract);
         }
 
@@ -3872,6 +4029,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::U64
                     | RuntimeValueKind::F64
                     | RuntimeValueKind::Char
+                    | RuntimeValueKind::Duration
                     | RuntimeValueKind::Receiver(_)
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)

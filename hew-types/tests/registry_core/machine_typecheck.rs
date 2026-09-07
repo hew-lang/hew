@@ -1729,6 +1729,124 @@ fn machine_state_entry_reads_the_selected_input_payload() {
 /// The same scope is fail-closed: a field the selected input does not declare
 /// is refused rather than resolved against some other input.
 #[test]
+fn generic_machine_instantiated_with_a_handle_is_refused_at_the_use_site() {
+    // The purity proof is deferred to instantiation (D427), so the refusal
+    // lands where the impure argument is chosen and names both the argument
+    // and the machine.
+    let output = typecheck_isolated(
+        r"
+        actor Worker {
+            let id: i64,
+
+            receive fn ping() -> i64 {
+                return self.id;
+            }
+        }
+        machine Slot<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: T },
+            on Put: Empty => Full {
+                .Full { value: event.value }
+            }
+            on Clear: Full => Empty {
+                .Empty
+            }
+            default { state }
+        }
+        fn main() {
+            var slot: Slot<LocalPid<Worker>> = .Empty;
+        }
+        ",
+    );
+    let refusal = output
+        .errors
+        .iter()
+        .find(|error| error.message.contains("cannot be instantiated"))
+        .unwrap_or_else(|| panic!("expected an instantiation refusal: {:#?}", output.errors));
+    assert!(
+        refusal.message.contains("Slot") && refusal.message.contains("LocalPid<Worker>"),
+        "the refusal must name the machine and the argument: {}",
+        refusal.message
+    );
+}
+
+#[test]
+fn generic_machine_instantiated_with_a_value_type_is_admitted() {
+    // Negative control for the refusal above: the same machine at a pure
+    // argument carries no diagnostic.
+    let output = typecheck_isolated(
+        r"
+        machine Slot<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: T },
+            on Put: Empty => Full {
+                .Full { value: event.value }
+            }
+            on Clear: Full => Empty {
+                .Empty
+            }
+            default { state }
+        }
+        fn main() {
+            var slot: Slot<i64> = .Empty;
+            let _ = slot.step(.Put { value: 3 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a generic machine at a value type must type-check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_machine_no_argument_could_purify_is_refused_at_the_declaration() {
+    // A state payload that carries external identity for every argument can
+    // never be purified by an instantiation, so it fails where it is written
+    // rather than waiting for a use site that may not exist.
+    let output = typecheck_isolated(
+        r"
+        actor Worker {
+            let id: i64,
+
+            receive fn ping() -> i64 {
+                return self.id;
+            }
+        }
+        type Pair<T> {
+            left: T,
+            right: LocalPid<Worker>,
+        }
+        machine Holder<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: Pair<T> },
+            on Put: Empty => Empty {
+                .Empty
+            }
+            on Clear: Full => Empty {
+                .Empty
+            }
+            default { state }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("not demonstrably pure")),
+        "an unconditionally impure generic machine must be refused at its \
+         declaration: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn machine_transition_supervisor_spawn_refused_as_impure() {
     // Spawning a supervisor from a transition body is refused by machine
     // normalization, which runs before HIR. This replaces the HIR pre-pass

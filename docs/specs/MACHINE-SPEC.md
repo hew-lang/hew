@@ -146,10 +146,13 @@ Embedding the value in an actor does not move those effects into `step`.
 
 ## Implementation scope
 
-The native evaluator supports concrete ordinary machines, owning value
-payloads, guarded fallback, source wildcards, dynamic targets, hooks and typed
-outputs. Const parameters, composite state evaluation, unclassified generic
-payloads and additional source forms are not yet admitted by this path.
+The native evaluator supports ordinary machines, owning value payloads,
+guarded fallback, source wildcards, dynamic targets, hooks and typed outputs.
+A generic machine is admitted: its purity proof is deferred to each concrete
+instantiation, so a machine instantiated with a type that carries external
+identity is refused where that argument is chosen, and one no argument could
+purify is refused at its declaration. Const parameters, composite state
+evaluation and additional source forms are not yet admitted by this path.
 Parser or diagram support for a form is not evidence of executable support.
 
 Machine normalization precedes body checking and HIR. Generated state and

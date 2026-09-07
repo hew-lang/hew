@@ -24963,6 +24963,151 @@ impl LowerCtx {
         }
     }
 
+    /// `for c in s` over `string` and `for b in raw` over `bytes`.
+    ///
+    /// Both lower to `for __i in 0..seq.len() { let c = seq[__i]; body }` over
+    /// a single-evaluation binding of the sequence. `string` indexes
+    /// codepoints and `bytes` indexes bytes, matching `s[i]` exactly.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear expansion: source temp, length, counter, element binding and loop"
+    )]
+    fn lower_for_sequence_index_desugar(
+        &mut self,
+        sequence: HirExpr,
+        element: (&str, &Span),
+        body: &Block,
+        label: Option<&String>,
+        span: Span,
+        iterable_span: &Span,
+    ) -> HirExprKind {
+        let (var_name, pattern_span) = element;
+        let sequence_ty = sequence.ty.clone();
+        let (element_ty, length_family) = if sequence_ty == ResolvedTy::String {
+            (ResolvedTy::Char, hew_types::RuntimeCallFamily::StringLen)
+        } else {
+            (ResolvedTy::U8, hew_types::RuntimeCallFamily::BytesLen)
+        };
+
+        self.push_scope();
+        let block_scope = self.ids.scope();
+
+        let sequence_name = format!("__hew_for_seq_{}", self.ids.binding().0);
+        let sequence_binding = self.bind(
+            sequence_name.clone(),
+            sequence_ty.clone(),
+            false,
+            iterable_span.clone(),
+        );
+        let sequence_id = sequence_binding.id;
+        let sequence_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(sequence_binding, Some(sequence)),
+            span: iterable_span.clone(),
+        };
+
+        let length_receiver = self.make_binding_ref(
+            sequence_name.clone(),
+            sequence_id,
+            sequence_ty.clone(),
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+        let length_kind = self.collection_call_kind(
+            length_family,
+            vec![length_receiver],
+            &ResolvedTy::I64,
+            iterable_span,
+        );
+        let length = self.make_expr(
+            length_kind,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+
+        let index_name = format!("__hew_for_index_{}", self.ids.binding().0);
+        let index_binding = self.bind(
+            index_name.clone(),
+            ResolvedTy::I64,
+            false,
+            iterable_span.clone(),
+        );
+        let index_id = index_binding.id;
+        let start = self.make_i64_literal(0, iterable_span.clone());
+        let step = self.make_i64_literal(1, iterable_span.clone());
+
+        self.push_scope();
+        let element_binding = self.bind(
+            var_name.to_string(),
+            element_ty.clone(),
+            false,
+            pattern_span.clone(),
+        );
+        let container = self.make_binding_ref(
+            sequence_name,
+            sequence_id,
+            sequence_ty,
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+        let index = self.make_binding_ref(
+            index_name,
+            index_id,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+        let element = self.make_expr(
+            HirExprKind::Index {
+                container: Box::new(container),
+                index: Box::new(index),
+            },
+            element_ty,
+            IntentKind::Read,
+            pattern_span.clone(),
+        );
+        let element_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(element_binding, Some(element)),
+            span: pattern_span.clone(),
+        };
+        let mut loop_body = self.lower_block(body, &ResolvedTy::Unit);
+        loop_body.statements.insert(0, element_stmt);
+        self.pop_scope();
+
+        let loop_expr = self.make_expr(
+            HirExprKind::ForRange {
+                label: label.cloned(),
+                binding: index_binding,
+                start: Box::new(start),
+                end: Box::new(length),
+                inclusive: false,
+                step: Box::new(step),
+                descending: false,
+                body: loop_body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let loop_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(loop_expr),
+            span: span.clone(),
+        };
+        self.pop_scope();
+
+        HirExprKind::Block(HirBlock {
+            node: self.ids.node(),
+            scope: block_scope,
+            statements: vec![sequence_stmt, loop_stmt],
+            tail: None,
+            ty: ResolvedTy::Unit,
+            span,
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         clippy::if_not_else,
@@ -24987,6 +25132,21 @@ impl LowerCtx {
         };
         // Retain the checked iterable and source intent for iterator desugaring.
         let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
+
+        // `for c in s` / `for b in raw` are index walks, not cursors: the
+        // element is a scalar copy, so there is no iterator object to own and
+        // no clone recipe to prove. The sequence is bound once so a
+        // side-effectful source runs once and the length is read once.
+        if matches!(lowered_iterable.ty, ResolvedTy::String | ResolvedTy::Bytes) {
+            return self.lower_for_sequence_index_desugar(
+                lowered_iterable,
+                (&var_name, &pattern.1),
+                body,
+                label,
+                span,
+                &iterable.1,
+            );
+        }
 
         // Statements that must run before the iterator-cursor `Let` in the
         // for-in's outer block. The HashMap/HashSet arms push a single-eval

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1616u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1618u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1616] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -939,6 +939,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1616] = {
      "u32, i64, i64, ) -> BytesTriple\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_bytes_slice_owned",
+     "{\"native\": \"fn hew_bytes_slice_owned( *const BytesTriple, i64, i64, "
+     "*mut BytesTriple, )\", \"wasm32-wasip1\": \"fn hew_bytes_slice_owned( "
+     "*const BytesTriple, i64, i64, *mut BytesTriple, )\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_callable_clone",
      "{\"native\": \"fn hew_callable_clone( *const HewCallableValue, *mut "
      "HewCallableValue, ) -> i32\", \"wasm32-wasip1\": \"fn "
@@ -5900,7 +5906,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1616] = {
      "i64, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
      "hew_string_slice_codepoints_from( *const HewString, i64, ) -> *mut "
      "HewString\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_split",
      "{\"native\": \"fn hew_string_split( *const HewString, *const HewString, "
@@ -6970,6 +6976,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1616] = {
     {"hew_vec_append",
      "{\"native\": \"fn hew_vec_append( *mut HewVec, *const HewVec)\", "
      "\"wasm32-wasip1\": \"fn hew_vec_append( *mut HewVec, *const HewVec)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_vec_borrow_owned",
+     "{\"native\": \"fn hew_vec_borrow_owned( *const HewVec, i64, *mut "
+     "core::ffi::c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
+     "hew_vec_borrow_owned( *const HewVec, i64, *mut core::ffi::c_void, ) -> "
+     "bool\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_vec_clear",

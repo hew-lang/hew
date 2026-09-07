@@ -1473,6 +1473,38 @@ pub(crate) fn tcp_conn_read_available_result(handle: c_int) -> std::io::Result<A
     }
 }
 
+/// Read the socket's configured inactivity timeout before a native request.
+pub(crate) fn tcp_conn_timeout_result(
+    handle: c_int,
+    write: bool,
+) -> std::io::Result<Option<std::time::Duration>> {
+    let stream = match tcp_clone_stream_outcome(handle) {
+        CloneOutcome::Cloned(stream) => stream,
+        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        CloneOutcome::Failed(error) => return Err(error),
+    };
+    if write {
+        stream.write_timeout()
+    } else {
+        stream.read_timeout()
+    }
+}
+
+/// One nonblocking write for a reactor-owned request. The caller retains the
+/// connection loan and sets nonblocking mode before registering readiness.
+pub(crate) fn tcp_conn_write_some_result(handle: c_int, bytes: &[u8]) -> std::io::Result<usize> {
+    let mut stream = match tcp_clone_stream_outcome(handle) {
+        CloneOutcome::Cloned(stream) => stream,
+        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        CloneOutcome::Failed(error) => return Err(error),
+    };
+    let written = stream.write(bytes)?;
+    tcp_counters()
+        .bytes_written
+        .fetch_add(written as u64, Ordering::Relaxed);
+    Ok(written)
+}
+
 /// Open a TCP listener at `addr` (`host:port`).
 ///
 /// Returns a positive listener handle, or -1 on error.

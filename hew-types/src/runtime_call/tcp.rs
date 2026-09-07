@@ -15,7 +15,6 @@ pub enum TcpOp {
     ListenerPort,
     ListenerClose,
     ConnectionClose,
-    Write,
     ReadTimeout,
     WriteTimeout,
     Detach,
@@ -32,7 +31,6 @@ impl TcpOp {
             Self::ListenerPort => "hew_tcp_listener_local_port",
             Self::ListenerClose => "hew_tcp_listener_close",
             Self::ConnectionClose => "hew_tcp_close",
-            Self::Write => "hew_tcp_write",
             Self::ReadTimeout => "hew_tcp_set_read_timeout",
             Self::WriteTimeout => "hew_tcp_set_write_timeout",
             Self::Detach => "hew_tcp_detach",
@@ -96,7 +94,7 @@ impl TcpOp {
             Self::ConnectionClose => {
                 runtime_semantic_contract(&[CLOSE_CONNECTION], BitCopy(I32), &[])
             }
-            Self::Write | Self::BroadcastExcept => {
+            Self::BroadcastExcept => {
                 runtime_semantic_contract(&[CONNECTION, BYTES], BitCopy(I32), &[])
             }
             Self::ReadTimeout | Self::WriteTimeout => {

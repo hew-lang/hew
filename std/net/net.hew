@@ -668,15 +668,14 @@ impl ConnectionMethods for Connection {
     /// Write raw bytes to the connection.
     fn write(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, data)
+            await hew_tcp_write(conn, data)
         })
     }
     /// Write a UTF-8 string to the connection.
     fn write_string(conn: Connection, data: string) -> Result<(), WriteError> {
+        let payload = data.to_bytes();
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, unsafe {
-                hew_string_to_bytes(data)
-            })
+            await hew_tcp_write(conn, payload)
         })
     }
     /// Set the read timeout in milliseconds.
@@ -696,15 +695,14 @@ impl ConnectionMethods for Connection {
     /// Send raw bytes to the connection (alias for `write`).
     fn send(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, data)
+            await hew_tcp_write(conn, data)
         })
     }
     /// Send a UTF-8 string to the connection (alias for `write_string`).
     fn send_string(conn: Connection, data: string) -> Result<(), WriteError> {
+        let payload = data.to_bytes();
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, unsafe {
-                hew_string_to_bytes(data)
-            })
+            await hew_tcp_write(conn, payload)
         })
     }
 }
@@ -895,7 +893,6 @@ extern "C" {
     // none is declared (mirrors `hew_remote_pid_send`, whose real symbol
     // `hew_actor_send_by_id` is interned in codegen rather than declared in Hew).
     fn hew_tcp_detach(conn: Connection);
-    fn hew_string_to_bytes(s: string) -> bytes;
     fn hew_tcp_listener_close(consume listener: Listener) -> i32;
     fn hew_tcp_close(consume conn: Connection) -> i32;
     fn hew_tcp_set_read_timeout(conn: Connection, ms: i32) -> i32;

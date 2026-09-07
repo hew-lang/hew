@@ -41,6 +41,8 @@ pub enum AsyncIoResume {
     Bytes,
     /// Discard the successful byte count and return 0; return -1 on failure.
     WriteStatus,
+    /// Return the successful byte count; return -1 on failure.
+    WriteCount,
     /// Transfer an accepted connection; return the invalid handle on failure.
     Connection,
 }
@@ -74,6 +76,7 @@ pub enum AsyncIoOp {
     FileWriteString,
     FileWriteBytes,
     TcpRead,
+    TcpWrite,
     TcpAccept,
     TcpConnect,
     TcpConnectTimeout,
@@ -88,7 +91,7 @@ impl AsyncIoOp {
             | Self::FileWriteBytes
             | Self::TcpConnect
             | Self::TcpConnectTimeout => AsyncIoLoan::UntilSubmitReturns,
-            Self::TcpRead | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
+            Self::TcpRead | Self::TcpWrite | Self::TcpAccept => AsyncIoLoan::UntilQuiescent,
         }
     }
     #[must_use]
@@ -98,6 +101,7 @@ impl AsyncIoOp {
             Self::FileWriteString => "hew_file_write",
             Self::FileWriteBytes => "hew_file_write_bytes",
             Self::TcpRead => "hew_tcp_read",
+            Self::TcpWrite => "hew_tcp_write",
             Self::TcpAccept => "hew_tcp_accept",
             Self::TcpConnect => "hew_tcp_connect",
             Self::TcpConnectTimeout => "hew_tcp_connect_timeout",
@@ -113,6 +117,7 @@ impl AsyncIoOp {
             Self::FileWriteString => "hew_async_file_write_string",
             Self::FileWriteBytes => "hew_async_file_write",
             Self::TcpRead => "hew_async_tcp_read",
+            Self::TcpWrite => "hew_async_tcp_write",
             Self::TcpAccept => "hew_async_tcp_accept",
             Self::TcpConnect => "hew_async_tcp_connect",
             Self::TcpConnectTimeout => "hew_async_tcp_connect_timeout",
@@ -127,6 +132,7 @@ impl AsyncIoOp {
             Self::TcpAccept | Self::TcpConnect | Self::TcpConnectTimeout => {
                 AsyncIoResume::Connection
             }
+            Self::TcpWrite => AsyncIoResume::WriteCount,
         }
     }
 
@@ -176,6 +182,7 @@ impl AsyncIoOp {
                 FreshOwned(IoHandle(IoHandleKind::Connection)),
                 &[],
             ),
+            Self::TcpWrite => runtime_semantic_contract(&[CONNECTION, DATA], BitCopy(I32), &[]),
             Self::TcpAccept => runtime_semantic_contract(
                 &[LISTENER],
                 FreshOwned(IoHandle(IoHandleKind::Connection)),
@@ -205,6 +212,7 @@ impl RuntimeCallFamily {
                 "std.fs"
             }
             AsyncIoOp::TcpRead
+            | AsyncIoOp::TcpWrite
             | AsyncIoOp::TcpAccept
             | AsyncIoOp::TcpConnect
             | AsyncIoOp::TcpConnectTimeout => "std.net",
@@ -259,6 +267,12 @@ mod tests {
                 "std.net",
                 vec![connection.clone()],
                 ResolvedTy::Bytes,
+            ),
+            (
+                AsyncIoOp::TcpWrite,
+                "std.net",
+                vec![connection.clone(), ResolvedTy::Bytes],
+                ResolvedTy::I32,
             ),
             (AsyncIoOp::TcpAccept, "std.net", vec![listener], connection),
         ] {

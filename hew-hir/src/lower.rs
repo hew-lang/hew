@@ -19037,75 +19037,8 @@ impl LowerCtx {
                 )
             }
             Expr::Await(inner) => {
-                // NEW-1: `await conn.read()` / `await conn.read_string()` — the
-                // checker recorded the inner method-call span as a suspending
-                // read. Lower to `ConnAwaitRead` (MIR emits `SuspendingRead` for
-                // a suspendable caller, else the blocking read). The HIR type is
-                // the method's return type (`bytes` for read, `string` for
-                // read_string), already assigned to `expr` by the checker.
-                if let Some(&to_string) = self.conn_await_reads.get(&self.mk_key(&inner.1)) {
-                    if let Expr::MethodCall { receiver, .. } = &inner.0 {
-                        let conn = self.lower_expr(receiver, IntentKind::Read);
-                        // The await's value type is the read's return type:
-                        // `string` for `read_string`, `bytes` for raw `read`.
-                        let result_ty = if to_string {
-                            ResolvedTy::String
-                        } else {
-                            ResolvedTy::Bytes
-                        };
-
-                        let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class,
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ConnAwaitRead {
-                                conn: Box::new(conn),
-                                to_string,
-                                deadline_ns: None,
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                }
-                // NEW-2: `await listener.accept()` — the checker recorded the
-                // inner method-call span as a suspending accept. Lower to
-                // `ListenerAwaitAccept` (MIR emits `SuspendingAccept` for a
-                // suspendable caller, else the blocking accept). The value type is
-                // the accept's return type (`Connection`), captured from the
-                // checker's resolved type table (falling back to the qualified
-                // opaque name, which the codegen handle map recognises).
-                if self.listener_await_accepts.contains(&self.mk_key(&inner.1)) {
-                    if let Expr::MethodCall { receiver, .. } = &inner.0 {
-                        let listener = self.lower_expr(receiver, IntentKind::Read);
-                        let result_ty = self
-                            .resolved_expr_types
-                            .get(&self.mk_key(&inner.1))
-                            .cloned()
-                            .unwrap_or(ResolvedTy::Named {
-                                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
-                                args: vec![],
-                                builtin: None,
-                                is_opaque: true,
-                            });
-
-                        let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class,
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ListenerAwaitAccept {
-                                listener: Box::new(listener),
-                                deadline_ns: None,
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                }
+                // TCP methods retain their authored wrapper and checked return
+                // type. Their canonical extern call owns native I/O suspension.
                 // NEW-7: `await stream.recv()` over a `Stream<T>` — the
                 // checker wired the inner method call to the layout-witness
                 // `hew_stream_next_layout` entry (one symbol for every

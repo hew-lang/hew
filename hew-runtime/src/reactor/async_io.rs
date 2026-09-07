@@ -1,16 +1,79 @@
 //! Generic owned-operation adapter for the existing readiness loop.
 
+use crate::util::MutexExt;
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::async_io::{AcceptedConnection, HewAsyncIo, IoFailure, IoProducer, IoValue};
 
 use super::{
     deliver_orphan_close, ensure_reactor_started, unregister_fd, ActorIncarnation, HewIoPoller,
-    Pending, RegMode, Registration, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ,
+    Pending, RegMode, Registration, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ, HEW_IO_WRITE,
     LISTENER_ADMISSION_CLOSED, REACTOR_STATE, REACTOR_STOP,
 };
+
+/// The owned operation decides which readiness can make progress.
+#[derive(Clone)]
+pub(crate) enum AsyncIoAction {
+    Read { deadline: Option<Instant> },
+    Accept,
+    Write(Arc<Mutex<WriteProgress>>),
+}
+
+pub(crate) struct WriteProgress {
+    bytes: Vec<u8>,
+    written: usize,
+    timeout: Option<Duration>,
+    deadline: Option<Instant>,
+}
+
+impl AsyncIoAction {
+    pub(crate) fn write(bytes: Vec<u8>) -> Self {
+        Self::Write(Arc::new(Mutex::new(WriteProgress {
+            bytes,
+            written: 0,
+            timeout: None,
+            deadline: None,
+        })))
+    }
+
+    fn configure_timeout(&mut self, handle: i32) -> Result<(), IoFailure> {
+        let write = matches!(self, Self::Write(_));
+        if matches!(self, Self::Accept) {
+            return Ok(());
+        }
+        let timeout = crate::transport::tcp_conn_timeout_result(handle, write)
+            .map_err(|error| IoFailure::from_io("read TCP timeout setting", &error))?;
+        let deadline = timeout.and_then(|duration| Instant::now().checked_add(duration));
+        match self {
+            Self::Read { deadline: current } => *current = deadline,
+            Self::Write(progress) => {
+                let mut progress = progress.lock_or_recover();
+                progress.timeout = timeout;
+                progress.deadline = deadline;
+            }
+            Self::Accept => {}
+        }
+        Ok(())
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        match self {
+            Self::Read { deadline } => *deadline,
+            Self::Write(progress) => progress.lock_or_recover().deadline,
+            Self::Accept => None,
+        }
+    }
+
+    pub(super) fn interest(&self) -> i32 {
+        match self {
+            Self::Write(_) => HEW_IO_WRITE,
+            Self::Read { .. } | Self::Accept => HEW_IO_READ,
+        }
+    }
+}
 
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
@@ -38,7 +101,7 @@ pub(super) fn in_flight() -> bool {
 
 pub(crate) fn reactor_await_async_io(
     handle: i32,
-    accept: bool,
+    mut action: AsyncIoAction,
     operation: Arc<HewAsyncIo>,
 ) -> Result<(), IoFailure> {
     if crate::runtime::rt_current_opt().is_none() {
@@ -52,6 +115,7 @@ pub(crate) fn reactor_await_async_io(
             &io::Error::from_raw_os_error(libc::ECANCELED),
         ));
     }
+    let accept = matches!(action, AsyncIoAction::Accept);
     let fd = if accept {
         crate::transport::tcp_listener_raw_fd(handle)
     } else {
@@ -63,6 +127,7 @@ pub(crate) fn reactor_await_async_io(
             &io::Error::from_raw_os_error(libc::EBADF),
         )
     })?;
+    action.configure_timeout(handle)?;
     let nonblocking = if accept {
         crate::transport::tcp_listener_set_nonblocking_result(handle, true)
     } else {
@@ -105,7 +170,7 @@ pub(crate) fn reactor_await_async_io(
                     },
                 },
                 ActorIncarnation::NONE,
-                RegMode::AsyncIo { operation, accept },
+                RegMode::AsyncIo { operation, action },
             ),
         });
         Ok(())
@@ -183,18 +248,23 @@ pub(super) fn handle_ready(
     fd: i32,
     handle: i32,
     events: i32,
-    accept: bool,
+    action: &AsyncIoAction,
     operation: &HewAsyncIo,
 ) {
     if !operation.is_pending() {
         unregister_fd(poller, fd);
         return;
     }
-    if events & (HEW_IO_READ | HEW_IO_HUP | HEW_IO_ERROR) == 0 {
+    if events & (action.interest() | HEW_IO_HUP | HEW_IO_ERROR) == 0 {
         return;
     }
     let closed = events & (HEW_IO_HUP | HEW_IO_ERROR) != 0;
-    let result = if accept {
+    let result = if let AsyncIoAction::Write(progress) = action {
+        let Some(result) = write_ready(handle, progress, operation) else {
+            return;
+        };
+        result
+    } else if matches!(action, AsyncIoAction::Accept) {
         match crate::transport::tcp_listener_accept_nonblocking_result(handle) {
             Ok(crate::transport::AcceptOutcome::Accepted(connection)) => {
                 Ok(IoValue::Connection(AcceptedConnection(connection)))
@@ -230,6 +300,73 @@ pub(super) fn handle_ready(
     // read on this handle; it must not race an old unregister after its new add.
     unregister_fd(poller, fd);
     operation.complete(result);
+}
+
+/// Preserve the committed prefix across `WouldBlock`. Each syscall is
+/// nonblocking, and cancellation can stop the loop between partial writes.
+fn write_ready(
+    handle: i32,
+    progress: &Mutex<WriteProgress>,
+    operation: &HewAsyncIo,
+) -> Option<Result<IoValue, IoFailure>> {
+    let mut progress = progress.lock_or_recover();
+    while progress.written < progress.bytes.len() {
+        if !operation.is_pending() {
+            return None;
+        }
+        match crate::transport::tcp_conn_write_some_result(
+            handle,
+            &progress.bytes[progress.written..],
+        ) {
+            Ok(0) => {
+                return Some(Err(IoFailure::from_io(
+                    "write TCP connection",
+                    &io::Error::new(io::ErrorKind::WriteZero, "socket accepted no bytes"),
+                )))
+            }
+            Ok(written) => {
+                progress.written += written;
+                progress.deadline = progress
+                    .timeout
+                    .and_then(|duration| Instant::now().checked_add(duration));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return None,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Some(Err(IoFailure::from_io("write TCP connection", &error))),
+        }
+    }
+    Some(Ok(IoValue::Count(
+        i64::try_from(progress.written).expect("native write count fits i32"),
+    )))
+}
+
+/// Expire requests on the reactor thread before delivering more readiness.
+/// Retain producer leases under the registry lock until removal and completion
+/// finish, so a resumed caller cannot close or reuse the connection early.
+pub(super) fn expire_deadlines(poller: *mut HewIoPoller) {
+    let now = Instant::now();
+    let expired: Vec<_> = REACTOR_STATE.access(|state| {
+        state
+            .registry
+            .iter()
+            .filter_map(|(fd, registration)| {
+                let RegMode::AsyncIo { operation, action } = &registration.mode else {
+                    return None;
+                };
+                action
+                    .deadline()
+                    .filter(|deadline| *deadline <= now)
+                    .map(|_| (*fd, operation.clone(), Flight::new()))
+            })
+            .collect()
+    });
+    for (fd, operation, _flight) in expired {
+        unregister_fd(poller, fd);
+        operation.complete(Err(IoFailure::from_io(
+            "TCP I/O timeout",
+            &io::Error::from_raw_os_error(libc::ETIMEDOUT),
+        )));
+    }
 }
 
 pub(super) fn cancel_all() -> usize {

@@ -2253,6 +2253,17 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || (matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: None,
+                is_opaque: true,
+                ..
+            }
+        ) && module
+            .type_facts
+            .get(&hew_types::TypeInstanceKey(ty.clone()))
+            .is_some_and(|row| row.class == hew_types::ValueClass::BitCopy))
         || crate::stream_element(ty).is_some()
         || crate::sink_element(ty).is_some()
         || module.actors.iter().any(|actor| actor.admits_target(ty))

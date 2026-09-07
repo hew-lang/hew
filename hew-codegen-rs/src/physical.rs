@@ -785,6 +785,8 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     fn emit_record_close(
         &self,
         value: BasicValueEnum<'ctx>,
+        layout: &PhysicalLayout,
+        ty: &ResolvedTy,
         close: CallableId,
     ) -> CodegenResult<()> {
         let callee = callable(self.module, close)?;
@@ -856,7 +858,16 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .build_unreachable()
             .llvm_ctx("terminate failing record release")?;
         self.builder.position_at_end(released);
-        Ok(())
+        // `close` borrows the record, so the members are still this glue's to
+        // release once the program's own cleanup has run.
+        let members = self
+            .module
+            .aggregate_glue
+            .iter()
+            .find(|glue| glue.ty == *ty)
+            .ok_or_else(|| CodegenError::FailClosed("record release has no member glue".into()))?
+            .id;
+        self.destroy_loaded_value(value, layout, DestroyAction::Aggregate(members))
     }
 
     fn clone_loaded_value(
@@ -1017,7 +1028,8 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 if let hew_mir::physical::ResourceRelease::RecordClose { close, .. } =
                     &resource.release
                 {
-                    return self.emit_record_close(value, *close);
+                    let ty = resource.ty.clone();
+                    return self.emit_record_close(value, layout, &ty, *close);
                 }
                 let family = resource
                     .release

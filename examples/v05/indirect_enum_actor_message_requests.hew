@@ -46,8 +46,14 @@ fn main() -> i64 {
         after 5s => -4,
     };
     let (joined_a_result, joined_b_result) = await fork (scorer.score(30, .Node(.Leaf(5), .Leaf(6))), scorer.score(40, .Node(.Leaf(7), .Leaf(8))));
-    let joined_a = match joined_a_result { .Ok(value) => value, .Err(_) => -1 };
-    let joined_b = match joined_b_result { .Ok(value) => value, .Err(_) => -1 };
+    let joined_a = match joined_a_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let joined_b = match joined_b_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
     let suspended_ask = match await coordinator.ask_score(50, .Node(.Leaf(9), .Leaf(10))) {
         .Ok(value) => value,
         .Err(_) => -5,

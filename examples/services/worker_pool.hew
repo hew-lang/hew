@@ -62,10 +62,22 @@ fn main() {
     // ── Fan-out: distribute work, collect all results ──
     println("--- Fan-out: 4 jobs across 4 workers ---");
     let (r0_result, r1_result, r2_result, r3_result) = await fork (w0.compute(10), w1.compute(12), w2.compute(8), w3.compute(14));
-    let r0 = match r0_result { .Ok(value) => value, .Err(_) => -1 };
-    let r1 = match r1_result { .Ok(value) => value, .Err(_) => -1 };
-    let r2 = match r2_result { .Ok(value) => value, .Err(_) => -1 };
-    let r3 = match r3_result { .Ok(value) => value, .Err(_) => -1 };
+    let r0 = match r0_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r1 = match r1_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r2 = match r2_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r3 = match r3_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
     let total = r0 + r1 + r2 + r3;
     println(f"Results: {r0}, {r1}, {r2}, {r3}  (sum={total})");
 
@@ -73,10 +85,22 @@ fn main() {
     println("");
     println("--- Round 2: mixed workloads ---");
     let (a_result, b_result, c_result, d_result) = await fork (w0.compute(6), w1.compute(9), w2.compute(11), w3.compute(7));
-    let a = match a_result { .Ok(value) => value, .Err(_) => -1 };
-    let b = match b_result { .Ok(value) => value, .Err(_) => -1 };
-    let c = match c_result { .Ok(value) => value, .Err(_) => -1 };
-    let d = match d_result { .Ok(value) => value, .Err(_) => -1 };
+    let a = match a_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let b = match b_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let c = match c_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let d = match d_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
     println(f"Results: {a}, {b}, {c}, {d}");
 
     // ── Crash and recovery ──
@@ -88,10 +112,22 @@ fn main() {
     // ChildRef re-resolves worker 2's current incarnation after restart.
     println("--- Post-crash fan-out ---");
     let (p_result, q_result, r_result, s_result) = await fork (w0.compute(5), w1.compute(5), w2.compute(5), w3.compute(5));
-    let p = match p_result { .Ok(value) => value, .Err(_) => -1 };
-    let q = match q_result { .Ok(value) => value, .Err(_) => -1 };
-    let r = match r_result { .Ok(value) => value, .Err(_) => -1 };
-    let s = match s_result { .Ok(value) => value, .Err(_) => -1 };
+    let p = match p_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let q = match q_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r = match r_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let s = match s_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
     println(f"Results: {p}, {q}, {r}, {s}  (all workers operational)");
     println("");
     println("Pool survived the crash. Supervision + batch fork = scatter/gather");

@@ -301,6 +301,53 @@ fn certified_fault_cleanup_drains_tasks_without_admitting_ordinary_continuation(
 }
 
 #[test]
+fn certified_cleanup_accepts_a_proven_impossible_dispatch_edge_but_nothing_it_hides() {
+    let mut module = fixture(Case::LinearTrap);
+    let function = probe(&mut module);
+    let trap = function.blocks[0].terminator.clone();
+    let edge = |target| PhysicalEdge {
+        target: BlockId(target),
+        transfers: vec![],
+        leaf_transfers: vec![],
+    };
+    let scalar = function.parameters[1];
+    function.blocks[0].terminator = PhysicalTerminator::CleanupDispatch {
+        normal: edge(1),
+        fault: edge(2),
+    };
+    function.blocks.extend([
+        PhysicalBlock {
+            id: BlockId(1),
+            arguments: vec![],
+            ops: vec![],
+            terminator: trap,
+        },
+        PhysicalBlock {
+            id: BlockId(2),
+            arguments: vec![],
+            ops: vec![],
+            terminator: PhysicalTerminator::Unreachable,
+        },
+    ]);
+    partial::verify_trap_cleanup_refinement(function).unwrap();
+
+    // An unreachable continuation is admitted for being unexecutable, not as
+    // a licence to leave the region or to carry ordinary work into it.
+    for escape in [false, true] {
+        let mut broken = function.clone();
+        if escape {
+            broken.blocks[2].terminator = PhysicalTerminator::Return { value: None };
+        } else {
+            broken.blocks[2].ops.push(PhysicalOp::Const {
+                dest: scalar,
+                value: PhysicalConst::Bool(false),
+            });
+        }
+        assert!(partial::verify_trap_cleanup_refinement(&broken).is_err());
+    }
+}
+
+#[test]
 fn expanded_local_partitions_refuse_missing_zero_sized_cells_and_synthetic_root_bits() {
     let semantic = partial_fixture::local_module(partial_fixture::Case::MixedReplacement);
     let module = lower_physical_module(&semantic, target_for_inventory(&semantic))

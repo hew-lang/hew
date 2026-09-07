@@ -509,7 +509,14 @@ pub(super) fn verify_trap_cleanup_refinement(
                 | PhysicalTerminator::EnterDefer { .. }
                 | PhysicalTerminator::FinishDefer { .. }
                 | PhysicalTerminator::CheckedRaiseFault { .. }
-                | PhysicalTerminator::RecoverFault { .. } => {}
+                | PhysicalTerminator::RecoverFault { .. }
+                // Fault dispatch can prove one structurally present cleanup
+                // edge impossible; physical lowering keeps the block and
+                // marks it unreachable. Such a continuation discharges the
+                // obligation structurally: if flow ever does reach it, the
+                // initialization walk already refuses it for abandoning the
+                // active fault, pending parks, live loans or active storage.
+                | PhysicalTerminator::Unreachable => {}
                 PhysicalTerminator::CleanupDispatch { fault, .. } => {
                     pending.push(((fault.target, 0), false));
                 }

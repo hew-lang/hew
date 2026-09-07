@@ -3667,6 +3667,24 @@ impl Checker {
                 }
             }
 
+            (
+                Expr::Unary {
+                    op: UnaryOp::BitNot,
+                    operand,
+                },
+                ty,
+            ) if ty.is_integer() && !ty.is_integer_literal() => {
+                // Complement uses the contextual width for both its operand
+                // and result, including nested literal expressions.
+                let operand_ty = self.check_against(&operand.0, &operand.1, expected);
+                if matches!(operand_ty, Ty::Never | Ty::Error) {
+                    operand_ty
+                } else {
+                    self.record_type(span, expected);
+                    expected.clone()
+                }
+            }
+
             // Integer literal can coerce to any integer type (with range check)
             (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
                 if !expected.is_numeric_literal() {

@@ -5,6 +5,22 @@
 pub(super) use super::*;
 
 #[test]
+fn contextual_complement_rejects_invalid_operands() {
+    for source in [
+        "fn main() { let value: u8 = ~256; }",
+        "fn main() { let value: u8 = ~-1; }",
+        "fn main() { let value: u8 = ~true; }",
+        "fn main() { let input: u64 = 1; let value: u8 = ~input; }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            !output.errors.is_empty(),
+            "invalid complement accepted: {source}"
+        );
+    }
+}
+
+#[test]
 fn contextual_variants_resolve_only_from_the_expected_type() {
     let output = check_source(
         r"

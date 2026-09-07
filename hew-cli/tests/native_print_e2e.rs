@@ -55,6 +55,29 @@ fn main() { print_str("kept"); }
     );
 }
 
+#[test]
+fn contextual_complements_preserve_unsigned_widths() {
+    check_print_output(
+        r"
+fn mask() -> u64 { ~0 }
+fn echo(value: u8) -> u8 { value }
+fn main() {
+    let byte: u8 = ~0;
+    let word: u32 = ~(1 + 2);
+    let wide: u64 = ~0;
+    let nested: u8 = ~~7;
+    println(byte);
+    println(word);
+    println(wide);
+    println(nested);
+    println(mask());
+    println(echo(~1));
+}
+",
+        "255\n4294967292\n18446744073709551615\n7\n18446744073709551615\n254\n",
+    );
+}
+
 fn check_print_output(source: &str, expected: &str) {
     require_codegen();
     let directory = tempdir();

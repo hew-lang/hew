@@ -3733,10 +3733,11 @@ fn record_field_map_and_set_constructors_publish_their_runtime_targets() {
 }
 
 /// Negative control: a map constructor whose expected type is not a `HashMap`
-/// must not publish the map constructor target. Falling through to the ordinary
-/// resolver is what produces the type-mismatch diagnostic.
+/// is a type error, and the mismatch does not change which callee was written.
+/// `HashMap.new` is the map constructor whatever the annotation says, so the
+/// published target stays the map family and the diagnostic carries the refusal.
 #[test]
-fn map_constructor_against_a_non_map_expectation_publishes_no_target() {
+fn map_constructor_against_a_non_map_expectation_is_rejected() {
     let output = check_source(
         r"
         fn main() {
@@ -3750,13 +3751,13 @@ fn map_constructor_against_a_non_map_expectation_publishes_no_target() {
         "a map constructor assigned to a `Vec` binding must be rejected"
     );
     assert!(
-        !output.direct_call_targets.values().any(|target| matches!(
+        output.direct_call_targets.values().any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::HashMapNew
             )
         )),
-        "a mismatched map constructor must not publish the map target: {:#?}",
+        "the map constructor keeps its callee identity under a mismatch: {:#?}",
         output.direct_call_targets
     );
 }

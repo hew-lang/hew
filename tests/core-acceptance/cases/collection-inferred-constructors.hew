@@ -1,0 +1,24 @@
+// Unannotated collection constructors take their element types from later use.
+fn main() {
+    var counts = HashMap.new();
+    counts.insert("alpha", 1);
+    counts.insert("beta", 2);
+
+    var names = Vec.new();
+    names.push("alpha");
+    names.push("beta");
+
+    var seen = HashSet.new();
+    seen.insert(1);
+    seen.insert(2);
+    seen.insert(1);
+
+    var sums = Vec.new();
+    for name in names {
+        sums.push(counts[name]);
+    }
+
+    println(names.len());
+    println(seen.len());
+    println(sums[0] + sums[1]);
+}

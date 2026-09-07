@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-inferred-constructors"
+intent = "Unannotated `Vec.new()`, `HashMap.new()` and `HashSet.new()` infer their element types from later use, and each collection is released once."
+source = "cases/collection-inferred-constructors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n2\n3\n"
+exit = 0

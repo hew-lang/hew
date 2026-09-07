@@ -1594,3 +1594,38 @@ timeout_seconds = 15
 stdout = "guarded\nguarded cleaned\nMAIN cleaned\n"
 stderr = "hew: failure: UserPanic (212): guard failure\n"
 exit = 212
+
+[[case]]
+id = "assertion-equality-values"
+intent = "assert_eq and assert_ne compare scalars, strings and owned records through the language's selected equality, evaluate each argument once and leave both operands usable afterwards."
+source = "cases/assertion-equality-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "evaluated\nHERE\n3\n"
+exit = 0
+
+[[case]]
+id = "assertion-equality-fault"
+intent = "A failed assert_eq over owned record operands reports both rendered values, runs deferred cleanup and releases the owned temporary exactly once."
+source = "cases/assertion-equality-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: Point(3, ACTUAL)\n  right: Point(4, EXPECTED)\n"
+exit = 212
+
+[[case]]
+id = "assertion-inequality-fault"
+intent = "A failed assert_ne over owned string temporaries reports both rendered values and releases them on the fault path."
+source = "cases/assertion-inequality-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: left == right\n  left: SAME\n  right: SAME\n"
+exit = 212

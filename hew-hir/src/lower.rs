@@ -12244,6 +12244,201 @@ impl LowerCtx {
         Ok(lowered)
     }
 
+    /// Normalize `assert_eq(a, b)` / `assert_ne(a, b)` into ordinary HIR.
+    ///
+    /// The checker registers both as generic builtins over one type parameter
+    /// `T: Eq + Display` (`registration.rs`), so by the time lowering runs the
+    /// operands share a type that carries a selected equality and a renderable
+    /// `Display`. Nothing downstream needs an assertion concept: the call
+    /// becomes
+    ///
+    /// ```text
+    /// {
+    ///     let __hew_assert_left_N  = <left>;
+    ///     let __hew_assert_right_N = <right>;
+    ///     if __hew_assert_left_N != __hew_assert_right_N {
+    ///         panic("assertion failed: left != right\n  left: …\n  right: …");
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Binding both operands first is what makes each argument expression
+    /// evaluate exactly once even though the comparison and the failure message
+    /// each read them. The comparison is the ordinary `!=` / `==` the language
+    /// already lowers, so SIR selects the same `Eq` capability it selects for a
+    /// hand-written comparison, and the two locals are ordinary owned bindings
+    /// released on every exit including the fault path. `panic` reuses the one
+    /// logical-fault path `assert` uses.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the desugar is one shape; splitting it would scatter the bindings it threads"
+    )]
+    fn lower_equality_assertion(
+        &mut self,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let expect_equal = name == "assert_eq";
+        let Ok([left, right]) = <[HirExpr; 2]>::try_from(args) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: "equality assertion did not receive exactly two operands".to_string(),
+                },
+                span.clone(),
+                "checker must reject an equality assertion with the wrong arity",
+            ));
+            return (
+                HirExprKind::Unsupported(format!("`{name}` requires exactly two operands")),
+                ResolvedTy::Unit,
+            );
+        };
+        let operand_ty = left.ty.clone();
+
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let left_name = format!("__hew_assert_left_{}", self.ids.binding().0);
+        let left_binding = self.bind(left_name.clone(), operand_ty.clone(), false, span.clone());
+        let left_id = left_binding.id;
+        let right_name = format!("__hew_assert_right_{}", self.ids.binding().0);
+        let right_binding = self.bind(right_name.clone(), operand_ty.clone(), false, span.clone());
+        let right_id = right_binding.id;
+        let mut statements = vec![
+            HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(left_binding, Some(left)),
+                span: span.clone(),
+            },
+            HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(right_binding, Some(right)),
+                span: span.clone(),
+            },
+        ];
+
+        // The failure condition is the negation of what the assertion claims.
+        let condition_op = if expect_equal {
+            hew_parser::ast::BinaryOp::NotEqual
+        } else {
+            hew_parser::ast::BinaryOp::Equal
+        };
+        let condition_left = self.make_binding_ref(
+            left_name.clone(),
+            left_id,
+            operand_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let condition_right = self.make_binding_ref(
+            right_name.clone(),
+            right_id,
+            operand_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: condition_op,
+                left: Box::new(condition_left),
+                right: Box::new(condition_right),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let left_ref = self.make_binding_ref(
+            left_name,
+            left_id,
+            operand_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let right_ref = self.make_binding_ref(
+            right_name,
+            right_id,
+            operand_ty,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let message = self.assertion_failure_message(expect_equal, left_ref, right_ref, span);
+        let panic_call = self.build_catalog_call("panic", vec![message], span.clone());
+        let then_scope = self.ids.scope();
+        let then_block = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::Never, &self.type_classes),
+            ty: ResolvedTy::Never,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: then_scope,
+                statements: Vec::new(),
+                tail: Some(Box::new(panic_call)),
+                ty: ResolvedTy::Never,
+                span: span.clone(),
+            }),
+            span: span.clone(),
+        };
+        let guard = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_block),
+                else_expr: None,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(guard),
+            span: span.clone(),
+        });
+        self.pop_scope();
+
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: span.clone(),
+            }),
+            ResolvedTy::Unit,
+        )
+    }
+
+    /// Build the string an equality assertion panics with, rendering both
+    /// operands through the same `Display` spine f-string interpolation uses.
+    fn assertion_failure_message(
+        &mut self,
+        expect_equal: bool,
+        left: HirExpr,
+        right: HirExpr,
+        span: &Span,
+    ) -> HirExpr {
+        let claim = if expect_equal {
+            "assertion failed: left != right\n  left: "
+        } else {
+            "assertion failed: left == right\n  left: "
+        };
+        let mut message = self.build_string_literal_expr(claim.to_string(), span.clone());
+        for (separator, operand) in [(None, left), (Some("\n  right: "), right)] {
+            if let Some(separator) = separator {
+                let literal = self.build_string_literal_expr(separator.to_string(), span.clone());
+                message =
+                    self.build_catalog_call("string_concat", vec![message, literal], span.clone());
+            }
+            let rendered = self.lower_display_dispatch(operand, span.clone());
+            message =
+                self.build_catalog_call("string_concat", vec![message, rendered], span.clone());
+        }
+        message
+    }
+
     /// Lower an `Expr::InterpolatedString` to a chain of `string_concat` calls
     /// joining literal segments with `Display::fmt(…)` results.  Empty
     /// interpolations collapse to the empty-string literal.  The result type
@@ -18531,6 +18726,8 @@ impl LowerCtx {
                         // Fall through to regular-call to keep checker-stream
                         // coverage for the malformed source.
                         self.lower_regular_call(function, args, &span, site)
+                    } else if matches!(name.as_str(), "assert_eq" | "assert_ne") {
+                        self.lower_equality_assertion(name, args, &span)
                     } else if stdlib_catalog::is_overloaded_builtin(name) {
                         let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
                         if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {

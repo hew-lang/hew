@@ -350,15 +350,6 @@ const BYTES_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::U8];
 const BYTES_I64: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64];
 const BYTES_I64_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64, BuiltinTy::U8];
 const BYTES_BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::Bytes];
-const U8_U8: &[BuiltinTy] = &[BuiltinTy::U8, BuiltinTy::U8];
-const I8_I8: &[BuiltinTy] = &[BuiltinTy::I8, BuiltinTy::I8];
-const I16_I16: &[BuiltinTy] = &[BuiltinTy::I16, BuiltinTy::I16];
-const I32_I32: &[BuiltinTy] = &[BuiltinTy::I32, BuiltinTy::I32];
-const ISIZE_ISIZE: &[BuiltinTy] = &[BuiltinTy::Isize, BuiltinTy::Isize];
-const U16_U16: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::U16];
-const U32_U32: &[BuiltinTy] = &[BuiltinTy::U32, BuiltinTy::U32];
-const U64_U64: &[BuiltinTy] = &[BuiltinTy::U64, BuiltinTy::U64];
-const USIZE_USIZE: &[BuiltinTy] = &[BuiltinTy::Usize, BuiltinTy::Usize];
 const DURATION: &[BuiltinTy] = &[BuiltinTy::Duration];
 const INSTANT: &[BuiltinTy] = &[BuiltinTy::Instant];
 const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
@@ -388,7 +379,6 @@ const VEC_ANY_I64_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, Bu
 const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
-const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
 const U16_STRING: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::String];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
@@ -457,18 +447,6 @@ macro_rules! tostring_entry {
             $params,
             BuiltinTy::String,
             BuiltinLinkage::ToStringShim { symbol: $symbol },
-        )
-    };
-}
-
-macro_rules! assert_entry {
-    ($name:literal, $of:literal, $params:expr, $symbol:literal) => {
-        overload(
-            $name,
-            $of,
-            $params,
-            BuiltinTy::Unit,
-            BuiltinLinkage::RuntimeFfiShim { symbol: $symbol },
         )
     };
 }
@@ -703,73 +681,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_concat",
         },
     ),
-    // Class A: monomorphic assertion and len overloads.
-    assert_entry!("assert_eq_i8", "assert_eq", I8_I8, "hew_assert_eq_i8"),
-    assert_entry!("assert_eq_i16", "assert_eq", I16_I16, "hew_assert_eq_i16"),
-    assert_entry!("assert_eq_i32", "assert_eq", I32_I32, "hew_assert_eq_i32"),
-    assert_entry!("assert_eq_i64", "assert_eq", I64_I64, "hew_assert_eq_i64"),
-    assert_entry!(
-        "assert_eq_isize",
-        "assert_eq",
-        ISIZE_ISIZE,
-        "hew_assert_eq_isize"
-    ),
-    assert_entry!("assert_eq_u8", "assert_eq", U8_U8, "hew_assert_eq_u8"),
-    assert_entry!("assert_eq_u16", "assert_eq", U16_U16, "hew_assert_eq_u16"),
-    assert_entry!("assert_eq_u32", "assert_eq", U32_U32, "hew_assert_eq_u32"),
-    assert_entry!("assert_eq_u64", "assert_eq", U64_U64, "hew_assert_eq_u64"),
-    assert_entry!(
-        "assert_eq_usize",
-        "assert_eq",
-        USIZE_USIZE,
-        "hew_assert_eq_usize"
-    ),
-    assert_entry!(
-        "assert_eq_str",
-        "assert_eq",
-        STRING_STRING,
-        "hew_assert_eq_str"
-    ),
-    assert_entry!("assert_eq_f64", "assert_eq", F64_F64, "hew_assert_eq_f64"),
-    assert_entry!(
-        "assert_eq_bool",
-        "assert_eq",
-        BOOL_BOOL,
-        "hew_assert_eq_bool"
-    ),
-    assert_entry!("assert_ne_i8", "assert_ne", I8_I8, "hew_assert_ne_i8"),
-    assert_entry!("assert_ne_i16", "assert_ne", I16_I16, "hew_assert_ne_i16"),
-    assert_entry!("assert_ne_i32", "assert_ne", I32_I32, "hew_assert_ne_i32"),
-    assert_entry!("assert_ne_i64", "assert_ne", I64_I64, "hew_assert_ne_i64"),
-    assert_entry!(
-        "assert_ne_isize",
-        "assert_ne",
-        ISIZE_ISIZE,
-        "hew_assert_ne_isize"
-    ),
-    assert_entry!("assert_ne_u8", "assert_ne", U8_U8, "hew_assert_ne_u8"),
-    assert_entry!("assert_ne_u16", "assert_ne", U16_U16, "hew_assert_ne_u16"),
-    assert_entry!("assert_ne_u32", "assert_ne", U32_U32, "hew_assert_ne_u32"),
-    assert_entry!("assert_ne_u64", "assert_ne", U64_U64, "hew_assert_ne_u64"),
-    assert_entry!(
-        "assert_ne_usize",
-        "assert_ne",
-        USIZE_USIZE,
-        "hew_assert_ne_usize"
-    ),
-    assert_entry!(
-        "assert_ne_str",
-        "assert_ne",
-        STRING_STRING,
-        "hew_assert_ne_str"
-    ),
-    assert_entry!("assert_ne_f64", "assert_ne", F64_F64, "hew_assert_ne_f64"),
-    assert_entry!(
-        "assert_ne_bool",
-        "assert_ne",
-        BOOL_BOOL,
-        "hew_assert_ne_bool"
-    ),
+    // Class A: monomorphic len overloads.
     overload(
         "len_str",
         "len",
@@ -2782,10 +2694,7 @@ pub fn missing_import_hint(module: &str) -> String {
 
 #[must_use]
 pub fn is_overloaded_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "println" | "print" | "to_string" | "assert_eq" | "assert_ne" | "len"
-    )
+    matches!(name, "println" | "print" | "to_string" | "len")
 }
 
 #[must_use]
@@ -2801,12 +2710,6 @@ fn overload_lowered_name(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static 
         }
         "print" if arg_tys.len() == 1 => print_suffix(&arg_tys[0]).and_then(print_name_for_suffix),
         "to_string" if arg_tys.len() == 1 => to_string_name_for_ty(&arg_tys[0]),
-        "assert_eq" if arg_tys.len() == 2 && arg_tys[0] == arg_tys[1] => {
-            assert_eq_name_for_ty(&arg_tys[0])
-        }
-        "assert_ne" if arg_tys.len() == 2 && arg_tys[0] == arg_tys[1] => {
-            assert_ne_name_for_ty(&arg_tys[0])
-        }
         "len" if arg_tys.len() == 1 => len_name_for_ty(&arg_tys[0]),
         _ => None,
     }
@@ -2866,44 +2769,6 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::Bool => Some("to_string_bool"),
         ResolvedTy::Char => Some("to_string_char"),
         ResolvedTy::String => Some("to_string_str"),
-        _ => None,
-    }
-}
-
-fn assert_eq_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
-    match ty {
-        ResolvedTy::I8 => Some("assert_eq_i8"),
-        ResolvedTy::I16 => Some("assert_eq_i16"),
-        ResolvedTy::I32 => Some("assert_eq_i32"),
-        ResolvedTy::I64 => Some("assert_eq_i64"),
-        ResolvedTy::Isize => Some("assert_eq_isize"),
-        ResolvedTy::U8 => Some("assert_eq_u8"),
-        ResolvedTy::U16 => Some("assert_eq_u16"),
-        ResolvedTy::U32 => Some("assert_eq_u32"),
-        ResolvedTy::U64 => Some("assert_eq_u64"),
-        ResolvedTy::Usize => Some("assert_eq_usize"),
-        ResolvedTy::String => Some("assert_eq_str"),
-        ResolvedTy::F64 => Some("assert_eq_f64"),
-        ResolvedTy::Bool => Some("assert_eq_bool"),
-        _ => None,
-    }
-}
-
-fn assert_ne_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
-    match ty {
-        ResolvedTy::I8 => Some("assert_ne_i8"),
-        ResolvedTy::I16 => Some("assert_ne_i16"),
-        ResolvedTy::I32 => Some("assert_ne_i32"),
-        ResolvedTy::I64 => Some("assert_ne_i64"),
-        ResolvedTy::Isize => Some("assert_ne_isize"),
-        ResolvedTy::U8 => Some("assert_ne_u8"),
-        ResolvedTy::U16 => Some("assert_ne_u16"),
-        ResolvedTy::U32 => Some("assert_ne_u32"),
-        ResolvedTy::U64 => Some("assert_ne_u64"),
-        ResolvedTy::Usize => Some("assert_ne_usize"),
-        ResolvedTy::String => Some("assert_ne_str"),
-        ResolvedTy::F64 => Some("assert_ne_f64"),
-        ResolvedTy::Bool => Some("assert_ne_bool"),
         _ => None,
     }
 }

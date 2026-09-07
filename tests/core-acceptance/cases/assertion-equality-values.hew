@@ -1,0 +1,26 @@
+type Point { x: i64, label: string }
+
+impl Display for Point {
+    fn fmt(p: Point) -> string {
+        "Point(" + to_string(p.x) + ", " + p.label + ")"
+    }
+}
+
+fn counted(value: i64) -> i64 {
+    println("evaluated");
+    value
+}
+
+fn main() {
+    assert_eq(1 + 1, 2);
+    assert_ne(7, 8);
+    assert_eq("left".to_upper(), "LEFT");
+    assert_ne("a", "b");
+    let point = Point { x: 3, label: "here".to_upper() };
+    let same = Point { x: 3, label: "here".to_upper() };
+    assert_eq(point, same);
+    assert_ne(point, Point { x: 4, label: "here".to_upper() });
+    assert_eq(counted(9), 9);
+    println(point.label);
+    println(to_string(same.x));
+}

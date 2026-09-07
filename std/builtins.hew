@@ -1004,9 +1004,11 @@ pub fn print(value: dyn Display) {}
 /// ```
 pub fn assert(condition: bool) {}
 
-/// Assert that two values are equal. Panics with a diff if they differ.
+/// Assert that two values are equal.
 ///
-/// Both arguments must be the same type.
+/// Both operands share one type that carries equality and a `Display`
+/// rendering. A mismatch raises the same recoverable logical fault `assert`
+/// and `panic` raise, with a message showing both values.
 ///
 /// # Examples
 ///
@@ -1019,11 +1021,13 @@ pub fn assert(condition: bool) {}
 ///     assert_eq(add(1, 2), 3);
 /// }
 /// ```
-pub fn assert_eq(left: dyn Display, right: dyn Display) {}
+pub fn assert_eq<T: Eq + Display>(left: T, right: T) {}
 
-/// Assert that two values are not equal. Panics if they are the same.
+/// Assert that two values are not equal.
 ///
-/// Both arguments must be the same type.
+/// Both operands share one type that carries equality and a `Display`
+/// rendering. A match raises the same recoverable logical fault `assert`
+/// and `panic` raise, with a message showing both values.
 ///
 /// # Examples
 ///
@@ -1034,7 +1038,7 @@ pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 ///     assert_ne(a, b);
 /// }
 /// ```
-pub fn assert_ne(left: dyn Display, right: dyn Display) {}
+pub fn assert_ne<T: Eq + Display>(left: T, right: T) {}
 
 // ---------------------------------------------------------------------------
 // Math

@@ -1226,7 +1226,10 @@ impl Checker {
         self.register_builtin_fn_with_bounds(
             "assert_eq",
             vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            HashMap::from([(
+                "T".to_string(),
+                vec!["Eq".to_string(), "Display".to_string()],
+            )]),
             vec![
                 Ty::Named {
                     builtin: None,
@@ -1244,7 +1247,10 @@ impl Checker {
         self.register_builtin_fn_with_bounds(
             "assert_ne",
             vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            HashMap::from([(
+                "T".to_string(),
+                vec!["Eq".to_string(), "Display".to_string()],
+            )]),
             vec![
                 Ty::Named {
                     builtin: None,

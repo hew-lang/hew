@@ -11,9 +11,9 @@
 //!
 //! - `RuntimeFfiShim`, `ToStringShim`, `StringCloneShim`, and `PrintIntercept`
 //!   entries name real C-ABI symbols the codegen will link against.
-//! - `known_runtime_symbols` is not exhaustive: for example `hew_int_to_string` and
-//!   `hew_assert_eq_*` are in the catalog but not in M2. Using M2 would produce
-//!   false failures for legitimately classified symbols.
+//! - `known_runtime_symbols` is not exhaustive: for example `hew_int_to_string`
+//!   is in the catalog but not in M2. Using M2 would produce false failures for
+//!   legitimately classified symbols.
 //! - `CompilerIntrinsic` entries do not name a C-ABI symbol; they are handled
 //!   entirely inside the codegen backend (LLVM ops). They always pass.
 //!

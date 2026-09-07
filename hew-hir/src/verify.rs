@@ -844,7 +844,8 @@ impl Verifier {
             HirExprKind::TupleIndex { tuple, .. } => {
                 self.expr(tuple);
             }
-            HirExprKind::Index { container, index } => {
+            HirExprKind::Index { container, index }
+            | HirExprKind::BorrowedIndex { container, index } => {
                 self.expr(container);
                 self.expr(index);
             }

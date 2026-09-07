@@ -4326,6 +4326,43 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.write_variant_value(self.slots[result.0 as usize], 0, &[element], option)?;
                 }
             }
+            PhysicalVectorOp::IndexBorrow => {
+                let element_layout =
+                    self.module.target.layout(&glue.element.ty).ok_or_else(|| {
+                        CodegenError::FailClosed("vector element lacks its target layout".into())
+                    })?;
+                let _ = llvm_type(self.ctx, &element_layout.repr)?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_borrow_owned",
+                    self.ctx
+                        .bool_type()
+                        .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                )?;
+                let found = self
+                    .runtime_call_value(
+                        function,
+                        &[
+                            vector.into(),
+                            self.load(source(1)?, "vector.borrow.index")?.into(),
+                            self.slots[result.0 as usize].into(),
+                        ],
+                        "vector.borrow.found",
+                    )?
+                    .into_int_value();
+                let present = self
+                    .ctx
+                    .append_basic_block(self.value, "vector.borrow.present");
+                let absent = self
+                    .ctx
+                    .append_basic_block(self.value, "vector.borrow.absent");
+                self.builder
+                    .build_conditional_branch(found, present, absent)
+                    .llvm_ctx("select vector borrow outcome")?;
+                self.builder.position_at_end(absent);
+                self.emit_edge(failure()?)?;
+                self.builder.position_at_end(present);
+            }
             PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {
                 let length_fn = get_or_declare_external(
                     self.llvm,

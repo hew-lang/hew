@@ -300,6 +300,15 @@ pub(super) struct PreparedSelectTask {
     pub span: Span,
 }
 
+/// How one `for` loop binds each `Vec<T>` element (D432).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecIterationMode {
+    /// Each iteration owns an independent copy of the element.
+    Clone,
+    /// Each iteration reads a loan of the slot the vector still owns.
+    Borrow,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -327,6 +336,11 @@ pub struct TypeCheckOutput {
     /// of the field names, so the two spellings cannot drift apart in one
     /// backend and not another.
     pub actor_self_state_fields: HashSet<SpanKey>,
+    /// Iterable spans of `for` loops whose element type has no clone, so each
+    /// element is bound as a loan of the slot the sequence still owns (D432).
+    /// The checker decides borrow versus clone once, here; no lowering stage
+    /// re-derives it from the element's facts.
+    pub borrowed_element_for_loops: HashSet<SpanKey>,
     /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
     ///
     /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
@@ -1348,6 +1362,7 @@ impl Default for TypeCheckOutput {
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
             actor_self_state_fields: HashSet::new(),
+            borrowed_element_for_loops: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             type_facts: BTreeMap::new(),
             type_fact_context: TypeFactContext::default(),
@@ -2716,6 +2731,8 @@ pub struct Checker {
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::actor_self_state_fields`].
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::borrowed_element_for_loops`].
+    pub(super) borrowed_element_for_loops: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
@@ -3811,6 +3828,7 @@ impl Checker {
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
+            borrowed_element_for_loops: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),

@@ -202,6 +202,7 @@ impl Builder<'_, '_> {
             for binding in self.scopes[index].clone().into_iter().rev() {
                 self.end_binding_scope(binding)?;
             }
+            self.end_scope_loans(index)?;
         }
         self.cleanup_draining = previous_draining;
         if ran || self.cleanup_may_fail {
@@ -409,7 +410,7 @@ impl Builder<'_, '_> {
         self.current = normal;
         self.owned_live.insert(failure, failure_ty);
         let floor = self.scopes.len();
-        self.scopes.push(Vec::new());
+        self.open_scope();
         self.bind_source_value(error, failure)?;
         let hew_hir::HirExprKind::Block(body) = &handler.kind else {
             return Err("scope recovery handler must be a lexical block".into());

@@ -1961,11 +1961,18 @@ impl Checker {
                                         .to_string(),
                                 );
                                 Ty::Error
-                            } else if self.validate_vec_iter_element_clone_type(&elem, &iterable.1)
-                            {
-                                elem
                             } else {
-                                Ty::Error
+                                match self.vec_iteration_element_mode(&elem, &iterable.1) {
+                                    Some(super::types::VecIterationMode::Clone) => elem,
+                                    Some(super::types::VecIterationMode::Borrow) => {
+                                        self.borrowed_element_for_loops.insert(SpanKey::in_module(
+                                            &iterable.1,
+                                            self.current_module_idx,
+                                        ));
+                                        elem
+                                    }
+                                    None => Ty::Error,
+                                }
                             }
                         } else {
                             self.report_error(

@@ -1,3 +1,4 @@
+use super::types::VecIterationMode;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -1256,6 +1257,38 @@ impl Checker {
             ),
         );
         false
+    }
+
+    /// How `for value in vec` binds each element (D432).
+    ///
+    /// An element with a semantic clone is copied out per iteration, which is
+    /// what every cursor form does today. An element without one — a
+    /// `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
+    /// generator — is bound as a loan of the slot the vector still owns: the
+    /// body may read it and call its borrowing methods, and the owning removal
+    /// is the way to move it out. A trait object stays refused here; its
+    /// consuming iterator is the trait-objects surface.
+    ///
+    /// `None` means the element is not iterable at all and a diagnostic was
+    /// reported.
+    pub(super) fn vec_iteration_element_mode(
+        &mut self,
+        ty: &Ty,
+        span: &Span,
+    ) -> Option<VecIterationMode> {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::Error) {
+            return None;
+        }
+        let mut visiting = CollectionClonePath::default();
+        if self
+            .vec_iter_clone_blocker(&resolved, &mut visiting)
+            .is_none()
+        {
+            return Some(VecIterationMode::Clone);
+        }
+        let _ = span;
+        Some(VecIterationMode::Borrow)
     }
 
     /// Checker boundary for `xs[a..b]` over `Vec<T>`.

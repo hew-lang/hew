@@ -976,7 +976,26 @@ fn check_function_with_context(
         types.insert(param.value, param.ty.clone());
         definitions.insert(param.value, (function.entry, DefinitionPoint::BlockEntry));
     }
+    // Blocks that receive a loan through their block arguments: the normal
+    // successor of a runtime call whose contract result is `Borrowed`. A loan's
+    // kind comes from the borrow, not from its type's class.
+    let borrow_continuations: HashSet<BlockId> = function
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            crate::SemTerminator::RtCall { family, normal, .. }
+                if matches!(
+                    family.semantic_contract().map(|contract| contract.result),
+                    Some(hew_types::RuntimeResultEffect::Borrowed(_))
+                ) =>
+            {
+                Some(normal.target)
+            }
+            _ => None,
+        })
+        .collect();
     for block in &function.blocks {
+        let borrowed_argument = borrow_continuations.contains(&block.id);
         for arg in &block.args {
             record_value(function, arg.value, &mut values, &mut diagnostics);
             verify_own_kind(
@@ -984,7 +1003,11 @@ fn check_function_with_context(
                 arg.value,
                 &arg.ty,
                 arg.own,
-                crate::OwnKind::of_ty(&arg.ty, facts),
+                if borrowed_argument {
+                    Ok(crate::OwnKind::Guaranteed)
+                } else {
+                    crate::OwnKind::of_ty(&arg.ty, facts)
+                },
                 &mut diagnostics,
             );
             types.insert(arg.value, arg.ty.clone());
@@ -1026,6 +1049,16 @@ fn check_function_with_context(
                 diagnostics.push(diag(function, SirDiagnosticKind::DuplicateOp(*id)));
             }
         }
+        // A runtime family whose contract result is a loan defines a
+        // `Guaranteed` value: the receiver keeps the obligation.
+        let borrowed_result = matches!(
+            &block.terminator,
+            crate::SemTerminator::RtCall { family, .. }
+                if matches!(
+                    family.semantic_contract().map(|contract| contract.result),
+                    Some(hew_types::RuntimeResultEffect::Borrowed(_))
+                )
+        );
         block.terminator.visit_results(|result| {
             record_value(function, result.id, &mut values, &mut diagnostics);
             verify_own_kind(
@@ -1033,7 +1066,11 @@ fn check_function_with_context(
                 result.id,
                 &result.ty,
                 result.own,
-                crate::OwnKind::of_ty(&result.ty, facts),
+                if borrowed_result {
+                    Ok(crate::OwnKind::Guaranteed)
+                } else {
+                    crate::OwnKind::of_ty(&result.ty, facts)
+                },
                 &mut diagnostics,
             );
             types.insert(result.id, result.ty.clone());
@@ -3415,6 +3452,9 @@ fn verify_runtime_call_terminator(
     let expected_own = match contract.result {
         RuntimeResultEffect::Unit | RuntimeResultEffect::Never => None,
         RuntimeResultEffect::BitCopy(_) => Some(crate::OwnKind::None),
+        // A loan of a value argument zero still owns: no obligation of its own,
+        // and no clone recipe required.
+        RuntimeResultEffect::Borrowed(_) => Some(crate::OwnKind::Guaranteed),
         RuntimeResultEffect::FreshOwned(_)
         | RuntimeResultEffect::UpdatedReceiver(_)
         | RuntimeResultEffect::FreshOwnedVariant(_)

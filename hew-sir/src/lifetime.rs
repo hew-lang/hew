@@ -392,6 +392,38 @@ impl<'a> Flow<'a> {
                 }
             }
         }
+        // A runtime family whose contract result is a loan defines one in its
+        // normal successor's parameter: the body reads that name, and ending it
+        // is what releases the region.
+        for block in &function.blocks {
+            let crate::SemTerminator::RtCall {
+                family,
+                args,
+                normal,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            if !matches!(
+                family.semantic_contract().map(|contract| contract.result),
+                Some(hew_types::RuntimeResultEffect::Borrowed(_))
+            ) {
+                continue;
+            }
+            let Some(owner) = args.first().map(|arg| PlaceBase::Value(arg.operand.value)) else {
+                continue;
+            };
+            for parameter in function
+                .blocks
+                .iter()
+                .filter(|target| target.id == normal.target)
+                .flat_map(|target| target.args.iter().map(|arg| arg.value))
+            {
+                parents.insert(parameter, owner);
+                local_borrows.insert(parameter);
+            }
+        }
         let mut dependents = BTreeMap::<_, Vec<_>>::new();
         for (&value, &base) in &parents {
             dependents
@@ -661,7 +693,10 @@ impl<'a> Flow<'a> {
             {
                 self.require_complete_environment(from, argument.value, &state, emit);
             }
-            self.access(from, argument.value, true, &mut state, emit);
+            // A guaranteed value carries no obligation, so forwarding it names
+            // the same loan in the successor rather than transferring one.
+            let consume = !self.guaranteed.contains(&argument.value);
+            self.access(from, argument.value, consume, &mut state, emit);
         }
         for argument in &target.args {
             self.define(edge.target, argument.value, &mut state, emit);

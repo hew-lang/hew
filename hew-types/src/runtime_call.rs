@@ -317,6 +317,11 @@ pub enum RuntimeResultEffect {
     /// scalar elements are bit-copied, as decided by the concrete type facts.
     /// Runtime interior borrows never escape through this result.
     IndependentValue(RuntimeValueKind),
+    /// A loan of a value the receiver still owns. The result carries no
+    /// obligation of its own and must not outlive the receiver's loan, so it
+    /// needs no clone recipe: a clone-free element is readable this way and
+    /// no other.
+    Borrowed(RuntimeValueKind),
     /// A transform yields `(receiver, value)`. SIR destructures the sole
     /// result and writes the receiver back to its source binding.
     UpdatedReceiverAndValue(RuntimeValueKind),
@@ -442,6 +447,7 @@ impl RuntimeSemanticContract {
             RuntimeResultEffect::BitCopy(kind)
             | RuntimeResultEffect::FreshOwned(kind)
             | RuntimeResultEffect::IndependentValue(kind)
+            | RuntimeResultEffect::Borrowed(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind)
             | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
                 let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
@@ -538,6 +544,9 @@ pub enum VecValueOp {
     Set,
     Pop,
     Clear,
+    /// `v[i]` where the element has no clone: a loan of the element the vector
+    /// still owns, readable for the length of the receiver's loan.
+    IndexBorrow,
     /// `v[a..b]` - a fresh independent `Vec<T>` over the selected range.
     Slice,
     /// `v[a..]` - the open-ended form; the runtime supplies the end bound so
@@ -608,6 +617,11 @@ impl VecValueOp {
             Self::Pop => runtime_semantic_contract(
                 &[WRITE],
                 UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::IndexBorrow => runtime_semantic_contract(
+                &[READ, INDEX],
+                RuntimeResultEffect::Borrowed(ELEMENT_TYPE),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
             Self::Slice => runtime_semantic_contract(
@@ -2737,6 +2751,7 @@ impl RuntimeCallFamily {
                 VecValueOp::Set => "vec.value.set",
                 VecValueOp::Pop => "vec.value.pop",
                 VecValueOp::Clear => "vec.value.clear",
+                VecValueOp::IndexBorrow => "vec.value.index_borrow",
                 VecValueOp::Slice => "vec.value.slice",
                 VecValueOp::SliceFrom => "vec.value.slice_from",
             },
@@ -3182,6 +3197,7 @@ impl RuntimeCallFamily {
             "vec.value.set" => Self::Vector(VecValueOp::Set),
             "vec.value.pop" => Self::Vector(VecValueOp::Pop),
             "vec.value.clear" => Self::Vector(VecValueOp::Clear),
+            "vec.value.index_borrow" => Self::Vector(VecValueOp::IndexBorrow),
             "vec.value.slice" => Self::Vector(VecValueOp::Slice),
             "vec.value.slice_from" => Self::Vector(VecValueOp::SliceFrom),
             "Vec::new" => Self::VecNew,
@@ -3789,6 +3805,7 @@ impl RuntimeCallFamily {
                 }
                 RuntimeResultEffect::Unit
                 | RuntimeResultEffect::Never
+                | RuntimeResultEffect::Borrowed(_)
                 | RuntimeResultEffect::IndependentValue(_)
                 | RuntimeResultEffect::UpdatedReceiverAndValue(_)
                 | RuntimeResultEffect::BitCopy(_)
@@ -3841,6 +3858,7 @@ impl RuntimeCallFamily {
                     RuntimeResultAuthority::IndependentOwned
                 }
                 RuntimeResultEffect::BitCopy(_) => RuntimeResultAuthority::IndependentBitCopy,
+                RuntimeResultEffect::Borrowed(_) => RuntimeResultAuthority::InteriorAliasOfReceiver,
                 RuntimeResultEffect::Unit | RuntimeResultEffect::Never => {
                     RuntimeResultAuthority::FailClosed
                 }

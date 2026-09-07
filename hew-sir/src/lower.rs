@@ -8051,6 +8051,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "extern `{endpoint}` cannot be declared to never return"
             ));
         }
+        if signature.result == ResolvedTy::Bytes {
+            // `bytes` is the runtime's three-word triple. It crosses inward by
+            // pointer, but returning it by value needs the target's aggregate
+            // return classification, which this path does not realize. Refuse
+            // rather than hand back a mis-decoded triple.
+            return Err(format!(
+                "extern `{endpoint}` returns `bytes` by value; the byte triple's C-ABI \
+                 aggregate return is not realized - return a handle, or write the result \
+                 through an out-parameter"
+            ));
+        }
         if self.ty(&expr.ty) != signature.result {
             return Err(format!(
                 "extern `{endpoint}` returns `{}`, used as `{}`",

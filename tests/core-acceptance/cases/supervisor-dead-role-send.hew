@@ -20,16 +20,20 @@ fn refused(reason: SendError) {
     }
 }
 
+// A dead or closed role refuses the submission and names why. The sends go
+// through a one-way `mailbox(..)` view: a completion call on a handler that
+// panics reports the trap, not the delivery refusal this case is about.
 fn main() {
     let app = spawn App;
+    let inbox = mailbox(app.worker, on_full: .Reject);
     for _ in 0..2 {
-        match app.worker.boom() {
+        match inbox.boom() {
             .Ok(_) => println("accepted"),
             .Err(failure) => refused(failure.reason),
         }
         let _ = await_restart app.worker;
     }
-    match app.worker.ping() {
+    match inbox.ping() {
         .Ok(_) => println("accepted"),
         .Err(failure) => refused(failure.reason),
     }

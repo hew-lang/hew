@@ -1,6 +1,6 @@
 [[case]]
 id = "tell-outcomes"
-intent = "A `receive fn` without a reply submits at its call site: the call yields `Result<Delivery, SendFailure<_>>`, `?` propagates a refusal, `let _ =` discards one deliberately, and `await` on a replying handler is still the ask."
+intent = "A call through a `mailbox(..)` view submits without waiting: it yields `Result<Delivery, SendFailure<_>>` and `let _ =` discards a refusal deliberately, while a call on the actor handle waits for the handler."
 source = "cases/tell-outcomes.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

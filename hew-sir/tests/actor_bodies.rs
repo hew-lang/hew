@@ -23,7 +23,7 @@ actor Counter {
 }
 fn main() {
     let counter = spawn Counter();
-    let _ = send counter.increment(2);
+    let _ = counter.increment(2);
     await close(counter);
 }
 "#;
@@ -113,7 +113,7 @@ actor Ledger {
 }
 fn main() {
     let ledger = spawn Ledger();
-    match await ledger.show() {
+    match ledger.show() {
         .Ok(label) => println(label),
         .Err(_) => panic("show failed"),
     }

@@ -61,7 +61,7 @@ actor Gate {
 actor Waiter {
     receive fn wait(gate: LocalPid<Gate>) -> string {
         loop {
-            match await gate.ready() {
+            match gate.ready() {
                 .Ok(opened) => { if opened { return "first".to_upper(); } },
                 .Err(_) => panic("gate failed"),
             }
@@ -70,7 +70,7 @@ actor Waiter {
 }
 actor Opener {
     receive fn open(gate: LocalPid<Gate>) -> string {
-        let _ = send gate.open();
+        let _ = gate.open();
         "second".to_upper()
     }
 }
@@ -144,7 +144,7 @@ fn one_branch_returns_its_result_without_a_tuple_wrapper() {
 actor Echo { receive fn echo(value: string) -> string { value.to_upper() } }
 fn main() {
     let echo = spawn Echo();
-    let result: Result<string, AskError> = join { await echo.echo("one") };
+    let result: Result<string, AskError> = join { echo.echo("one") };
     match result { .Ok(value) => println(value), .Err(_) => panic("join failed"), }
 }
 "#,

@@ -5,9 +5,11 @@
 //
 // The full mailbox is deterministic without a worker-count assumption: `fill`
 // runs inside `Sink`, so nothing can drain `Sink`'s own queue while it holds
-// the actor. Two self-sends fill the capacity-two mailbox and the third is
-// refused. `fill` is an ask, so `main` resumes only after it has returned and
-// its queued work is ordered ahead of the counting asks.
+// the actor. The self-sends go through a one-way `mailbox(..)` view, because a
+// completion call on itself could never finish. Two of them fill the
+// capacity-two mailbox and the third is refused. `main` calls `fill` on the
+// handle, so it resumes only after `fill` has returned and its queued work is
+// ordered ahead of the counting calls.
 actor Sink {
     mailbox 2 overflow fail,
     var count: i64 = 0,
@@ -23,9 +25,10 @@ actor Sink {
     receive fn tail_len() -> i64 { last.len() }
 
     receive fn fill(me: LocalPid<Sink>, backup: LocalPid<Sink>) -> i64 {
-        let _ = me.take(tagged("one"));
-        let _ = me.take(tagged("two"));
-        match me.take(tagged("three")) {
+        let inbox = mailbox(me, on_full: .Reject);
+        let _ = inbox.take(tagged("one"));
+        let _ = inbox.take(tagged("two"));
+        match inbox.take(tagged("three")) {
             .Ok(_) => println("UNEXPECTED_ACCEPT"),
             .Err(rejected) => match rejected.message.retry() {
                 .Ok(_) => println("UNEXPECTED_RETRY_ACCEPT"),

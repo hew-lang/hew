@@ -875,34 +875,34 @@ fn must_use_inline_directive_suppresses() {
     );
 }
 
-// ── checker-stage lint: must_use on a discarded `await actor.msg()` ───
+// ── checker-stage lint: must_use on a discarded `actor.msg()` result ───
 
-/// A program whose only diagnostic is `E_SEND_RESULT_DROPPED`: `await
-/// d.process(5)` is discarded in statement position, dropping the
-/// `Result<i64, AskError>` it returns — a silently lost timeout /
-/// full-mailbox / stopped-actor signal. This is a compile error, not a lint.
+/// A program whose only diagnostic is `E_SEND_RESULT_DROPPED`: `d.process(5)`
+/// is discarded in statement position, dropping the `Result<i64, AskError>`
+/// the completion call returns — a silently lost timeout / full-mailbox /
+/// stopped-actor signal. This is a compile error, not a lint.
 const ASK_MUST_USE_DISCARD: &str = "actor Doubler {\n\
      receive fn process(n: i64) -> i64 { n * 2 }\n\
      }\n\
      fn main() {\n\
      let d = spawn Doubler;\n\
-     await d.process(5);\n\
+     d.process(5);\n\
      }\n";
 
-/// The same program, but the ask result is explicitly discarded with `let _`,
+/// The same program, but the call result is explicitly discarded with `let _`,
 /// the deliberate drop the fix-it names (silent).
 const ASK_MUST_USE_HANDLED: &str = "actor Doubler {\n\
      receive fn process(n: i64) -> i64 { n * 2 }\n\
      }\n\
      fn main() {\n\
      let d = spawn Doubler;\n\
-     let _ = await d.process(5);\n\
+     let _ = d.process(5);\n\
      }\n";
 
 const ASK_MUST_USE_MESSAGE: &str = "E_SEND_RESULT_DROPPED";
 
 #[test]
-fn discarded_await_ask_is_refused_by_default() {
+fn discarded_call_result_is_refused_by_default() {
     let output = run_check(ASK_MUST_USE_DISCARD, &[]);
     let stderr = stderr_of(&output);
     assert!(
@@ -911,7 +911,7 @@ fn discarded_await_ask_is_refused_by_default() {
     );
     assert!(
         stderr.contains("error:") && stderr.contains(ASK_MUST_USE_MESSAGE),
-        "expected the discarded-await refusal to render:\n{stderr}"
+        "expected the discarded-result refusal to render:\n{stderr}"
     );
     assert!(
         stderr.contains("AskError"),
@@ -924,12 +924,12 @@ fn discarded_await_ask_is_refused_by_default() {
 }
 
 #[test]
-fn must_use_await_ask_handled_is_silent() {
+fn must_use_call_result_handled_is_silent() {
     let output = run_check(ASK_MUST_USE_HANDLED, &[]);
     let stderr = stderr_of(&output);
     assert!(output.status.success(), "check should pass:\n{stderr}");
     assert!(
         !stderr.contains(ASK_MUST_USE_MESSAGE),
-        "`let _ = await …` must be accepted:\n{stderr}"
+        "`let _ = …` must be accepted:\n{stderr}"
     );
 }

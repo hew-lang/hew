@@ -1,7 +1,7 @@
-// The call is the send: a `receive fn` without a reply submits at its call
-// site and yields `Result<Delivery, SendFailure<_>>`. `?` propagates a
-// rejection, `let _ =` discards one deliberately, and `await` on a replying
-// handler is still the ask.
+// A call through a `mailbox(..)` view submits and returns as soon as the
+// message is accepted, yielding `Result<Delivery, SendFailure<_>>`. `let _ =`
+// discards a rejection deliberately. A call on the actor handle itself waits
+// for the handler instead.
 actor Worker {
     var seen: i64 = 0,
     receive fn process(job: string) {
@@ -12,12 +12,13 @@ actor Worker {
 }
 
 fn drive(w: LocalPid<Worker>) -> Result<(), SendError> {
-    match w.process("a") {
+    let inbox = mailbox(w, on_full: .Reject);
+    match inbox.process("a") {
         .Ok(Delivery.Accepted) => println("accepted"),
         .Ok(Delivery.Discarded) => println("discarded"),
         .Err(failure) => return Err(failure.reason),
     }
-    let _ = w.process("b");
+    let _ = inbox.process("b");
     Ok(())
 }
 

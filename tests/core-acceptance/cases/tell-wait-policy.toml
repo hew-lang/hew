@@ -1,6 +1,6 @@
 [[case]]
 id = "tell-wait-policy"
-intent = "A call through a `policy(target, on_full: .Wait)` view suspends the sender on a full bounded mailbox instead of refusing, so every message is delivered."
+intent = "A call through a `mailbox(target, on_full: .Wait)` view suspends the sender on a full bounded mailbox instead of refusing, so every message is delivered."
 source = "cases/tell-wait-policy.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20

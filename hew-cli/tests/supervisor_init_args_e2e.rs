@@ -56,7 +56,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w1;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -114,7 +114,7 @@ supervisor Pool {
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
-    match await w.report() {
+    match w.report() {
         .Ok(status) => status,
         .Err(_) => 2,
     }
@@ -137,7 +137,7 @@ supervisor Pool {
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
-    match await w.report() {
+    match w.report() {
         .Ok(status) => status,
         .Err(_) => 2,
     }
@@ -194,7 +194,7 @@ supervisor Pool {
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
-    match await w.report() {
+    match w.report() {
         .Ok(status) => status,
         .Err(_) => 2,
     }
@@ -253,7 +253,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -322,7 +322,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -465,7 +465,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -507,7 +507,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -550,7 +550,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -642,7 +642,7 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -694,8 +694,8 @@ supervisor CounterGroup {
 }
 fn main() {
     let sup = spawn CounterGroup;
-    let _ = await sup.c1.increment();
-    let _ = await sup.c2.increment();
+    let _ = sup.c1.increment();
+    let _ = sup.c2.increment();
     supervisor_stop(sup);
     println("Stopped");
 }

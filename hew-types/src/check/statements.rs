@@ -1896,16 +1896,6 @@ impl Checker {
                     // raw` walks a bytes value's bytes. Both yield a scalar
                     // copy, so neither needs a clone recipe or a cursor.
                     Ty::String | Ty::Bytes => {
-                        if *is_await {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &iterable.1,
-                                format!(
-                                    "`for await` is not valid over a {}; use a plain `for` loop",
-                                    iter_ty.user_facing()
-                                ),
-                            );
-                        }
                         if matches!(iter_ty, Ty::String) {
                             Ty::Char
                         } else {

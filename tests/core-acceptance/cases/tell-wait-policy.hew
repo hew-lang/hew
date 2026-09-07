@@ -1,7 +1,7 @@
-// `policy(target, on_full: .Wait)` is the only suspending submission policy: a
-// call through that view parks the sender until the bounded mailbox has room,
-// so every message arrives instead of being refused. The checker takes the
-// suspension effect from the view's type, not from the handler.
+// `mailbox(target, on_full: .Wait)` is the only suspending submission policy:
+// a call through that one-way view parks the sender until the bounded mailbox
+// has room, so every message arrives instead of being refused. The checker
+// takes the suspension effect from the view's type, not from the handler.
 actor Sink {
     mailbox 1 overflow fail,
     var count: i64 = 0,
@@ -13,7 +13,7 @@ actor Sink {
 
 actor Driver {
     receive fn run(sink: LocalPid<Sink>) -> i64 {
-        let reliable = policy(sink, on_full: .Wait);
+        let reliable = mailbox(sink, on_full: .Wait);
         for i in 0..5 {
             match reliable.take(i) {
                 .Ok(_) => {},

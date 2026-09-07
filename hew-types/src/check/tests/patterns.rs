@@ -5,6 +5,28 @@
 pub(super) use super::*;
 
 #[test]
+fn nested_generic_payload_literal_retains_checked_type_constraints() {
+    let (errors, _) = parse_and_check(
+        r#"
+enum Inner<T> { Value(T), Empty }
+enum Outer<T> { Value(Inner<T>) }
+fn inspect(value: Outer<bool>) -> i64 {
+    match value {
+        .Value(.Value("wrong")) => 1,
+        _ => 0,
+    }
+}
+"#,
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "nested literal must be checked against bool: {errors:#?}"
+    );
+}
+
+#[test]
 fn same_leaf_qualified_unit_variant_cannot_cover_foreign_enum() {
     let (errors, _) = parse_and_check(
         r"

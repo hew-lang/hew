@@ -67,12 +67,12 @@ pub use check::{
     NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
     OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
-    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResolvedCall, ResultReturnKind,
-    RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
-    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
-    WireLayoutTable, WireTextFormat,
+    PatternKind, PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern,
+    PlanField, PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate,
+    ResolvedCall, ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering,
+    TyPattern, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp,
+    VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

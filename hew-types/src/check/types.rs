@@ -1260,6 +1260,14 @@ pub struct PayloadBinding {
     pub ty: Ty,
 }
 
+/// A literal test against a checker-instantiated variant payload field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PayloadLiteralPattern {
+    pub field_idx: usize,
+    pub literal: Literal,
+    pub ty: Ty,
+}
+
 /// Checker-resolved nested constructor subpattern occupying one payload slot
 /// of an enclosing constructor pattern.
 ///
@@ -1272,10 +1280,9 @@ pub struct PayloadBinding {
 ///
 /// `bindings` and `nested` index into THIS nested variant's payload list,
 /// not the enclosing one. The structure is recursive so arbitrary
-/// constructor-nesting depth flows through one shape; non-constructor
-/// refutable subpatterns (literals, struct/tuple destructures, or-patterns)
-/// inside a nested constructor remain fail-closed at the checker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// constructor-nesting depth flows through one shape. Literal predicates use
+/// the instantiated field types at each level.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PayloadVariantPattern {
     /// 0-based slot of this subpattern within the ENCLOSING variant's
     /// payload list.
@@ -1287,6 +1294,8 @@ pub struct PayloadVariantPattern {
     pub variant_match: VariantMatch,
     /// Bindings introduced from THIS nested variant's payload slots.
     pub bindings: Vec<PayloadBinding>,
+    /// Literal tests within THIS variant, before bindings or guard evaluation.
+    pub literals: Vec<PayloadLiteralPattern>,
     /// Deeper nested constructor subpatterns within this variant's payload.
     pub nested: Vec<PayloadVariantPattern>,
 }
@@ -1295,7 +1304,7 @@ pub struct PayloadVariantPattern {
 ///
 /// Keyed by `SpanKey::from(&arm.pattern.1)` in the
 /// `TypeCheckOutput::pattern_resolutions` side table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArmResolution {
     /// High-level pattern classification.
     pub pattern_kind: PatternKind,

@@ -148,3 +148,45 @@ fn payload_or_pattern_wildcard_discards_payload() {
         "wildcard payload or-pattern output mismatch; stdout: {stdout}"
     );
 }
+
+#[test]
+fn generic_and_nested_literals_preserve_owned_guard_fallthrough() {
+    use std::process::Command;
+    use support::{describe_output, run_bounded_command, tempdir};
+
+    require_codegen();
+    let dir = tempdir();
+    let source = repo_root().join("tests/core-acceptance/cases/generic-payload-literals.hew");
+    let expected = concat!(
+        "true\nfalse\nERROR\nask true\nask false\n",
+        "SHORT guarded\nTINY true\nFALSE false\npayload empty\nenvelope empty\n",
+        "FIRST seven\nSECOND other\nmatched\nFALLBACK\n",
+        "SHORT nested guarded\nTINY nested true\nFALSE nested false\n",
+        "nested payload empty\nnested envelope empty\n",
+        "FIRST deep seven\nSECOND deep other\ndeep empty\n",
+        "nested matched\nNESTED FALLBACK\n",
+        "nested result true\nnested result false\nINNER ERROR\nOUTER ERROR\n",
+    );
+    for opt in ["0", "2"] {
+        let binary = hew_testutil::compiled_binary_path(dir.path(), &format!("patterns-{opt}"));
+        let mut build = Command::new(hew_binary());
+        build
+            .arg("build")
+            .arg(&source)
+            .args(["--opt-level", opt, "-o"])
+            .arg(&binary);
+        let output = run_bounded_command(build, format!("build generic patterns O{opt}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        let mut run = Command::new(binary);
+        run.env("HEW_WORKERS", "1");
+        let output = run_bounded_command(run, format!("run generic patterns O{opt}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "{}",
+            describe_output(&output)
+        );
+        assert!(output.stderr.is_empty(), "{}", describe_output(&output));
+    }
+}

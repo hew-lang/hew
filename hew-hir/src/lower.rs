@@ -105,13 +105,8 @@ fn collect_match_payload_predicates(
 ) -> Result<Vec<HirPayloadPredicate>, String> {
     match &pattern.0 {
         Pattern::Constructor { name, patterns } => {
-            let field_tys = ctx
-                .lookup_variant_ctor(name, Some(scrutinee_ty))
-                .map(|(_, _, kind)| match kind {
-                    HirVariantKind::Tuple(field_tys) => field_tys.clone(),
-                    HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                })
-                .unwrap_or_default();
+            let field_tys =
+                ctx.instantiated_pattern_payload_types(name, scrutinee_ty, patterns.len())?;
             Ok(patterns
                 .iter()
                 .enumerate()
@@ -122,11 +117,8 @@ fn collect_match_payload_predicates(
                     let Ok(field_idx) = u32::try_from(field_idx) else {
                         return None;
                     };
-                    let (literal, literal_ty) = literal_to_hir(lit);
-                    let ty = field_tys
-                        .get(field_idx as usize)
-                        .cloned()
-                        .unwrap_or(literal_ty);
+                    let (literal, _) = literal_to_hir(lit);
+                    let ty = field_tys[field_idx as usize].clone();
                     Some(HirPayloadPredicate {
                         field_idx,
                         literal,
@@ -193,13 +185,10 @@ fn collect_match_payload_predicates(
         Pattern::NominalPath { path, payload } => match payload.as_ref() {
             None => Ok(Vec::new()),
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                let field_tys = nominal_path_leaf(path)
-                    .and_then(|name| ctx.lookup_variant_ctor(name, Some(scrutinee_ty)))
-                    .map(|(_, _, kind)| match kind {
-                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
-                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                    })
-                    .unwrap_or_default();
+                let name = nominal_path_leaf(path)
+                    .ok_or_else(|| "tuple variant pattern has no constructor name".to_string())?;
+                let field_tys =
+                    ctx.instantiated_pattern_payload_types(name, scrutinee_ty, patterns.len())?;
                 Ok(patterns
                     .iter()
                     .enumerate()
@@ -210,11 +199,8 @@ fn collect_match_payload_predicates(
                         let Ok(field_idx) = u32::try_from(field_idx) else {
                             return None;
                         };
-                        let (literal, literal_ty) = literal_to_hir(literal);
-                        let ty = field_tys
-                            .get(field_idx as usize)
-                            .cloned()
-                            .unwrap_or(literal_ty);
+                        let (literal, _) = literal_to_hir(literal);
+                        let ty = field_tys[field_idx as usize].clone();
                         Some(HirPayloadPredicate {
                             field_idx,
                             literal,
@@ -253,13 +239,11 @@ fn collect_match_payload_predicates(
         Pattern::ContextVariant(context) => match context.payload.as_ref() {
             None => Ok(Vec::new()),
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                let field_tys = ctx
-                    .lookup_variant_ctor(&context.name, Some(scrutinee_ty))
-                    .map(|(_, _, kind)| match kind {
-                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
-                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                    })
-                    .unwrap_or_default();
+                let field_tys = ctx.instantiated_pattern_payload_types(
+                    &context.name,
+                    scrutinee_ty,
+                    patterns.len(),
+                )?;
                 Ok(patterns
                     .iter()
                     .enumerate()
@@ -270,11 +254,8 @@ fn collect_match_payload_predicates(
                         let Ok(field_idx) = u32::try_from(field_idx) else {
                             return None;
                         };
-                        let (literal, literal_ty) = literal_to_hir(literal);
-                        let ty = field_tys
-                            .get(field_idx as usize)
-                            .cloned()
-                            .unwrap_or(literal_ty);
+                        let (literal, _) = literal_to_hir(literal);
+                        let ty = field_tys[field_idx as usize].clone();
                         Some(HirPayloadPredicate {
                             field_idx,
                             literal,
@@ -28080,6 +28061,43 @@ impl LowerCtx {
         None
     }
 
+    /// Instantiate the declaration's payload types using the checked enum
+    /// owner. Literal syntax must not supply a replacement type for a generic
+    /// field; the same substitution also owns the enum's concrete layout.
+    fn instantiated_pattern_payload_types(
+        &self,
+        name: &str,
+        owner_ty: &ResolvedTy,
+        arity: usize,
+    ) -> Result<Vec<ResolvedTy>, String> {
+        let (owner, _, kind) = self
+            .lookup_variant_ctor(name, Some(owner_ty))
+            .ok_or_else(|| format!("missing checked variant constructor for {owner_ty:?}"))?;
+        let fields = match kind {
+            HirVariantKind::Tuple(fields) => fields.as_slice(),
+            HirVariantKind::Unit => &[],
+            HirVariantKind::Struct(_) => {
+                return Err("tuple variant pattern has a record declaration".into());
+            }
+        };
+        let ResolvedTy::Named { args, .. } = owner_ty else {
+            return Err("variant pattern has a non-nominal owner".into());
+        };
+        let params = self
+            .enum_type_params
+            .get(&owner)
+            .map_or(&[][..], Vec::as_slice);
+        if params.len() != args.len() || fields.len() != arity {
+            return Err(
+                "variant pattern disagrees with its checked generic or payload arity".into(),
+            );
+        }
+        Ok(fields
+            .iter()
+            .map(|ty| substitute_type_params(ty, params, args))
+            .collect())
+    }
+
     fn resolved_option_inner(ty: &ResolvedTy) -> Option<&ResolvedTy> {
         match ty {
             ResolvedTy::Named {
@@ -30420,6 +30438,10 @@ impl LowerCtx {
     /// Must be called inside the arm's scope (`push_scope`) so the inner
     /// bindings resolve in the guard and body. Returns `None` after pushing a
     /// fail-closed diagnostic.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one recursive checker boundary converts binding and literal types with diagnostics"
+    )]
     fn build_payload_variant_predicate(
         &mut self,
         pvp: &hew_types::PayloadVariantPattern,
@@ -30494,6 +30516,34 @@ impl LowerCtx {
                 ty,
             });
         }
+        let mut literals = Vec::with_capacity(pvp.literals.len());
+        for predicate in &pvp.literals {
+            let Ok(field_idx) = u32::try_from(predicate.field_idx) else {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "nested literal field index exceeds u32::MAX",
+                    "match-expression-substrate",
+                );
+                return None;
+            };
+            let ty = match ResolvedTy::from_ty(&predicate.ty) {
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
+                Err(err) => {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        format!("unresolved nested literal type ({err:?})"),
+                        "match-expression-substrate",
+                    );
+                    return None;
+                }
+            };
+            let (literal, _) = literal_to_hir(&predicate.literal);
+            literals.push(HirPayloadPredicate {
+                field_idx,
+                literal,
+                ty,
+            });
+        }
         let mut nested = Vec::with_capacity(pvp.nested.len());
         for child in &pvp.nested {
             nested.push(self.build_payload_variant_predicate(child, pattern_span)?);
@@ -30507,6 +30557,7 @@ impl LowerCtx {
             },
             variant_idx,
             bindings,
+            literals,
             nested,
         })
     }

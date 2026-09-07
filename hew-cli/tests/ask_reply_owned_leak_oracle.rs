@@ -40,7 +40,7 @@
 //! A select winner binds its owned reply, and a *bound-but-unused* match/select
 //! arm binding of an owned payload is not yet scope-dropped — a PRE-EXISTING,
 //! reply-channel-INDEPENDENT consume-side drop gap (a plain `let s = e; s.len()`
-//! drops correctly; `select { reply from a.m() => 0, ... }` leaks the winner's
+//! drops correctly; `select { reply = await a.m() => 0, ... }` leaks the winner's
 //! `reply`). A per-`spawn` actor allocation leaks similarly. Both contaminate a
 //! consume/loop leak slope but neither aborts, so the never-consumed leg is
 //! pinned by the deterministic no-double-free guard here, and by the
@@ -99,7 +99,7 @@ fn cancelled_owned_reply_source(iters: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {iters} {{\n\
          \x20       let r = select {{\n\
-         \x20           reply from slow.fetch() => 1,\n\
+         \x20           reply = await slow.fetch() => 1,\n\
          \x20           after 1ms => 0,\n\
          \x20       }};\n\
          \x20       let _ = r;\n\
@@ -127,8 +127,8 @@ fn never_consumed_owned_reply_source(iters: usize) -> String {
          \x20       let a = spawn Replier(tag: \"alpha-owned-reply\");\n\
          \x20       let b = spawn Replier(tag: \"beta-owned-reply\");\n\
          \x20       let r = select {{\n\
-         \x20           reply from a.fetch() => 10,\n\
-         \x20           reply from b.fetch() => 20,\n\
+         \x20           reply = await a.fetch() => 10,\n\
+         \x20           reply = await b.fetch() => 20,\n\
          \x20       }};\n\
          \x20       let _ = r;\n\
          \x20       i = i + 1;\n\

@@ -14,7 +14,7 @@ actor Worker {
         };
         txa.send(7);
         select {
-            a from rxa.recv() => {
+            a = rxa.recv() => {
                 match a {
                     .Some(n) => println(f"a:{n}"),
                     .None => println("a:none"),

@@ -458,7 +458,7 @@ fn actor_request_carrier_source(frames: usize) -> String {
          \x20       match await scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, tree: Tree) -> i64 {{\n\
-         \x20       select {{ reply from scorer.score(tag, tree) => reply, after 5s => -2, }}\n\
+         \x20       select {{ reply = await scorer.score(tag, tree) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -468,7 +468,7 @@ fn actor_request_carrier_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let direct = match await scorer.score(i, Node(Leaf(1), Leaf(2))) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
-         \x20       let selected = select {{ reply from scorer.score(i, Node(Leaf(3), Leaf(4))) => reply, after 5s => -4, }};\n\
+         \x20       let selected = select {{ reply = await scorer.score(i, Node(Leaf(3), Leaf(4))) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
          \x20       let (joined_a, joined_b) = join {{\n\
          \x20           scorer.score(i, Node(Leaf(5), Leaf(6))),\n\
          \x20           scorer.score(i, Node(Leaf(7), Leaf(8))),\n\
@@ -500,7 +500,7 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20       match await scorer.score(tag, value) {{ .Ok(result) => result, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, value: i64) -> i64 {{\n\
-         \x20       select {{ reply from scorer.score(tag, value) => reply, after 5s => -2, }}\n\
+         \x20       select {{ reply = await scorer.score(tag, value) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -510,7 +510,7 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let direct = match await scorer.score(i, 3) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
-         \x20       let selected = select {{ reply from scorer.score(i, 7) => reply, after 5s => -4, }};\n\
+         \x20       let selected = select {{ reply = await scorer.score(i, 7) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
          \x20       let (joined_a, joined_b) = join {{ scorer.score(i, 11), scorer.score(i, 15), }};\n\
          \x20       let suspended_ask = match await coordinator.ask_score(i, 19) {{ .Ok(value) => value, .Err(_) => -5, }};\n\
          \x20       let suspended_select = match await coordinator.select_score(i, 23) {{ .Ok(value) => value, .Err(_) => -6, }};\n\
@@ -546,7 +546,7 @@ fn dead_actor_select_request_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let selected = select {{\n\
-         \x20           reply from worker.score(i, Node(Leaf(1), Leaf(2))) => reply,\n\
+         \x20           reply = await worker.score(i, Node(Leaf(1), Leaf(2))) => reply.expect(\"ask reply\"),\n\
          \x20           after 1ms => i,\n\
          \x20       }};\n\
          \x20       total = total + selected;\n\

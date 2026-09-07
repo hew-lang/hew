@@ -87,7 +87,7 @@ actor Keeper {\n\
 }\n\
 fn main() -> i64 {\n\
     let k = spawn Keeper(dq: unsafe { hew_deque_new() });\n\
-    let _ = select { reply from k.replace() => 1, after 50ms => 0 };\n\
+    let _ = select { reply = await k.replace() => 1, after 50ms => 0 };\n\
     0\n\
 }\n";
 
@@ -114,7 +114,7 @@ actor Keeper {\n\
 }\n\
 fn main() -> i64 {\n\
     let k = spawn Keeper(dq: unsafe { hew_deque_new() });\n\
-    let _ = select { reply from k.ping() => 1, after 50ms => 0 };\n\
+    let _ = select { reply = await k.ping() => 1, after 50ms => 0 };\n\
     println(\"done\");\n\
     0\n\
 }\n";

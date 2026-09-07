@@ -175,7 +175,7 @@ actor Keeper {\n\
 }\n\
 fn main() -> i64 {\n\
     let k = spawn Keeper(h: Holder { dq: unsafe { hew_deque_new() } });\n\
-    let _ = select { reply from k.ping() => 1, after 50ms => 0 };\n\
+    let _ = select { reply = await k.ping() => 1, after 50ms => 0 };\n\
     0\n\
 }\n";
 
@@ -197,7 +197,7 @@ actor Worker {\n\
 }\n\
 fn main() -> i64 {\n\
     let w = spawn Worker;\n\
-    let _ = select { reply from w.run() => 1, after 200ms => 0 };\n\
+    let _ = select { reply = await w.run() => 1, after 200ms => 0 };\n\
     0\n\
 }\n";
 

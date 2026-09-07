@@ -134,7 +134,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
-         \x20           t from rx.recv() => {\n\
+         \x20           t = rx.recv() => {\n\
          \x20               match t {\n\
          \x20                   .Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n\
          \x20                   .None => println(\"closed\"),\n\
@@ -176,7 +176,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
-         \x20           t from rx.recv() => {\n\
+         \x20           t = rx.recv() => {\n\
          \x20               match t {\n\
          \x20                   .Some(t2) => {\n\
          \x20                       match t2 {\n\
@@ -363,7 +363,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
          \x20           select {\n\
-         \x20               t from rx.recv() => {\n\
+         \x20               t = rx.recv() => {\n\
          \x20                   match t {\n\
          \x20                       .Some(tr) => {\n\
          \x20                           println(f\"{tr.from_state} -> {tr.to_state}\");\n\
@@ -419,7 +419,7 @@ fn select_after_genuine_expiry_takes_after_arm() {
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
          \x20       select {\n\
-         \x20           v from rx.recv() => {\n\
+         \x20           v = rx.recv() => {\n\
          \x20               match v {\n\
          \x20                   .Some(_) => println(\"value\"),\n\
          \x20                   .None => println(\"closed\"),\n\
@@ -472,7 +472,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
          \x20       select {\n\
-         \x20           v from rx.recv() => {\n\
+         \x20           v = rx.recv() => {\n\
          \x20               match v {\n\
          \x20                   .Some(_) => println(\"value\"),\n\
          \x20                   .None => println(\"closed\"),\n\
@@ -721,7 +721,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
          \x20           select {\n\
-         \x20               snap from rx.recv() => {\n\
+         \x20               snap = rx.recv() => {\n\
          \x20                   match snap {\n\
          \x20                       .Some(s) => {\n\
          \x20                           match s {\n\
@@ -965,7 +965,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\
          \x20       select {\n\
-         \x20           snap from rx.recv() => {\n\
+         \x20           snap = rx.recv() => {\n\
          \x20               match snap {\n\
          \x20                   .Some(s) => {\n\
          \x20                       match s {\n\

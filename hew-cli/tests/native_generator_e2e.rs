@@ -82,7 +82,7 @@ fn replacement_failure_drains_incoming_owner_and_preserves_first_fault() {
     run_generator(
         include_str!("../../tests/core-acceptance/cases/generator-replacement-fault.hew"),
         "primary\nsecondary\nprimary cleaned\nsecondary cleaned\n",
-        212,
+        1,
         "hew: failure: UserPanic (212): primary\nhew: secondary failure: UserPanic (212): secondary\n",
     );
 }

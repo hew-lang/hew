@@ -131,7 +131,7 @@ fn main() {
 }
 "#,
         "cleanup\n",
-        212,
+        1,
         "step_by requires a positive step",
     );
 }
@@ -152,7 +152,7 @@ fn main() {
 }
 "#,
         "iteration\nparent\n",
-        212,
+        1,
         "operand failed",
     );
 }

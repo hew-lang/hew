@@ -288,7 +288,7 @@ fn negative_bytes_index_takes_the_owned_cleanup_failure_edge() {
     println(live_owner);
     0
 }"#,
-        205,
+        1,
         b"",
         b"hew: failure: IndexOutOfBounds (205)\n",
     );
@@ -304,7 +304,7 @@ fn past_end_bytes_index_takes_the_owned_cleanup_failure_edge() {
     println(live_owner);
     0
 }"#,
-        205,
+        1,
         b"",
         b"hew: failure: IndexOutOfBounds (205)\n",
     );

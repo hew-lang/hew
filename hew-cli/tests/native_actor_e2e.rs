@@ -437,7 +437,7 @@ fn main() {
 }
 "#,
         "INIT-CLEANUP\nroot-cleanup\n",
-        212,
+        1,
         "UserPanic",
     );
 }

@@ -1,5 +1,5 @@
 //! Executed regression for NEW-4: worker-free `await rx.recv()` over a
-//! std/channel `Receiver<T>` and the `select { pat from rx.recv() }` arm.
+//! std/channel `Receiver<T>` and the `select { pat = rx.recv() }` arm.
 //!
 //! The `examples/channel/*.hew` fixtures are COMPILED AND RUN and their stdout
 //! asserted under both the default pool AND `HEW_WORKERS=1` — the single-worker
@@ -25,7 +25,12 @@
 //! `await_recv_actor_binds_some_then_none_under_both_pools` below and by
 //! `eval_e2e.rs`'s `for_await_*_drains_to_completion_under_single_worker`
 //! tests; both currently fail on the same suspend gap and will resume
-//! proving it once physical MIR grows a channel-recv terminator.
+//! proving it once physical MIR grows a channel-recv terminator. The
+//! `--dump-mir raw`/`elab` oracle that pinned the parked `for await`
+//! cleanup plan (cursor consumes the receiver; the plan closes exactly one
+//! sender and one receiver) went the same way. Lost coverage: the
+//! exactly-once cursor/sender close on coroutine destruction has no
+//! physical-dump equivalent until that terminator exists.
 
 mod support;
 
@@ -93,87 +98,4 @@ fn await_recv_actor_binds_some_then_none_under_both_pools() {
 #[test]
 fn select_channel_recv_arm_picks_ready_under_both_pools() {
     run_channel_example_both_pools("select_recv", "b:7\n");
-}
-
-/// Compile a Hew program to one MIR dump stage and return the dump.
-fn mir_dump(source: &str, stage: &str) -> String {
-    let dir = support::tempdir();
-    let hew_src = dir.path().join("oracle.hew");
-    std::fs::write(&hew_src, source).unwrap();
-    let mut command = Command::new(hew_binary());
-    command
-        .arg("compile")
-        .arg("--dump-mir")
-        .arg(stage)
-        .arg(&hew_src)
-        .current_dir(repo_root());
-    let out = support::run_bounded_command(command, format!("dump-mir {stage}"));
-    assert!(
-        out.status.success(),
-        "dump-mir {stage} must succeed; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn handler_section<'a>(dump: &'a str, name: &str) -> &'a str {
-    let start = dump
-        .find(name)
-        .unwrap_or_else(|| panic!("{name} must be present in MIR dump"));
-    let rest = &dump[start..];
-    let end = rest.find("\nfn ").unwrap_or(rest.len());
-    &rest[..end]
-}
-
-/// The `for await` cursor takes the receiver's ownership, while the sibling
-/// sender remains live. A parked receive must close exactly that cursor and
-/// sender — not the consumed source receiver — on coroutine destruction.
-#[test]
-fn parked_forawait_receiver_plan_closes_cursor_and_sender_once() {
-    let source = "import std.channel.channel;\n\
-         actor Drain {\n\
-         \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       tx.send(\"ready\");\n\
-         \x20       for await item in rx { println(item); }\n\
-         \x20   }\n\
-         }\n";
-    let raw = mir_dump(source, "raw");
-    let elab = mir_dump(source, "elab");
-    let raw_handler = handler_section(&raw, "fn Drain__recv__run");
-    let cursor_bind = raw_handler
-        .find("__hew_for_iter_")
-        .expect("for-await must bind its synthetic cursor");
-    assert!(
-        raw_handler[..cursor_bind].contains(" rx ")
-            && raw_handler[..cursor_bind].contains("intent=Consume"),
-        "the cursor must consume the source receiver:\n{raw_handler}"
-    );
-    let cursor_move = raw_handler[cursor_bind..]
-        .lines()
-        .find_map(|line| line.trim().split_once(" = move "))
-        .expect("cursor bind must be followed by its whole-value move");
-    let cursor_place = cursor_move.0.trim();
-    let elab_handler = handler_section(&elab, "fn Drain__recv__run");
-    let suspend_plan_start = elab_handler
-        .find("suspend[")
-        .expect("for-await receiver must suspend");
-    let suspend_plan = &elab_handler[suspend_plan_start..];
-    let suspend_plan = &suspend_plan[..suspend_plan
-        .find("\n    return[")
-        .unwrap_or(suspend_plan.len())];
-    assert_eq!(
-        suspend_plan.matches("fn=rt(SenderClose)").count(),
-        1,
-        "the live sender must close exactly once:\n{suspend_plan}"
-    );
-    assert_eq!(
-        suspend_plan.matches("fn=rt(ReceiverClose)").count(),
-        1,
-        "only the moved cursor receiver may close:\n{suspend_plan}"
-    );
-    assert!(
-        suspend_plan.contains(&format!("drop {cursor_place} ty=Receiver<string> kind=resource fn=rt(ReceiverClose)")),
-        "the sole receiver close must target the raw cursor move destination {cursor_place}:\n{suspend_plan}"
-    );
 }

@@ -534,6 +534,10 @@ fn overwrite_ownership_controls_do_not_double_free_or_read_poison() {
 // `conditional_consume_after_live_alias_overwrite_drops_exactly_once`,
 // still proves the same flag-transition invariant end to end (exactly-once
 // release under a poisoned allocator).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the deterministic poisoned-allocator contract is macOS-only"
+)]
 #[test]
 fn conditional_consume_after_live_alias_overwrite_drops_exactly_once() {
     require_codegen();

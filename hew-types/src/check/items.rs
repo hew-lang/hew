@@ -2244,13 +2244,6 @@ impl Checker {
         rf: &ReceiveFnDecl,
         fields: &[FieldDecl],
     ) {
-        if matches!(
-            rf.return_type.as_ref().map(|ty| &ty.0),
-            Some(TypeExpr::Fallible { .. })
-        ) {
-            self.report_error(TypeErrorKind::InvalidOperation, &rf.span,
-                "`fails` receive functions require fallible message completion lowering, which is not yet admitted".to_string());
-        }
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
         self.actor_handler_state_guards.insert(

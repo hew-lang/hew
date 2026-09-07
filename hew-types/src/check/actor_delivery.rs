@@ -234,18 +234,7 @@ impl Checker {
             .collect::<Vec<_>>();
         if let Some(reply_ty) = reply_ty {
             if through_view {
-                let handler = method_id
-                    .rsplit_once("::")
-                    .map_or("this handler", |(_, name)| name);
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "`{handler}` returns a value, so it cannot be called through a mailbox \
-                         view, which only submits; call it on the actor handle to wait for the \
-                         reply, or `fork target.{handler}(..)` to run it concurrently"
-                    ),
-                );
+                self.reject_replying_handler_through_view(&method_id, span);
                 return Ty::Error;
             }
             let completion = self.completion_call_type(
@@ -303,6 +292,27 @@ impl Checker {
             Ty::Tuple(payload),
             policy,
         ))
+    }
+
+    /// A mailbox view submits and nothing more, so a handler that owes the
+    /// caller a reply or a declared failure cannot be called through one.
+    fn reject_replying_handler_through_view(&mut self, method_id: &str, span: &Span) {
+        let handler = method_id
+            .rsplit_once("::")
+            .map_or("this handler", |(_, name)| name);
+        let subject = if self.receive_fails_methods.contains(method_id) {
+            "declares `fails`, so its failure has nowhere to go through a mailbox view"
+        } else {
+            "returns a value, so it cannot be called through a mailbox view"
+        };
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`{handler}` {subject}, which only submits; call it on the actor handle to wait \
+                 for the reply, or `fork target.{handler}(..)` to run it concurrently"
+            ),
+        );
     }
 
     /// The result of a completion call: the handler's success value, or an

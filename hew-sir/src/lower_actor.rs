@@ -385,7 +385,7 @@ impl Builder<'_, '_> {
             receiver,
             method_id,
             args,
-            reply_ty,
+            reply_ty: _,
             argument_order,
             deadline_ns,
         } = &expression.kind
@@ -401,22 +401,9 @@ impl Builder<'_, '_> {
             .find(|handler| handler.declaration.full_path() == method_id.as_str())
             .ok_or("ask has no exact receive protocol member")?;
         let message = handler.message_id;
-        if handler.return_ty != self.ty(reply_ty) {
-            return Err("ask reply differs from its receive protocol".into());
-        }
+
         let output = self.ty(&expression.ty);
-        let ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Result),
-            args: output_args,
-            ..
-        } = &output
-        else {
-            return Err("ask must return its complete checked Result".into());
-        };
-        let [_, error_ty] = output_args.as_slice() else {
-            return Err("ask must return its complete checked Result".into());
-        };
-        let signature = descriptor.ask_signature(message, &target_ty, error_ty.clone())?;
+        let signature = descriptor.ask_signature(message, &target_ty, output.clone())?;
         if signature.return_ty != output
             || signature.params.len() != args.len() + 1
             || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()

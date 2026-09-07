@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-call-envelope"
+intent = "A completion call fails with `ActorError`: a `fails` handler's `Err` arrives as `Failed(e)`, and a call on a closed actor reports `Dead` rather than a retryable rejection."
+source = "cases/actor-call-envelope.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "70\ninsufficient funds\ndead\n"
+exit = 0

@@ -4671,19 +4671,8 @@ fn verify_terminator_shape(
                             let crate::CallResult::Value(value) = result else {
                                 return None;
                             };
-                            let ResolvedTy::Named {
-                                builtin: Some(hew_types::BuiltinType::Result),
-                                args,
-                                ..
-                            } = &value.ty
-                            else {
-                                return None;
-                            };
-                            let [_, error_ty] = args.as_slice() else {
-                                return None;
-                            };
                             descriptor
-                                .ask_signature(*message, target, error_ty.clone())
+                                .ask_signature(*message, target, value.ty.clone())
                                 .ok()
                         })
                         .is_some_and(|signature| {

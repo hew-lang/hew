@@ -255,7 +255,7 @@ fn actor_send_unknown_handler_skipped() {
             let printer = actor |x: i64| {
                 println(x);
             };
-            printer.send(42);
+            _ = printer.send(42);
         }
         ",
     );

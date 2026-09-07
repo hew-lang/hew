@@ -812,6 +812,10 @@ pub enum TypeErrorKind {
     /// §4.12). The compiler synthesizes the handle wrapper itself; naming it
     /// in the annotation says the body yields handles, not `Y` values.
     GenReturnSpelling,
+    /// A statement-position send or ask whose typed delivery outcome is
+    /// discarded (HEW-SPEC-2026 §2.1.1, §5.6). Losing a delivery failure by
+    /// accident is not available; the discard has to be written down.
+    SendResultDropped,
     /// Actor types form a reference cycle via `LocalPid` fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
@@ -1511,6 +1515,7 @@ impl TypeErrorKind {
             Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
+            Self::SendResultDropped => "E_SEND_RESULT_DROPPED",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",

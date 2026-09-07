@@ -2017,7 +2017,7 @@ fn lambda_actor_capture_must_be_send() {
                 println(rc.strong_count());
                 println(x);
             };
-            worker.send(1);
+            _ = worker.send(1);
         }
         ",
     );
@@ -2042,7 +2042,7 @@ fn lambda_actor_call_rejects_non_send_payload() {
                 println(msg);
             };
             let rc: Rc<i64> = Rc.new(1);
-            worker(rc.strong_count());
+            _ = worker(rc.strong_count());
         }
         ",
     );
@@ -2202,7 +2202,7 @@ fn actor_lambda_new_syntax_typechecks() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker(1);
+            _ = worker(1);
         }
         ",
     );
@@ -2222,7 +2222,7 @@ fn ask_shaped_actor_return_matches_typechecks() {
             let doubler = actor |n: i64| -> i64 {
                 n * 2
             };
-            doubler(5);
+            _ = doubler(5);
         }
         ",
     );
@@ -2303,10 +2303,10 @@ fn lambda_actor_recursive_self_call_typechecks() {
         fn main() {
             let fib = actor |n: i64| {
                 if n > 1 {
-                    fib(n - 1);
+                    _ = fib(n - 1);
                 }
             };
-            fib(10);
+            _ = fib(10);
         }
         ",
     );
@@ -2334,7 +2334,7 @@ fn lambda_actor_dot_send_now_accepted_via_duplex_method() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker.send(1);
+            _ = worker.send(1);
         }
         ",
     );
@@ -2354,7 +2354,7 @@ fn tell_shaped_actor_typechecks() {
             let log = actor |s: string| {
                 println(s);
             };
-            log("x");
+            _ = log("x");
         }
         "#,
     );

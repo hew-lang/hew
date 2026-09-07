@@ -1,20 +1,20 @@
 //! The `must_use` lint.
 //!
 //! Flags a *discarded* value whose type carries a failure that must not be
-//! ignored — `WriteError`, `SendError`, and `AskError`, the error arms returned
-//! by `Connection.write`, the pid `send` family, and an actor `ask`
-//! (`await actor.msg()`). Dropping such a value on the floor silently fails
-//! open: a backpressure or disconnect signal vanishes, an undelivered message
-//! is never noticed, or a timed-out / mailbox-full / stopped-actor ask is
-//! mistaken for a reply. A program should handle it (`?`, `match`) or discard
-//! it explicitly (`let _ = …`).
+//! ignored — `WriteError`, the error arm returned by `Connection.write`.
+//! Dropping such a value on the floor silently fails open: a backpressure or
+//! disconnect signal vanishes. A program should handle it (`?`, `match`) or
+//! discard it explicitly (`let _ = …`).
+//!
+//! Send and ask outcomes are not a lint tier: discarding one is
+//! `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
+//! (HEW-SPEC-2026 §2.1.1, §5.6).
 //!
 //! The value is flagged in two shapes:
 //!
-//! - the bare error: `WriteError` / `SendError` / `AskError`;
-//! - a `Result<_, E>` whose error arm is one of those — the common case, since
-//!   `write()` returns `Result<(), WriteError>`, `send()` returns
-//!   `Result<(), SendError>`, and an `ask` returns `Result<Reply, AskError>`.
+//! - the bare error: `WriteError`;
+//! - a `Result<_, E>` whose error arm is one — the common case, since
+//!   `write()` returns `Result<(), WriteError>`.
 //!
 //! ## Precision over recall
 //!
@@ -23,10 +23,9 @@
 //!   `var` binding, and a `match` / `if let` scrutinee are all "used" and never
 //!   flagged. `expr?` lands here typed as the unwrapped ok arm, so a handled
 //!   call is silent; only the unhandled discard remains.
-//! - The discarded expression's resolved type must be exactly one of the
-//!   must-use errors (`WriteError` / `SendError` / `AskError`) or a `Result<_,
-//!   E>` over one, verified through [`LintCtx::resolved_type_at`]; an
-//!   unresolved type stays silent.
+//! - The discarded expression's resolved type must be exactly `WriteError` or
+//!   a `Result<_, WriteError>`, verified through [`LintCtx::resolved_type_at`];
+//!   an unresolved type stays silent.
 //! - `// hew:allow(must_use)` (or an explicit `let _ = …`) is the documented
 //!   opt-out, mirroring the registry's other suppressible lints.
 
@@ -34,7 +33,6 @@ use hew_parser::ast::{Block, Span, Stmt};
 
 use crate::error::TypeError;
 use crate::ty::Ty;
-use crate::BuiltinType;
 
 use super::{LintCtx, LintId, LintLevels, NodeVisitor};
 
@@ -128,18 +126,6 @@ impl MustUseError {
         class: "write/send",
         reports: "backpressure, disconnect, or undelivered sends",
     };
-    /// `SendError` — an undelivered message from the pid `send` family.
-    const SEND: Self = Self {
-        name: "SendError",
-        class: "write/send",
-        reports: "backpressure, disconnect, or undelivered sends",
-    };
-    /// `AskError` — a failed `await actor.msg()` / lambda-actor `ask`.
-    const ASK: Self = Self {
-        name: "AskError",
-        class: "ask",
-        reports: "a timeout, a full mailbox, or a stopped actor",
-    };
 }
 
 /// The must-use error a discarded value carries, or `None`.
@@ -154,34 +140,18 @@ fn must_use_error(ty: &Ty) -> Option<MustUseError> {
     error_kind(ty)
 }
 
-/// `WriteError` / `SendError` / `AskError` named-type detection.
+/// `WriteError` named-type detection.
 fn error_kind(ty: &Ty) -> Option<MustUseError> {
     let Ty::Named { name, builtin, .. } = ty else {
         return None;
     };
-    if *builtin == Some(BuiltinType::SendError)
-        && generated_builtin_enum_has_identity("SendError", name)
-    {
-        return Some(MustUseError::SEND);
-    }
-    if *builtin == Some(BuiltinType::AskError)
-        && generated_builtin_enum_has_identity("AskError", name)
-    {
-        return Some(MustUseError::ASK);
-    }
     (builtin.is_none() && name == crate::stdlib::STD_NET_WRITE_ERROR).then_some(MustUseError::WRITE)
-}
-
-/// Prove that a compiler-owned enum has both its generated discriminator and
-/// the exact source owner published by the shared enum catalog.
-fn generated_builtin_enum_has_identity(leaf: &str, actual_name: &str) -> bool {
-    crate::builtin_enums::monomorphic_builtin_enum(leaf)
-        .is_some_and(|fact| fact.canonical_name == actual_name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BuiltinType;
 
     fn named(name: &str, builtin: Option<BuiltinType>) -> Ty {
         Ty::Named {
@@ -192,49 +162,16 @@ mod tests {
     }
 
     #[test]
-    fn generated_error_requires_discriminator_and_exact_catalog_owner() {
-        let ask = crate::builtin_enums::monomorphic_builtin_enum("AskError")
-            .expect("generated AskError catalog row");
-        assert!(error_kind(&named(ask.canonical_name, Some(BuiltinType::AskError))).is_some());
-
-        for missing_or_wrong in [None, Some(BuiltinType::SendError)] {
-            assert!(
-                error_kind(&named(ask.canonical_name, missing_or_wrong)).is_none(),
-                "the canonical owner alone must not grant AskError authority"
-            );
-        }
-        for foreign_or_leaf in ["foreign.AskError", "AskError"] {
-            assert!(
-                error_kind(&named(foreign_or_leaf, Some(BuiltinType::AskError))).is_none(),
-                "the discriminator alone must not grant AskError authority"
-            );
-        }
-    }
-
-    #[test]
-    fn generated_send_error_requires_discriminator_and_exact_catalog_owner() {
-        let send = crate::builtin_enums::monomorphic_builtin_enum("SendError")
-            .expect("generated SendError catalog row");
-        assert!(error_kind(&named(send.canonical_name, Some(BuiltinType::SendError))).is_some());
-
-        for missing_or_wrong in [None, Some(BuiltinType::AskError)] {
-            assert!(
-                error_kind(&named(send.canonical_name, missing_or_wrong)).is_none(),
-                "the canonical owner alone must not grant SendError authority"
-            );
-        }
-        for foreign_or_leaf in ["foreign.SendError", "SendError"] {
-            assert!(
-                error_kind(&named(foreign_or_leaf, Some(BuiltinType::SendError))).is_none(),
-                "the discriminator alone must not grant SendError authority"
-            );
-        }
-    }
-
-    #[test]
-    fn write_error_requires_exact_std_net_source_identity() {
+    fn only_the_stdlib_write_error_is_must_use() {
         assert!(error_kind(&named(crate::stdlib::STD_NET_WRITE_ERROR, None)).is_some());
+        // Delivery outcomes moved to E_SEND_RESULT_DROPPED and must not be
+        // reported a second time as a lint.
+        for delivery in [
+            named("std.builtins.SendError", Some(BuiltinType::SendError)),
+            named("std.builtins.AskError", Some(BuiltinType::AskError)),
+        ] {
+            assert!(error_kind(&delivery).is_none(), "{delivery:?}");
+        }
         assert!(error_kind(&named("WriteError", None)).is_none());
-        assert!(error_kind(&named("foreign.WriteError", None)).is_none());
     }
 }

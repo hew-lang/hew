@@ -222,15 +222,15 @@ the precise subset that is actually convertible.
     `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
     branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
     chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
-  - **`must_use`** — a discarded value carrying a write/send/ask error that must not be ignored:
-    `WriteError` / `SendError` / `AskError`, bare or as the error arm of a `Result<_, E>`.
-    *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
+  - **`must_use`** — a discarded value carrying a write error that must not be ignored:
+    `WriteError`, bare or as the error arm of a `Result<_, E>`, plus a discarded machine step
+    report. *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
     `match`/`if let` scrutinee, and `expr?` are all "used" and never flagged); the resolved type
-    must be exactly a must-use error or a `Result` over it, matched by canonical name so the
-    builtins `SendError` / `AskError` and the stdlib `WriteError` all qualify. Discarding any
-    fails open — a dropped backpressure/disconnect signal, an unnoticed undelivered send, or a
-    timed-out / mailbox-full / stopped-actor `ask` (`await actor.msg()`) mistaken for a reply.
-    Opt out with `let _ = …` or `// hew:allow(must_use)`.
+    must be exactly the stdlib `WriteError` or a `Result` over it, matched by canonical name.
+    Discarding one fails open — a dropped backpressure/disconnect signal. Opt out with
+    `let _ = …` or `// hew:allow(must_use)`. Send and ask outcomes are **not** a lint tier:
+    discarding one is `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
+    (HEW-SPEC-2026 §2.1.1, §5.6).
   - **`sleep_loop_blocks_mailbox`** — an actor `receive fn` contains a `loop`, `while true`,
     `while flag`, or `while !flag` whose body directly reaches `sleep` or `sleep_until`, has no
     reachable `break` for that loop, and does not assign the bare guard name inside the loop body.

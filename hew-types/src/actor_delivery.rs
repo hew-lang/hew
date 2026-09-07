@@ -72,6 +72,26 @@ impl SendPolicy {
     }
 }
 
+/// The delivery outcome a discarded expression drops, or `None`.
+///
+/// A `send` yields `Result<Delivery, SendFailure<_>>`, the pid/channel `send`
+/// family yields `Result<_, SendError>`, and an `ask` yields
+/// `Result<_, AskError>`. Discarding any of them in statement position loses a
+/// delivery failure, which is `E_SEND_RESULT_DROPPED` (HEW-SPEC-2026 §2.1.1,
+/// §5.6). The returned name is the error type, for the diagnostic.
+#[must_use]
+pub fn dropped_delivery_outcome(ty: &Ty) -> Option<&'static str> {
+    let (_, error) = ty.as_result()?;
+    let Ty::Named { name, builtin, .. } = error else {
+        return None;
+    };
+    match builtin {
+        Some(crate::BuiltinType::SendError) => Some("SendError"),
+        Some(crate::BuiltinType::AskError) => Some("AskError"),
+        _ => (builtin.is_none() && name == FAILURE_TYPE).then_some("SendFailure"),
+    }
+}
+
 /// Selected operations carried independently of source and linker spellings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActorDeliveryCall {

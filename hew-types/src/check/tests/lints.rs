@@ -4236,28 +4236,16 @@ fn warn_dead_code_self_recursive_function() {
 // -----------------------------------------------------------------------
 // must_use lint
 // -----------------------------------------------------------------------
+//
+// Delivery outcomes (send/ask) are no longer a lint tier: discarding one is
+// `E_SEND_RESULT_DROPPED`, covered in `check::tests::actor_delivery`. What
+// remains here is `WriteError` and the machine step report.
 
 fn count_must_use(diags: &[TypeError]) -> usize {
     diags
         .iter()
         .filter(|d| d.kind == TypeErrorKind::Lint(LintId::MustUse))
         .count()
-}
-
-/// A fieldless actor whose `process` reply makes `await d.process(_)` resolve to
-/// `Result<i64, AskError>` — the ask-shaped must-use case. `AskError` is a
-/// compiler-owned builtin whose exact owner comes from the generated catalog.
-const ASK_ACTOR: &str = "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n";
-
-#[test]
-fn must_use_flags_discarded_send_result() {
-    let src = "fn caller() { let log = actor |n: i64| { let _ = n; }; log(5); }";
-    let (_, warnings) = parse_and_check(src);
-    let hit = warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
-        .expect("a discarded Result<(), SendError> must fire must_use");
-    assert!(hit.message.contains("SendError"), "msg: {}", hit.message);
 }
 
 #[test]
@@ -4273,63 +4261,8 @@ fn must_use_flags_bare_error_value() {
 }
 
 #[test]
-fn must_use_not_flagged_when_handled_by_question() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() -> Result<(), AskError> {{ \
-         let d = spawn Doubler; await d.process(5)?; Ok(()) }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "`?` consumes the Result, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_explicitly_bound() {
-    let src =
-        format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; let _ = await d.process(5); }}");
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "`let _ =` is the documented opt-out, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_in_tail_position() {
-    // The trailing expression is the block's value (used), not a discard.
-    let src = format!(
-        "{ASK_ACTOR}fn caller() -> Result<i64, AskError> {{ \
-         let d = spawn Doubler; await d.process(5) }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a tail Result is the function's value, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_matched() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; \
-         match await d.process(5) {{ Ok(_) => {{}} Err(_) => {{}} }} }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a matched Result is handled, warnings: {warnings:?}"
-    );
-}
-
-#[test]
 fn must_use_not_flagged_for_ordinary_result() {
-    // Only WriteError/SendError are must-use; an unrelated error is left alone.
+    // Only WriteError is must-use; an unrelated error is left alone.
     let src = "fn g() -> Result<(), i64> { Ok(()) }\nfn caller() { g(); }";
     let (_, warnings) = parse_and_check(src);
     assert_eq!(
@@ -4359,116 +4292,6 @@ fn must_use_rejects_user_same_leaf_error_names() {
         0,
         "same-leaf user types do not carry stdlib must-use authority: {:?}",
         output.warnings
-    );
-}
-
-#[test]
-fn must_use_deny_routes_to_errors() {
-    let src = format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; await d.process(5); }}");
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Deny);
-    assert_eq!(count_must_use(&out.errors), 1, "errors: {:?}", out.errors);
-    assert_eq!(count_must_use(&out.warnings), 0);
-}
-
-#[test]
-fn must_use_allow_suppresses() {
-    let src = format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; await d.process(5); }}");
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Allow);
-    assert_eq!(count_must_use(&out.warnings), 0);
-    assert_eq!(count_must_use(&out.errors), 0);
-}
-
-#[test]
-fn must_use_suppressed_by_directive() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() {{\n    let d = spawn Doubler;\n    // hew:allow(must_use)\n    await d.process(5);\n}}"
-    );
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
-    assert_eq!(
-        count_must_use(&out.warnings),
-        0,
-        "a directive above the discard must suppress, warnings: {:?}",
-        out.warnings
-    );
-}
-
-#[test]
-fn must_use_flags_discarded_await_ask() {
-    // A bare `await actor.msg()` in statement position drops a
-    // `Result<_, AskError>` — a lost timeout/full-mailbox/stopped-actor signal.
-    let src = format!("{ASK_ACTOR}fn main() {{ let d = spawn Doubler; await d.process(5); }}");
-    let (errors, warnings) = parse_and_check(&src);
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    let hit = warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
-        .expect("a discarded `await actor.msg()` (Result<_, AskError>) must fire must_use");
-    assert!(
-        hit.message.contains("AskError") && hit.message.contains("ask error"),
-        "primary message should name AskError and the ask class: {}",
-        hit.message
-    );
-    assert!(
-        hit.suggestions.iter().any(|s| {
-            s.contains("timeout") && s.contains("mailbox") && s.contains("stopped actor")
-        }),
-        "suggestion should name the concrete ask failures: {:?}",
-        hit.suggestions
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_await_matched() {
-    let src = format!(
-        "{ASK_ACTOR}fn main() {{ let d = spawn Doubler; \
-         match await d.process(5) {{ Ok(_) => {{}} Err(_) => {{}} }} }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a matched await ask is handled, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_await_explicitly_bound() {
-    let src =
-        format!("{ASK_ACTOR}fn main() {{ let d = spawn Doubler; let _ = await d.process(5); }}");
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "`let _ = await …` is an explicit discard, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_await_in_tail_position() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() -> Result<i64, AskError> \
-         {{ let d = spawn Doubler; await d.process(5) }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a tail await is the function's value, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_await_suppressed_by_directive() {
-    let src = format!(
-        "{ASK_ACTOR}fn main() {{\n    let d = spawn Doubler;\n    \
-         // hew:allow(must_use)\n    await d.process(5);\n}}"
-    );
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
-    assert_eq!(
-        count_must_use(&out.warnings),
-        0,
-        "a directive above the discarded await must suppress, warnings: {:?}",
-        out.warnings
     );
 }
 

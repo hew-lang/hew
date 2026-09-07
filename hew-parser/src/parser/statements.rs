@@ -144,14 +144,28 @@ impl Parser<'_> {
                     let value = self.parse_expr()?;
                     self.expect(&Token::Semicolon)?;
                     let span = expr.1.start..value.1.end;
-                    stmts.push((
-                        Stmt::Assign {
-                            target: expr,
-                            op: None,
-                            value,
-                        },
-                        span,
-                    ));
+                    // `_ = expr;` is the explicit discard: the same statement as
+                    // `let _ = expr;`, spelled without a binding no one reads.
+                    if matches!(&expr.0, Expr::Identifier(name) if name == "_") {
+                        stmts.push((
+                            Stmt::Let {
+                                pattern: (Pattern::Wildcard, expr.1.clone()),
+                                ty: None,
+                                value: Some(value),
+                                else_block: None,
+                            },
+                            span,
+                        ));
+                    } else {
+                        stmts.push((
+                            Stmt::Assign {
+                                target: expr,
+                                op: None,
+                                value,
+                            },
+                            span,
+                        ));
+                    }
                 } else if self.eat(&Token::Semicolon) {
                     // Expression statement
                     while self.peek() == Some(&Token::Semicolon) {

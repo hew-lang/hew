@@ -188,16 +188,24 @@ impl Checker {
             .and_then(|name| self.env.lookup(name))
             .is_some_and(|binding| binding.is_moved);
         let ty = self.synthesize(expr, span);
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        if matches!(
-            self.actor_delivery_calls.get(&key),
-            Some(crate::actor_delivery::ActorDeliveryCall::Submit { .. })
-        ) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
+        // A statement-position send or ask drops its typed delivery outcome,
+        // which is how a delivery failure gets lost by accident. The discard
+        // has to be written down instead (HEW-SPEC-2026 §2.1.1, §5.6).
+        if let Some(error) =
+            crate::actor_delivery::dropped_delivery_outcome(&self.subst.resolve(&ty))
+        {
+            self.report_error_with_suggestions(
+                TypeErrorKind::SendResultDropped,
                 span,
-                "actor send result must be handled; use `?`, `match`, or an explicit `let _ = ...` acknowledgment"
-                    .to_string(),
+                format!(
+                    "E_SEND_RESULT_DROPPED: discarded delivery outcome; an ignored `{error}` \
+                     fails open"
+                ),
+                vec![
+                    "handle it with `?`, `match` or `handle`, or discard it deliberately with \
+                     `_ = <expr>;`"
+                        .to_string(),
+                ],
             );
         }
         if !root_was_moved {

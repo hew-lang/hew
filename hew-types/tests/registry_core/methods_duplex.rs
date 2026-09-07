@@ -602,7 +602,7 @@ fn lambda_actor_call_syntax_typechecks() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker(42);
+            _ = worker(42);
         }
     ";
     let output = typecheck(source);
@@ -624,7 +624,7 @@ fn lambda_actor_dot_send_records_send_entry_rewrite() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker.send(42);
+            _ = worker.send(42);
         }
     ";
     let output = typecheck(source);

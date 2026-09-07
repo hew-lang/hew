@@ -1299,7 +1299,7 @@ The handle type is `Pid<T>` (the actor type itself). Let it infer, or annotate w
 
 > **Spelling in this build.** One actor identity `Pid<A>` covers local and remote actors (HEW-SPEC-2026 §2.1.1). The compiler still spells the local case `LocalPid<A>` and the remote case `RemotePid<A>`, which is what the examples in this guide write.
 
-### Fire-and-forget send
+### Calling a handler that returns nothing
 
 ```hew
 actor Logger {
@@ -1309,12 +1309,30 @@ actor Logger {
 }
 fn main() {
     let lg = spawn Logger(n: 0);
-    let _ = lg.log(7);    // no await; the call submits
+    let _ = lg.log(7);    // waits until the handler has finished
     let _ = lg.ping();
 }
 ```
 
-The call is the send: a return-less `receive fn` is submitted by calling it, with no `await` and no keyword. The call has type `Result<Delivery, SendFailure<M>>` — `?` propagates a refusal, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored refusal loses work silently. A refusal hands the whole message back: `failure.message.retry()` resubmits it to the same actor and `failure.message.to(other)` readdresses it, so a consumed payload survives the failure path.
+A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), AskError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored failure loses work silently.
+
+### Submitting without waiting
+
+```hew
+actor Logger {
+    var n: i64 = 0,
+    receive fn log(msg: i64) { println(f"log: {msg}"); n = n + 1; }
+}
+fn main() {
+    let lg = spawn Logger(n: 0);
+    let inbox = mailbox(lg, on_full: .Reject);
+    let _ = inbox.log(7);    // accepted, not processed
+}
+```
+
+`mailbox(target, on_full: ...)` is a one-way view of the same actor: a call through it submits and returns as soon as the message is accepted, with type `Result<Delivery, SendFailure<M>>`. `.Reject` refuses a full mailbox, `.Wait` parks the sender until there is room, and `.DropNewest` discards the message and says so. A refusal hands the whole message back: `failure.message.retry()` resubmits it to the same actor and `failure.message.to(other)` readdresses it, so a consumed payload survives the failure path. A handler that returns a value cannot be called through a mailbox view — use `fork target.m(..)` when you want its reply concurrently.
+
+Use a mailbox view for a producer that must not block on its consumer, and for a message an actor sends to itself: a completion call on your own actor could never finish.
 
 ### Ask / request-reply
 

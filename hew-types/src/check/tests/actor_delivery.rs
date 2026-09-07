@@ -2,13 +2,14 @@ use super::check_source;
 use crate::actor_delivery::{ActorDeliveryCall, SendPolicy};
 use crate::check::effects::SuspensionEffect;
 
-/// The call is the send. A rejected submission hands the whole message back,
-/// and the two moves left on it — `.to(other)` and `.retry()` — resubmit it.
+/// A call through a mailbox view submits. A rejected submission hands the whole
+/// message back, and the two moves left on it — `.to(other)` and `.retry()` —
+/// resubmit it.
 #[test]
-fn actor_calls_submit_and_rejections_can_be_resubmitted() {
+fn mailbox_calls_submit_and_rejections_can_be_resubmitted() {
     let source = r#"actor Worker { receive fn process(value: string) {} }
         fn main() {
-            let worker = spawn Worker();
+            let worker = mailbox(spawn Worker(), on_full: .Reject);
             let backup = spawn Worker();
             match worker.process("work") {
                 .Ok(delivery) => {},
@@ -46,15 +47,16 @@ fn actor_calls_submit_and_rejections_can_be_resubmitted() {
         .all(|effect| *effect == SuspensionEffect::Never));
 }
 
-/// `.Wait` is the only suspending policy, and the effect comes from the view's
-/// type, not from the handler being called (A399).
+/// `.Wait` is the only suspending submission policy, and the effect comes from
+/// the view's type, not from the handler being called (A399).
 #[test]
 fn actor_delivery_wait_policy_only_suspends_submission() {
     let source = r"actor Worker { receive fn process(value: i64) {} }
         fn main() {
             let worker = spawn Worker();
-            let sender = policy(worker, on_full: .Wait);
-            let _ = worker.process(1);
+            let quick = mailbox(worker, on_full: .Reject);
+            let sender = mailbox(worker, on_full: .Wait);
+            let _ = quick.process(1);
             let _ = sender.process(42);
         }";
     let output = check_source(source);
@@ -84,7 +86,7 @@ fn actor_delivery_rejects_reuse_and_incompatible_destination() {
         let source = format!(
             "actor Worker {{ receive fn process(value: i64) {{}} }} \
              actor Other {{ receive fn process(value: i64) {{}} }} \
-             fn main() {{ let worker = spawn Worker(); \
+             fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
              match worker.process(1) {{ \
                  .Ok(_) => {{}}, \
                  .Err(rejected) => {{ let m = rejected.message; {body} }} \
@@ -112,8 +114,9 @@ fn statement_position_delivery_outcomes_are_refused() {
          receive fn process(n: i64) -> i64 { n * 2 } }";
 
     for (body, error) in [
-        ("d.tell(1);", "SendFailure"),
-        ("await d.process(5);", "AskError"),
+        ("mailbox(d, on_full: .Reject).tell(1);", "SendFailure"),
+        ("d.tell(1);", "AskError"),
+        ("d.process(5);", "AskError"),
         (
             "let log = actor |n: i64| { let _ = n; }; log(5);",
             "SendError",
@@ -150,10 +153,11 @@ fn handled_delivery_outcomes_are_accepted() {
         "_ = d.tell(1);",
         "let _ = d.tell(1);",
         "let r = d.tell(1); let _ = r;",
-        "d.tell(1) handle failure { Delivery.Accepted };",
+        "d.tell(1) handle failure { };",
         "match d.tell(1) { .Ok(_) => {}, .Err(_) => {} }",
-        "_ = await d.process(5);",
-        "match await d.process(5) { .Ok(_) => {}, .Err(_) => {} }",
+        "_ = d.process(5);",
+        "match d.process(5) { .Ok(_) => {}, .Err(_) => {} }",
+        "let _ = mailbox(d, on_full: .Reject).tell(1);",
     ] {
         let source = format!("{ACTOR} fn main() {{ let d = spawn Doubler; {body} }}");
         let output = check_source(&source);
@@ -176,9 +180,9 @@ fn used_delivery_outcomes_outside_statement_position_are_accepted() {
          receive fn process(n: i64) -> i64 { n * 2 } }";
 
     for signature_and_body in [
-        "fn main() -> Result<i64, AskError> { let d = spawn Doubler; await d.process(5) }",
+        "fn main() -> Result<i64, AskError> { let d = spawn Doubler; d.process(5) }",
         "fn main() -> Result<(), AskError> { let d = spawn Doubler; \
-         let _ = await d.process(5)?; Ok(()) }",
+         let _ = d.process(5)?; Ok(()) }",
     ] {
         let source = format!("{ACTOR} {signature_and_body}");
         let output = check_source(&source);
@@ -195,7 +199,7 @@ fn used_delivery_outcomes_outside_statement_position_are_accepted() {
 
 #[test]
 fn actor_delivery_sealing_does_not_capture_user_record_names() {
-    let output = check_source("type Message { payload: i64 } type ActorSender { target: i64 } fn main() { let message = Message { payload: 7 }; let sender = ActorSender { target: message.payload }; let x = sender.target; }");
+    let output = check_source("type Message { payload: i64 } type ActorMailbox { target: i64 } fn main() { let message = Message { payload: 7 }; let sender = ActorMailbox { target: message.payload }; let x = sender.target; }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
@@ -207,7 +211,7 @@ fn actor_delivery_seals_message_destructuring_and_construction() {
     ] {
         let source = format!(
             "actor Worker {{ receive fn process(value: i64) {{}} }} \
-             fn main() {{ let worker = spawn Worker(); \
+             fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
              match worker.process(1) {{ \
                  .Ok(_) => {{}}, \
                  .Err(rejected) => {{ let m = rejected.message; {body} }} \
@@ -238,7 +242,7 @@ fn actor_delivery_named_arguments_preserve_protocol_order() {
         .next()
         .expect("message constructor");
     assert!(
-        matches!(dispatch, crate::ActorMethodKind::Message { argument_order, .. } if argument_order == &[1, 0])
+        matches!(dispatch, crate::ActorMethodKind::Ask { argument_order, .. } if argument_order == &[1, 0])
     );
     let output = check_source("actor Worker { receive fn process(first: i64, second: i64) {} } fn main() { let worker = spawn Worker(); let _ = worker.process(first: 1, first: 2); }");
     assert!(
@@ -253,10 +257,43 @@ fn actor_delivery_named_arguments_preserve_protocol_order() {
 
 #[test]
 fn actor_delivery_failure_reason_matches_annotated_error_values() {
-    let output = check_source("actor Worker { receive fn process() {} } fn reason(error: SendError) -> SendError { error } fn main() { let worker = spawn Worker(); match worker.process() { .Ok(_) => {}, .Err(failure) => { let same = reason(failure.reason); } } }");
+    let output = check_source("actor Worker { receive fn process() {} } fn reason(error: SendError) -> SendError { error } fn main() { let worker = mailbox(spawn Worker(), on_full: .Reject); match worker.process() { .Ok(_) => {}, .Err(failure) => { let same = reason(failure.reason); } } }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
         output.type_defs["std.builtins.SendFailure"].fields["reason"],
         crate::Ty::send_error()
     );
+}
+
+/// A call on the handle waits for the handler, so a void handler's call has the
+/// unit completion result, not a delivery outcome.
+#[test]
+fn a_call_on_a_handle_completes_with_a_unit_result() {
+    let output = check_source(
+        "actor Worker { receive fn work(n: i64) {} } \
+         fn drive(w: LocalPid<Worker>) -> Result<(), AskError> { w.work(1) } \
+         fn main() { let w = spawn Worker(); let _ = drive(w); }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .actor_method_dispatch
+        .values()
+        .any(|dispatch| matches!(dispatch, crate::ActorMethodKind::Ask { reply_ty, .. } if *reply_ty == crate::Ty::Unit)));
+}
+
+/// A mailbox view only submits, so a value-returning handler has no reply to
+/// give through it; the diagnostic names `fork` for the concurrent call.
+#[test]
+fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.total(); }",
+    );
+    let message = output
+        .errors
+        .iter()
+        .map(|error| error.message.clone())
+        .find(|message| message.contains("mailbox view"))
+        .unwrap_or_else(|| panic!("expected the mailbox-view refusal: {:?}", output.errors));
+    assert!(message.contains("fork target.total(..)"), "{message}");
 }

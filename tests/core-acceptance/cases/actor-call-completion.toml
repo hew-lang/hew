@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-call-completion"
+intent = "A call on an actor handle returns only after the handler has finished, so a later query never overtakes an earlier update and the handler's output precedes the caller's."
+source = "cases/actor-call-completion.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "handler FIRST\nreturned first\nhandler SECOND\nreturned second\n2\nclosed\n"
+exit = 0

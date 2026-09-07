@@ -796,6 +796,19 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_self_token() -> usize"
+      },
+      "symbol": "hew_actor_self_token"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],

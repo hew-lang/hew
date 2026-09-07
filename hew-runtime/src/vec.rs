@@ -3706,13 +3706,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_set_i32_oob_traps_main_context() {
         let output = run_vec_death_helper("vec::tests::_helper_vec_set_i32_oob");
-        assert!(
-            !output.status.success(),
-            "out-of-bounds Vec.set() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "out-of-bounds Vec.set() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -3720,7 +3721,7 @@ mod tests {
             "out-of-bounds Vec.set() must report index and len; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "out-of-bounds Vec.set() must route through the trap code; got: {stderr}"
         );
     }
@@ -3745,13 +3746,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_pop_i32_empty_traps_main_context() {
         let output = run_vec_death_helper("vec::tests::_helper_vec_pop_i32_empty");
-        assert!(
-            !output.status.success(),
-            "empty Vec.pop() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "empty Vec.pop() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -3759,7 +3761,7 @@ mod tests {
             "empty Vec.pop() must report the operation; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "empty Vec.pop() must route through the trap code; got: {stderr}"
         );
     }
@@ -3783,13 +3785,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_remove_i32_oob_traps_main_context() {
         let output = run_vec_death_helper("vec::tests::_helper_vec_remove_i32_oob");
-        assert!(
-            !output.status.success(),
-            "out-of-bounds Vec.remove() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "out-of-bounds Vec.remove() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -3797,7 +3800,7 @@ mod tests {
             "out-of-bounds Vec.remove() must report index and len; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "out-of-bounds Vec.remove() must route through the trap code; got: {stderr}"
         );
     }
@@ -3822,7 +3825,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_get_generic_oob() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4350,7 +4353,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn vec_remove_at_layout_oob_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4392,7 +4395,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn vec_remove_at_layout_layout_managed_aborts() {
         // Non-Plain (LayoutManaged) layout must fail closed — the BitCopy
@@ -4820,7 +4823,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn vec_clone_layout_layout_managed_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -5634,7 +5637,7 @@ mod vec_owned_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn clone_rejects_missing_clone_thunk_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -5686,7 +5689,7 @@ mod vec_owned_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn owned_op_rejects_missing_descriptor_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())

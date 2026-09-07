@@ -225,7 +225,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn runtime_bounds_trap_aborts_without_actor_context() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -242,13 +242,14 @@ mod tests {
             .output()
             .unwrap();
 
-        assert!(
-            !output.status.success(),
-            "runtime bounds trap must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "runtime bounds trap must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "runtime bounds trap should preserve the trap code diagnostic; got: {stderr}"
         );
     }

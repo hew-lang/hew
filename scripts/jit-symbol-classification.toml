@@ -173,6 +173,7 @@ stable = [
   "hew_actor_schedule_periodic",
   "hew_actor_self",
   "hew_actor_self_pid",
+  "hew_actor_self_token",
   "hew_actor_self_stop",
   "hew_actor_send",
   "hew_actor_send_by_id",

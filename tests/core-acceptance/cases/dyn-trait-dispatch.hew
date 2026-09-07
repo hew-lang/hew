@@ -37,4 +37,8 @@ fn main() {
     announce(build(7));
     let held: dyn Named = Person { label: "ada" };
     println(held.name());
+    // Reassignment must release the erased Person before the Machine lands.
+    var slot: dyn Named = Person { label: "linus" };
+    slot = Machine { id: 12 };
+    println(slot.name());
 }

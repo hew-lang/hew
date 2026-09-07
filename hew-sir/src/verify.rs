@@ -4665,7 +4665,26 @@ fn verify_terminator_shape(
                         .filter(|descriptor| descriptor.id == *actor)
                         .and_then(|descriptor| {
                             let target = types.get(&inputs.first()?.operand.value)?;
-                            descriptor.ask_signature(*message, target).ok()
+                            // The sealed message inside `ActorError` is a
+                            // per-call-site fact; the protocol owns the reply
+                            // and the request, which is what this verifies.
+                            let crate::CallResult::Value(value) = result else {
+                                return None;
+                            };
+                            let ResolvedTy::Named {
+                                builtin: Some(hew_types::BuiltinType::Result),
+                                args,
+                                ..
+                            } = &value.ty
+                            else {
+                                return None;
+                            };
+                            let [_, error_ty] = args.as_slice() else {
+                                return None;
+                            };
+                            descriptor
+                                .ask_signature(*message, target, error_ty.clone())
+                                .ok()
                         })
                         .is_some_and(|signature| {
                             resumes.len() == 1
@@ -4746,7 +4765,10 @@ fn verify_terminator_shape(
                     // Only a stream producer body sends: its owned sink is
                     // lent and the element transfers to the consumer.
                     let element = callable_context.and_then(|context| {
-                        context.actors.iter().flat_map(|actor| &actor.handlers)
+                        context
+                            .actors
+                            .iter()
+                            .flat_map(|actor| &actor.handlers)
                             .find(|handler| handler.callable == function.callable)
                             .and_then(|handler| handler.stream.as_ref())
                     });
@@ -4769,7 +4791,11 @@ fn verify_terminator_shape(
                                 && inputs.is_empty()
                                 && function.places.iter().any(|declaration| {
                                     declaration.id == *place
-                                        && matches!(declaration.origin, crate::PlaceOrigin::Local | crate::PlaceOrigin::Aggregate { .. })
+                                        && matches!(
+                                            declaration.origin,
+                                            crate::PlaceOrigin::Local
+                                                | crate::PlaceOrigin::Aggregate { .. }
+                                        )
                                         && crate::OwnKind::of_ty(&declaration.ty, variants.facts)
                                             .ok()
                                             == Some(crate::OwnKind::Owned)

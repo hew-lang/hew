@@ -168,7 +168,7 @@ mod tests {
         // reported a second time as a lint.
         for delivery in [
             named("std.builtins.SendError", Some(BuiltinType::SendError)),
-            named("std.builtins.AskError", Some(BuiltinType::AskError)),
+            named(crate::actor_delivery::ACTOR_ERROR_TYPE, None),
         ] {
             assert!(error_kind(&delivery).is_none(), "{delivery:?}");
         }

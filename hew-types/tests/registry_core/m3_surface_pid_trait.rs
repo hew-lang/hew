@@ -226,13 +226,13 @@ fn remote_pid_ask_returns_typed_reply_or_ask_error() {
 
         fn main() {
             let remote: RemotePid<Worker>;
-            let result: Result<i64, AskError> = remote.ask(Job { n: 9 }, 250);
+            let result: Result<i64, ActorError<Never, Never>> = remote.ask(Job { n: 9 }, 250);
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "RemotePid.ask should return Result<T::Reply, AskError>: {:#?}",
+        "RemotePid.ask should return Result<T.Reply, ActorError<Never, Never>>: {:#?}",
         output.errors
     );
 }

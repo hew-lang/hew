@@ -516,7 +516,6 @@ const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 /// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
-const SYNTHETIC_ASK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1003);
 /// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
 /// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in
 /// `std/builtins.hew` but never emitted as a HIR `Record`/`TypeDecl` item, so
@@ -769,7 +768,6 @@ const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
     ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
-    ("std.builtins.AskError", SYNTHETIC_ASK_ERROR_ITEM),
     ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
     ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
     (

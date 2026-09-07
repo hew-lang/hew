@@ -53,13 +53,13 @@ fn duplex_send_tell_shaped_resolves() {
     );
 }
 
-/// `d.send(42)` on ask-shaped `Duplex<i64, bool>` returns `Result<bool, AskError>`.
+/// `d.send(42)` on ask-shaped `Duplex<i64, bool>` returns `Result<bool, ActorError<Never, Never>>`.
 #[test]
 fn duplex_send_ask_shaped_resolves() {
     let source = r"
         fn main() {
             let (d, _) = duplex_pair<i64, bool>(16);
-            let _: Result<bool, AskError> = d.send(42);
+            let _: Result<bool, ActorError<Never, Never>> = d.send(42);
         }
     ";
     let output = typecheck(source);
@@ -82,7 +82,7 @@ fn duplex_send_int_resolves() {
     let source = r"
         fn main() {
             let (d, _) = duplex_pair<i64, i64>(16);
-            let _: Result<i64, AskError> = d.send(42);
+            let _: Result<i64, ActorError<Never, Never>> = d.send(42);
         }
     ";
     let output = typecheck(source);

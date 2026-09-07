@@ -80,7 +80,6 @@ pub enum BuiltinType {
     /// Canonical payload accepted by `#[on(down)]`.
     DownNotification,
     SendError,
-    AskError,
     LookupError,
     RecvError,
     LinkError,
@@ -249,7 +248,6 @@ builtin_types! {
     DownReason => "DownReason",
     DownNotification => "DownNotification",
     SendError => "SendError",
-    AskError => "AskError",
     LookupError => "LookupError",
     RecvError => "RecvError",
     LinkError => "LinkError",
@@ -425,7 +423,6 @@ impl BuiltinType {
             | Self::CrashAction
             | Self::CrashKind
             | Self::SendError
-            | Self::AskError
             | Self::LookupError
             | Self::RecvError
             | Self::LinkError
@@ -556,7 +553,6 @@ impl BuiltinType {
             | Self::DownReason
             | Self::DownNotification
             | Self::SendError
-            | Self::AskError
             | Self::LookupError
             | Self::RecvError
             | Self::LinkError
@@ -923,7 +919,7 @@ mod tests {
             assert!(!has_exact_source_owned_lifecycle_identity(name, None));
             assert!(!has_exact_source_owned_lifecycle_identity(
                 name,
-                Some(BuiltinType::AskError)
+                Some(BuiltinType::SendError)
             ));
             assert!(!has_exact_source_owned_lifecycle_identity(
                 crate::short_name(name),

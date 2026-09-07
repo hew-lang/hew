@@ -2592,11 +2592,14 @@ impl Checker {
                 }
                 // Return type depends on reply direction:
                 //   tell-shaped (Reply = ()) → Result<(), SendError>
-                //   ask-shaped  (Reply = R)  → Result<R, AskError>
+                //   ask-shaped  (Reply = R)  → Result<R, ActorError>
                 if matches!(reply_ty, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(reply_ty, Ty::ask_error())
+                    Ty::result(
+                        reply_ty,
+                        Ty::actor_error(Ty::never_type(), Ty::never_type()),
+                    )
                 }
             }
             _ => {

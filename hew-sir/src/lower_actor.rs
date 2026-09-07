@@ -404,8 +404,19 @@ impl Builder<'_, '_> {
         if handler.return_ty != self.ty(reply_ty) {
             return Err("ask reply differs from its receive protocol".into());
         }
-        let signature = descriptor.ask_signature(message, &target_ty)?;
         let output = self.ty(&expression.ty);
+        let ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Result),
+            args: output_args,
+            ..
+        } = &output
+        else {
+            return Err("ask must return its complete checked Result".into());
+        };
+        let [_, error_ty] = output_args.as_slice() else {
+            return Err("ask must return its complete checked Result".into());
+        };
+        let signature = descriptor.ask_signature(message, &target_ty, error_ty.clone())?;
         if signature.return_ty != output
             || signature.params.len() != args.len() + 1
             || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()

@@ -7,7 +7,6 @@
 
 use hew_hir::{lower_program, HirBlock, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::BuiltinType;
 use hew_types::{Checker, Ty};
 use std::path::Path;
 
@@ -241,22 +240,19 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
         block_contains_remote_actor_ask(&main.body),
         "RemotePid.ask should lower to HirExprKind::RemoteActorAsk: {main:#?}"
     );
-    let has_result_ask_error_layout = lower.module.enum_layouts.iter().any(|layout| {
+    let has_result_actor_error_layout = lower.module.enum_layouts.iter().any(|layout| {
         layout.key.origin_name == "Result"
             && matches!(
                 layout.key.type_args.as_slice(),
                 [
                     hew_types::ResolvedTy::I64,
-                    hew_types::ResolvedTy::Named {
-                        builtin: Some(BuiltinType::AskError),
-                        ..
-                    }
-                ]
+                    hew_types::ResolvedTy::Named { name, .. }
+                ] if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE
             )
     });
     assert!(
-        has_result_ask_error_layout,
-        "RemotePid.ask should register Result<i64, AskError> layout: {:#?}",
+        has_result_actor_error_layout,
+        "RemotePid.ask should register Result<i64, ActorError<..>> layout: {:#?}",
         lower.module.enum_layouts
     );
 }

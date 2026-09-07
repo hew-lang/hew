@@ -1642,6 +1642,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    /// Construct the field-less variant a runtime status tag names. The payload
+    /// seat stays zeroed: the enum's drop glue dispatches on the tag, so a
+    /// variant that declares no fields never reads it. Enums whose other
+    /// variants do carry payloads (`ActorError.Rejected`, `ActorError.Failed`)
+    /// are built at their own construction sites, never from a status tag.
     pub(super) fn actor_unit_variant(
         &self,
         ty: &ResolvedTy,
@@ -1652,13 +1657,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .variant_glue
             .iter()
             .find(|glue| glue.ty == *ty)
-            .filter(|glue| {
-                glue.variants
-                    .iter()
-                    .all(|variant| variant.fields.is_empty())
-            })
             .ok_or_else(|| {
-                CodegenError::FailClosed("delivery status requires a unit-only enum".into())
+                CodegenError::FailClosed("delivery status requires its exact variant recipe".into())
             })?;
         let layout = self.value_emitter().variant_layout(&glue.ty)?;
         let object = llvm_type(self.ctx, &layout.object.repr)?

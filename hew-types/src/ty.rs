@@ -66,7 +66,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::DownReason
             | BuiltinType::DownNotification
             | BuiltinType::SendError
-            | BuiltinType::AskError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
@@ -1035,15 +1034,23 @@ impl Ty {
             .expect("generated builtin enum catalog must contain SendError")
     }
 
-    /// Construct `AskError` — error type for ask-shaped lambda-actor calls.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
+    /// Construct `ActorError<E, M>` — the error of every completion call on an
+    /// actor handle. `error` is the handler's declared `fails` type and
+    /// `message` the call's sealed message type; both are `Never` when the
+    /// call cannot produce that variant.
     #[must_use]
-    pub fn ask_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("AskError")
-            .expect("generated builtin enum catalog must contain AskError")
+    pub fn actor_error(error: Ty, message: Ty) -> Ty {
+        crate::actor_delivery::nominal(
+            crate::actor_delivery::ACTOR_ERROR_TYPE,
+            vec![error, message],
+        )
+    }
+
+    /// Construct `Never` — the uninhabited stdlib enum that stands in for an
+    /// `ActorError` parameter a call site can never produce.
+    #[must_use]
+    pub fn never_type() -> Ty {
+        crate::actor_delivery::nominal(crate::actor_delivery::NEVER_TYPE, Vec::new())
     }
 
     /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`

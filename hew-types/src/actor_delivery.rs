@@ -9,9 +9,13 @@ pub const SENDER_TYPE: &str = "std.builtins.ActorMailbox";
 pub const FAILURE_TYPE: &str = "std.builtins.SendFailure";
 pub const DELIVERY_TYPE: &str = "std.builtins.Delivery";
 pub const ON_FULL_TYPE: &str = "std.builtins.OnFull";
+pub const ACTOR_ERROR_TYPE: &str = "std.builtins.ActorError";
+pub const NEVER_TYPE: &str = "std.builtins.Never";
 
 /// These declarations have one source owner in `std/builtins.hew`.
 pub const DECLARATIONS: &[&str] = &[
+    "ActorError",
+    "Never",
     "ActorMailbox",
     "Message",
     "SendFailure",
@@ -75,8 +79,8 @@ impl SendPolicy {
 /// The delivery outcome a discarded expression drops, or `None`.
 ///
 /// A submission yields `Result<Delivery, SendFailure<_>>`, the pid/channel
-/// `send` family yields `Result<_, SendError>`, and an `ask` yields
-/// `Result<_, AskError>`. Discarding any of them in statement position loses a
+/// `send` family yields `Result<_, SendError>`, and a completion call yields
+/// `Result<_, ActorError<_, _>>`. Discarding any of them in statement position loses a
 /// delivery failure, which is `E_SEND_RESULT_DROPPED` (HEW-SPEC-2026 §2.1.1,
 /// §5.6). The returned name is the error type, for the diagnostic.
 #[must_use]
@@ -87,8 +91,9 @@ pub fn dropped_delivery_outcome(ty: &Ty) -> Option<&'static str> {
     };
     match builtin {
         Some(crate::BuiltinType::SendError) => Some("SendError"),
-        Some(crate::BuiltinType::AskError) => Some("AskError"),
-        _ => (builtin.is_none() && name == FAILURE_TYPE).then_some("SendFailure"),
+        None if name == ACTOR_ERROR_TYPE => Some("ActorError"),
+        None if name == FAILURE_TYPE => Some("SendFailure"),
+        _ => None,
     }
 }
 

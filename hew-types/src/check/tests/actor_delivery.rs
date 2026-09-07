@@ -115,8 +115,8 @@ fn statement_position_delivery_outcomes_are_refused() {
 
     for (body, error) in [
         ("mailbox(d, on_full: .Reject).tell(1);", "SendFailure"),
-        ("d.tell(1);", "AskError"),
-        ("d.process(5);", "AskError"),
+        ("d.tell(1);", "ActorError"),
+        ("d.process(5);", "ActorError"),
         (
             "let log = actor |n: i64| { let _ = n; }; log(5);",
             "SendError",
@@ -269,16 +269,35 @@ fn actor_delivery_failure_reason_matches_annotated_error_values() {
 /// unit completion result, not a delivery outcome.
 #[test]
 fn a_call_on_a_handle_completes_with_a_unit_result() {
-    let output = check_source(
-        "actor Worker { receive fn work(n: i64) {} } \
-         fn drive(w: LocalPid<Worker>) -> Result<(), AskError> { w.work(1) } \
-         fn main() { let w = spawn Worker(); let _ = drive(w); }",
-    );
+    let source = "actor Worker { receive fn work(n: i64) {} } \
+         fn main() { let w = spawn Worker(); let _ = w.work(1); }";
+    let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
         .actor_method_dispatch
         .values()
         .any(|dispatch| matches!(dispatch, crate::ActorMethodKind::Ask { reply_ty, .. } if *reply_ty == crate::Ty::Unit)));
+    let start = source.find("w.work(1)").expect("call site");
+    let call = output
+        .expr_types
+        .get(&crate::check::SpanKey::in_module(
+            &(start..start + "w.work(1)".len()),
+            0,
+        ))
+        .expect("completion call type");
+    let (success, failure) = call.as_result().expect("completion result");
+    assert_eq!(success, &crate::Ty::Unit, "{call:?}");
+    // The handler declares no `fails`, so the error can never be `Failed`; the
+    // sealed message is the call's own, so `Rejected` names exactly this call.
+    let crate::Ty::Named { name, args, .. } = failure else {
+        panic!("completion error is not nominal: {failure:?}");
+    };
+    assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
+    assert_eq!(args[0], crate::Ty::never_type(), "{failure:?}");
+    assert!(
+        crate::actor_delivery::message_parts(&args[1]).is_some(),
+        "{failure:?}"
+    );
 }
 
 /// A mailbox view only submits, so a value-returning handler has no reply to

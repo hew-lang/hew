@@ -6289,13 +6289,16 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 `.secs()`, `.mins()`, `.hours()`. `duration` implements `Display` (`5s`
 prints as `5000000000ns`).
 
-> **Instant arithmetic is not usable yet.** `instant::now()` parses,
-> type-checks, and links (no import required), but it evaluates to a constant
-> `0` rather than a real clock reading, and subtracting two instants fails
-> during lowering with ``E_MIR: unsupported HIR node reached MIR lowering:
-> integer binary result `duration` disagrees with common operand type `i64` ``.
-> Measure elapsed time through `std.time` until the `instant` substrate
-> lands.
+**`instant`:** a monotonic timestamp in nanoseconds read with
+`instant.now()` (no import required). `instant + duration` and
+`instant - duration` produce an `instant`, `instant - instant` produces a
+`duration`, and `.elapsed()` and `.duration_since(earlier)` return the
+`duration` since an earlier stamp.
+
+**Suspension:** `sleep(d)` waits a span and `sleep_until(t)` waits until a
+monotonic deadline; both suspend the calling task or actor handler instead of
+blocking its worker, so sibling work continues while the timer runs and a
+deadline already in the past returns immediately.
 
 **Deadlines:**
 

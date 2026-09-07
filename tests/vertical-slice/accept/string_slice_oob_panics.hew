@@ -2,7 +2,7 @@
 //
 // "hello"[1..10]: end exceeds char_count(5), so
 // hew_string_slice_codepoints routes through the runtime bounds trap. In main
-// context there is no actor recovery frame, so the helper aborts with exit 134.
+// context there is no actor recovery frame, so the helper exits 1 with its typed stderr line.
 fn main() -> i64 {
     let s: string = "hello";
     let slice: string = s[1..10];

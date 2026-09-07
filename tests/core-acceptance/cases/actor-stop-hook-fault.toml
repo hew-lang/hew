@@ -9,4 +9,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "1\nstop\n"
 stderr = "hew: failure: UserPanic (212): goodbye failed\nhew: failure: UserPanic (212)\n"
-exit = 212
+exit = 1

@@ -9,4 +9,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "5\n"
 stderr = "hew: failure: UserPanic (212): argument\nhew: secondary failure: UserPanic (212): older\n"
-exit = 212
+exit = 1

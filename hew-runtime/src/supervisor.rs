@@ -522,7 +522,17 @@ pub unsafe extern "C-unwind" fn hew_trap_with_code(code: i32) {
         std::panic::panic_any(crate::actor::HewPanic { code });
     }
     if !actor_stamped {
-        eprintln!("hew: trap in main context: {}", trap_kind_name(code));
+        // No actor owns this trap, so no supervisor can rule on it: it is an
+        // unrecovered fault and the process reports `1` (HEW-SPEC-2026 5.8)
+        // after its typed line. Terminating here rather than returning to the
+        // generated `llvm.trap` is what keeps the private trap code out of the
+        // process status. Buffered output is flushed first, as `exit()` does.
+        crate::fault::report_trap_code(code);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        // JUSTIFIED: a trap with no recovery authority ends the run; the OS
+        // reclaims what the skipped destructors would have released.
+        std::process::exit(1);
     }
     // No runtime-owned catch boundary exists below this call. Generated trap
     // sites follow this bridge with their target trap instruction, which owns

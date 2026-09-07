@@ -243,6 +243,22 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     i32::from(write_report(fault, &mut io::stderr().lock()).is_err())
 }
 
+/// Write one fault's typed line to stderr for a code with no fault owner.
+///
+/// The main-context trap bridge reaches a fatal trap with a code and nothing
+/// else; the checked path reaches the same diagnostic through
+/// [`hew_fault_report`]. Both print the one line HEW-SPEC-2026 5.8 promises,
+/// from this one formatter, so the text does not depend on which path failed.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn report_trap_code(code: i32) {
+    let fault = HewFault {
+        code,
+        message: None,
+        secondary: Vec::new(),
+    };
+    let _ = write_report(&fault, &mut io::stderr().lock());
+}
+
 fn fault_reason(code: i32) -> &'static str {
     if matches!(code, HEW_FAULT_CANCELLED | HEW_FAULT_RACE_LOST) {
         return "Cancelled";

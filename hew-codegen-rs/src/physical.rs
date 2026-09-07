@@ -2057,9 +2057,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_call(drop, &[fault_value.into()], "entry.fault.drop")
             .llvm_ctx("drop physical entry fault")?;
-        let status = self.emit_process_runtime_finish(&builder, status)?;
+        // The status the entry body returned is the fault's private tag, not a
+        // process exit code (HEW-SPEC-2026 5.8): an unrecovered trap or panic
+        // reports `1` after its typed line reaches stderr. The tag stays
+        // internal, and `hew_native_runtime_finish` keeps this `1` because a
+        // deliberate non-zero code is never overwritten.
+        let failed = self.ctx.i32_type().const_int(1, false);
+        let failed = self.emit_process_runtime_finish(&builder, failed)?;
         builder
-            .build_return(Some(&status))
+            .build_return(Some(&failed))
             .llvm_ctx("return physical failure status")?;
 
         builder.position_at_end(success);

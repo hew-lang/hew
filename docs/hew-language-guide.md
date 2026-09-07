@@ -853,7 +853,7 @@ fn main() {
 | `fn main() -> i64` | same — return the code value                                   |
 | `fn main()` (unit) | call `exit(N)` explicitly; the function itself can only exit 0 |
 
-Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero) all exit non-zero via the runtime trap handler and do not need an explicit return.
+Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero, an out-of-range index) are faults under the same rule: each writes one line to stderr — `hew: failure: DivideByZero (202)`, or the panic text after the kind — and exits 1. The number in that line names the failure; it is not the exit code.
 
 ### Mutation through a parameter persists
 

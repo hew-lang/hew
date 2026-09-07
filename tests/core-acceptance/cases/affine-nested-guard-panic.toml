@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = "guarded\nguarded cleaned\nMAIN cleaned\n"
 stderr = "hew: failure: UserPanic (212): guard failure\n"
-exit = 212
+exit = 1

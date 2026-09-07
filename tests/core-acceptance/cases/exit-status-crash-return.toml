@@ -1,0 +1,11 @@
+[[case]]
+id = "exit-status-crash-return"
+intent = "Returning from `main` after an unsupervised actor crash reports the fault: exit 1."
+source = "cases/exit-status-crash-return.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "returned\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 1

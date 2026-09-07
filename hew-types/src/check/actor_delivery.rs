@@ -244,6 +244,7 @@ impl Checker {
                 Ty::Tuple(payload),
                 SendPolicy::Wait,
             );
+            self.record_completion_call_edge(&method_id, span);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -265,6 +266,7 @@ impl Checker {
                 Ty::Tuple(payload),
                 SendPolicy::Wait,
             );
+            self.record_completion_call_edge(&method_id, span);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -292,6 +294,61 @@ impl Checker {
             Ty::Tuple(payload),
             policy,
         ))
+    }
+
+    /// Record one handler-to-handler completion call. A completion call waits
+    /// for the callee's handler to finish, so a cycle among these edges is a
+    /// deadlock: every actor in the ring is blocked on the next.
+    fn record_completion_call_edge(&mut self, callee: &str, span: &Span) {
+        if !self.in_receive_fn {
+            return;
+        }
+        let Some(enclosing) = self.current_function.clone() else {
+            return;
+        };
+        if !self.actor_receive_methods.contains(&enclosing) {
+            return;
+        }
+        self.completion_call_edges
+            .push((enclosing, callee.to_string(), span.clone()));
+    }
+
+    /// Report every completion-call cycle a handle resolves statically. This
+    /// sees only calls whose target actor the checker knows at the call site;
+    /// a ring formed through a handle passed at runtime still deadlocks and is
+    /// left to the runtime's own wait-cycle detection.
+    pub(super) fn report_completion_call_cycles(&mut self) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut edges: BTreeMap<&str, Vec<(&str, &Span)>> = BTreeMap::new();
+        for (caller, callee, span) in &self.completion_call_edges {
+            edges
+                .entry(caller.as_str())
+                .or_default()
+                .push((callee.as_str(), span));
+        }
+        let mut reported: BTreeSet<Vec<String>> = BTreeSet::new();
+        let mut findings = Vec::new();
+        for start in edges.keys().copied() {
+            let mut path: Vec<(&str, &Span)> = vec![(start, edges[start][0].1)];
+            walk(start, &edges, &mut path, &mut findings, &mut reported);
+            path.pop();
+        }
+        for (ring, span) in findings {
+            let path = ring
+                .iter()
+                .map(|name| name.replace("::", "."))
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &span,
+                format!(
+                    "completion calls form a cycle: {path}. Every handler in the ring waits for \
+                     the next, so none can finish; make one leg a `mailbox(..)` submission or \
+                     `fork` it"
+                ),
+            );
+        }
     }
 
     /// A mailbox view submits and nothing more, so a handler that owes the
@@ -356,5 +413,35 @@ impl Checker {
         } else {
             false
         }
+    }
+}
+
+/// Depth-first walk of the completion-call graph, reporting the first time it
+/// re-enters a handler already on the current path.
+fn walk<'a>(
+    node: &'a str,
+    edges: &std::collections::BTreeMap<&'a str, Vec<(&'a str, &'a Span)>>,
+    path: &mut Vec<(&'a str, &'a Span)>,
+    findings: &mut Vec<(Vec<String>, Span)>,
+    reported: &mut std::collections::BTreeSet<Vec<String>>,
+) {
+    for (callee, span) in edges.get(node).into_iter().flatten() {
+        if let Some(entry) = path.iter().position(|(name, _)| name == callee) {
+            let mut ring: Vec<String> = path[entry..]
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect();
+            ring.push((*callee).to_string());
+            let mut key = ring.clone();
+            key.sort();
+            key.dedup();
+            if reported.insert(key) {
+                findings.push((ring, (*span).clone()));
+            }
+            continue;
+        }
+        path.push((callee, span));
+        walk(callee, edges, path, findings, reported);
+        path.pop();
     }
 }

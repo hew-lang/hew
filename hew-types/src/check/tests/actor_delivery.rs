@@ -373,3 +373,40 @@ fn a_fails_completion_envelope_still_requires_its_failed_arm() {
         output.errors
     );
 }
+
+/// Two handlers that complete-call each other deadlock: each waits for the
+/// other to finish. The diagnostic names the ring.
+#[test]
+fn static_completion_call_cycles_are_refused_and_name_the_path() {
+    let output = check_source(
+        "actor Beta { var alpha: Alpha, \
+           receive fn pong(n: i64) -> i64 { \
+             match alpha.ping(n) { .Ok(v) => v, .Err(_) => 0 } } } \
+         actor Alpha { var beta: Beta, \
+           receive fn ping(n: i64) -> i64 { \
+             match beta.pong(n) { .Ok(v) => v, .Err(_) => 0 } } } \
+         fn main() {}",
+    );
+    let message = output
+        .errors
+        .iter()
+        .map(|error| error.message.clone())
+        .find(|message| message.contains("completion calls form a cycle"))
+        .unwrap_or_else(|| panic!("expected the cycle refusal: {:?}", output.errors));
+    assert!(message.contains("Alpha.ping"), "{message}");
+    assert!(message.contains("Beta.pong"), "{message}");
+}
+
+/// The negative control: a one-way chain of completion calls is not a cycle.
+#[test]
+fn a_completion_call_chain_without_a_cycle_is_accepted() {
+    let output = check_source(
+        "actor Sink { var n: i64 = 0, receive fn take(v: i64) -> i64 { n = n + v; n } } \
+         actor Source { var sink: Sink, \
+           receive fn run(v: i64) -> i64 { \
+             match sink.take(v) { .Ok(t) => t, .Err(_) => 0 } } } \
+         fn main() { let s = spawn Sink(); let src = spawn Source(sink: s); \
+           match src.run(3) { .Ok(_) => {}, .Err(_) => {} } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}

@@ -71,7 +71,7 @@ pub actor SinkI64 {
     receive fn push(item: PipelineItemI64) {
         var admitted = false;
         while !admitted {
-            match await control.take_permit() {
+            match control.take_permit() {
                 .Ok(open) => {
                     admitted = open;
                 },
@@ -130,7 +130,7 @@ pub actor StageI64 {
     mailbox 1,
 
     receive fn push(item: PipelineItemI64) -> bool {
-        match await control.mark_stage_attempt() {
+        match control.mark_stage_attempt() {
             .Ok(_) => {},
             .Err(_) => {
                 return false;
@@ -140,8 +140,8 @@ pub actor StageI64 {
             panic("pipeline S1 stage crash");
         }
         let transformed = PipelineItemI64 { value: item.value * 2, label: item.label + ":stage", crash_stage: false };
-        next.push(transformed);
-        match await control.mark_stage_post_send() {
+        let _ = next.push(transformed);
+        match control.mark_stage_post_send() {
             .Ok(_) => true,
             .Err(_) => false,
         }
@@ -156,49 +156,49 @@ pub actor SourceI64 {
     mailbox 1,
 
     receive fn push(item: PipelineItemI64) -> bool {
-        match await next.push(item) {
+        match next.push(item) {
             .Ok(accepted) => accepted,
             .Err(_) => false,
         }
     }
 
     receive fn count() -> i64 {
-        match await sink.count() {
+        match sink.count() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn sum() -> i64 {
-        match await sink.sum() {
+        match sink.sum() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn last_value() -> i64 {
-        match await sink.last_value() {
+        match sink.last_value() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn item(index: i64) -> i64 {
-        match await sink.item(index) {
+        match sink.item(index) {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn last_label() -> string {
-        match await sink.last_label() {
+        match sink.last_label() {
             .Ok(value) => value,
             .Err(_) => "",
         }
     }
 
     receive fn release_sink() {
-        control.release();
+        let _ = control.release();
     }
 
     receive fn control_handle() -> LocalPid<AdmissionControlI64> {
@@ -206,21 +206,21 @@ pub actor SourceI64 {
     }
 
     receive fn stage_attempts() -> i64 {
-        match await control.attempts() {
+        match control.attempts() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn stage_post_sends() -> i64 {
-        match await control.post_sends() {
+        match control.post_sends() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn shutdown(expected_count: i64) -> bool {
-        match await sink.count() {
+        match sink.count() {
             .Ok(value) => value == expected_count,
             .Err(_) => false,
         }

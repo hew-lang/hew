@@ -46,14 +46,16 @@ pub type RemotePid<T> {
 }
 
 /// An immutable sender view. Construct one with `policy(target, on_full: ...)`.
-/// The policy type records whether submission can suspend.
+/// A receive call through the view submits under that policy, and the policy
+/// type records whether that submission can suspend.
 pub type ActorSender<Target, Policy> {
     target: Target,
 }
 
-/// An owned, addressed message description. Only a checked receive method can
-/// construct one. `send message` submits it; `message.to(target)` readdresses
-/// it to a compatible actor without opening its payload.
+/// An owned, addressed message description. Only the runtime rejection path
+/// hands one back, inside `SendFailure`. `message.retry()` resubmits it to the
+/// same target; `message.to(target)` readdresses it to a compatible actor and
+/// resubmits, neither opening its payload.
 pub type Message<Target, Payload, Policy> {
     target: Target,
     message_id: u32,

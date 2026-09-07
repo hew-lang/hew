@@ -59,7 +59,7 @@ for the documented resolver precedence.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
 - Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`Pid<Self>`, spelled `LocalPid<Self>` in this build), not a field prefix. `this` is not a word in Hew.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
-- Ask (request-reply) is `await ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`.
+- Ask (request-reply) is `ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
 - Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
@@ -1013,13 +1013,13 @@ actor Sink { let id: i64, receive fn take(data: string) -> i64 { data.len() } }
 fn main() {
     let s = spawn Sink(id: 0);
     let msg: string = "hello";
-    let n = await s.take(msg);         // receiver gets a snapshot of msg
+    let n = s.take(msg);         // receiver gets a snapshot of msg
     match n { .Ok(len) => println(len), .Err(_) => println("ask failed") }
     println(msg.len());   // 5 — msg still valid after the send
 }
 ```
 
-Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `await actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
+Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
 
 ### Strings and scalars are freely reusable
 
@@ -1218,7 +1218,7 @@ actor Sink {
 }
 fn main() {
     let s = spawn Sink();
-    s.put(Record { key: 1, val: 99 });
+    let _ = s.put(Record { key: 1, val: 99 });
     let r = await s.get();
     match r { .Ok(v) => println(v), .Err(_) => println("err") }
 }
@@ -1261,8 +1261,8 @@ actor Bank {
 }
 fn main() {
     let acct = spawn Bank(balance: 100);
-    acct.deposit(50);
-    let r = await acct.balance_of();
+    let _ = acct.deposit(50);
+    let r = acct.balance_of();
     match r { .Ok(v) => println(f"balance={v}"), .Err(_) => println("ask failed") }
 }
 ```
@@ -1290,7 +1290,7 @@ actor Greeter {
 }
 fn main() {
     let g: LocalPid<Greeter> = spawn Greeter(name: 5);
-    let r = await g.greet();
+    let r = g.greet();
     match r { .Ok(v) => println(f"name={v}"), .Err(_) => println("ask failed") }
 }
 ```
@@ -1309,14 +1309,14 @@ actor Logger {
 }
 fn main() {
     let lg = spawn Logger(n: 0);
-    lg.log(7);    // no await; type ()
-    lg.ping();
+    let _ = lg.log(7);    // no await; the call submits
+    let _ = lg.ping();
 }
 ```
 
-Call a return-less `receive fn` directly with no `await` — the checker derives fire-and-forget from the absent return type. The call has type `()`; do not bind or interpolate it.
+The call is the send: a return-less `receive fn` is submitted by calling it, with no `await` and no keyword. The call has type `Result<Delivery, SendFailure<M>>` — `?` propagates a refusal, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored refusal loses work silently. A refusal hands the whole message back: `failure.message.retry()` resubmits it to the same actor and `failure.message.to(other)` readdresses it, so a consumed payload survives the failure path.
 
-### Ask / request-reply via await
+### Ask / request-reply
 
 ```hew
 actor Counter {
@@ -1326,13 +1326,13 @@ actor Counter {
 }
 fn main() {
     let c = spawn Counter(count: 0);
-    c.increment(10); c.increment(20); c.increment(12);
-    let r = await c.total();
+    let _ = c.increment(10); let _ = c.increment(20); let _ = c.increment(12);
+    let r = c.total();
     match r { .Ok(v) => println(f"total={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
-Write request-reply as `await ref.method(args)` and match `Ok`/`Err`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, AskError>`, never bare `R`.
+Write request-reply as `ref.method(args)` and match `Ok`/`Err` — the call waits on its own, with no `await`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, AskError>`, never bare `R`. To run an ask concurrently, `fork` it and `await` the task.
 
 ### await position rules
 
@@ -1345,15 +1345,15 @@ actor Src { receive fn val() -> i64 { 42 } }
 actor Consumer {
     var src: LocalPid<Src>,
     receive fn run(unused: i64) -> i64 {
-        // await as a statement, inside a receive fn — always valid
-        let r = await src.val();
+        // an ask inside a receive fn — always valid
+        let r = src.val();
         match r { .Ok(v) => v, .Err(_) => -1 }
     }
 }
 fn main() {
     let s = spawn Src();
     let c = spawn Consumer(src: s);
-    let r = await c.run(0);
+    let r = c.run(0);
     match r { .Ok(v) => println(f"v={v}"), .Err(_) => println("err") }
 }
 ```
@@ -1394,14 +1394,14 @@ actor Counter {
 }
 fn run() -> Result<i64, AskError> {
     let c = spawn Counter(count: 0);
-    let v = (await c.bump())?;
-    let w = (await c.bump())?;
+    let v = c.bump()?;
+    let w = c.bump()?;
     Ok(v + w)
 }
 fn main() { match run() { .Ok(t) => println(f"total={t}"), .Err(_) => println("failed") } }
 ```
 
-Inside a fn returning `Result<_, AskError>`, use `let v = (await ...)?;` to take the Ok and auto-propagate Err. There is one propagation spelling: `?` goes on the expression, and the parentheses are what keep it outside the `await`.
+Inside a fn returning `Result<_, AskError>`, use `let v = ref.method(args)?;` to take the Ok and auto-propagate Err. There is one propagation spelling: `?` goes on the expression, so a forked ask propagates as `(await task)?`.
 
 ### Lifecycle hooks #[on(start)] and #[on(stop)]
 
@@ -1414,7 +1414,7 @@ actor Boot {
 }
 fn main() {
     let b = spawn Boot(ready: 0);
-    let r = await b.status();
+    let r = b.status();
     match r { .Ok(v) => println(f"ready={v}"), .Err(_) => println("ask failed") }
 }
 ```
@@ -1451,7 +1451,7 @@ actor FileWriter {
 
 fn main() {
     let writer = spawn FileWriter(descriptor: -1);
-    writer.write("service started");
+    let _ = writer.write("service started");
 }
 ```
 
@@ -1490,7 +1490,7 @@ actor Calc {
 }
 fn main() {
     let calc = spawn Calc(acc: 0);
-    let r = await calc.apply(5);
+    let r = calc.apply(5);
     match r { .Ok(v) => println(f"acc={v}"), .Err(_) => println("ask failed") }
 }
 ```
@@ -1521,19 +1521,19 @@ actor Worker {
 actor Manager {
     var worker: LocalPid<Worker>,
     receive fn dispatch(n: i64) -> i64 {
-        let r = await worker.work(n);
+        let r = worker.work(n);
         match r { .Ok(v) => v, .Err(_) => -1 }
     }
 }
 fn main() {
     let w = spawn Worker(id: 3);
     let m = spawn Manager(worker: w);
-    let r = await m.dispatch(7);
+    let r = m.dispatch(7);
     match r { .Ok(v) => println(f"result={v}"), .Err(_) => println("failed") }
 }
 ```
 
-Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and `await dep.method(...)` from a handler. Awaiting another actor yields `Result<R, AskError>` like any ask.
+Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, AskError>` like any ask.
 
 ### Avoid reference cycles in actor state
 
@@ -1575,7 +1575,7 @@ actor Ticker {
 
 fn main() {
     let t = spawn Ticker;
-    t.run(3);
+    let _ = t.run(3);
     sleep(100ms);
     // tick 0
     // tick 1
@@ -1685,7 +1685,7 @@ actor Worker {
 fn main() {
     let worker = spawn Worker(running: true, ticks: 0);
     sleep(150ms);
-    worker.halt();
+    let _ = worker.halt();
     sleep(150ms);
     let r = await worker.total();
     match r {

@@ -1,0 +1,20 @@
+actor Worker {
+    #[on(start)]
+    fn started() { println("start"); }
+    receive fn boom() { panic("worker failed"); }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child worker: Worker,
+}
+
+fn main() {
+    let app = spawn App;
+    for _ in 0..2 {
+        let _ = send app.worker.boom();
+        let _ = await_restart app.worker;
+    }
+    println("budget spent");
+}

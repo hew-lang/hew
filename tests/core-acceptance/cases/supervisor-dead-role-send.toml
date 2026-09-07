@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-dead-role-send"
+intent = "A send through a supervised role whose restart budget is spent is refused as `SendError.Dead` rather than reported as delivered."
+source = "cases/supervisor-dead-role-send.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "start\naccepted\nstart\naccepted\ndead\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 1): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 3): UserPanic\n"
+exit = 1

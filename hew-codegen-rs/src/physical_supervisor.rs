@@ -88,8 +88,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    /// Release the config once, at supervisor teardown. Emitted only when a
-    /// config field actually owns something.
+    /// Release what the config's fields own, once, at supervisor teardown.
+    /// Emitted only when a config field actually owns something.
     fn emit_supervisor_config_drop(&self, supervisor: &SemSupervisor) -> CodegenResult<()> {
         let owned: Vec<_> = supervisor
             .config
@@ -137,14 +137,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("load owned config field")?;
             emitter.destroy_loaded_value(value, layout, action)?;
         }
-        let free = get_or_declare_external(
-            &self.llvm,
-            "free",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(free, &[config.into()], "")
-            .llvm_ctx("release supervisor config")?;
+        // The supervisor frees the buffer itself once teardown has run this
+        // callback; releasing it here would free it twice.
         builder
             .build_return(None)
             .llvm_ctx("finish supervisor config release")?;

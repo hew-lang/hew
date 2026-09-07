@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-restart-one-for-all"
+intent = "One child's crash stops every sibling with its stop hook and restarts the whole group, so no incarnation keeps state across the restart."
+source = "cases/supervisor-restart-one-for-all.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "start left\nstart right\n1\nstop right\nstart left\nstart right\n0\n0\nstop left\nstop right\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 0

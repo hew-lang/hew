@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-restart-budget"
+intent = "A child that outruns its restart intensity is not restarted again, and the unrecovered fault fails the process."
+source = "cases/supervisor-restart-budget.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "start\nstart\nbudget spent\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 1): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 3): UserPanic\n"
+exit = 1

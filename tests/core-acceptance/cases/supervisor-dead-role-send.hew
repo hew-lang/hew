@@ -1,0 +1,36 @@
+actor Worker {
+    mailbox 8 overflow drop_new,
+    #[on(start)]
+    fn started() { println("start"); }
+    receive fn boom() { panic("worker failed"); }
+    receive fn ping() {}
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child worker: Worker,
+}
+
+fn refused(reason: SendError) {
+    match reason {
+        SendError.Dead => println("dead"),
+        SendError.Closed => println("closed"),
+        _ => println("refused"),
+    }
+}
+
+fn main() {
+    let app = spawn App;
+    for _ in 0..2 {
+        match send app.worker.boom() {
+            .Ok(_) => println("accepted"),
+            .Err(failure) => refused(failure.reason),
+        }
+        let _ = await_restart app.worker;
+    }
+    match send app.worker.ping() {
+        .Ok(_) => println("accepted"),
+        .Err(failure) => refused(failure.reason),
+    }
+}

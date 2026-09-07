@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-restart-one-for-one"
+intent = "A crashed child restarts from its declaration and the supervisor's config with fresh state and its start hook, siblings-free, and the supervisor's stop runs the survivor's stop hook once."
+source = "cases/supervisor-restart-one-for-one.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "start keeper\n1\nstart keeper\n0\nstop keeper\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 0

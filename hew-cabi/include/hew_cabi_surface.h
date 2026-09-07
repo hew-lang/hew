@@ -943,7 +943,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
      "{\"native\": \"fn hew_bytes_slice_owned( *const BytesTriple, i64, i64, "
      "*mut BytesTriple, )\", \"wasm32-wasip1\": \"fn hew_bytes_slice_owned( "
      "*const BytesTriple, i64, i64, *mut BytesTriple, )\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_callable_clone",
      "{\"native\": \"fn hew_callable_clone( *const HewCallableValue, *mut "
@@ -5906,7 +5906,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
      "i64, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
      "hew_string_slice_codepoints_from( *const HewString, i64, ) -> *mut "
      "HewString\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_split",
      "{\"native\": \"fn hew_string_split( *const HewString, *const HewString, "
@@ -6983,7 +6983,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
      "core::ffi::c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
      "hew_vec_borrow_owned( *const HewVec, i64, *mut core::ffi::c_void, ) -> "
      "bool\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_vec_clear",
      "{\"native\": \"fn hew_vec_clear( *mut HewVec)\", \"wasm32-wasip1\": \"fn "

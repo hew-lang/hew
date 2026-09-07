@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-await-fault"
+intent = "A child that faults during a vector join aborts the program and releases the un-joined handles and the vector on the fault path."
+source = "cases/vector-await-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): boom\n"
+exit = 212

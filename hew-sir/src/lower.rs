@@ -4313,7 +4313,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         value: ValueId,
         span: Range<usize>,
     ) -> Result<(), String> {
-        let target = self.acquire_binding_target(value)?;
+        // Candidate names refer to the projected owner until every predicate
+        // and guard has passed. A failed candidate must leave it available.
+        let target = BindingTarget::Value(value);
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
@@ -4438,6 +4440,41 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 ));
             }
             self.bind_match_arm_value(binding, field.value, span.clone())?;
+        }
+        Ok(())
+    }
+
+    fn acquire_selected_match_bindings(
+        &mut self,
+        outer_bindings: &std::collections::HashSet<BindingId>,
+    ) -> Result<(), String> {
+        let mut selected = self
+            .binding_declarations
+            .iter()
+            .filter(|(binding, _)| !outer_bindings.contains(binding))
+            .map(|(binding, declaration)| (*binding, *declaration))
+            .collect::<Vec<_>>();
+        selected.sort_unstable_by_key(|(_, declaration)| *declaration);
+        for (binding, declaration) in selected {
+            let BindingTarget::Value(value) = self.bindings[&binding] else {
+                continue;
+            };
+            if self.value_own_kind(value) != Some(OwnKind::Owned) {
+                continue;
+            }
+            let target = self.acquire_binding_target(value)?;
+            // Failed-candidate control states still reference the original
+            // declaration. Give the selected owner a new declaration rather
+            // than changing the target under those saved states.
+            let mut selected = self.source_bindings[declaration].clone();
+            let declaration = self.source_bindings.len();
+            selected.id = crate::BindingId(
+                u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
+            );
+            selected.target = target;
+            self.source_bindings.push(selected);
+            self.binding_declarations.insert(binding, declaration);
+            self.bindings.insert(binding, target);
         }
         Ok(())
     }
@@ -4689,6 +4726,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.current = branch.block;
             self.owned_live = branch.owned_live;
             if branch.variant == predicate.variant_idx {
+                for literal in &predicate.literals {
+                    let condition = self.lower_payload_literal_test(&branch.fields, literal)?;
+                    failures.push(self.branch_candidate_test(condition)?);
+                }
                 self.bind_match_fields(&predicate.bindings, &branch.fields, span)?;
                 let mut nested_failures = Vec::new();
                 for nested in &predicate.nested {
@@ -4800,7 +4841,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         source_arms: &[HirMatchArm],
     ) -> Result<Option<ValueId>, String> {
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
-        if scrutinee_ty.is_integer() || matches!(scrutinee_ty, ResolvedTy::Bool | ResolvedTy::Char)
+        if scrutinee_ty.is_integer()
+            || matches!(
+                scrutinee_ty,
+                ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String
+            )
         {
             return self.lower_scalar_match(whole, scrutinee_expr, source_arms);
         }
@@ -4943,6 +4988,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     failures.push(self.branch_candidate_test(condition)?);
                 }
 
+                self.acquire_selected_match_bindings(&outer_bindings)?;
                 let result = self.lower_selected_match_body(arm, &result_ty)?;
                 if self.is_open() {
                     if let Some(result) = &result {
@@ -5072,6 +5118,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     &scrutinee_expr.span,
                 )?);
             }
+            self.acquire_selected_match_bindings(&outer_bindings)?;
             let escaping_bindings = self
                 .bindings
                 .keys()

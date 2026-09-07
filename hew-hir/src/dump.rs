@@ -434,6 +434,14 @@ fn dump_payload_variant_predicate(
         pvp.bindings.len(),
     )
     .expect("write to string");
+    for literal in &pvp.literals {
+        writeln!(
+            out,
+            "{pad}  payload[{}] == {:?}: {:?}",
+            literal.field_idx, literal.literal, literal.ty
+        )
+        .expect("write to string");
+    }
     for child in &pvp.nested {
         dump_payload_variant_predicate(out, child, indent + 2);
     }

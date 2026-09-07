@@ -284,11 +284,16 @@ impl Verifier {
                 HirStmtKind::LetElse {
                     scrutinee,
                     bindings,
+                    payload_variant_predicates,
                     success_prelude,
                     else_body,
                     ..
                 } => {
                     self.expr(scrutinee);
+                    self.nested_payload_literals(
+                        payload_variant_predicates,
+                        scrutinee.span.clone(),
+                    );
                     // The Ok-path bindings escape into the enclosing scope —
                     // register them here so later references resolve.
                     for binding in bindings {
@@ -963,6 +968,7 @@ impl Verifier {
                             arm.span.clone(),
                         );
                     }
+                    self.nested_payload_literals(&arm.payload_variant_predicates, arm.span.clone());
                     for binding in &arm.bindings {
                         self.binding(binding.binding, arm.span.clone());
                     }
@@ -989,10 +995,12 @@ impl Verifier {
             HirExprKind::WhileLet {
                 scrutinee,
                 bindings,
+                payload_variant_predicates,
                 body,
                 ..
             } => {
                 self.expr(scrutinee);
+                self.nested_payload_literals(payload_variant_predicates, expr.span.clone());
                 for binding in bindings {
                     // While-let payload bindings are scoped to the body
                     // (one fresh BindingId allocated by HIR lowering);
@@ -1005,11 +1013,13 @@ impl Verifier {
             HirExprKind::IfLet {
                 scrutinee,
                 bindings,
+                payload_variant_predicates,
                 body,
                 else_body,
                 ..
             } => {
                 self.expr(scrutinee);
+                self.nested_payload_literals(payload_variant_predicates, expr.span.clone());
                 for binding in bindings {
                     // If-let payload bindings are scoped to the then-body;
                     // register them here mirroring `WhileLet` and `Match`.
@@ -1052,6 +1062,19 @@ impl Verifier {
                 span,
                 "binding id reused inside resolved HIR",
             ));
+        }
+    }
+
+    fn nested_payload_literals(
+        &mut self,
+        predicates: &[crate::node::HirPayloadVariantPredicate],
+        span: Range<usize>,
+    ) {
+        for predicate in predicates {
+            for literal in &predicate.literals {
+                self.match_literal_predicate(&literal.literal, &literal.ty, span.clone());
+            }
+            self.nested_payload_literals(&predicate.nested, span.clone());
         }
     }
 

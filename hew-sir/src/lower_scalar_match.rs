@@ -1,11 +1,15 @@
-//! Ordered scalar patterns share ordinary match exits and ownership cleanup.
+//! Ordered scalar and string patterns share match exits and ownership cleanup.
 
-use super::{Builder, MatchExit};
+use super::{lower_initial_value_transfer, Builder, MatchExit, OwnedBindingUse};
 use crate::{Operand, Provenance, SemOpKind, SemTerminator, ValueId};
 use hew_hir::{HirBinding, HirExpr, HirLiteral, HirMatchArm, HirMatchArmPredicate};
 use hew_types::ResolvedTy;
 
 impl Builder<'_, '_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ordered literal selection and candidate ownership share one match boundary"
+    )]
     pub(super) fn lower_scalar_match(
         &mut self,
         whole: &HirExpr,
@@ -16,10 +20,19 @@ impl Builder<'_, '_> {
             return Err("scalar match has no source arms".to_string());
         }
         let scrutinee_ty = self.ty(&scrutinee.ty);
-        let selected = self.lower_read_operand(scrutinee, "scalar match scrutinee")?;
+        let selected = Operand {
+            value: lower_initial_value_transfer(
+                self,
+                scrutinee,
+                "literal match scrutinee",
+                OwnedBindingUse::Copy,
+            )?,
+        };
         let result_ty = self.ty(&whole.ty);
         let outer_bindings = self.bindings.keys().copied().collect();
-        let outer_live = self.owned_live.clone();
+        let root_live = self.owned_live.clone();
+        let mut outer_live = root_live.clone();
+        outer_live.remove(&selected.value);
         let mut exits = Vec::new();
         let mut fallthrough = true;
         for arm in arms {
@@ -46,6 +59,17 @@ impl Builder<'_, '_> {
                     name,
                     ty,
                 } if self.ty(ty) == scrutinee_ty => {
+                    // A candidate binding owns its value independently: a failed
+                    // guard must leave the string available to later candidates.
+                    let bound = if scrutinee_ty == ResolvedTy::String {
+                        self.emit_typed(
+                            Provenance::Site(scrutinee.site),
+                            &scrutinee_ty,
+                            SemOpKind::CopyValue { source: selected.clone() },
+                        )?
+                    } else {
+                        selected.value
+                    };
                     self.bind_source_value(
                         &HirBinding {
                             id: *binding_id,
@@ -55,7 +79,7 @@ impl Builder<'_, '_> {
                             span: arm.span.clone(),
                             is_consume: false,
                         },
-                        selected.value,
+                        bound,
                     )?;
                 }
                 _ => {
@@ -90,7 +114,7 @@ impl Builder<'_, '_> {
             let mut next = Vec::new();
             for failure in failures {
                 self.restore_control_state(&failure);
-                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                self.cleanup_match_candidate(&root_live, &outer_bindings)?;
                 next.push(self.control_state());
             }
             self.merge_control_states(next)?;
@@ -109,17 +133,25 @@ impl Builder<'_, '_> {
         literal: &HirLiteral,
         provenance: Provenance,
     ) -> Result<ValueId, String> {
-        let constant = match literal {
-            HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstI64(*value),
-            HirLiteral::Bool(value) if *ty == ResolvedTy::Bool => SemOpKind::ConstBool(*value),
-            HirLiteral::Char(value) if *ty == ResolvedTy::Char => SemOpKind::ConstChar(*value),
-            _ => {
-                return Err(
-                    "scalar match requires an exact integer, boolean or character literal".into(),
-                )
-            }
-        };
+        let constant =
+            match literal {
+                HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstI64(*value),
+                HirLiteral::Bool(value) if *ty == ResolvedTy::Bool => SemOpKind::ConstBool(*value),
+                HirLiteral::Char(value) if *ty == ResolvedTy::Char => SemOpKind::ConstChar(*value),
+                HirLiteral::String(value) if *ty == ResolvedTy::String => {
+                    SemOpKind::ConstStr(self.service.intern_string(value))
+                }
+                _ => return Err(
+                    "literal match requires an exact integer, boolean, character or string literal"
+                        .into(),
+                ),
+            };
         let value = self.emit_typed(provenance.clone(), ty, constant)?;
+        if *ty == ResolvedTy::String {
+            let equals = self.lower_string_equals_values(selected.value, value)?;
+            self.emit_destroy(value)?;
+            return Ok(equals);
+        }
         self.emit_typed(
             provenance,
             &ResolvedTy::Bool,

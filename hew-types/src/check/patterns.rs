@@ -2705,6 +2705,7 @@ impl Checker {
             .unwrap_or_else(|| vec![Ty::Error; inner_patterns.len()]);
         let mut bindings: Vec<PayloadBinding> = Vec::new();
         let mut nested: Vec<PayloadVariantPattern> = Vec::new();
+        let mut literals = Vec::new();
         for (inner_idx, (sub_pat, inner_span)) in inner_patterns.iter().enumerate() {
             let inner_ty = inner_payload_tys
                 .get(inner_idx)
@@ -2765,6 +2766,11 @@ impl Checker {
             match sub_pat {
                 Pattern::Wildcard => {}
                 Pattern::Tuple(pats) if pats.is_empty() => {}
+                Pattern::Literal(literal) => literals.push(PayloadLiteralPattern {
+                    field_idx: inner_idx,
+                    literal: literal.clone(),
+                    ty: resolved_inner,
+                }),
                 Pattern::Identifier(binding_name) => {
                     // All plain identifiers (including uppercase ones that did
                     // not resolve as constructors above) are plain bindings.
@@ -2775,13 +2781,9 @@ impl Checker {
                     });
                 }
                 other => {
-                    // Literal predicates are admitted at the top payload level
-                    // (MIR compares them against a directly-projected field)
-                    // but not yet inside a nested constructor; aggregate
-                    // destructures, or-patterns, and regex subpatterns are
-                    // fail-closed at every depth.
+                    // Aggregate destructures, or-patterns and regex subpatterns
+                    // require their own checked projection contracts.
                     let label = match other {
-                        Pattern::Literal(_) => "literal predicate inside a nested constructor",
                         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
                             "record destructure"
                         }
@@ -2792,6 +2794,7 @@ impl Checker {
                             "nested constructor"
                         }
                         Pattern::Wildcard
+                        | Pattern::Literal(_)
                         | Pattern::Identifier(_)
                         | Pattern::Constructor { .. } => {
                             unreachable!("handled above")
@@ -2807,7 +2810,7 @@ impl Checker {
                             "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
                         ),
                         pattern_span,
-                        "nested constructor payloads support plain bindings (`x`), wildcards \
+                        "nested constructor payloads support literal predicates, plain bindings (`x`), wildcards \
                          (`_`), and further nested constructors; other subpattern shapes are \
                          reserved for a future match-destructure stage"
                             .to_string(),
@@ -2821,6 +2824,7 @@ impl Checker {
             payload_ty: resolved_payload_ty,
             variant_match,
             bindings,
+            literals,
             nested,
         })
     }

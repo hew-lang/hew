@@ -203,12 +203,27 @@ impl Checker {
                 let constructor = format!("{}::{member}", head.canonical_type);
                 Some(self.synthesize_identifier(&constructor, span))
             }
-            DottedTypeMemberUse::Call { args, span, .. }
-                if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) =>
-            {
+            DottedTypeMemberUse::Call {
+                args,
+                expected,
+                span,
+            } if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) => {
                 let constructor_name = format!("{}::{member}", head.canonical_type);
                 let constructor = (Expr::Identifier(constructor_name), head.span.clone());
-                let result = self.check_call(&constructor, head.type_args.as_deref(), args, span);
+                let result = expected
+                    .filter(|_| head.type_args.is_none())
+                    .and_then(|expected| {
+                        self.check_call_against_expected_constructor(
+                            &constructor,
+                            None,
+                            args,
+                            expected,
+                            span,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        self.check_call(&constructor, head.type_args.as_deref(), args, span)
+                    });
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::EnumConstructorPath {

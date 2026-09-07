@@ -2596,15 +2596,10 @@ pub struct HirPayloadPredicate {
 /// `EnumVariant` match arm (e.g. the `IoError::NotFound` in
 /// `Err(IoError::NotFound)` or the inner `Ok(v)` in `Ok(Ok(v))`).
 ///
-/// MIR lowering evaluates these after the outer tag check and any literal
-/// payload predicates: it loads the payload slot into a fresh
-/// `payload_ty`-typed local (an unregistered transient alias — never entered
-/// into `owned_locals`, so ownership stays with the scrutinee), compares
-/// `EnumTag` of that local against `variant_idx`, and branches to the arm's
-/// fallthrough target on mismatch. On match, `bindings` are materialised
-/// from the nested variant's payload slots (registered exactly like
-/// top-level arm bindings) and `nested` children recurse with the transient
-/// local as their parent.
+/// SIR tests the nested tag, then its instantiated literal predicates and
+/// recursive children before selecting the arm. Candidate bindings preserve
+/// the payload owners while a literal or guard can still fall through; only
+/// the selected arm acquires those bindings for its body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirPayloadVariantPredicate {
     /// 0-based payload slot within the ENCLOSING variant.
@@ -2619,6 +2614,8 @@ pub struct HirPayloadVariantPredicate {
     pub variant_idx: u32,
     /// Bindings into THIS nested variant's payload slots.
     pub bindings: Vec<HirMatchArmBinding>,
+    /// Literal tests against this variant's instantiated payload fields.
+    pub literals: Vec<HirPayloadPredicate>,
     /// Deeper nested constructor subpatterns.
     pub nested: Vec<HirPayloadVariantPredicate>,
 }

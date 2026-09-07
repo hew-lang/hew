@@ -1,0 +1,147 @@
+enum Payload<T> { Value(T, string), Empty }
+enum Envelope<T> { Wrapped(T), Empty }
+enum Token<T> { Value(T) }
+
+actor Gate {
+    receive fn ready(value: bool) -> bool { value }
+}
+
+fn result_case(value: Result<bool, string>) -> string {
+    match value {
+        .Ok(true) => "true",
+        .Ok(false) => "false",
+        .Err(error) => error,
+    }
+}
+
+fn ask_case(gate: LocalPid<Gate>, value: bool) -> string {
+    match await gate.ready(value) {
+        .Ok(true) => "ask true",
+        .Ok(false) => "ask false",
+        .Err(_) => panic("ask failed"),
+    }
+}
+
+fn nested_case(value: Envelope<Payload<bool>>) -> string {
+    match value {
+        .Wrapped(inner) => match inner {
+            Payload.Value(true, label) if label.len() > 4 => label + " guarded",
+            .Value(true, label) => label + " true",
+            .Value(false, label) => label + " false",
+            .Value(_, _) => panic("literal cases did not match"),
+            .Empty => "payload empty",
+        },
+        .Empty => "envelope empty",
+    }
+}
+
+fn narrow_case(value: Payload<u8>) -> string {
+    match value {
+        .Value(0, label) => label + " zero",
+        .Value(7, label) => label + " seven",
+        .Value(255, label) => label + " maximum",
+        .Value(_, label) => label + " other",
+        .Empty => "empty",
+    }
+}
+
+fn string_case(value: Token<string>) -> string {
+    match value {
+        .Value("MATCH") => "matched",
+        .Value(text) => text,
+    }
+}
+
+fn nested_constructor_case(value: Envelope<Payload<bool>>) -> string {
+    match value {
+        .Wrapped(.Value(true, label)) if label.len() > 4 => label + " nested guarded",
+        .Wrapped(.Value(false, label)) => label + " nested false",
+        .Wrapped(.Value(true, label)) => label + " nested true",
+        .Wrapped(.Empty) => "nested payload empty",
+        .Empty => "nested envelope empty",
+        _ => panic("nested literal cases did not match"),
+    }
+}
+
+fn deep_case(value: Envelope<Envelope<Payload<u8>>>) -> string {
+    match value {
+        .Wrapped(.Wrapped(.Value(7, label))) => label + " deep seven",
+        .Wrapped(.Wrapped(.Value(_, label))) => label + " deep other",
+        _ => "deep empty",
+    }
+}
+
+fn nested_string_case(value: Envelope<Token<string>>) -> string {
+    match value {
+        .Wrapped(.Value("MATCH")) => "nested matched",
+        .Wrapped(.Value(text)) => text,
+        .Empty => "nested string empty",
+    }
+}
+
+fn nested_result_case(value: Result<Result<bool, string>, string>) -> string {
+    match value {
+        .Ok(.Ok(true)) => "nested result true",
+        .Ok(.Ok(false)) => "nested result false",
+        .Ok(.Err(error)) => error,
+        .Err(error) => error,
+        _ => panic("nested result cases did not match"),
+    }
+}
+
+fn direct_string_case(value: string, guarded: bool) -> string {
+    match value {
+        candidate if candidate.len() == 1000 => candidate,
+        "HIT" if guarded => "guarded hit",
+        "HIT" => "hit",
+        "É" => "unicode",
+        "" => "empty",
+        fallback => fallback + " fallback",
+    }
+}
+
+fn string_wildcard(value: string) -> string {
+    match value { "yes" => "yes", _ => "wildcard" }
+}
+
+fn main() {
+    let original = "hit".to_upper();
+    println(direct_string_case(original, false));
+    println(original);
+    println(direct_string_case("hit".to_upper(), true));
+    println(direct_string_case("É", false));
+    println(direct_string_case("", false));
+    println(direct_string_case("miss".to_upper(), false));
+    println(string_wildcard("no".to_upper()));
+    println(result_case(Result.Ok(true)));
+    println(result_case(Result.Ok(false)));
+    println(result_case(Result.Err("error".to_upper())));
+    let gate = spawn Gate();
+    println(await ask_case(gate, true));
+    println(await ask_case(gate, false));
+    println(nested_case(Envelope.Wrapped(Payload.Value(true, "short".to_upper()))));
+    println(nested_case(Envelope.Wrapped(Payload.Value(true, "tiny".to_upper()))));
+    println(nested_case(Envelope.Wrapped(Payload.Value(false, "false".to_upper()))));
+    println(nested_case(Envelope.Wrapped(Payload.Empty)));
+    println(nested_case(Envelope.Empty));
+    println(narrow_case(Payload.Value(7, "first".to_upper())));
+    println(narrow_case(Payload.Value(9, "second".to_upper())));
+    println(narrow_case(Payload.Value(0, "zero".to_upper())));
+    println(narrow_case(Payload.Value(255, "maximum".to_upper())));
+    println(string_case(Token.Value("match".to_upper())));
+    println(string_case(Token.Value("fallback".to_upper())));
+    println(nested_constructor_case(Envelope.Wrapped(Payload.Value(true, "short".to_upper()))));
+    println(nested_constructor_case(Envelope.Wrapped(Payload.Value(true, "tiny".to_upper()))));
+    println(nested_constructor_case(Envelope.Wrapped(Payload.Value(false, "false".to_upper()))));
+    println(nested_constructor_case(Envelope.Wrapped(Payload.Empty)));
+    println(nested_constructor_case(Envelope.Empty));
+    println(deep_case(Envelope.Wrapped(Envelope.Wrapped(Payload.Value(7, "first".to_upper())))));
+    println(deep_case(Envelope.Wrapped(Envelope.Wrapped(Payload.Value(9, "second".to_upper())))));
+    println(deep_case(Envelope.Wrapped(Envelope.Empty)));
+    println(nested_string_case(Envelope.Wrapped(Token.Value("match".to_upper()))));
+    println(nested_string_case(Envelope.Wrapped(Token.Value("nested fallback".to_upper()))));
+    println(nested_result_case(Result.Ok(Result.Ok(true))));
+    println(nested_result_case(Result.Ok(Result.Ok(false))));
+    println(nested_result_case(Result.Ok(Result.Err("inner error".to_upper()))));
+    println(nested_result_case(Result.Err("outer error".to_upper())));
+}

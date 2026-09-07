@@ -20,6 +20,7 @@ mod optimize;
 mod ownership;
 mod projection;
 mod resource;
+mod supervisor;
 mod task_scope;
 mod verify;
 
@@ -64,6 +65,10 @@ pub use ownership::{
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use resource::{verify_resource_release, ResourceCarrier, ResourceExtern, ResourceRelease};
+pub use supervisor::{
+    SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor, SemSupervisorChild,
+    SupervisorId,
+};
 pub use verify::{
     check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,
     CfgDiscardSafetyReason, CheckedFunction, CheckedModule, SirDiagnostic, SirDiagnosticKind,

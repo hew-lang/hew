@@ -218,6 +218,10 @@ pub(crate) struct CheckerClassDeclarations<'a> {
     /// Resolves an imported `#[opaque]` handle spelling, which the set above
     /// does not carry.
     module_registry: &'a crate::module_registry::ModuleRegistry,
+    /// Supervisor declarations. A supervisor is a nominal with no value
+    /// members: only its `LocalPid<S>` handle is ever a value, so the
+    /// declaration classes `BitCopy` from an empty member list.
+    supervisors: &'a HashMap<String, crate::check::types::SupervisorChildren>,
 }
 
 impl CheckerClassDeclarations<'_> {
@@ -248,6 +252,9 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                 .and_then(|(_, leaf)| self.type_defs.get(leaf))
         });
         let Some(definition) = definition else {
+            if self.supervisors.contains_key(name) {
+                return Some(DeclaredType::default());
+            }
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
                 builtin: None,
@@ -722,6 +729,7 @@ impl Checker {
         names.extend(self.registry.resource_type_names().iter().cloned());
         names.extend(self.user_opaque_type_names.iter().cloned());
         names.extend(self.module_registry.all_handle_types());
+        names.extend(self.supervisor_children.keys().cloned());
         let rendered = names
             .into_iter()
             .filter_map(|name| {
@@ -749,6 +757,7 @@ impl Checker {
             type_defs: &self.type_defs,
             user_opaque_type_names: &self.user_opaque_type_names,
             module_registry: &self.module_registry,
+            supervisors: &self.supervisor_children,
         }
     }
 

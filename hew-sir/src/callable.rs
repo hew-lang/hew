@@ -347,6 +347,7 @@ mod tests {
         }
         SemModule {
             actors: Vec::new(),
+            supervisors: Vec::new(),
             callables: vec![parent, body],
             closures: vec![SemClosure {
                 generator_yield: None,

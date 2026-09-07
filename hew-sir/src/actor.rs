@@ -72,6 +72,27 @@ impl SemModule {
 }
 
 impl SemActor {
+    /// The stable supervised role for this actor: re-resolved through its
+    /// supervisor on every use, never a cached address.
+    #[must_use]
+    pub fn child_ref_ty(&self) -> ResolvedTy {
+        let actor_ty = match &self.handle_ty {
+            ResolvedTy::Named { args, .. } => args[0].clone(),
+            _ => unreachable!("actor handle is validated as LocalPid<A>"),
+        };
+        ResolvedTy::named_builtin(
+            hew_types::BuiltinType::ChildRef.canonical_name(),
+            hew_types::BuiltinType::ChildRef,
+            vec![actor_ty],
+        )
+    }
+
+    /// A message may address this actor through its handle or its role.
+    #[must_use]
+    pub fn admits_target(&self, ty: &ResolvedTy) -> bool {
+        *ty == self.handle_ty || *ty == self.child_ref_ty()
+    }
+
     /// Every private body entered with this actor's exclusive state seat.
     pub fn bodies(&self) -> impl Iterator<Item = CallableId> + '_ {
         self.init
@@ -87,7 +108,11 @@ impl SemActor {
     ///
     /// # Errors
     /// Rejects an unknown protocol member or an unresolved reply type.
-    pub fn ask_signature(&self, message: u32) -> Result<crate::SemSignature, String> {
+    pub fn ask_signature(
+        &self,
+        message: u32,
+        target: &ResolvedTy,
+    ) -> Result<crate::SemSignature, String> {
         let handler = self
             .handlers
             .iter()
@@ -96,8 +121,11 @@ impl SemActor {
         if handler.return_ty == ResolvedTy::Unit {
             return Err("a unit receive handler produces a message description, not an ask".into());
         }
+        if !self.admits_target(target) {
+            return Err("ask target is neither this actor's handle nor its role".into());
+        }
         let mut params = vec![crate::SemAbiParam {
-            ty: self.handle_ty.clone(),
+            ty: target.clone(),
             passing: crate::SemParamPassing::Consume,
             caller_visible_projection: false,
         }];
@@ -341,6 +369,8 @@ pub enum ActorOperation {
     StreamStart {
         actor: ActorId,
         message: u32,
+        /// The handle or role the request addresses.
+        target: ResolvedTy,
     },
     Submit {
         actor: ActorId,
@@ -348,6 +378,20 @@ pub enum ActorOperation {
         message_ty: ResolvedTy,
         result_ty: ResolvedTy,
     },
+    /// Construct the supervisor from its config, spawn every declared child
+    /// through its spawn callable and start supervising. The result is the
+    /// supervisor's handle.
+    SupervisorSpawn(crate::SupervisorId),
+    /// Resolve one declared child: an actor child yields its stable role, a
+    /// nested supervisor its current handle. A dead occupant never yields a
+    /// live-looking handle.
+    SupervisorChild {
+        supervisor: crate::SupervisorId,
+        child: u32,
+    },
+    /// Stop the supervisor and every child; each child's stop hooks run before
+    /// its terminal cleanup.
+    SupervisorStop(crate::SupervisorId),
 }
 
 impl ActorOperation {
@@ -358,35 +402,70 @@ impl ActorOperation {
     pub fn signature(
         &self,
         actors: &[SemActor],
+        supervisors: &[crate::SemSupervisor],
         callable: impl Fn(crate::CallableId) -> Option<crate::SemSignature>,
     ) -> Result<crate::SemSignature, String> {
+        let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
+            params: types
+                .into_iter()
+                .map(|ty| crate::SemAbiParam {
+                    ty,
+                    passing: crate::SemParamPassing::Consume,
+                    caller_visible_projection: false,
+                })
+                .collect(),
+            return_ty,
+        };
         let id = match self {
             Self::Spawn(id)
             | Self::Close(id)
             | Self::AwaitClosed(id)
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
+            Self::SupervisorSpawn(id)
+            | Self::SupervisorChild { supervisor: id, .. }
+            | Self::SupervisorStop(id) => {
+                let supervisor = supervisors
+                    .get(id.0 as usize)
+                    .filter(|supervisor| supervisor.id == *id)
+                    .ok_or("unknown supervisor identity")?;
+                return Ok(match self {
+                    Self::SupervisorSpawn(_) => {
+                        consume(supervisor.config.clone(), supervisor.handle_ty.clone())
+                    }
+                    Self::SupervisorChild { child, .. } => consume(
+                        vec![supervisor.handle_ty.clone()],
+                        supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
+                    ),
+                    _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
+                });
+            }
         };
         let actor = actors
             .get(id.0 as usize)
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
-            Self::StreamStart { message, .. } => {
+            Self::StreamStart {
+                message, target, ..
+            } => {
                 let handler = actor
                     .handlers
                     .iter()
                     .find(|handler| handler.message_id == *message && handler.stream.is_some())
                     .ok_or("stream start has no exact producer member")?;
+                if !actor.admits_target(target) {
+                    return Err("stream request addresses neither the handle nor the role".into());
+                }
                 (
-                    vec![
-                        actor.handle_ty.clone(),
-                        ResolvedTy::Tuple(handler.params.clone()),
-                    ],
+                    vec![target.clone(), ResolvedTy::Tuple(handler.params.clone())],
                     ResolvedTy::Unit,
                 )
             }
             Self::Close(_) => (vec![actor.handle_ty.clone()], actor.handle_ty.clone()),
+            Self::SupervisorSpawn(_) | Self::SupervisorChild { .. } | Self::SupervisorStop(_) => {
+                unreachable!("supervisor boundaries return above")
+            }
             Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
             Self::Spawn(_) => (
                 actor
@@ -405,7 +484,8 @@ impl ActorOperation {
                 let source_ty = message_ty.to_ty();
                 let (target, _, selected) = hew_types::actor_delivery::message_parts(&source_ty)
                     .ok_or("submission requires an exact message description")?;
-                if *target != actor.handle_ty.to_ty()
+                let target = ResolvedTy::from_ty(target).map_err(|error| error.to_string())?;
+                if !actor.admits_target(&target)
                     || selected != *policy
                     || result_ty.to_ty()
                         != hew_types::actor_delivery::result_type(source_ty.clone())
@@ -423,16 +503,6 @@ impl ActorOperation {
                 types.extend(init.params.iter().skip(1).map(|param| param.ty.clone()));
             }
         }
-        Ok(crate::SemSignature {
-            params: types
-                .into_iter()
-                .map(|ty| crate::SemAbiParam {
-                    ty,
-                    passing: crate::SemParamPassing::Consume,
-                    caller_visible_projection: false,
-                })
-                .collect(),
-            return_ty,
-        })
+        Ok(consume(types, return_ty))
     }
 }

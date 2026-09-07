@@ -237,6 +237,7 @@ pub fn module(case: Case) -> sir::SemModule {
     }
     sir::SemModule {
         actors: Vec::new(),
+        supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: vec![],
         value_capabilities: BTreeMap::new(),

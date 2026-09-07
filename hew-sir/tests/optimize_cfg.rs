@@ -76,6 +76,7 @@ fn module(function: SemFunction) -> SemModule {
     }
     SemModule {
         actors: Vec::new(),
+        supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
         value_capabilities: BTreeMap::new(),
@@ -882,6 +883,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
 
     let mut module = SemModule {
         actors: Vec::new(),
+        supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
         value_capabilities: BTreeMap::new(),

@@ -9,6 +9,9 @@ mod projection;
 #[path = "lower_actor.rs"]
 mod actor;
 
+#[path = "lower_supervisor.rs"]
+mod supervisor;
+
 #[path = "lower_binding.rs"]
 mod binding;
 
@@ -567,6 +570,9 @@ struct InstanceService<'a> {
     closures: Vec<crate::SemClosure>,
     actors: Vec<crate::SemActor>,
     actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>)>,
+    supervisors: Vec<crate::SemSupervisor>,
+    /// Bodies the lowering synthesizes outside the HIR item table.
+    synthetic_sources: HashMap<CallableId, HirFn>,
     closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
     closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
     entry_adapter: Option<EntryAdapter>,
@@ -999,7 +1005,9 @@ fn require_type_shapes(
                 );
             }
         }
-        if actor::declaration(module, &ty).is_none() {
+        if actor::declaration(module, &ty).is_none()
+            && supervisor::declaration(module, &ty).is_none()
+        {
             hew_types::push_type_components(&ty, &mut pending);
         }
     }
@@ -1029,6 +1037,8 @@ impl<'a> InstanceService<'a> {
             closures: Vec::new(),
             actors: Vec::new(),
             actor_sources: HashMap::new(),
+            supervisors: Vec::new(),
+            synthetic_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
             closure_sources: Vec::new(),
             entry_adapter: None,
@@ -1517,6 +1527,14 @@ impl<'a> InstanceService<'a> {
                 },
             });
         }
+        if let Some(function) = self.synthetic_sources.get(&callable) {
+            return Ok(LoweringInput {
+                function: Cow::Owned(function.clone()),
+                callable: callable_meta,
+                substitution: TypeSubstitution::empty(),
+                source: BodySource::Function,
+            });
+        }
         let function = *self
             .table
             .functions_by_item
@@ -1890,6 +1908,7 @@ impl<'a> InstanceService<'a> {
             mut functions,
             closures,
             actors,
+            supervisors,
             aggregate_shapes,
             variant_shapes,
             string_literals,
@@ -1924,6 +1943,7 @@ impl<'a> InstanceService<'a> {
             .collect();
         SemModule {
             actors,
+            supervisors,
             resources,
             closures,
             callables: table.callables,
@@ -2190,6 +2210,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || crate::sink_element(ty).is_some()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
+        || ty.is_builtin(hew_types::BuiltinType::ChildRef)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
 }
@@ -2205,6 +2226,7 @@ fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
 fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
         || actor::declaration(module, ty).is_some()
+        || supervisor::declaration(module, ty).is_some()
         || is_concrete_aggregate_type(facts, ty)
         || is_concrete_variant_type(module, ty)
 }
@@ -4275,6 +4297,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 state_idx, payload, ..
             } => self.lower_variant_make(expr, *state_idx, payload.as_deref()),
             HirExprKind::FieldAccess { object, field } => {
+                if let Some(slot) = self.service.module.supervisor_child_slots.get(&expr.site) {
+                    return self.lower_supervisor_child(expr, object, slot);
+                }
                 self.lower_aggregate_project(expr, object, field)
             }
             HirExprKind::BindingRef {
@@ -6942,6 +6967,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             CallTarget::Builtin { endpoint } if endpoint == "sleep" => {
                 self.lower_sleep(expr, args)?;
                 Ok(None)
+            }
+            CallTarget::Builtin { endpoint } if endpoint == "supervisor_stop" => {
+                let [handle] = args.as_slice() else {
+                    return Err("supervisor stop takes exactly one handle".into());
+                };
+                self.lower_supervisor_stop(handle)
             }
             CallTarget::Extern {
                 declaration,

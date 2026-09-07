@@ -595,6 +595,8 @@ pub fn runtime_variant_shape_refs(
 pub struct SemModule {
     /// Demanded actors with exact state, body and receive protocol identities.
     pub actors: Vec<crate::SemActor>,
+    /// Demanded supervisors with their config, restart policy and child roles.
+    pub supervisors: Vec<crate::SemSupervisor>,
     /// Exact resource release recipes; ownership remains in SSA and places.
     pub resources: BTreeMap<ResolvedTy, crate::ResourceRelease>,
     /// Concrete environments in canonical module-local identity order.

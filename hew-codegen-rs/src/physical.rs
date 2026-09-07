@@ -6592,6 +6592,7 @@ mod tests {
         };
         SemModule {
             actors: Vec::new(),
+            supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
@@ -6777,6 +6778,7 @@ mod tests {
         };
         SemModule {
             actors: Vec::new(),
+            supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
             callables: vec![callable],

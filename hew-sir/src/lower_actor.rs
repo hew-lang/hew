@@ -15,7 +15,7 @@ pub(super) fn declaration<'a>(
     ty: &ResolvedTy,
 ) -> Option<&'a hew_hir::HirActorDecl> {
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::LocalPid),
+        builtin: Some(hew_types::BuiltinType::LocalPid | hew_types::BuiltinType::ChildRef),
         args,
         ..
     } = ty
@@ -50,13 +50,22 @@ fn actor_overflow(source: &hew_hir::HirActorDecl) -> Result<crate::SemActorOverf
 }
 
 impl InstanceService<'_> {
+    /// The descriptor an actor handle or supervised role addresses.
     pub(super) fn require_actor(&mut self, ty: &ResolvedTy) -> Result<crate::ActorId, String> {
-        if let Some(actor) = self.actors.iter().find(|actor| actor.handle_ty == *ty) {
+        if let Some(actor) = self.actors.iter().find(|actor| actor.admits_target(ty)) {
             return Ok(actor.id);
         }
         let source = declaration(self.module, ty)
             .ok_or("local actor handle lacks its exact declaration")?
             .clone();
+        let ty = &ResolvedTy::named_builtin(
+            hew_types::BuiltinType::LocalPid.canonical_name(),
+            hew_types::BuiltinType::LocalPid,
+            match ty {
+                ResolvedTy::Named { args, .. } => args.clone(),
+                _ => unreachable!("declaration() matched a named handle"),
+            },
+        );
         if !source.type_params.is_empty() {
             return Err("generic actors need their instance contracts".into());
         }
@@ -395,7 +404,7 @@ impl Builder<'_, '_> {
         if handler.return_ty != self.ty(reply_ty) {
             return Err("ask reply differs from its receive protocol".into());
         }
-        let signature = descriptor.ask_signature(message)?;
+        let signature = descriptor.ask_signature(message, &target_ty)?;
         let output = self.ty(&expression.ty);
         if signature.return_ty != output
             || signature.params.len() != args.len() + 1
@@ -502,16 +511,63 @@ impl Builder<'_, '_> {
                 if !args.is_empty() {
                     return Err("actor lifecycle boundary has unexpected arguments".into());
                 }
-                let actor = self.service.require_actor(&self.ty(&receiver.ty))?;
-                let boundary = if matches!(
+                let target_ty = self.ty(&receiver.ty);
+                let closing = matches!(
                     operation,
                     hew_types::actor_delivery::ActorDeliveryCall::Close
-                ) {
+                );
+                if super::supervisor::declaration(self.service.module, &target_ty).is_some() {
+                    if !closing {
+                        return Err(
+                            "awaiting a supervisor's stop needs its terminal contract".into()
+                        );
+                    }
+                    let supervisor = self.service.require_supervisor(&target_ty)?;
+                    return Ok((
+                        crate::ActorOperation::SupervisorStop(supervisor),
+                        vec![(**receiver).clone()],
+                        vec![0],
+                    ));
+                }
+                let actor = self.service.require_actor(&target_ty)?;
+                let boundary = if closing {
                     crate::ActorOperation::Close(actor)
                 } else {
                     crate::ActorOperation::AwaitClosed(actor)
                 };
                 Ok((boundary, vec![(**receiver).clone()], vec![0]))
+            }
+            HirExprKind::Spawn { args, .. }
+                if super::supervisor::declaration(
+                    self.service.module,
+                    &self.ty(&expression.ty),
+                )
+                .is_some() =>
+            {
+                let ty = self.ty(&expression.ty);
+                let id = self.service.require_supervisor(&ty)?;
+                let source = super::supervisor::declaration(self.service.module, &ty)
+                    .ok_or("spawn lost its supervisor declaration")?;
+                let values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
+                let mut argument_order = Vec::new();
+                for parameter in &source.params {
+                    let (index, _) = args
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (name, _))| *name == parameter.name)
+                        .ok_or_else(|| {
+                            format!("supervisor config `{}` is missing", parameter.name)
+                        })?;
+                    argument_order.push(index);
+                }
+                if argument_order.len() != args.len() {
+                    return Err("spawn carries an unknown supervisor config argument".into());
+                }
+                Ok((
+                    crate::ActorOperation::SupervisorSpawn(id),
+                    values,
+                    argument_order,
+                ))
             }
             HirExprKind::Spawn { args, .. } => {
                 let ty = self.ty(&expression.ty);
@@ -599,11 +655,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
         let (operation, sources, argument_order) = self.actor_arguments(expression)?;
-        let signature = operation.signature(&self.service.actors, |id| {
-            self.service
-                .callable(id)
-                .map(|callable| callable.signature.clone())
-        })?;
+        let signature = self.actor_signature(&operation)?;
         let mut values = Vec::new();
         // Evaluate explicit arguments in source order, then defaults. Only the
         // completed values are rearranged into state and init parameter order.
@@ -632,9 +684,20 @@ impl Builder<'_, '_> {
         self.emit_actor_call(operation, signature, args)
     }
 
+    pub(super) fn actor_signature(
+        &self,
+        operation: &crate::ActorOperation,
+    ) -> Result<SemSignature, String> {
+        operation.signature(&self.service.actors, &self.service.supervisors, |id| {
+            self.service
+                .callable(id)
+                .map(|callable| callable.signature.clone())
+        })
+    }
+
     /// Transfer evaluated operands across one actor boundary and continue
     /// with its typed result.
-    fn emit_actor_call(
+    pub(super) fn emit_actor_call(
         &mut self,
         operation: crate::ActorOperation,
         signature: SemSignature,
@@ -1014,12 +1077,9 @@ impl Builder<'_, '_> {
         let operation = crate::ActorOperation::StreamStart {
             actor,
             message: handler.message_id,
+            target: target_ty,
         };
-        let signature = operation.signature(&self.service.actors, |id| {
-            self.service
-                .callable(id)
-                .map(|callable| callable.signature.clone())
-        })?;
+        let signature = self.actor_signature(&operation)?;
         if self
             .emit_actor_call(operation, signature, vec![target, payload])?
             .is_some()

@@ -595,7 +595,9 @@ impl TypeFactService {
                     |instance| instance.nominal.full_path().to_string(),
                 );
                 let Some(definition) = self.context.type_defs.get(&owner) else {
-                    if builtin.is_some() {
+                    // A builtin, or a memberless declaration such as a
+                    // supervisor, derives nothing.
+                    if builtin.is_some() || self.context.declarations.contains_key(&owner) {
                         return Ok(false);
                     }
                     return Err(ClassError::UnknownDeclaration { name: owner });
@@ -752,11 +754,13 @@ impl TypeFactService {
                     | crate::BuiltinType::RemotePid
             )),
             ResolvedTy::Named { name, args, .. } => {
-                let definition = self
-                    .context
-                    .type_defs
-                    .get(name)
-                    .ok_or_else(|| ClassError::UnknownDeclaration { name: name.clone() })?;
+                let Some(definition) = self.context.type_defs.get(name) else {
+                    // A memberless declaration such as a supervisor derives nothing.
+                    if self.context.declarations.contains_key(name) {
+                        return Ok(false);
+                    }
+                    return Err(ClassError::UnknownDeclaration { name: name.clone() });
+                };
                 if definition.type_params.len() != args.len() {
                     return Err(ClassError::UnknownDeclaration {
                         name: ty.user_facing().to_string(),

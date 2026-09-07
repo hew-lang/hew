@@ -1121,6 +1121,7 @@ pub struct PhysicalFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
     pub actors: Vec<hew_sir::SemActor>,
+    pub supervisors: Vec<hew_sir::SemSupervisor>,
     pub actor_recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     pub resources: Vec<PhysicalResourceDescriptor>,
     pub value_capabilities:
@@ -1280,6 +1281,7 @@ pub fn lower_physical_module(
     let physical = PhysicalModule {
         actor_recipes: actor_value_recipes(module, &ids)?,
         actors: module.actors.clone(),
+        supervisors: module.supervisors.clone(),
         resources,
         value_capabilities: capability::build(module, &ids)?,
         closures: module
@@ -6061,12 +6063,16 @@ fn verify_terminator(
             unwind,
             ..
         } => {
+            let target = match args.first() {
+                Some(ArgumentTransfer::Move(source)) => slot(*source)?.ty.clone(),
+                _ => return Err(PhysicalError::new("ask must transfer its target first")),
+            };
             let signature = module
                 .actors
                 .get(actor.0 as usize)
                 .filter(|descriptor| descriptor.id == *actor)
                 .ok_or_else(|| PhysicalError::new("ask requires its exact actor descriptor"))?
-                .ask_signature(*message)
+                .ask_signature(*message, &target)
                 .map_err(PhysicalError::new)?;
             if args.len() != signature.params.len() || slot(*result)?.ty != signature.return_ty {
                 return Err(PhysicalError::new(
@@ -7038,7 +7044,7 @@ pub fn actor_signature(
     operation: &hew_sir::ActorOperation,
 ) -> Result<hew_sir::SemSignature, PhysicalError> {
     operation
-        .signature(&module.actors, |id| {
+        .signature(&module.actors, &module.supervisors, |id| {
             module
                 .callables
                 .iter()
@@ -7064,6 +7070,9 @@ fn actor_value_recipes(
     ids: &PhysicalGlueIds,
 ) -> Result<BTreeMap<ResolvedTy, PhysicalValueRecipe>, PhysicalError> {
     let mut types = Vec::new();
+    for supervisor in &module.supervisors {
+        types.extend(supervisor.config.iter().cloned());
+    }
     for actor in &module.actors {
         types.push(actor.state_ty.clone());
         types.extend(actor.fields.iter().map(|field| field.ty.clone()));
@@ -7086,7 +7095,7 @@ fn actor_value_recipes(
                     ..
                 } if policy.may_suspend() => Some(message_ty.clone()),
                 SemTerminator::ActorCall {
-                    operation: ActorOperation::StreamStart { actor, message },
+                    operation: ActorOperation::StreamStart { actor, message, .. },
                     ..
                 } => module
                     .actor(*actor)
@@ -7620,6 +7629,7 @@ mod tests {
         );
         SemModule {
             actors: Vec::new(),
+            supervisors: Vec::new(),
             resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
@@ -8890,6 +8900,7 @@ mod tests {
         };
         let physical = PhysicalModule {
             actors: Vec::new(),
+            supervisors: Vec::new(),
             actor_recipes: BTreeMap::new(),
             resources: vec![],
             closures: vec![],

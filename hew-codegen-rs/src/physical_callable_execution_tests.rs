@@ -330,6 +330,7 @@ fn counter_module(
     }
     let mut module = sir::SemModule {
         actors: Vec::new(),
+        supervisors: Vec::new(),
         callables: vec![parent, body],
         type_facts: facts.rows().clone(),
         closures: vec![sir::SemClosure {

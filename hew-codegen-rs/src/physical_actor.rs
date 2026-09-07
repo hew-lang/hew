@@ -776,6 +776,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::AwaitClosed(id)
             | ActorOperation::StreamStart { actor: id, .. }
             | ActorOperation::Submit { actor: id, .. } => *id,
+            ActorOperation::SupervisorSpawn(_)
+            | ActorOperation::SupervisorChild { .. }
+            | ActorOperation::SupervisorStop(_) => {
+                return Err(CodegenError::FailClosed(
+                    "supervisor boundaries need their native realization".into(),
+                ))
+            }
         };
         let actor =
             self.module.actors.get(id.0 as usize).ok_or_else(|| {
@@ -826,6 +833,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.ctx.i32_type().const_zero()
             }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
+            ActorOperation::SupervisorSpawn(_)
+            | ActorOperation::SupervisorChild { .. }
+            | ActorOperation::SupervisorStop(_) => unreachable!("refused above"),
             ActorOperation::StreamStart { message, .. } => {
                 self.emit_actor_stream_start(actor, message, &sources, unwind)?
             }

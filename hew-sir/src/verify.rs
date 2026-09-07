@@ -240,6 +240,7 @@ pub(crate) struct CallableContext<'a> {
     by_id: BTreeMap<CallableId, &'a SemCallable>,
     closures: &'a [crate::SemClosure],
     actors: &'a [crate::SemActor],
+    supervisors: &'a [crate::SemSupervisor],
 }
 
 /// Index an already-verified module's callable table.
@@ -252,10 +253,12 @@ pub(crate) fn callable_context<'a>(
     callables: &'a [SemCallable],
     closures: &'a [crate::SemClosure],
     actors: &'a [crate::SemActor],
+    supervisors: &'a [crate::SemSupervisor],
 ) -> CallableContext<'a> {
     CallableContext {
         closures,
         actors,
+        supervisors,
         by_id: callables
             .iter()
             .map(|callable| (callable.id, callable))
@@ -1232,6 +1235,19 @@ fn verify_callable_table<'a>(
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidTerminator { reason }));
         }
     }
+    let mut supervisor_declarations = HashSet::new();
+    for supervisor in &module.supervisors {
+        let checked = supervisor.validate(module).and_then(|()| {
+            if supervisor_declarations.insert(&supervisor.declaration) {
+                Ok(())
+            } else {
+                Err("supervisor declaration is repeated".into())
+            }
+        });
+        if let Err(reason) = checked {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidTerminator { reason }));
+        }
+    }
     let mut instances = HashSet::new();
     for closure in &module.closures {
         let result = closure.validate(module).and_then(|()| {
@@ -1526,6 +1542,7 @@ fn verify_callable_table<'a>(
         by_id,
         closures: &module.closures,
         actors: &module.actors,
+        supervisors: &module.supervisors,
     }
 }
 
@@ -2225,7 +2242,11 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
         || crate::stream_element(ty).is_some()
         || crate::sink_element(ty).is_some()
-        || module.actors.iter().any(|actor| actor.handle_ty == *ty)
+        || module.actors.iter().any(|actor| actor.admits_target(ty))
+        || module
+            .supervisors
+            .iter()
+            .any(|supervisor| supervisor.handle_ty == *ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
@@ -4114,7 +4135,7 @@ fn verify_terminator_shape(
             let check = (|| {
                 let context =
                     callable_context.ok_or("actor boundary requires its module contracts")?;
-                let signature = operation.signature(context.actors, |id| {
+                let signature = operation.signature(context.actors, context.supervisors, |id| {
                     context
                         .callable(id)
                         .map(|callable| callable.signature.clone())
@@ -4350,7 +4371,10 @@ fn verify_terminator_shape(
                 crate::SuspendKind::Ask { actor, message, .. } => {
                     callable_context.and_then(|context| context.actors.get(actor.0 as usize))
                         .filter(|descriptor| descriptor.id == *actor)
-                        .and_then(|descriptor| descriptor.ask_signature(*message).ok())
+                        .and_then(|descriptor| {
+                            let target = types.get(&inputs.first()?.operand.value)?;
+                            descriptor.ask_signature(*message, target).ok()
+                        })
                         .is_some_and(|signature| {
                             resumes.len() == 1
                                 && inputs.len() == signature.params.len()
@@ -4984,7 +5008,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[], &[]);
+        let context = callable_context(&callables, &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -5003,7 +5027,7 @@ mod parameter_own_kind_tests {
     fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[], &[]);
+        let context = callable_context(&callables, &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -5021,7 +5045,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
-        let context = callable_context(&callables, &[], &[]);
+        let context = callable_context(&callables, &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics =

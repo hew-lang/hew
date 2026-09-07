@@ -140,70 +140,95 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 let glue = self.variant_glue(id)?;
                 let variant = self.variant_layout(&glue.ty)?;
                 if variant.is_indirect {
-                    return Err(CodegenError::FailClosed(
-                        "indirect variant cleanup lacks admitted destruction".into(),
-                    ));
-                }
-                let object = llvm_type(self.ctx, &variant.object.repr)?.into_struct_type();
-                let tag_slot = self
-                    .builder
-                    .build_struct_gep(object, slot, 0, "close.tag.slot")
-                    .llvm_ctx("find active variant tag")?;
-                let tag = self
-                    .builder
-                    .build_load(
-                        object.get_field_type_at_index(0).unwrap(),
-                        tag_slot,
-                        "close.tag",
-                    )
-                    .llvm_ctx("read active variant tag")?
-                    .into_int_value();
-                let invalid = self
-                    .ctx
-                    .append_basic_block(self.value, "close.variant.invalid");
-                let done = self
-                    .ctx
-                    .append_basic_block(self.value, "close.variant.done");
-                let cases = glue
-                    .variants
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| {
-                        (
-                            tag.get_type().const_int(index as u64, false),
-                            self.ctx
-                                .append_basic_block(self.value, "close.variant.case"),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                self.builder
-                    .build_switch(tag, invalid, &cases)
-                    .llvm_ctx("select active variant cleanup")?;
-                for (index, (_, block)) in cases.iter().enumerate() {
-                    self.builder.position_at_end(*block);
-                    if !glue.variants[index].fields.is_empty() {
-                        let payload = self.variant_payload_ptr(slot, variant)?;
-                        let object =
-                            llvm_type(self.ctx, &variant.variants[index].repr)?.into_struct_type();
-                        self.visit_close_fields(
-                            payload,
-                            object,
-                            &glue.variants[index].fields,
-                            context,
-                        )?;
-                    }
+                    let close = self.glue_function(
+                        &format!("__hew_variant_close_{}", id.0),
+                        self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+                        |emitter, function| {
+                            emitter.visit_close_variant(
+                                function.get_nth_param(0).unwrap().into_pointer_value(),
+                                glue,
+                                variant,
+                                function.get_nth_param(1).unwrap().into_pointer_value(),
+                            )?;
+                            emitter
+                                .builder
+                                .build_return(None)
+                                .llvm_ctx("finish indirect variant child selection")?;
+                            Ok(())
+                        },
+                    )?;
+                    let node = self.variant_object_ptr(slot, variant)?;
                     self.builder
-                        .build_unconditional_branch(done)
-                        .llvm_ctx("finish active variant cleanup")?;
+                        .build_call(close, &[node.into(), context.into()], "")
+                        .llvm_ctx("select indirect variant children")?;
+                } else {
+                    self.visit_close_variant(slot, glue, variant, context)?;
                 }
-                self.builder.position_at_end(invalid);
-                self.emit_invalid_variant_tag()?;
-                self.builder.position_at_end(done);
             }
             DestroyAction::StringRelease
             | DestroyAction::BytesRelease
             | DestroyAction::Encoding(_) => {}
         }
+        Ok(())
+    }
+
+    /// Select the active case's children of one tag-and-payload object.
+    fn visit_close_variant(
+        &self,
+        slot: PointerValue<'ctx>,
+        glue: &PhysicalVariantGlue,
+        variant: &PhysicalVariantLayout,
+        context: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let object = llvm_type(self.ctx, &variant.object.repr)?.into_struct_type();
+        let tag_slot = self
+            .builder
+            .build_struct_gep(object, slot, 0, "close.tag.slot")
+            .llvm_ctx("find active variant tag")?;
+        let tag = self
+            .builder
+            .build_load(
+                object.get_field_type_at_index(0).unwrap(),
+                tag_slot,
+                "close.tag",
+            )
+            .llvm_ctx("read active variant tag")?
+            .into_int_value();
+        let invalid = self
+            .ctx
+            .append_basic_block(self.value, "close.variant.invalid");
+        let done = self
+            .ctx
+            .append_basic_block(self.value, "close.variant.done");
+        let cases = glue
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                (
+                    tag.get_type().const_int(index as u64, false),
+                    self.ctx
+                        .append_basic_block(self.value, "close.variant.case"),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.builder
+            .build_switch(tag, invalid, &cases)
+            .llvm_ctx("select active variant cleanup")?;
+        for (index, (_, block)) in cases.iter().enumerate() {
+            self.builder.position_at_end(*block);
+            if !glue.variants[index].fields.is_empty() {
+                let payload = self.variant_payload_ptr(slot, variant)?;
+                let object = llvm_type(self.ctx, &variant.variants[index].repr)?.into_struct_type();
+                self.visit_close_fields(payload, object, &glue.variants[index].fields, context)?;
+            }
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish active variant cleanup")?;
+        }
+        self.builder.position_at_end(invalid);
+        self.emit_invalid_variant_tag()?;
+        self.builder.position_at_end(done);
         Ok(())
     }
 

@@ -2043,45 +2043,6 @@ fn check_dual_module_same_type_name_impl_resource_qualified_compiles() {
     );
 }
 
-/// Fail-closed boundary (#2359 / #2647): a generator yielding
-/// `Vec<indirect-enum>` is rejected at check time. The element's per-element
-/// node free is unwired, so the consuming body's per-frame release could only
-/// be the buffer-only `hew_vec_free` — a per-frame element-node leak
-/// (previously 2 nodes x N iterations, compiling clean). As of #2647 the
-/// `Vec<indirect-enum>` construction is rejected at the type-checker boundary
-/// (the earliest fail-closed point), which preempts the generator yield-seam
-/// release-verdict refusal for this fixture; the yield/recv seam refusal
-/// remains in MIR as a backstop for any shape that reaches it without local
-/// construction.
-#[test]
-fn check_gen_yield_vec_indirect_enum_fails_closed() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("indirect enum whose per-element release protocol is not yet wired"),
-        "expected the #2647 checker-boundary release-protocol reject; got: {combined}"
-    );
-}
-
 /// Known limitation (#2352): `Generator`/`AsyncGenerator` formally implement
 /// `Iterator`, so a generator value type-checks against `std::iter`'s
 /// generic adapters (`iter::map`, `iter::filter`, ...). Passing one in

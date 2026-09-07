@@ -1348,7 +1348,12 @@ fn extract_handle_methods(
                 c_symbol,
                 params,
                 return_type,
-                dispatch_through_impl: dispatch_through_impl || inherent_resource_close,
+                // Resource methods keep their authored conversions and
+                // suspension boundaries; the extern inside the body has the
+                // exact runtime ABI signature.
+                dispatch_through_impl: dispatch_through_impl
+                    || inherent_resource_close
+                    || resource_type_names.contains(&type_name),
             });
         }
     }

@@ -67,8 +67,8 @@ use hew_sir::{
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
 pub use hew_sir::{
-    BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, SemParamPassing,
-    TaskScopeId, TrapKind,
+    BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, ResourceCarrier,
+    SemParamPassing, TaskScopeId, TrapKind,
 };
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
@@ -756,6 +756,7 @@ pub struct PhysicalVariantArm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalRuntimeAction {
     FileRead(hew_types::runtime_call::FileReadOp),
+    Tcp(hew_types::runtime_call::TcpOp),
     StreamClose,
     Encoding {
         format: EncodingFormat,
@@ -803,6 +804,7 @@ impl PhysicalRuntimeAction {
     const fn semantic_family(self) -> RuntimeCallFamily {
         match self {
             Self::FileRead(op) => RuntimeCallFamily::FileRead(op),
+            Self::Tcp(op) => RuntimeCallFamily::Tcp(op),
             Self::StreamClose => RuntimeCallFamily::StreamClose,
             Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
             Self::JsonObjectKeys => RuntimeCallFamily::JsonObjectKeys,
@@ -1988,6 +1990,7 @@ fn physical_runtime_action(
 ) -> Result<PhysicalRuntimeAction, PhysicalError> {
     Ok(match family {
         RuntimeCallFamily::FileRead(op) => PhysicalRuntimeAction::FileRead(op),
+        RuntimeCallFamily::Tcp(op) => PhysicalRuntimeAction::Tcp(op),
         RuntimeCallFamily::StreamClose => PhysicalRuntimeAction::StreamClose,
         RuntimeCallFamily::Encoding { format, op } => {
             PhysicalRuntimeAction::Encoding { format, op }
@@ -3070,9 +3073,13 @@ fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
             semantic_type_facts(module, &resource.ty)?,
         )
         .map_err(PhysicalError::new)?;
-        if required_layout(&module.target, &resource.ty)?.repr != PhysicalRepr::Pointer {
+        let expected = match resource.release.carrier().map_err(PhysicalError::new)? {
+            hew_sir::ResourceCarrier::Pointer => PhysicalRepr::Pointer,
+            hew_sir::ResourceCarrier::I32 => PhysicalRepr::Integer { bits: 32 },
+        };
+        if required_layout(&module.target, &resource.ty)?.repr != expected {
             return Err(PhysicalError::new(
-                "resource release requires its pointer carrier",
+                "resource release requires its exact checked carrier",
             ));
         }
     }

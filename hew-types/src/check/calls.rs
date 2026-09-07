@@ -1490,7 +1490,9 @@ impl Checker {
         // The nominal close wrapper must retain the release declaration for
         // HIR's exact forwarding proof. SIR selects its runtime action from
         // that validated lifecycle, after this declaration boundary.
-        if family == crate::RuntimeCallFamily::FileRead(crate::runtime_call::FileReadOp::Close) {
+        if family == crate::RuntimeCallFamily::FileRead(crate::runtime_call::FileReadOp::Close)
+            || matches!(family, crate::RuntimeCallFamily::Tcp(op) if op.is_release())
+        {
             return None;
         }
         let contract = self
@@ -1518,6 +1520,13 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_file_read_extern(
+            module,
+            declaration.full_path(),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
+        ) || family.matches_tcp_extern(
             module,
             declaration.full_path(),
             &extern_decl.symbol,

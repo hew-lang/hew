@@ -62,7 +62,7 @@ pub use ownership::{
     SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TrapKind,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
-pub use resource::{verify_resource_release, ResourceExtern, ResourceRelease};
+pub use resource::{verify_resource_release, ResourceCarrier, ResourceExtern, ResourceRelease};
 pub use verify::{
     check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,
     CfgDiscardSafetyReason, CheckedFunction, CheckedModule, SirDiagnostic, SirDiagnosticKind,

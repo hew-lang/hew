@@ -943,6 +943,9 @@ fn invocation_contract(
                                 | crate::runtime_call::FileReadOp::StreamOpen
                                 | crate::runtime_call::FileReadOp::Collect
                                 | crate::runtime_call::FileReadOp::StreamCollect
+                        ) | crate::RuntimeCallFamily::Tcp(
+                            crate::runtime_call::TcpOp::Connect
+                                | crate::runtime_call::TcpOp::ConnectTimeout
                         )
                     ),
                 parameters: BTreeSet::new(),

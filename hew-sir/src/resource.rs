@@ -35,18 +35,55 @@ pub struct ResourceExtern {
     pub result: ResolvedTy,
 }
 
+/// Scalar ABI carrier selected by the checked release protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceCarrier {
+    Pointer,
+    I32,
+}
+
 impl ResourceRelease {
+    /// Return the scalar carrier of the admitted release protocol.
+    ///
+    /// # Errors
+    /// Refuses a release without an executable runtime contract.
+    pub fn carrier(&self) -> Result<ResourceCarrier, String> {
+        Ok(
+            if matches!(self.runtime_family()?, RuntimeCallFamily::Tcp(_)) {
+                ResourceCarrier::I32
+            } else {
+                ResourceCarrier::Pointer
+            },
+        )
+    }
+
+    /// Return the release ABI result, discarded by ordinary destruction.
+    ///
+    /// # Errors
+    /// Refuses a release without an executable runtime contract.
+    pub fn release_result(&self) -> Result<ResolvedTy, String> {
+        Ok(
+            if matches!(self.runtime_family()?, RuntimeCallFamily::Tcp(_)) {
+                ResolvedTy::I32
+            } else {
+                ResolvedTy::Unit
+            },
+        )
+    }
     /// Select only an executable release from the retained semantic authority.
     ///
     /// # Errors
-    /// Refuses releases outside the synchronous file-resource contract.
+    /// Refuses releases outside the admitted synchronous resource contracts.
     pub fn runtime_family(&self) -> Result<RuntimeCallFamily, String> {
         match self {
             Self::Task => Ok(RuntimeCallFamily::TaskFree),
             Self::Generator => Ok(RuntimeCallFamily::GeneratorFree),
             Self::Nominal { lifecycle, .. } => {
                 RuntimeCallFamily::from_c_symbol(&lifecycle.release_symbol)
-                    .filter(|family| *family == RuntimeCallFamily::FileRead(FileReadOp::Close))
+                    .filter(|family| {
+                        *family == RuntimeCallFamily::FileRead(FileReadOp::Close)
+                            || matches!(family, RuntimeCallFamily::Tcp(op) if op.is_release())
+                    })
                     .ok_or_else(|| {
                         "nominal resource release has no synchronous runtime contract".into()
                     })
@@ -70,42 +107,39 @@ pub(crate) fn resource_release_from_hir(
     if matches!(ty, ResolvedTy::Task(_)) {
         return Some(ResourceRelease::Task);
     }
-    match FileReadHandleKind::of_ty(ty)? {
-        FileReadHandleKind::Nominal => {
-            let lifecycle = module
-                .type_classes
-                .lifecycle_registry()
-                .opaque_resource_for_ty(ty)?
-                .clone();
-            let find = |declaration: &hew_types::DefId| {
-                module.items.iter().find_map(|item| {
-                    let hew_hir::HirItem::ExternFn(function) = item else {
-                        return None;
-                    };
-                    (&function.declaration == declaration).then(|| ResourceExtern {
-                        declaration: function.declaration.clone(),
-                        symbol: function.name.clone(),
-                        params: function.param_tys.clone(),
-                        consumes: function.param_consume.clone(),
-                        result: function.return_ty.clone(),
-                    })
+    if FileReadHandleKind::Stream.matches(ty) {
+        Some(ResourceRelease::Builtin(RuntimeDropDescriptor::StreamClose))
+    } else {
+        let lifecycle = module
+            .type_classes
+            .lifecycle_registry()
+            .opaque_resource_for_ty(ty)?
+            .clone();
+        let find = |declaration: &hew_types::DefId| {
+            module.items.iter().find_map(|item| {
+                let hew_hir::HirItem::ExternFn(function) = item else {
+                    return None;
+                };
+                (&function.declaration == declaration).then(|| ResourceExtern {
+                    declaration: function.declaration.clone(),
+                    symbol: function.name.clone(),
+                    params: function.param_tys.clone(),
+                    consumes: function.param_consume.clone(),
+                    result: function.return_ty.clone(),
                 })
-            };
-            let release = find(&lifecycle.release_declaration)?;
-            let producers = lifecycle
-                .producer_declarations
-                .iter()
-                .map(find)
-                .collect::<Option<Vec<_>>>()?;
-            Some(ResourceRelease::Nominal {
-                lifecycle: Box::new(lifecycle),
-                release,
-                producers,
             })
-        }
-        FileReadHandleKind::Stream => {
-            Some(ResourceRelease::Builtin(RuntimeDropDescriptor::StreamClose))
-        }
+        };
+        let release = find(&lifecycle.release_declaration)?;
+        let producers = lifecycle
+            .producer_declarations
+            .iter()
+            .map(find)
+            .collect::<Option<Vec<_>>>()?;
+        Some(ResourceRelease::Nominal {
+            lifecycle: Box::new(lifecycle),
+            release,
+            producers,
+        })
     }
 }
 
@@ -139,14 +173,17 @@ pub fn verify_resource_release(
     let contract = family
         .semantic_contract()
         .ok_or("resource release lacks semantic argument effects")?;
-    if contract.result != RuntimeResultEffect::Unit
-        || !contract.matches_signature(std::slice::from_ref(ty), &ResolvedTy::Unit)
+    let release_result = release.release_result()?;
+    if !matches!(
+        contract.result,
+        RuntimeResultEffect::Unit | RuntimeResultEffect::BitCopy(hew_types::RuntimeValueKind::I32)
+    ) || !contract.matches_signature(std::slice::from_ref(ty), &release_result)
         || contract.arguments.len() != 1
         || contract.arguments[0].effect != hew_types::RuntimeArgumentEffect::Move
         || !contract.failures.is_empty()
     {
         return Err(
-            "resource release must synchronously consume one exact owner and return unit".into(),
+            "resource release must synchronously consume one exact owner and return its scalar status".into(),
         );
     }
     match release {
@@ -180,7 +217,9 @@ fn verify_nominal_release(
         || release.symbol != lifecycle.release_symbol
         || release.params != [ty.clone()]
         || release.consumes != [true]
-        || release.result != ResolvedTy::Unit
+        || !family
+            .semantic_contract()
+            .is_some_and(|contract| contract.matches_signature(&release.params, &release.result))
     {
         return Err("release declaration or signature disagrees with checked lifecycle".into());
     }
@@ -196,8 +235,18 @@ fn verify_nominal_release(
         || symbols != lifecycle.producer_symbols
         || producers.iter().any(|producer| {
             producer.result != *ty
-                || producer.params != [ResolvedTy::String]
-                || producer.consumes != [false]
+                || !RuntimeCallFamily::from_c_symbol(&producer.symbol)
+                    .and_then(RuntimeCallFamily::semantic_contract)
+                    .is_some_and(|contract| {
+                        contract.matches_signature(&producer.params, &producer.result)
+                            && producer.consumes.len() == contract.arguments.len()
+                            && producer.consumes.iter().zip(contract.arguments).all(
+                                |(consume, arg)| {
+                                    *consume
+                                        == (arg.effect == hew_types::RuntimeArgumentEffect::Move)
+                                },
+                            )
+                    })
         })
     {
         return Err("producer declarations or signatures disagree with checked lifecycle".into());

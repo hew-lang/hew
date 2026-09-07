@@ -2037,7 +2037,8 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
-        || hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
+        || (hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
+            || hew_types::runtime_call::IoHandleKind::of_ty(ty).is_some())
         || matches!(
             ty,
             ResolvedTy::String
@@ -6263,6 +6264,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 trusted_compiled_stdlib: true,
             } if args.first().is_some_and(|argument| {
                 hew_types::runtime_call::FileReadHandleKind::Nominal.matches(&argument.ty)
+                    || hew_types::runtime_call::IoHandleKind::of_ty(&argument.ty).is_some()
             }) =>
             {
                 let ty = &args.first().ok_or("resource release has no owner")?.ty;

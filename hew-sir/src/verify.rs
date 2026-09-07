@@ -447,7 +447,8 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for key in module.type_facts.keys().filter(|key| {
         matches!(key.0, ResolvedTy::Task(_))
             || crate::generator_parts(&key.0).is_some()
-            || hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
+            || (hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
+                || hew_types::runtime_call::IoHandleKind::of_ty(&key.0).is_some())
     }) {
         if !module.resources.contains_key(&key.0) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
@@ -2174,7 +2175,9 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
-    if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some() {
+    if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
+        || hew_types::runtime_call::IoHandleKind::of_ty(ty).is_some()
+    {
         return true;
     }
     crate::generator_parts(ty).is_some()

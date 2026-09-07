@@ -13802,8 +13802,9 @@ impl LowerCtx {
                 .collect(),
         );
         let mut params = Vec::new();
-        for param in &func.params {
-            let binding = self.bind_param(param);
+        for (index, param) in func.params.iter().enumerate() {
+            let mut binding = self.bind_param(param);
+            binding.is_consume |= index == 0 && func.consumes_self;
             params.push(binding);
         }
 

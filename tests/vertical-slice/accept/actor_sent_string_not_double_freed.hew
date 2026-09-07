@@ -31,8 +31,8 @@ actor Echoer {
 fn main() -> i64 {
     let e = spawn Echoer(last: "");
     let s = string_concat("msg-", "payload");
-    e.note(s);
-    let c = match await e.count() {
+    let _ = e.note(s);
+    let c = match e.count() {
         .Ok(v) => v,
         .Err(_e) => 0,
     };

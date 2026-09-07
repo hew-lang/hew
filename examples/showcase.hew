@@ -117,10 +117,10 @@ fn main() {
     // 9. Actors
     println("9. Actors:");
     let c = spawn Counter(count: 0);
-    c.increment();
-    c.increment();
-    c.increment();
-    let r = await c.get_count();
+    let _ = c.increment();
+    let _ = c.increment();
+    let _ = c.increment();
+    let r = c.get_count();
     match r {
         .Ok(count) => println(f"  Counter after 3 increments: {count}"),
         .Err(_) => println("  Counter: ask failed"),

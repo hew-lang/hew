@@ -31,5 +31,5 @@ actor Ledger {
 
 fn main() {
     let l = spawn Ledger(total: 4, label: "ledger");
-    l.add(3);
+    let _ = l.add(3);
 }

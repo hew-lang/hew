@@ -57,12 +57,12 @@ fn main() {
 
     let ledger = spawn Ledger(total: 0);
     let label = classify("alpha", "fallback");
-    let _ = send ledger.add(label.len());
+    let _ = ledger.add(label.len());
     match string.to_int("7") {
-        .Ok(amount) => { let _ = send ledger.add(amount); },
+        .Ok(amount) => { let _ = ledger.add(amount); },
         .Err(_) => {},
     }
-    match await ledger.read() {
+    match ledger.read() {
         .Ok(total) => println(total),
         .Err(_) => println(0),
     }

@@ -19,6 +19,6 @@ fn main() {
     let c: LocalPid<Counter> = spawn Counter;
     let v: Vec<LocalPid<Counter>> = Vec.new();
     let same = store_and_read(v, c);
-    same.bump();
-    same.report();
+    let _ = same.bump();
+    let _ = same.report();
 }

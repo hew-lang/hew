@@ -19,7 +19,7 @@ fn main() -> i64 {
     var total = workers.len();
 
     let indexed = workers[1];
-    match await indexed.id() {
+    match indexed.id() {
         .Ok(value) => {
             if value != 7 {
                 return 1;
@@ -33,7 +33,7 @@ fn main() -> i64 {
 
     match workers.get(2) {
         .Some(worker) => {
-            match await worker.id() {
+            match worker.id() {
                 .Ok(value) => {
                     if value != 7 {
                         return 3;

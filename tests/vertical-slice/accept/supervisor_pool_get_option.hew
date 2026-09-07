@@ -19,7 +19,7 @@ fn main() -> i64 {
 
     match sup.workers.get(0) {
         .Some(worker) => {
-            match await worker.id() {
+            match worker.id() {
                 .Ok(value) => {
                     if value != 7 {
                         return 1;
@@ -38,7 +38,7 @@ fn main() -> i64 {
 
     match sup.workers.get(1) {
         .Some(worker) => {
-            match await worker.id() {
+            match worker.id() {
                 .Ok(value) => {
                     if value != 7 {
                         return 4;

@@ -33,7 +33,7 @@ fn main() {
         }
     }
     println(f"total={total}");
-    let r = await m.ping();
+    let r = m.ping();
     match r {
         .Ok(v) => println(f"ping={v}"),
         .Err(_) => println("ping failed"),

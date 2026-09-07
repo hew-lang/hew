@@ -33,7 +33,7 @@ fn main() {
         .None => println("unexpected-close"),
     }
 
-    let updated = await t.set_base(500);
+    let updated = t.set_base(500);
     match updated {
         .Ok(_v) => {}
         .Err(_e) => println("set_base failed"),

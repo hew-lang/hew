@@ -36,6 +36,6 @@ fn main() {
     tx.close();
     let w = spawn Worker;
     // Transfer rx through a tuple. After this send `rx` must not be used.
-    w.deliver((rx, "payload"));
-    w.finish();
+    let _ = w.deliver((rx, "payload"));
+    let _ = w.finish();
 }

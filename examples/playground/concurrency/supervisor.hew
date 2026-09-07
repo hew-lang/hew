@@ -22,11 +22,11 @@ fn main() {
     // Access supervised children by their declared names.
     let w1 = workers.w1;
     let w2 = workers.w2;
-    let a = match await w1.work(10) {
+    let a = match w1.work(10) {
         .Ok(v) => v,
         .Err(_) => -1,
     };
-    let b = match await w2.work(20) {
+    let b = match w2.work(20) {
         .Ok(v) => v,
         .Err(_) => -1,
     };

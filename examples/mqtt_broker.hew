@@ -210,18 +210,18 @@ actor ClientHandler {
     var buf: bytes,
     var registered: bool,
     receive fn register(reader: LocalPid<ClientReader>) {
-        let accepted = match await router.register_client(session_id.clone(), self) {
+        let accepted = match router.register_client(session_id.clone(), self) {
             .Ok(value) => value,
             .Err(_) => false,
         };
         if accepted {
             registered = true;
-            reader.start();
+            let _ = reader.start();
         } else {
             unsafe {
                 hew_sink_shutdown(sink)
             };
-            reader.stop();
+            let _ = reader.stop();
             unsafe {
                 hew_actor_self_stop()
             };
@@ -292,7 +292,7 @@ actor ClientHandler {
                                     connected = false;
                                     break;
                                 };
-                                let claim_status = match await router.claim_client_id(session_id.clone(), new_client_id.clone()) {
+                                let claim_status = match router.claim_client_id(session_id.clone(), new_client_id.clone()) {
                                     .Ok(value) => {
                                         if value {
                                             1
@@ -352,7 +352,7 @@ actor ClientHandler {
                         if connected {
                             let payload_bytes = bytes_slice(buf, payload_off, packet_end);
                             println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
-                            router.publish(topic, payload_bytes, qos as i32, packet_id);
+                            let _ = router.publish(topic, payload_bytes, qos as i32, packet_id);
                         }
                     }
                     if !connected {
@@ -384,7 +384,7 @@ actor ClientHandler {
                                 // matching only; reject filters it cannot honor.
                                 return_codes.push(0x80 as u8);
                             } else {
-                                router.subscribe(stopic, session_id.clone(), req_qos);
+                                let _ = router.subscribe(stopic, session_id.clone(), req_qos);
                                 return_codes.push(req_qos as u8);
                             }
                             topic_off = topic_off + tw + 1;
@@ -416,7 +416,7 @@ actor ClientHandler {
                                 connected = false;
                                 break;
                             };
-                            router.unsubscribe(utopic, session_id.clone());
+                            let _ = router.unsubscribe(utopic, session_id.clone());
                             topic_off = topic_off + tw;
                         }
                         if connected {
@@ -460,7 +460,7 @@ actor ClientHandler {
         }
         if !connected {
             if registered {
-                router.client_disconnect(session_id.clone());
+                let _ = router.client_disconnect(session_id.clone());
                 registered = false;
             }
             println(f"[mqtt] connection closed for {client_id}");
@@ -475,7 +475,7 @@ actor ClientHandler {
     }
     receive fn on_close() {
         if registered {
-            router.client_disconnect(session_id.clone());
+            let _ = router.client_disconnect(session_id.clone());
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
@@ -499,13 +499,13 @@ actor ClientReader {
         while reading {
             match input.recv() {
                 .Some(chunk) => {
-                    reading = match await client.on_data(chunk) {
+                    reading = match client.on_data(chunk) {
                         .Ok(keep_reading) => keep_reading,
                         .Err(_) => false,
                     };
                 },
                 .None => {
-                    client.on_close();
+                    let _ = client.on_close();
                     reading = false;
                 },
             }
@@ -583,7 +583,7 @@ actor Router {
                 for j in 0 .. session_ids.len() {
                     if session_ids[j] == sub_session {
                         let target = clients[j];
-                        target.deliver(build_publish(topic, payload, sub_q, packet_id));
+                        let _ = target.deliver(build_publish(topic, payload, sub_q, packet_id));
                         break;
                     }
                 }
@@ -669,7 +669,7 @@ actor Acceptor {
             let (input, sink) = conn.into_stream_sink();
             let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false);
             let reader = spawn ClientReader(input: input, client: handler);
-            handler.register(reader);
+            let _ = handler.register(reader);
             next_id = next_id + 1;
         }
     }
@@ -691,7 +691,7 @@ fn main() {
     let empty_sub_qos: Vec<i32> = Vec.new();
     let router = spawn Router(session_ids: empty_sessions, client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_session_ids: empty_sub_sessions, sub_qos: empty_sub_qos);
     let listener = spawn Acceptor(router: router, addr: addr);
-    listener.start();
+    let _ = listener.start();
     loop {
         sleep(1s);
     }

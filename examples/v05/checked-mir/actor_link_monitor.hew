@@ -23,6 +23,6 @@ actor Boss {
 fn main() -> i64 {
     let p = spawn Probe;
     let b = spawn Boss(target: p);
-    b.go();
+    let _ = b.go();
     0
 }

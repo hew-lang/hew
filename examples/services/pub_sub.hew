@@ -52,7 +52,7 @@ actor Broker {
         for i in 0 .. sub_topics.len() {
             if sub_topics[i] == topic {
                 let target = sub_actors[i];
-                target.on_message(sub_topics[i], payload);
+                let _ = target.on_message(sub_topics[i], payload);
                 delivered = delivered + 1;
             }
         }
@@ -78,12 +78,12 @@ fn main() {
     let carol = spawn Subscriber(name: "carol", received: 0);
     // ── Register subscriptions ──
     println("--- Registering subscriptions ---");
-    broker.subscribe("orders", alice);
-    broker.subscribe("orders", bob);
-    broker.subscribe("metrics", bob);
-    broker.subscribe("metrics", carol);
-    broker.subscribe("alerts", alice);
-    broker.subscribe("alerts", carol);
+    let _ = broker.subscribe("orders", alice);
+    let _ = broker.subscribe("orders", bob);
+    let _ = broker.subscribe("metrics", bob);
+    let _ = broker.subscribe("metrics", carol);
+    let _ = broker.subscribe("alerts", alice);
+    let _ = broker.subscribe("alerts", carol);
     sleep(30ms);
 
     // ── Publish messages ──
@@ -91,30 +91,30 @@ fn main() {
     println("--- Publishing messages ---");
 
     // Orders — alice and bob receive
-    broker.publish("orders", "order #1001 created");
+    let _ = broker.publish("orders", "order #1001 created");
     sleep(20ms);
-    broker.publish("orders", "order #1002 shipped");
+    let _ = broker.publish("orders", "order #1002 shipped");
     sleep(20ms);
 
     // Metrics — bob and carol receive
-    broker.publish("metrics", "cpu=42% mem=68%");
+    let _ = broker.publish("metrics", "cpu=42% mem=68%");
     sleep(20ms);
 
     // Alerts — alice and carol receive
-    broker.publish("alerts", "disk usage above 90%");
+    let _ = broker.publish("alerts", "disk usage above 90%");
     sleep(20ms);
 
     // Unknown topic — no subscribers, zero deliveries
-    broker.publish("unknown", "this goes nowhere");
+    let _ = broker.publish("unknown", "this goes nowhere");
     sleep(50ms);
 
     // ── Collect stats ──
     println("");
     println("--- Stats ---");
-    let _ = await broker.stats();
-    let _ = await alice.count();
-    let _ = await bob.count();
-    let _ = await carol.count();
+    let _ = broker.stats();
+    let _ = alice.count();
+    let _ = bob.count();
+    let _ = carol.count();
     println("");
     println("Pub/sub complete. No channels, no mutexes, no select loops.");
     println("The broker actor serialises all routing — data-race free.");

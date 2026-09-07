@@ -26,7 +26,7 @@ actor ProbeWorker {
     var rejected: i64,
     var unavailable: i64,
     receive fn handle_request() -> i64 {
-        let result = await tree.limiter.acquire();
+        let result = tree.limiter.acquire();
         match result {
             .Ok(value) => {
                 if value == 0 {
@@ -52,19 +52,19 @@ fn _rate_limit_denial_does_not_hide_ask_failure() {
     let tree = spawn ProbeTree;
     sleep(30ms);
     let worker = spawn ProbeWorker(tree: tree, rejected: 0, unavailable: 0);
-    match await worker.handle_request() {
+    match worker.handle_request() {
         .Ok(outcome) => testing.assert_eq(outcome, 1),
         .Err(_) => testing.assert_true(false),
     }
     supervisor_stop(tree);
     sleep(80ms);
-    match await worker.handle_request() {
+    match worker.handle_request() {
         .Ok(outcome) => testing.assert_eq(outcome, 2),
         .Err(_) => testing.assert_true(false),
     }
     // 10 means one legitimate rejection; the ones digit means one separate
     // unavailable result. If Err were mapped to rejection this would be 20.
-    match await worker.outcome_totals() {
+    match worker.outcome_totals() {
         .Ok(total) => testing.assert_eq(total, 11),
         .Err(_) => testing.assert_true(false),
     }

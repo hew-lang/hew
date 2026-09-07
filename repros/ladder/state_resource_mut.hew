@@ -13,5 +13,5 @@ actor Holder {
 }
 fn main() {
     let h = spawn Holder();
-    h.poke();
+    let _ = h.poke();
 }

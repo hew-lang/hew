@@ -15,7 +15,7 @@ fn main() {
     let a = spawn TestSink(observed: -1);
     let b = spawn TestSink(observed: -1);
     let value = Boxed { payload: [1, 2] };
-    a.take(value, 7);
-    b.take(value, 8);
+    let _ = a.take(value, 7);
+    let _ = b.take(value, 8);
     value.payload.push(9);
 }

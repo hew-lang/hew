@@ -28,7 +28,7 @@ fn main() -> i64 {
     let sup = spawn Pool;
     let idx: i64 = 4294967297; // 2^32 + 1 — used to alias member 1.
     let m = sup.workers[idx];
-    match await m.id() {
+    match m.id() {
         .Ok(v) => {
             v
         },

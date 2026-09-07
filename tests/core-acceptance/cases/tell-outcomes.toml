@@ -1,0 +1,10 @@
+[[case]]
+id = "tell-outcomes"
+intent = "A `receive fn` without a reply submits at its call site: the call yields `Result<Delivery, SendFailure<_>>`, `?` propagates a refusal, `let _ =` discards one deliberately, and `await` on a replying handler is still the ask."
+source = "cases/tell-outcomes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "accepted\nprocessed a\nprocessed b\n2\n"
+exit = 0

@@ -73,7 +73,7 @@ actor Replica {
 
     // Push local state to coordinator.
     receive fn sync_to_coordinator() {
-        coordinator.sync(name, local_count);
+        let _ = coordinator.sync(name, local_count);
     }
     receive fn get_local() -> i64 {
         local_count
@@ -97,32 +97,32 @@ fn main() {
     // Node.register("counter-1", r1); // for a RemotePid-based deployment
 
     // Register replicas with coordinator
-    coord.register_replica("node-1");
-    coord.register_replica("node-2");
-    coord.register_replica("node-3");
+    let _ = coord.register_replica("node-1");
+    let _ = coord.register_replica("node-2");
+    let _ = coord.register_replica("node-3");
     sleep(30ms);
 
     // ── Local writes (fast, uncoordinated) ──
     println("--- Local increments (no coordination) ---");
-    r1.increment(5);
-    r1.increment(3);
-    r2.increment(10);
-    r3.increment(7);
-    r3.increment(2);
+    let _ = r1.increment(5);
+    let _ = r1.increment(3);
+    let _ = r2.increment(10);
+    let _ = r3.increment(7);
+    let _ = r3.increment(2);
     sleep(30ms);
 
     // ── Sync to coordinator ──
     println("");
     println("--- Sync replicas to coordinator ---");
-    r1.sync_to_coordinator();
+    let _ = r1.sync_to_coordinator();
     sleep(10ms);
-    r2.sync_to_coordinator();
+    let _ = r2.sync_to_coordinator();
     sleep(10ms);
-    r3.sync_to_coordinator();
+    let _ = r3.sync_to_coordinator();
     sleep(30ms);
 
     // ── Read global total ──
-    let global = match await coord.get_global() {
+    let global = match coord.get_global() {
         .Ok(value) => value,
         .Err(_) => -1,
     };
@@ -132,16 +132,16 @@ fn main() {
     // ── More writes + re-sync ──
     println("");
     println("--- More writes + re-sync ---");
-    r1.increment(100);
-    r2.increment(200);
+    let _ = r1.increment(100);
+    let _ = r2.increment(200);
     sleep(20ms);
-    r1.sync_to_coordinator();
+    let _ = r1.sync_to_coordinator();
     sleep(10ms);
-    r2.sync_to_coordinator();
+    let _ = r2.sync_to_coordinator();
     sleep(10ms);
-    r3.sync_to_coordinator();
+    let _ = r3.sync_to_coordinator();
     sleep(30ms);
-    let global2 = match await coord.get_global() {
+    let global2 = match coord.get_global() {
         .Ok(value) => value,
         .Err(_) => -1,
     };

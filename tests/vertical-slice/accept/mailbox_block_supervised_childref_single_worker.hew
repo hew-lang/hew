@@ -22,8 +22,8 @@ actor Driver {
     let worker: ChildRef<BlockedChild>,
 
     receive fn run() {
-        worker.work(1);
-        worker.work(2);
+        let _ = worker.work(1);
+        let _ = worker.work(2);
         println("CHILDREF_BLOCK_SEND_RESUMED");
     }
 }
@@ -31,5 +31,5 @@ actor Driver {
 fn main() {
     let app = spawn App;
     let driver = spawn Driver(worker: app.worker);
-    driver.run();
+    let _ = driver.run();
 }

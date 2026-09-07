@@ -15,9 +15,9 @@ actor BytesPopProbe {
 fn main() -> i64 {
     let crasher = spawn BytesPopCrasher;
     let probe = spawn BytesPopProbe;
-    crasher.boom();
+    let _ = crasher.boom();
     sleep(300ms);
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,
     }

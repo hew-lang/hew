@@ -20,7 +20,7 @@ actor Coordinator {
     let scorer: LocalPid<Scorer>,
 
     receive fn ask_score(tag: i64, tree: Tree) -> i64 {
-        match await scorer.score(tag, tree) {
+        match scorer.score(tag, tree) {
             .Ok(value) => value,
             .Err(_) => -1,
         }
@@ -37,7 +37,7 @@ actor Coordinator {
 fn main() -> i64 {
     let scorer = spawn Scorer;
     let coordinator = spawn Coordinator(scorer: scorer);
-    let direct = match await scorer.score(10, .Node(.Leaf(1), .Leaf(2))) {
+    let direct = match scorer.score(10, .Node(.Leaf(1), .Leaf(2))) {
         .Ok(value) => value,
         .Err(_) => -3,
     };
@@ -54,11 +54,11 @@ fn main() -> i64 {
         .Ok(value) => value,
         .Err(_) => -1,
     };
-    let suspended_ask = match await coordinator.ask_score(50, .Node(.Leaf(9), .Leaf(10))) {
+    let suspended_ask = match coordinator.ask_score(50, .Node(.Leaf(9), .Leaf(10))) {
         .Ok(value) => value,
         .Err(_) => -5,
     };
-    let suspended_select = match await coordinator.select_score(60, .Node(.Leaf(11), .Leaf(12))) {
+    let suspended_select = match coordinator.select_score(60, .Node(.Leaf(11), .Leaf(12))) {
         .Ok(value) => value,
         .Err(_) => -6,
     };

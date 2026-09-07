@@ -23,13 +23,13 @@ fn refused(reason: SendError) {
 fn main() {
     let app = spawn App;
     for _ in 0..2 {
-        match send app.worker.boom() {
+        match app.worker.boom() {
             .Ok(_) => println("accepted"),
             .Err(failure) => refused(failure.reason),
         }
         let _ = await_restart app.worker;
     }
-    match send app.worker.ping() {
+    match app.worker.ping() {
         .Ok(_) => println("accepted"),
         .Err(failure) => refused(failure.reason),
     }

@@ -28,7 +28,7 @@ actor Crasher {
 fn main() -> i64 {
     let c = spawn Crasher;
     // Fire-and-forget: send the message that will crash the actor.
-    c.on_trigger(99);
+    let _ = c.on_trigger(99);
     // Give the scheduler time to deliver the message and emit the diagnostic.
     sleep(300ms);
     0

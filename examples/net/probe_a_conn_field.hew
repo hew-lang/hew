@@ -29,7 +29,7 @@ fn main() {
         .Err(_) => panic(f"network setup failed"),
     };
     let session = spawn Session(conn: conn);
-    session.pump(0);
+    let _ = session.pump(0);
     let client = listener.accept();
     let _ = client.write_string("hello");
     sleep(300ms);

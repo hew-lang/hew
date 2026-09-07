@@ -20,6 +20,6 @@ actor Driver {
 
 fn main() -> i64 {
     let d = spawn Driver;
-    d.drive();
+    let _ = d.drive();
     0
 }

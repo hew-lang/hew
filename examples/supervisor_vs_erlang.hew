@@ -102,26 +102,26 @@ fn main() {
     let reader = sup.reader;
     let writer = sup.writer;
     // Normal operation
-    reader.handle(1);
+    let _ = reader.handle(1);
     sleep(10ms);
-    writer.handle(2);
+    let _ = writer.handle(2);
     sleep(10ms);
-    reader.handle(3);
+    let _ = reader.handle(3);
     sleep(30ms);
 
     // Reader crashes — writer keeps running
     println("");
     println("Reader connection drops:");
-    reader.fail();
+    let _ = reader.fail();
     sleep(300ms);
 
     // New reader is already running (supervisor restarted it)
     println("");
     println("After automatic restart:");
     let reader2 = sup.reader;
-    reader2.handle(4);
+    let _ = reader2.handle(4);
     sleep(10ms);
-    writer.handle(5);
+    let _ = writer.handle(5);
     sleep(30ms);
     println("");
     println("Zero downtime. Zero manual recovery. That's supervision.");

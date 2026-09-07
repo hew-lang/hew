@@ -4,6 +4,6 @@ fn main() {
         println(s);
         println(x);
     };
-    w.send(1);
+    let _ = w.send(1);
     println(s);
 }

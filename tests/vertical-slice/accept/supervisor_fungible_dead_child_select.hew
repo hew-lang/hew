@@ -49,12 +49,12 @@ fn main() -> i64 {
     var attempts: i64 = 0;
     var dead = false;
     while attempts < 30 && !dead {
-        let alive = match await w.get_value() {
+        let alive = match w.get_value() {
             .Ok(_) => true,
             .Err(_) => false,
         };
         if alive {
-            w.crash_me();
+            let _ = w.crash_me();
             sleep(120ms);
         } else {
             dead = true;
@@ -69,7 +69,7 @@ fn main() -> i64 {
     sleep(200ms);
 
     // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
-    let ask_code = match await w.get_value() {
+    let ask_code = match w.get_value() {
         .Ok(_) => 1,
         .Err(_) => 20,
     };

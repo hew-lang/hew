@@ -12,7 +12,7 @@ supervisor ImportedWorkerPool {
 
 fn main() -> i64 {
     let sup = spawn ImportedWorkerPool;
-    match await sup.worker.identify() {
+    match sup.worker.identify() {
         .Ok(id) => {
             supervisor_stop(sup);
             id

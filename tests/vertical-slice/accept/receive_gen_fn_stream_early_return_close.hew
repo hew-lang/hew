@@ -34,7 +34,7 @@ fn main() {
     let t = spawn Ticker;
     let value = first(t);
     println(f"first={value}");
-    match await t.ping() {
+    match t.ping() {
         .Ok(v) => println(f"ping={v}"),
         .Err(_) => println("ping failed"),
     }

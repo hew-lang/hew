@@ -31,5 +31,5 @@ actor Greeter {
 
 fn main() {
     let g = spawn Greeter(prefix: "hello ");
-    g.greet("world");
+    let _ = g.greet("world");
 }

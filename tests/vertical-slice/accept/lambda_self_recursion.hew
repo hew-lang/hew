@@ -13,9 +13,9 @@ fn main() {
             println("liftoff");
         }
         if n > 1 {
-            count(n - 1);
+            let _ = count(n - 1);
         }
     };
-    count(10);
+    let _ = count(10);
     sleep(400ms);
 }

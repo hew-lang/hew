@@ -11,6 +11,6 @@ actor Messenger {
 
 fn main() {
     let messenger = spawn Messenger;
-    let _ = await messenger.print_message(100);
+    let _ = messenger.print_message(100);
     println(999);
 }

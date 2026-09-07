@@ -57,8 +57,7 @@ fn main() {
     };
     // The Stream half moves into the actor's state; the Sink half stays local.
     let d = spawn Drainer(input: input);
-    d.run();
-
+    let _ = d.run();
     // Producer side: drive the local sink, then close it to signal EOF.
     for i in 0 .. 3 {
         sink.send(f"frame-{i}".to_bytes());

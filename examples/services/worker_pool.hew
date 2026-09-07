@@ -106,7 +106,7 @@ fn main() {
     // ── Crash and recovery ──
     println("");
     println("--- Worker 2 crashes ---");
-    w2.crash_test();
+    let _ = w2.crash_test();
     sleep(200ms);
 
     // ChildRef re-resolves worker 2's current incarnation after restart.

@@ -35,7 +35,7 @@ fn main() -> i64 {
         let _ = w.process(i);
     }
     sleep(1s);
-    let result = await w.report();
+    let result = w.report();
     let final_count = match result {
         .Ok(value) => value,
         .Err(_) => -1,

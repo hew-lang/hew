@@ -45,8 +45,8 @@ actor DrainRecords {
 
 fn main() {
     let worker = spawn DrainRecords;
-    worker.run(0);
-    match await worker.fence() {
+    let _ = worker.run(0);
+    match worker.fence() {
         .Ok(_v) => {},
         .Err(_) => println("fence failed"),
     }

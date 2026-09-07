@@ -15,6 +15,6 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.bump();
+    let _ = c.bump();
     println(Counter.helper());
 }

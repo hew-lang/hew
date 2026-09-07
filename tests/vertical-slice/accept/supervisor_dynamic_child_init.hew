@@ -31,7 +31,7 @@ fn main() -> i64 {
     let cfg = AppConfig { size: 37 };
     let sup = spawn App(config: cfg);
     let c = sup.cache;
-    match await c.get_cap() {
+    match c.get_cap() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

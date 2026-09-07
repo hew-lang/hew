@@ -59,7 +59,7 @@ extern "C" {
 fn main() -> i64 {
     let sup = spawn App;
     let c = sup.counter;
-    let initial = match await c.get() {
+    let initial = match c.get() {
         .Ok(v) => v,
         .Err(_) => {
             return 1;
@@ -68,7 +68,7 @@ fn main() -> i64 {
     if initial != 110 {
         return initial;
     }
-    c.crash_me();
+    let _ = c.crash_me();
     let restarted = unsafe {
         hew_supervisor_wait_restart(sup, 1, 5000)
     };
@@ -76,7 +76,7 @@ fn main() -> i64 {
         return 2;
     }
     let c2 = sup.counter;
-    let after = match await c2.get() {
+    let after = match c2.get() {
         .Ok(v) => v,
         .Err(_) => {
             return 3;

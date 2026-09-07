@@ -2308,8 +2308,8 @@ run_accept_expect_status "supervisor_max_heap" 42
 #   this row now only proves the annotation's effect by observed execution.)
 run_accept_expect_status "mailbox_bounded_drop_new" 0
 
-# A lossy actor send is Result-typed, reports the exact drop, and cannot be
-# discarded accidentally as a bare statement. The sender is an actor handler
+# A lossy actor send reports the exact drop, and cannot be discarded
+# accidentally as a bare statement. The sender is an actor handler
 # and HEW_WORKERS=1 keeps the sole worker inside that handler for both sends,
 # so the capacity-one overflow is deterministic and the dropped work provably
 # never reached its handler. Sending from `main` would not be deterministic:
@@ -2324,11 +2324,12 @@ if grep -qF -- "DROPPED_WORK_DELIVERED" "${stdout_output}"; then
 fi
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/mailbox_loss_result_ignored.hew" \
-    "policy-sensitive actor send result must be handled" \
+    "E_SEND_RESULT_DROPPED" \
     "discarded lossy actor send"
 
-# Unbounded, non-overflowing actor sends keep the ordinary unit-typed call
-# shape: no Result handling is imposed on the reliable common case.
+# An unbounded, non-overflowing actor send carries the same delivery Result as
+# every other tell; discarding it deliberately is all the reliable common case
+# has to write.
 run_accept_expect_status "mailbox_normal_send_ergonomic" 42 HEW_WORKERS=1
 grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}"
 

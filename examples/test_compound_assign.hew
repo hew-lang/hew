@@ -21,8 +21,8 @@ actor Counter {
 
 fn main() {
     let counter = spawn Counter(value: 0);
-    counter.set(3);
-    counter.double();
-    counter.scale(4);
-    let _ = await counter.print_value();
+    let _ = counter.set(3);
+    let _ = counter.double();
+    let _ = counter.scale(4);
+    let _ = counter.print_value();
 }

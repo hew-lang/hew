@@ -36,7 +36,7 @@ fn sleep_returns_after_duration_in_handler() {
     let s = spawn Sleeper(done: 0);
     // The handler sleeps 20ms then increments; the value proves the handler
     // resumed correctly after the timer fired (exact value 1, not >= 1).
-    match await s.nap(20ms) {
+    match s.nap(20ms) {
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_true(false),
     }
@@ -49,7 +49,7 @@ fn two_sleeps_in_one_handler_resume_in_order() {
     // does +1, sleeps again, does +10. The exact result (11) proves BOTH
     // suspend points resumed in order through one persistent frame — a
     // multi-suspend frame correctness check, not just a single-suspend pass.
-    match await s.nap_twice(15ms) {
+    match s.nap_twice(15ms) {
         .Ok(n) => testing.assert_eq(n, 11),
         .Err(_) => testing.assert_true(false),
     }
@@ -63,9 +63,9 @@ fn many_handlers_each_sleep_then_resume() {
     let a = spawn Sleeper(done: 0);
     let b = spawn Sleeper(done: 0);
     let c = spawn Sleeper(done: 0);
-    let ra = await a.nap(10ms);
-    let rb = await b.nap(10ms);
-    let rc = await c.nap(10ms);
+    let ra = a.nap(10ms);
+    let rb = b.nap(10ms);
+    let rc = c.nap(10ms);
     match ra {
         .Ok(na) => testing.assert_eq(na, 1),
         .Err(_) => testing.assert_true(false),

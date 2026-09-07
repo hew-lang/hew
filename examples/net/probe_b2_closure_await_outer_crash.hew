@@ -47,7 +47,7 @@ fn main() {
         hew_tcp_listener_local_port(listener)
     };
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    let r = await reader.go(0);
+    let r = reader.go(0);
     match r {
         .Ok(v) => println(f"reader-returned: {v}"),
         .Err(_) => println("reader-crash-fallback"),

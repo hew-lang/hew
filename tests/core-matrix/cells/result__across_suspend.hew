@@ -12,7 +12,7 @@ actor Holder {
 fn main() {
     let x: Result<i64, string> = Result.Ok(6);
     let h = spawn Holder(ready: false);
-    match await h.hold(x) {
+    match h.hold(x) {
         Result.Ok(n) => println(f"held {n}"),
         Result.Err(_) => println("err"),
     }

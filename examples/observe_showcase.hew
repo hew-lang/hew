@@ -97,43 +97,41 @@ fn main() {
         // ~300 messages per round across 3 counters.
         var i: i32 = 0;
         while i < 100 {
-            c1.increment(1);
-            c2.increment(2);
-            c3.increment(3);
+            let _ = c1.increment(1);
+            let _ = c2.increment(2);
+            let _ = c3.increment(3);
             i = i + 1;
         }
         // ── Slow processor traffic ──
         // Each process() call sleeps 100ms, so these actors stay busy
         // and accumulate mailbox depth visible in the Actors tab.
-        slow1.process(round);
-        slow1.process(round);
-        slow1.process(round);
-        slow2.process(round);
-        slow2.process(round);
-
+        let _ = slow1.process(round);
+        let _ = slow1.process(round);
+        let _ = slow1.process(round);
+        let _ = slow2.process(round);
+        let _ = slow2.process(round);
         // ── Accumulator traffic ──
         // Moderate message rate with periodic resets every 10 rounds.
         i = 0;
         while i < 10 {
-            acc.add(round + i);
+            let _ = acc.add(round + i);
             i = i + 1;
         }
         if round % 10 == 9 {
-            acc.reset();
+            let _ = acc.reset();
         }
         // ── Sparse logger traffic ──
         // One message per second — barely visible in the message rate.
-        logger.log(1);
-
+        let _ = logger.log(1);
         // Wait 1 second between rounds. The profiler samples once per
         // second, so each round produces one sparkline data point.
         sleep(1s);
         round = round + 1;
     }
     // Print final stats.
-    let r1 = await c1.get();
-    let r2 = await c2.get();
-    let r3 = await c3.get();
+    let r1 = c1.get();
+    let r2 = c2.get();
+    let r3 = c3.get();
     let total = match r1 {
         .Ok(v) => v,
         .Err(_) => 0,

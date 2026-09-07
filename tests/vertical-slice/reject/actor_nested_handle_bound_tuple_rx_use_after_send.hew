@@ -23,7 +23,7 @@ fn main() {
     tx.close();
     let w = spawn Worker;
     let pair = (rx, 42);
-    w.accept(pair);
+    let _ = w.accept(pair);
     // `rx` was consumed into `pair` at construction. Using it here must be refused.
     rx.close();
 }

@@ -12,5 +12,5 @@ actor Worker {
 }
 
 fn send_local(pid: LocalPid<Worker>) {
-    pid.carry(inc);
+    let _ = pid.carry(inc);
 }

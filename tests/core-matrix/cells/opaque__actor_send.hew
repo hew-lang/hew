@@ -36,7 +36,7 @@ actor Sink {
 fn main() {
     let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
     let s = spawn Sink(hits: 0);
-    match await s.take(x) {
+    match s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),
         Result.Err(_) => println("err"),
     }

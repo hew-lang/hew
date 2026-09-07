@@ -53,13 +53,13 @@ fn main() {
     // These are direct calls on the local actor. They are lossless unit sends
     // for ChatRoom's unbounded mailbox; a RemotePid uses its typed send/ask
     // methods and returns a Result that callers must handle.
-    room.enter("alice");
-    room.enter("bob");
-    room.say("alice", "hello everyone!");
-    room.say("bob", "hey alice!");
-    room.say("alice", "how is the weather?");
-    room.exit_room("bob");
-    match await room.history() {
+    let _ = room.enter("alice");
+    let _ = room.enter("bob");
+    let _ = room.say("alice", "hello everyone!");
+    let _ = room.say("bob", "hey alice!");
+    let _ = room.say("alice", "how is the weather?");
+    let _ = room.exit_room("bob");
+    match room.history() {
         .Ok(_) => {},
         .Err(_) => panic("chat history request failed"),
     }

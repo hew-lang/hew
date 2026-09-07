@@ -19,18 +19,18 @@ supervisor App {
 
 fn main() {
     let app = spawn App;
-    let _ = send app.right.bump();
-    match await app.right.read() {
+    let _ = app.right.bump();
+    match app.right.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    let _ = send app.left.boom();
+    let _ = app.left.boom();
     let replacement = await_restart app.left;
-    match await replacement.read() {
+    match replacement.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    match await app.right.read() {
+    match app.right.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }

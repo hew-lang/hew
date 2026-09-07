@@ -11,5 +11,5 @@ actor Holder {
 fn main() {
     let val = json.from_int(1);
     let holder = spawn Holder(val: val);
-    holder.ping(0);
+    let _ = holder.ping(0);
 }

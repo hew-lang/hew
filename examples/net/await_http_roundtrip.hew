@@ -115,8 +115,8 @@ actor Client {
 fn main() {
     let s = spawn Server(addr: "127.0.0.1:18110");
     let c = spawn Client(url: "http://127.0.0.1:18110/hello");
-    s.serve(0);
-    c.go(0);
+    let _ = s.serve(0);
+    let _ = c.go(0);
     sleep(1500ms);
     println("main-done");
 }

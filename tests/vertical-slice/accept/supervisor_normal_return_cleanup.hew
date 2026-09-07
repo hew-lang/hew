@@ -25,7 +25,7 @@ supervisor App {
 
 fn main() -> i64 {
     let sup = spawn App;
-    match await sup.first.get() {
+    match sup.first.get() {
         .Ok(n) => n,
         .Err(_) => 1,
     }

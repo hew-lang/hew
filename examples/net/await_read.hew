@@ -40,7 +40,7 @@ fn main() {
         .Err(_) => panic(f"network setup failed"),
     };
     let reader = spawn Reader(port: "18077");
-    reader.go(0);
+    let _ = reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("hello-from-server");
     sleep(500ms);

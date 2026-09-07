@@ -39,12 +39,12 @@ fn main() {
     for i in 0 .. 50 {
         let w = spawn Worker(id: i);
         for j in 0 .. 20 {
-            w.process(j);
+            let _ = w.process(j);
         }
-        collector.tick();
+        let _ = collector.tick();
     }
     // Give time for all messages to be processed
     sleep(500ms);
-    collector.report();
+    let _ = collector.report();
     println("PASS: scheduler handles 50 actors x 20 messages");
 }

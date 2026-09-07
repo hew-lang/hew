@@ -9,5 +9,5 @@ fn main() {
     let printer = actor |x: i64| {
         println(x);
     };
-    printer.send(42);
+    let _ = printer.send(42);
 }

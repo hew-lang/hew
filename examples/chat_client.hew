@@ -102,7 +102,7 @@ fn main() {
         .Err(_) => panic("channel.new failed"),
     };
     let reader = spawn ChatReader(input: input, done: done_tx);
-    reader.pump();
+    let _ = reader.pump();
     loop {
         let line = io.read_line();
         if line.contains("/quit") {

@@ -1,0 +1,34 @@
+// The call is the send: a `receive fn` without a reply submits at its call
+// site and yields `Result<Delivery, SendFailure<_>>`. `?` propagates a
+// rejection, `let _ =` discards one deliberately, and `await` on a replying
+// handler is still the ask.
+actor Worker {
+    var seen: i64 = 0,
+    receive fn process(job: string) {
+        seen = seen + 1;
+        println("processed " + job);
+    }
+    receive fn total() -> i64 { seen }
+}
+
+fn drive(w: LocalPid<Worker>) -> Result<(), SendError> {
+    match w.process("a") {
+        .Ok(Delivery.Accepted) => println("accepted"),
+        .Ok(Delivery.Discarded) => println("discarded"),
+        .Err(failure) => return Err(failure.reason),
+    }
+    let _ = w.process("b");
+    Ok(())
+}
+
+fn main() {
+    let w = spawn Worker();
+    match drive(w) {
+        .Ok(_) => {},
+        .Err(_) => panic("submission refused"),
+    }
+    match w.total() {
+        .Ok(total) => println(total),
+        .Err(_) => panic("ask failed"),
+    }
+}

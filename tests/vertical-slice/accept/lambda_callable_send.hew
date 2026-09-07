@@ -6,5 +6,5 @@ fn main() {
     let log = actor |s: string| {
         println(s);
     };
-    log("hello");
+    let _ = log("hello");
 }

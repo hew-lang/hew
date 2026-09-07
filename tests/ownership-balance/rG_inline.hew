@@ -17,7 +17,7 @@ fn empty_snap() -> Snap {
 fn poll(svc: LocalPid<Svc>) -> Snap {
     var i = 0;
     while i < 3 {
-        match await svc.snapshot() {
+        match svc.snapshot() {
             .Ok(s) => {
                 if s.terminal {
                     return s;

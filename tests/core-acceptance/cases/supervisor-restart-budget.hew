@@ -13,7 +13,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     for _ in 0..2 {
-        let _ = send app.worker.boom();
+        let _ = app.worker.boom();
         let _ = await_restart app.worker;
     }
     println("budget spent");

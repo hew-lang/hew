@@ -50,7 +50,7 @@ fn main() {
     // Fast.compute(7) = 7 + 100 = 107; it replies before Slow wakes, so the
     // select binds 107. The Slow arm is the loser (cancelled); the deadline
     // never fires.
-    let r = await c.race_two(7);
+    let r = c.race_two(7);
     match r {
         .Ok(v) => println(f"winner={v}"),
         .Err(_) => println("race failed"),

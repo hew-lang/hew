@@ -29,7 +29,7 @@ actor Reader {
 
 fn main() {
     let reader = spawn Reader;
-    let r = await reader.go(0);
+    let r = reader.go(0);
     match r {
         .Ok(v) => println(f"reader-returned: {v}"),
         .Err(_) => println("reader-crash-fallback"),

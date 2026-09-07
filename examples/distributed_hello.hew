@@ -16,9 +16,8 @@ actor Counter {
 fn main() {
     // ── Local actor ──────────────────────────────────────────
     let counter = spawn Counter(count: 0);
-    counter.increment(5);
-    counter.increment(3);
-
+    let _ = counter.increment(5);
+    let _ = counter.increment(3);
     // ── Secure distributed node (QUIC mesh, mutual TLS) ──────
     // load_keys mints and persists the stable key from which this node's NodeId
     // is derived. identity_key() returns the public credential (lowercase hex)

@@ -20,7 +20,7 @@ supervisor AppSupervisor {
 fn main() -> i64 {
     let sup = spawn AppSupervisor;
     let w = sup.w1;
-    w.ping(1);
+    let _ = w.ping(1);
     supervisor_stop(sup);
     0
 }

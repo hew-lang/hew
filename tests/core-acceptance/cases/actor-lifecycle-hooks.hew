@@ -21,7 +21,7 @@ fn open(path: string) -> Stream<string> {
 
 fn main() {
     let keeper = spawn Keeper(journal: open("resource-read.bin"));
-    match await keeper.bump() {
+    match keeper.bump() {
         .Ok(count) => println(count),
         .Err(_) => panic("bump failed"),
     }

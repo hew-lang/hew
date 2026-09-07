@@ -14,8 +14,8 @@ actor BlockedWorker {
 
 actor Driver {
     receive fn run(worker: LocalPid<BlockedWorker>) {
-        worker.work(1);
-        worker.work(2);
+        let _ = worker.work(1);
+        let _ = worker.work(2);
         println("BLOCK_SEND_RESUMED");
     }
 }
@@ -23,5 +23,5 @@ actor Driver {
 fn main() {
     let worker = spawn BlockedWorker;
     let driver = spawn Driver;
-    driver.run(worker);
+    let _ = driver.run(worker);
 }

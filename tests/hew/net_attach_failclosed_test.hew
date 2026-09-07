@@ -36,7 +36,7 @@ fn test_websocket_typed_attach_dispatches_protocol_ids() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(server) => {
             let peer = spawn WebSocketPeer(url: f"ws://127.0.0.1:{server.port()}/");
-            peer.connect_and_hold();
+            let _ = peer.connect_and_hold();
             let conn = server.accept();
             let handler: LocalPid<WebSocketHandlerProbe> = spawn WebSocketHandlerProbe;
             conn.attach(handler);

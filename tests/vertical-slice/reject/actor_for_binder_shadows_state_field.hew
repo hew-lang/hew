@@ -25,8 +25,8 @@ actor Counter {
 
 fn main() {
     let counter = spawn Counter(count: 0);
-    counter.go();
-    match await counter.total() {
+    let _ = counter.go();
+    match counter.total() {
         .Ok(total) => println(total),
         .Err(_) => println("ask failed"),
     }

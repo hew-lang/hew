@@ -35,11 +35,11 @@ fn coalesce_owned_payload_superseded_values_drop_once() {
     let _ = worker.update(9, "three-three-three", 0ns);
     let _ = worker.update(9, "latest-payload", 0ns);
     sleep(350ms);
-    match await worker.count() {
+    match worker.count() {
         .Ok(value) => testing.assert_eq(value, 2),
         .Err(_) => testing.assert_true(false),
     }
-    match await worker.length() {
+    match worker.length() {
         .Ok(value) => testing.assert_eq(value, 14),
         .Err(_) => testing.assert_true(false),
     }

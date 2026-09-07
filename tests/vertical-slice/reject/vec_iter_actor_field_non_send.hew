@@ -31,5 +31,5 @@ fn main() {
     v.push(40);
     v.push(2);
     let h = spawn Holder(cur: v.iter());
-    let _ = await h.sum();
+    let _ = h.sum();
 }

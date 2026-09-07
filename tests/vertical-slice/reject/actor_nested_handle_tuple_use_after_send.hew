@@ -23,7 +23,7 @@ fn main() {
     };
     tx.close();
     let w = spawn Worker;
-    w.accept((rx, 42));
+    let _ = w.accept((rx, 42));
     // `rx` was moved into the tuple. Using it here must be refused.
     rx.close();
 }

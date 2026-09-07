@@ -31,7 +31,7 @@ actor TestSink {
 fn main() -> i64 {
     let sink = spawn TestSink;
     let holder = Holder { sock: Socket { fd: 7 }, count: 3 };
-    let _ = await sink.take(holder.sock);
-    let _ = await sink.take_holder(holder);
+    let _ = sink.take(holder.sock);
+    let _ = sink.take_holder(holder);
     return 0;
 }

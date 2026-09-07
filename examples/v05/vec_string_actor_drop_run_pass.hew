@@ -42,7 +42,7 @@ fn main() {
     words.push("gamma");
     let count = words.len();
     let holder = spawn WordHolder(words: words);
-    let r = await holder.ping();
+    let r = holder.ping();
     // "ok" is gated on both the populated-vec count (real data flow) and the
     // actor ack; teardown then exercises the managed per-slot string free.
     match r {

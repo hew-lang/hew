@@ -49,20 +49,20 @@ fn coalesce_same_key_different_message_types_do_not_merge() {
     sleep(2s);
     var alpha_count: i64 = -1;
     var beta_count: i64 = -1;
-    match await worker.alpha_seen() {
+    match worker.alpha_seen() {
         .Ok(value) => {
             alpha_count = value;
         },
         .Err(_) => testing.assert_true(false),
     }
-    match await worker.beta_seen() {
+    match worker.beta_seen() {
         .Ok(value) => {
             beta_count = value;
         },
         .Err(_) => testing.assert_true(false),
     }
     testing.assert_true(beta_count > alpha_count);
-    match await worker.latest() {
+    match worker.latest() {
         .Ok(value) => testing.assert_true(value == -1 || value >= 1000),
         .Err(_) => testing.assert_true(false),
     }

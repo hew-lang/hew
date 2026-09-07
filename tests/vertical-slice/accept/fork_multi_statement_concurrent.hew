@@ -52,7 +52,7 @@ actor Driver {
 
 fn main() {
     let driver = spawn Driver;
-    match await driver.run() {
+    match driver.run() {
         .Ok(_) => {},
         .Err(_) => panic("driver failed"),
     }

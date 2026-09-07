@@ -43,7 +43,7 @@ actor Monitor {
     receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
         if temp > threshold {
-            logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
+            let _ = logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
         }
         if readings.len() % 3 == 0 {
             var sum: i64 = 0;
@@ -51,7 +51,7 @@ actor Monitor {
                 sum = sum + reading as i64;
             }
             let avg = sum / readings.len();
-            logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");
+            let _ = logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");
         }
     }
 }
@@ -62,7 +62,7 @@ actor Sensor {
     let base_temp: i32,
     receive fn tick(cycle: i32) {
         let temp = base_temp + cycle % 5 - 2;
-        monitor.reading(sensor_id, temp);
+        let _ = monitor.reading(sensor_id, temp);
     }
 }
 
@@ -74,8 +74,8 @@ fn main() {
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
     for cycle in 0 .. 6 {
-        s1.tick(cycle);
-        s2.tick(cycle);
+        let _ = s1.tick(cycle);
+        let _ = s2.tick(cycle);
         sleep(30ms);
     }
     sleep(200ms);

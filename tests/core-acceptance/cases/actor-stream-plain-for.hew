@@ -1,0 +1,39 @@
+actor Producer {
+    var label: string = "tick",
+    var served: i64 = 0,
+    receive gen fn ticks(count: i64) -> string {
+        for index in 0..count {
+            served = served + 1;
+            yield label;
+        }
+    }
+    receive fn served() -> i64 { served }
+}
+
+fn main() {
+    let producer = spawn Producer();
+
+    // A plain `for` waits per item and runs the producer to completion.
+    var seen = 0;
+    for item in producer.ticks(3) {
+        println(item);
+        seen = seen + 1;
+    }
+    println(seen);
+
+    // Leaving early ends the producer turn without stranding the pipe.
+    var partial = 0;
+    for item in producer.ticks(100) {
+        println(item);
+        partial = partial + 1;
+        if partial >= 2 { break; }
+    }
+    println(partial);
+
+    match producer.served() {
+        .Ok(served) => println(served),
+        .Err(_) => panic("served failed"),
+    }
+    close(producer);
+    println("closed");
+}

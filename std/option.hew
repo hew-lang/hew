@@ -195,10 +195,10 @@ impl<T> Option<T> {
             .None => true,
         }
     }
-    fn unwrap(opt: Option<T>) -> T {
+    fn expect(opt: Option<T>, reason: string) -> T {
         match opt {
             .Some(v) => v,
-            .None => panic("option: unwrap called on None"),
+            .None => panic(f"expect failed: {reason}"),
         }
     }
     fn unwrap_or(opt: Option<T>, fallback: T) -> T {

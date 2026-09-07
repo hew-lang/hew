@@ -3,25 +3,25 @@ import std.encoding.json;
 
 fn early_exit(flag: bool) {
     var value = json.object();
-    value.set("n", json.from_int(11)).unwrap();
-    let child = value.get_field("n").unwrap().unwrap();
+    value.set("n", json.from_int(11)).expect("set succeeds");
+    let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     if flag {
         return;
     }
-    println(child.get_int().unwrap());
+    println(child.get_int().expect("get_int succeeds"));
 }
 
 fn _panic_exit() {
     var value = json.object();
-    value.set("n", json.from_int(12)).unwrap();
-    let _child = value.get_field("n").unwrap().unwrap();
+    value.set("n", json.from_int(12)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     panic("json value panic probe");
 }
 
 fn cancel_exit() {
     var value = json.object();
-    value.set("n", json.from_int(13)).unwrap();
-    let _child = value.get_field("n").unwrap().unwrap();
+    value.set("n", json.from_int(13)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     var i: i64 = 0;
     while i < 2 {
         i = i + 1;
@@ -39,13 +39,13 @@ actor JsonCancelDriver {
 fn main() {
     let (read, keys) = {
         var value = json.object();
-        value.set("n", json.from_int(7)).unwrap();
-        value.set("flag", json.from_bool(true)).unwrap();
-        let child = value.get_field("n").unwrap().unwrap();
-        (|| child.get_int().unwrap(), value.keys().unwrap())
+        value.set("n", json.from_int(7)).expect("set succeeds");
+        value.set("flag", json.from_bool(true)).expect("set succeeds");
+        let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
+        (|| child.get_int().expect("get_int succeeds"), value.keys().expect("keys succeeds"))
     };
     println(read());
-    println(keys.array_len().unwrap());
+    println(keys.array_len().expect("array_len succeeds"));
 
     // A parse failure returns an error without an owning value payload.
     match json.parse("{") {

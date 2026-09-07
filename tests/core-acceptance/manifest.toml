@@ -1369,15 +1369,15 @@ stderr = "hew: failure: UserPanic (212): ÉCHEC\u0000APRÈS\n"
 exit = 212
 
 [[case]]
-id = "panic-result-unwrap"
-intent = "Failed Result unwrap releases its owned error and caller siblings before propagating a message-bearing panic through the checked call boundary."
-source = "cases/panic-result-unwrap.hew"
+id = "panic-result-expect"
+intent = "A failed Result `expect` releases its owned error and caller siblings before propagating a reason-bearing panic through the checked call boundary."
+source = "cases/panic-result-expect.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
 stdout = "CALLER OWNER\nCALLEE OWNER\n"
-stderr = "hew: failure: UserPanic (212): called 'unwrap()' on an 'Err' value\n"
+stderr = "hew: failure: UserPanic (212): expect failed: the request had already failed\n"
 exit = 212
 
 [[case]]

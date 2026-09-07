@@ -9,9 +9,9 @@ fn main() {
     let keys: HashMap<string, Key<string>> = HashMap.new();
     keys.insert("key", key);
 
-    let cloned = keys.get("key").unwrap();
-    println(store.get(cloned).unwrap());
+    let cloned = keys.get("key").expect("get succeeds");
+    println(store.get(cloned).expect("get succeeds"));
 
-    let removed = keys.remove("key").unwrap();
-    println(store.get(removed).unwrap());
+    let removed = keys.remove("key").expect("remove succeeds");
+    println(store.get(removed).expect("get succeeds"));
 }

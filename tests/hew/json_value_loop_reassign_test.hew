@@ -8,17 +8,17 @@ fn rendered_count() -> string {
     var values = json.array();
     for n in 0 .. 3 {
         var next = values;
-        next.push(json.from_int(n)).unwrap();
+        next.push(json.from_int(n)).expect("push succeeds");
         // Mutating the copy must preserve the array being replaced.
-        testing.assert_eq(values.array_len().unwrap(), n);
+        testing.assert_eq(values.array_len().expect("array_len succeeds"), n);
         values = next;
     }
-    values.stringify().unwrap()
+    values.stringify().expect("stringify succeeds")
 }
 
 fn rendered_without_reassignment() -> string {
     let values = json.array();
-    values.stringify().unwrap()
+    values.stringify().expect("stringify succeeds")
 }
 
 #[test]

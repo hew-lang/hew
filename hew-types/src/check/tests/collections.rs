@@ -2829,7 +2829,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // for builtin `Result`/`Option` receivers selects the builtin method for
     // ALL method names.
     let output = check_source_allowing_prelude_redeclaration(
-        r"
+        r#"
         type Result { handle: i64, }
         impl Result {
             fn is_ok(self) -> i64 { self.handle }
@@ -2841,9 +2841,9 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
             let d = spawn Doubler;
             let r = await d.process(5);
             let ok: bool = r.is_ok();
-            let v = r.unwrap();
+            let v = r.expect("the value is present");
         }
-        ",
+        "#,
     );
 
     assert!(
@@ -2881,15 +2881,15 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
 #[test]
 fn builtin_option_extractors_consume_the_receiver() {
     let output = check_source(
-        r"
+        r#"
         fn take(value: Option<string>) -> string {
-            value.unwrap()
+            value.expect("the value is present")
         }
 
         fn take_or(value: Option<string>, fallback: string) -> string {
             value.unwrap_or(fallback)
         }
-        ",
+        "#,
     );
     assert!(
         output.errors.is_empty(),
@@ -2898,7 +2898,7 @@ fn builtin_option_extractors_consume_the_receiver() {
     );
 
     for method in [
-        OptionResultMethod::OptionUnwrap,
+        OptionResultMethod::OptionExpect,
         OptionResultMethod::OptionUnwrapOr,
     ] {
         let key = output
@@ -2915,6 +2915,30 @@ fn builtin_option_extractors_consume_the_receiver() {
             .unwrap_or_else(|| panic!("missing builtin Option rewrite for {method:?}"));
         assert!(output.method_call_consumes_receiver.contains(&key));
     }
+}
+
+#[test]
+fn unwrap_is_refused_and_points_at_expect() {
+    let output = check_source(
+        r"
+        fn take(value: Option<string>) -> string {
+            value.unwrap()
+        }
+        ",
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("no method `unwrap`"))
+        .expect("`unwrap` must be refused on Option");
+    assert!(
+        error
+            .suggestions
+            .iter()
+            .any(|s| s.contains("expect(\"reason\")")),
+        "the refusal must point at `expect(reason)`; got: {:?}",
+        error.suggestions
+    );
 }
 
 #[test]
@@ -3419,7 +3443,7 @@ fn non_root_private_rc_record_is_admitted_during_body_checking() {
         doc: None,
     };
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module).unwrap();
+    mg.add_module(module).expect("the value is present");
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
         module_graph: Some(mg),
@@ -3476,7 +3500,7 @@ fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
         doc: None,
     };
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module).unwrap();
+    mg.add_module(module).expect("the value is present");
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
         module_graph: Some(mg),
@@ -3551,7 +3575,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
         source_paths: vec![],
         doc: None,
     })
-    .unwrap();
+    .expect("the value is present");
     mg.add_module(Module {
         id: good_id.clone(),
         items: good.program.items,
@@ -3559,7 +3583,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
         source_paths: vec![],
         doc: None,
     })
-    .unwrap();
+    .expect("the value is present");
     mg.topo_order = vec![bad_id, good_id, root_id];
     let program = Program {
         module_graph: Some(mg),

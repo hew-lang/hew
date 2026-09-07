@@ -9,12 +9,12 @@ import std.encoding.yaml;
 
 fn main() {
     var original = yaml.object();
-    original.set("name", yaml.from_string("Hew")).unwrap();
+    original.set("name", yaml.from_string("Hew")).expect("set succeeds");
     var edited = original;
-    edited.set("name", yaml.from_string("Hew next")).unwrap();
-    let name = original.get_field("name").unwrap().unwrap();
-    println(name.get_string().unwrap()); // Hew
-    println(edited.stringify().unwrap());
+    edited.set("name", yaml.from_string("Hew next")).expect("set succeeds");
+    let name = original.get_field("name").expect("get_field succeeds").expect("get_field returns a value");
+    println(name.get_string().expect("get_string succeeds")); // Hew
+    println(edited.stringify().expect("stringify succeeds"));
 }
 ```
 

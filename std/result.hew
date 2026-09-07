@@ -201,10 +201,10 @@ impl<T, E> Result<T, E> {
             .Err(_) => true,
         }
     }
-    fn unwrap(r: Result<T, E>) -> T {
+    fn expect(r: Result<T, E>, reason: string) -> T {
         match r {
             .Ok(v) => v,
-            .Err(_) => panic("result: unwrap called on Err"),
+            .Err(_) => panic(f"expect failed: {reason}"),
         }
     }
     fn unwrap_or(r: Result<T, E>, fallback: T) -> T {

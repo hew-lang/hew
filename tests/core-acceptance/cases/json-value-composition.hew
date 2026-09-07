@@ -4,50 +4,50 @@ type Envelope { value: json.Value }
 
 fn retained() -> json.Value {
     var child = json.array();
-    child.push(json.from_string("déjà\0vu")).unwrap();
+    child.push(json.from_string("déjà\0vu")).expect("push succeeds");
     var original = json.object();
-    original.set("items", child).unwrap();
+    original.set("items", child).expect("set succeeds");
     var edited = original;
-    edited.set("items", json.null()).unwrap();
-    child.push(json.from_int(8)).unwrap();
-    println(child.array_len().unwrap());
-    println(edited.get_field("items").unwrap().unwrap().type_of() == Kind.Null);
-    original.get_field("items").unwrap().unwrap()
+    edited.set("items", json.null()).expect("set succeeds");
+    child.push(json.from_int(8)).expect("push succeeds");
+    println(child.array_len().expect("array_len succeeds"));
+    println(edited.get_field("items").expect("get_field succeeds").expect("get_field returns a value").type_of() == Kind.Null);
+    original.get_field("items").expect("get_field succeeds").expect("get_field returns a value")
 }
 
 fn capture_value(value: json.Value) -> fn[clone]() -> string {
-    || value.array_get(0).unwrap().unwrap().get_string().unwrap()
+    || value.array_get(0).expect("array_get succeeds").expect("array_get returns a value").get_string().expect("get_string succeeds")
 }
 
 fn main() -> i64 {
     var values = retained();
     let snapshot = values;
     let captured = capture_value(values);
-    values.push(json.from_bool(false)).unwrap();
-    println(values.array_len().unwrap());
-    println(snapshot.array_len().unwrap());
+    values.push(json.from_bool(false)).expect("push succeeds");
+    println(values.array_len().expect("array_len succeeds"));
+    println(snapshot.array_len().expect("array_len succeeds"));
     println(captured().len());
     println(captured() == "déjà\0vu");
-    let encoded = snapshot.stringify().unwrap();
-    println(json.parse(encoded).unwrap() == snapshot);
+    let encoded = snapshot.stringify().expect("stringify succeeds");
+    println(json.parse(encoded).expect("parse succeeds") == snapshot);
     var wrong = json.from_string("unchanged");
     println(wrong.push(values).is_err());
-    println(wrong.get_string().unwrap());
-    println(values.array_len().unwrap());
-    println(values.array_get(2).unwrap().is_none());
+    println(wrong.get_string().expect("get_string succeeds"));
+    println(values.array_len().expect("array_len succeeds"));
+    println(values.array_get(2).expect("array_get succeeds").is_none());
     println(values.array_get(-1).is_err());
     println(json.parse("[").is_err());
-    println(json.from_int(7).get_int().unwrap());
+    println(json.from_int(7).get_int().expect("get_int succeeds"));
     var envelope = Envelope { value: json.array() };
     let original = envelope;
-    envelope.value.push(json.from_int(11)).unwrap();
-    println(envelope.value.array_len().unwrap());
-    println(original.value.array_len().unwrap());
+    envelope.value.push(json.from_int(11)).expect("push succeeds");
+    println(envelope.value.array_len().expect("array_len succeeds"));
+    println(original.value.array_len().expect("array_len succeeds"));
     values.push({
-        values.push(json.from_int(99)).unwrap();
+        values.push(json.from_int(99)).expect("push succeeds");
         json.from_int(100)
-    }).unwrap();
-    println(values.array_len().unwrap());
-    println(snapshot.array_len().unwrap());
+    }).expect("the call succeeds");
+    println(values.array_len().expect("array_len succeeds"));
+    println(snapshot.array_len().expect("array_len succeeds"));
     0
 }

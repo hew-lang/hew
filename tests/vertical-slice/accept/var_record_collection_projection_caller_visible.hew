@@ -18,6 +18,6 @@ fn main() -> i64 {
     let holder = Holder { items: items, counts: counts };
     mutate(holder);
     println(holder.items[0]);
-    println(holder.counts.get("changed").unwrap());
+    println(holder.counts.get("changed").expect("get succeeds"));
     0
 }

@@ -24,7 +24,7 @@ impl Container for Holder {
 
 fn main() -> i64 {
     let h = Holder { n: 7 };
-    // NB: we deliberately do not call `h.unwrap()` here because trait-method
+    // NB: we deliberately do not call `h.expect("h is present")` here because trait-method
     // dispatch on user-defined traits with associated types is not yet wired
     // through HIR lowering (separate concern from Q004's diagnostic-authority
     // surface). Q004 only owns the impl-vs-trait sig-equivalence check; that

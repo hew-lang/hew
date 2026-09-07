@@ -1,7 +1,7 @@
 import p0c_helpers;
 
 fn main() {
-    let concrete = Option.Some(21).unwrap();
+    let concrete = Option.Some(21).expect("Some succeeds");
     let option_through_closure = |value: Option<i64>| value.unwrap_or(22);
     let abstract_opt = option_through_closure(Option.None);
     let imported_opt = p0c_helpers.imported_option(Option.Some(23));

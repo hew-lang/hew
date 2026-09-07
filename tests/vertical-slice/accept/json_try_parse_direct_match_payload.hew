@@ -15,7 +15,7 @@ fn report_line(line: string) -> string {
             if owned_doc.type_of() != Kind.Object {
                 return "";
             }
-            let number = owned_doc.get_field("N").unwrap().unwrap().get_int().unwrap();
+            let number = owned_doc.get_field("N").expect("get_field succeeds").expect("get_field returns a value").get_int().expect("get_int succeeds");
             if number != 1 {
                 return "";
             }

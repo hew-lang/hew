@@ -8,5 +8,5 @@ fn main() {
     let key = store.insert("through-vec");
     let keys: Vec<Key<string>> = [key];
     let recovered = keys[0];
-    println(store.get(recovered).unwrap());
+    println(store.get(recovered).expect("get succeeds"));
 }

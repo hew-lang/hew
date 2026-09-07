@@ -45,11 +45,11 @@ fn test_try_read_missing_returns_not_found() {
 fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
     let file_path = "tests/hew/_fs_stream_text_outcomes.txt";
     cleanup_file(file_path);
-    fs.write(file_path, "").unwrap();
-    testing.assert_eq_str(fs.read(file_path).unwrap(), "");
-    fs.write(file_path, "é\0中🙂").unwrap();
-    testing.assert_eq_str(fs.read(file_path).unwrap(), "é\0中🙂");
-    fs.write_bytes(file_path, b"A\xffB").unwrap();
+    fs.write(file_path, "").expect("write succeeds");
+    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "");
+    fs.write(file_path, "é\0中🙂").expect("write succeeds");
+    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "é\0中🙂");
+    fs.write_bytes(file_path, b"A\xffB").expect("write_bytes succeeds");
     match fs.read(file_path) {
         .Ok(_) => panic("invalid UTF-8 must be a read failure"),
         .Err(error) => match error {
@@ -63,8 +63,8 @@ fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
         testing.assert_eq(hew_stream_last_errno() as i64, 0);
         testing.assert_eq_str(hew_stream_last_error(), "");
     }
-    fs.write(file_path, "recovered").unwrap();
-    testing.assert_eq_str(fs.read(file_path).unwrap(), "recovered");
+    fs.write(file_path, "recovered").expect("write succeeds");
+    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "recovered");
     cleanup_file(file_path);
 }
 

@@ -42,7 +42,7 @@ impl<T> Arena<T> {
 
     fn remove(self, key: Key<T>) -> T {
         let slot = self.slots.remove(key.index);
-        slot.value.unwrap()
+        slot.value.expect("value is present")
     }
 
     fn len(self) -> i64 {

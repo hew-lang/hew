@@ -279,7 +279,7 @@ pub fn size(path: string) -> i64 {
 /// import std.fs;
 ///
 /// fn main() {
-///     let data = (await fs.read_bytes("image.png")).unwrap();
+///     let data = (await fs.read_bytes("image.png")).expect("the call succeeds");
 ///     println(data.len());
 /// }
 /// ```
@@ -352,7 +352,7 @@ pub fn mkdir_all(dir_path: string) -> Result<(), IoError> {
 /// import std.fs;
 ///
 /// fn main() {
-///     let entries = fs.list_dir("/tmp").unwrap();
+///     let entries = fs.list_dir("/tmp").expect("list_dir succeeds");
 ///     for entry in entries {
 ///         println(entry);
 ///     }

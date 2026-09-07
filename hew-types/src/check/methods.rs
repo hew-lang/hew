@@ -1476,11 +1476,11 @@ impl Checker {
         let Some(marker) = (match (receiver_builtin, method) {
             (BuiltinType::Option, "is_some") => Some(M::OptionIsSome),
             (BuiltinType::Option, "is_none") => Some(M::OptionIsNone),
-            (BuiltinType::Option, "unwrap") => Some(M::OptionUnwrap),
+            (BuiltinType::Option, "expect") => Some(M::OptionExpect),
             (BuiltinType::Option, "unwrap_or") => Some(M::OptionUnwrapOr),
             (BuiltinType::Result, "is_ok") => Some(M::ResultIsOk),
             (BuiltinType::Result, "is_err") => Some(M::ResultIsErr),
-            (BuiltinType::Result, "unwrap") => Some(M::ResultUnwrap),
+            (BuiltinType::Result, "expect") => Some(M::ResultExpect),
             (BuiltinType::Result, "unwrap_or") => Some(M::ResultUnwrapOr),
             _ => None,
         }) else {
@@ -1530,10 +1530,10 @@ impl Checker {
             (receiver_builtin, method),
             (
                 Some(BuiltinType::Option),
-                "is_some" | "is_none" | "unwrap" | "unwrap_or"
+                "is_some" | "is_none" | "expect" | "unwrap_or"
             ) | (
                 Some(BuiltinType::Result),
-                "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+                "is_ok" | "is_err" | "expect" | "unwrap_or"
             )
         )
     }
@@ -7402,9 +7402,9 @@ impl Checker {
         let builtin_option_result_consumes_receiver = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionUnwrap
+                method: OptionResultMethod::OptionExpect
                     | OptionResultMethod::OptionUnwrapOr
-                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultExpect
                     | OptionResultMethod::ResultUnwrapOr,
             })
         );
@@ -10285,11 +10285,30 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
+                // `unwrap` said nothing about why the value had to be there;
+                // point at the surfaces that do.
+                let suggestions = if method == "unwrap"
+                    && matches!(
+                        resolved,
+                        Ty::Named {
+                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            ..
+                        }
+                    ) {
+                    vec![
+                        "expect(\"reason\") to state why the value must be there".to_string(),
+                        "`?` to propagate the failure to the caller".to_string(),
+                        "`??` to supply a default".to_string(),
+                        "`handle` to recover".to_string(),
+                    ]
+                } else {
+                    self.similar_methods(&resolved, method)
+                };
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,
                     span,
                     format!("no method `{method}` on `{}`", resolved.user_facing()),
-                    self.similar_methods(&resolved, method),
+                    suggestions,
                 );
                 Ty::Error
             }

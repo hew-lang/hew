@@ -13,5 +13,5 @@ fn main() {
     }
     let survivor = store.insert("survivor");
     println(store.len());
-    println(store.get(survivor).unwrap());
+    println(store.get(survivor).expect("get succeeds"));
 }

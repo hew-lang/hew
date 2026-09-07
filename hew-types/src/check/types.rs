@@ -1654,11 +1654,11 @@ pub enum MethodCallReceiverKind {
 pub enum OptionResultMethod {
     OptionIsSome,
     OptionIsNone,
-    OptionUnwrap,
+    OptionExpect,
     OptionUnwrapOr,
     ResultIsOk,
     ResultIsErr,
-    ResultUnwrap,
+    ResultExpect,
     ResultUnwrapOr,
 }
 

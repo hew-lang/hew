@@ -29,8 +29,8 @@ import std.fs;
 import std.encoding.json;
 
 fn main() {
-    let raw = fs.read("data.json").unwrap();
-    println(json.parse(raw).unwrap());
+    let raw = fs.read("data.json").expect("read succeeds");
+    println(json.parse(raw).expect("parse succeeds"));
 }
 ```
 

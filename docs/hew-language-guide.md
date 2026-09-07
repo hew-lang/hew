@@ -54,7 +54,7 @@ for the documented resolver precedence.
 - Read collection elements with `v[i]` (returns `T`, traps on out-of-bounds) or `.get(i)` (returns `Option<T>`, never traps) — both universal across element types.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
 - Build maps/sets with `Type.new()` + `.insert()`; bind with `var`, since `.insert()` mutates the receiver.
-- Look up `HashMap`/`Option`/`Result` with `match`, not subscript. `unwrap()` is not the language's crash form; `expect(reason)` is, and it is not in this build yet.
+- Look up `HashMap`/`Option`/`Result` with `match`, not subscript. `unwrap()` is not the language's crash form; `expect(reason)` is.
 - **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
 - Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`Pid<Self>`, spelled `LocalPid<Self>` in this build), not a field prefix. `this` is not a word in Hew.
@@ -2285,7 +2285,7 @@ fn main() {
 }
 ```
 
-For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use the `.unwrap()`/`.unwrap_or()` method form.
+For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use the `.unwrap_or()` method form.
 
 ### Option .is_some() / .is_none()
 
@@ -2367,7 +2367,7 @@ fn load_port(path: string) -> Result<i64, dyn Error> {
 }
 ```
 
-`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.expect(reason)`, the one deliberate invariant assertion; `unwrap()` is removed from the language, and this build still accepts it only because the replacement has not landed.
+`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.expect(reason)`, the one deliberate invariant assertion; `unwrap()` is not a method in Hew.
 
 `fn main() -> Result<(), E>` needs `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr and exits 1.
 
@@ -3810,7 +3810,7 @@ fn main() {
     let stream = tls.connect("example.com", 443);
     let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
     let payload = req.to_bytes();
-    let sent = tls.write(stream, payload).unwrap();
+    let sent = tls.write(stream, payload).expect("write succeeds");
     println(f"sent {sent}/{payload.len()} bytes");
     // match tls.read(stream, 256) { .Ok(data) => ..., .Err(_) => ... }
     tls.close(stream);
@@ -3840,12 +3840,12 @@ Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 import std.process;
 
 fn main() {
-    let out = process.run("echo shell-form").unwrap();
+    let out = process.run("echo shell-form").expect("run succeeds");
     println(out.stdout.trim());
 
     let args: Vec<string> = Vec.new();
     args.push("no-shell-form");
-    let result = process.run_argv("echo", args).unwrap();
+    let result = process.run_argv("echo", args).expect("run_argv succeeds");
     println(result.stdout.trim());
 }
 ```

@@ -37,6 +37,6 @@ fn main() {
         .Err(_) => -1,
     };
     println(f"observe fixture sent={sent} total={total}");
-    let _barrier = observe.barrier().unwrap();
+    let _barrier = observe.barrier().expect("barrier succeeds");
     sleep(15s);
 }

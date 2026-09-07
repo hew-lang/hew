@@ -27282,20 +27282,21 @@ impl LowerCtx {
 
     fn option_result_method_arity(method: OptionResultMethod) -> usize {
         match method {
-            OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => 1,
+            OptionResultMethod::OptionExpect
+            | OptionResultMethod::OptionUnwrapOr
+            | OptionResultMethod::ResultExpect
+            | OptionResultMethod::ResultUnwrapOr => 1,
             OptionResultMethod::OptionIsSome
             | OptionResultMethod::OptionIsNone
-            | OptionResultMethod::OptionUnwrap
             | OptionResultMethod::ResultIsOk
-            | OptionResultMethod::ResultIsErr
-            | OptionResultMethod::ResultUnwrap => 0,
+            | OptionResultMethod::ResultIsErr => 0,
         }
     }
 
     fn is_option_result_marker_method_name(method: &str) -> bool {
         matches!(
             method,
-            "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+            "is_some" | "is_none" | "is_ok" | "is_err" | "expect" | "unwrap_or"
         )
     }
 
@@ -27343,9 +27344,9 @@ impl LowerCtx {
         });
 
         let receiver_intent = match method {
-            OptionResultMethod::OptionUnwrap
+            OptionResultMethod::OptionExpect
             | OptionResultMethod::OptionUnwrapOr
-            | OptionResultMethod::ResultUnwrap
+            | OptionResultMethod::ResultExpect
             | OptionResultMethod::ResultUnwrapOr => IntentKind::Consume,
             OptionResultMethod::OptionIsSome
             | OptionResultMethod::OptionIsNone
@@ -27484,22 +27485,14 @@ impl LowerCtx {
                     },
                 ]
             }
-            OptionResultMethod::OptionUnwrap | OptionResultMethod::ResultUnwrap => {
-                let (builtin, variant_name, empty_variant, binding_name, panic_msg) = match method {
-                    OptionResultMethod::OptionUnwrap => (
-                        BuiltinType::Option,
-                        "Some",
-                        "None",
-                        "__option_unwrap_value",
-                        "called 'unwrap()' on a 'None' value",
-                    ),
-                    OptionResultMethod::ResultUnwrap => (
-                        BuiltinType::Result,
-                        "Ok",
-                        "Err",
-                        "__result_unwrap_value",
-                        "called 'unwrap()' on an 'Err' value",
-                    ),
+            OptionResultMethod::OptionExpect | OptionResultMethod::ResultExpect => {
+                let (builtin, variant_name, empty_variant, binding_name) = match method {
+                    OptionResultMethod::OptionExpect => {
+                        (BuiltinType::Option, "Some", "None", "__option_expect_value")
+                    }
+                    OptionResultMethod::ResultExpect => {
+                        (BuiltinType::Result, "Ok", "Err", "__result_expect_value")
+                    }
                     _ => unreachable!("handled by outer match"),
                 };
                 let type_name = builtin.canonical_name();
@@ -27516,12 +27509,16 @@ impl LowerCtx {
                     );
                 };
                 let payload_binding = self.ids.binding();
-                // Build `panic("...")` as the failure-arm body. The call diverges
-                // (return type Never) so the match is type-correct even though the
-                // failure arm never produces a value of `ret_ty`.
+                // Build `panic("expect failed: " + reason)` as the failure-arm
+                // body. The call diverges (return type Never) so the match is
+                // type-correct even though the failure arm never produces a
+                // value of `ret_ty`. The reason is the caller's argument, so it
+                // is lowered here rather than baked into a literal.
+                let prefix =
+                    self.build_string_literal_expr("expect failed: ".to_string(), span.clone());
+                let reason = self.lower_expr(args[0].expr(), IntentKind::Read);
                 let panic_msg_expr =
-                    self.build_string_literal_expr(panic_msg.to_string(), span.clone());
-
+                    self.build_catalog_call("string_concat", vec![prefix, reason], span.clone());
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 let payload = self.synthetic_binding_ref(

@@ -18,7 +18,7 @@
 //! fn main() {
 //!     let store: arena.Arena<string> = arena.new();
 //!     let key = store.insert("hello");
-//!     println(store.get(key).unwrap());   // hello
+//!     println(store.get(key).expect("get succeeds"));   // hello
 //!     store.remove(key);
 //!     println(store.get(key).is_none());  // true
 //! }

@@ -9,7 +9,7 @@ fn main() {
     println(none_val.is_some());
     println(none_val.is_none());
     let some_for_unwrap = Some(77);
-    let unwrap_result = some_for_unwrap.unwrap();
+    let unwrap_result = some_for_unwrap.expect("some_for_unwrap is present");
     println(unwrap_result);
     let some_for_unwrap_or = Some(55);
     println(some_for_unwrap_or.unwrap_or(99));
@@ -22,7 +22,7 @@ fn main() {
     println(err_val.is_ok());
     println(err_val.is_err());
     let ok_for_unwrap: Result<i64, string> = Ok(13);
-    let unwrap_ok = ok_for_unwrap.unwrap();
+    let unwrap_ok = ok_for_unwrap.expect("ok_for_unwrap is present");
     println(unwrap_ok);
     let ok_for_unwrap_or: Result<i64, string> = Ok(5);
     println(ok_for_unwrap_or.unwrap_or(0));

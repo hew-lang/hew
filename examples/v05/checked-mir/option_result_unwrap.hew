@@ -5,16 +5,16 @@
 // (`hew_option_unwrap_or_*`, `hew_result_unwrap_or_{i32,i64}`), plus the
 // Result tag predicates (`hew_result_is_ok` / `hew_result_is_err`).
 //
-// Compile-only corpus fixture: `.unwrap()` is exercised deliberately
+// Compile-only corpus fixture: `.expect("the value is present")` is exercised deliberately
 // here because it IS the runtime surface under pin; user-facing code
 // matches instead.
 fn main() -> i64 {
     let a: Option<i64> = Some(9);
-    println(a.unwrap());
+    println(a.expect("a is present"));
     let b: Option<f64> = Some(1.5);
-    println(b.unwrap());
+    println(b.expect("b is present"));
     let c: Option<i32> = Some(3);
-    let cv = c.unwrap();
+    let cv = c.expect("c is present");
     let d: Option<i64> = Some(9);
     println(d.unwrap_or(0));
     let e: Option<f64> = Some(2.5);
@@ -22,11 +22,11 @@ fn main() -> i64 {
     let g: Option<i32> = Some(4);
     let gv = g.unwrap_or(7);
     let r: Result<i64, string> = Ok(7);
-    println(r.unwrap());
+    println(r.expect("r is present"));
     let rf: Result<f64, string> = Ok(1.0);
-    println(rf.unwrap());
+    println(rf.expect("rf is present"));
     let ri: Result<i32, string> = Ok(2);
-    let riv = ri.unwrap();
+    let riv = ri.expect("ri is present");
     let ru: Result<i64, string> = Ok(8);
     println(ru.unwrap_or(0));
     let rv: Result<i32, string> = Ok(8);

@@ -3,7 +3,7 @@ type Point { x: i64, y: i64, }
 fn main() {
     let ok: Result<Point, string> = Ok(Point { x: 10, y: 20 });
     if ok.is_ok() {
-        let p = ok.unwrap();
+        let p = ok.expect("ok is present");
         println(p.x + p.y);
     }
     let err: Result<Point, string> = Err("e");

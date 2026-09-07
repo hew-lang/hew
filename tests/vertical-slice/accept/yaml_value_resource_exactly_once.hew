@@ -3,25 +3,25 @@ import std.encoding.yaml;
 
 fn early_exit(flag: bool) {
     var value = yaml.object();
-    value.set("n", yaml.from_int(11)).unwrap();
-    let child = value.get_field("n").unwrap().unwrap();
+    value.set("n", yaml.from_int(11)).expect("set succeeds");
+    let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     if flag {
         return;
     }
-    println(child.get_int().unwrap());
+    println(child.get_int().expect("get_int succeeds"));
 }
 
 fn _panic_exit() {
     var value = yaml.object();
-    value.set("n", yaml.from_int(12)).unwrap();
-    let _child = value.get_field("n").unwrap().unwrap();
+    value.set("n", yaml.from_int(12)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     panic("yaml value panic probe");
 }
 
 fn cancel_exit() {
     var value = yaml.object();
-    value.set("n", yaml.from_int(13)).unwrap();
-    let _child = value.get_field("n").unwrap().unwrap();
+    value.set("n", yaml.from_int(13)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     var i: i64 = 0;
     while i < 2 {
         i = i + 1;
@@ -39,10 +39,10 @@ actor YamlCancelDriver {
 fn main() {
     let read = {
         var value = yaml.object();
-        value.set("n", yaml.from_int(9)).unwrap();
-        value.set("none", yaml.null()).unwrap();
-        let child = value.get_field("n").unwrap().unwrap();
-        || child.get_int().unwrap()
+        value.set("n", yaml.from_int(9)).expect("set succeeds");
+        value.set("none", yaml.null()).expect("set succeeds");
+        let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
+        || child.get_int().expect("get_int succeeds")
     };
     println(read());
 

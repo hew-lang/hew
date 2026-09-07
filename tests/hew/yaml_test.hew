@@ -7,12 +7,12 @@ import std.testing;
 #[test]
 fn test_lookup_distinguishes_missing_null_and_wrong_kind() {
     var doc = yaml.object();
-    doc.set("present", yaml.null()).unwrap();
+    doc.set("present", yaml.null()).expect("set succeeds");
     match doc.get_field("missing") {
         .Ok(.None) => {},
         _ => panic("missing field must be None"),
     }
-    let value = doc.get_field("present").unwrap().unwrap();
+    let value = doc.get_field("present").expect("get_field succeeds").expect("get_field returns a value");
     testing.assert_true(value.type_of() == Kind.Null);
     match value.get_field("x") {
         .Err(AccessError.WrongKind(Kind.Mapping, Kind.Null)) => {},
@@ -37,24 +37,24 @@ fn test_copy_mutation_and_extraction_survive_parent_scope() {
     let selected = {
         var original = yaml.object();
         var child = yaml.array();
-        child.push(yaml.from_int(7)).unwrap();
-        original.set("items", child).unwrap();
-        child.push(yaml.from_int(8)).unwrap();
+        child.push(yaml.from_int(7)).expect("push succeeds");
+        original.set("items", child).expect("set succeeds");
+        child.push(yaml.from_int(8)).expect("push succeeds");
         var edited = original;
-        edited.set("items", yaml.from_string("changed")).unwrap();
-        testing.assert_eq_str(edited.get_field("items").unwrap().unwrap().get_string().unwrap(), "changed");
-        testing.assert_eq(child.array_len().unwrap(), 2);
-        original.get_field("items").unwrap().unwrap()
+        edited.set("items", yaml.from_string("changed")).expect("set succeeds");
+        testing.assert_eq_str(edited.get_field("items").expect("get_field succeeds").expect("get_field returns a value").get_string().expect("get_string succeeds"), "changed");
+        testing.assert_eq(child.array_len().expect("array_len succeeds"), 2);
+        original.get_field("items").expect("get_field succeeds").expect("get_field returns a value")
     };
-    testing.assert_eq(selected.array_len().unwrap(), 1);
-    testing.assert_eq(selected.array_get(0).unwrap().unwrap().get_int().unwrap(), 7);
+    testing.assert_eq(selected.array_len().expect("array_len succeeds"), 1);
+    testing.assert_eq(selected.array_get(0).expect("array_get succeeds").expect("array_get returns a value").get_int().expect("get_int succeeds"), 7);
 }
 
 #[test]
 fn test_failed_mutation_preserves_receiver_and_child() {
     var receiver = yaml.from_string("original");
     var child = yaml.array();
-    child.push(yaml.from_int(9)).unwrap();
+    child.push(yaml.from_int(9)).expect("push succeeds");
     match receiver.set("x", child) {
         .Err(AccessError.WrongKind(Kind.Mapping, Kind.String)) => {},
         _ => panic("set must reject a scalar receiver"),
@@ -63,15 +63,15 @@ fn test_failed_mutation_preserves_receiver_and_child() {
         .Err(AccessError.WrongKind(Kind.Sequence, Kind.String)) => {},
         _ => panic("push must reject a scalar receiver"),
     }
-    testing.assert_eq_str(receiver.get_string().unwrap(), "original");
-    testing.assert_eq(child.array_get(0).unwrap().unwrap().get_int().unwrap(), 9);
+    testing.assert_eq_str(receiver.get_string().expect("get_string succeeds"), "original");
+    testing.assert_eq(child.array_get(0).expect("array_get succeeds").expect("array_get returns a value").get_int().expect("get_int succeeds"), 9);
 }
 
 #[test]
 fn test_array_absence_and_index_validation() {
     var values = yaml.array();
-    values.push(yaml.null()).unwrap();
-    testing.assert_true(values.array_get(0).unwrap().unwrap().type_of() == Kind.Null);
+    values.push(yaml.null()).expect("push succeeds");
+    testing.assert_true(values.array_get(0).expect("array_get succeeds").expect("array_get returns a value").type_of() == Kind.Null);
     match values.array_get(1) {
         .Ok(.None) => {},
         _ => panic("missing index"),
@@ -98,25 +98,25 @@ fn test_array_absence_and_index_validation() {
 fn test_exact_signed_and_unsigned_integer_boundaries() {
     let maximum: u64 = 9223372036854775807 as u64 * 2 + 1;
     let unsigned = yaml.from_u64(maximum);
-    testing.assert_true(unsigned.get_u64().unwrap() == maximum);
-    testing.assert_true(yaml.parse(unsigned.stringify().unwrap()).unwrap().get_u64().unwrap() == maximum);
+    testing.assert_true(unsigned.get_u64().expect("get_u64 succeeds") == maximum);
+    testing.assert_true(yaml.parse(unsigned.stringify().expect("stringify succeeds")).expect("parse succeeds").get_u64().expect("get_u64 succeeds") == maximum);
     match unsigned.get_int() {
         .Err(AccessError.IntegerRange) => {},
         _ => panic("u64 max cannot fit i64"),
     }
     let above_signed: u64 = 9223372036854775807 as u64 + 1;
-    testing.assert_true(yaml.parse("9223372036854775808").unwrap().get_u64().unwrap() == above_signed);
+    testing.assert_true(yaml.parse("9223372036854775808").expect("parse succeeds").get_u64().expect("get_u64 succeeds") == above_signed);
     let signed_max = yaml.from_int(9223372036854775807);
-    testing.assert_eq(signed_max.get_int().unwrap(), 9223372036854775807);
-    testing.assert_true(signed_max.get_u64().unwrap() == 9223372036854775807);
-    let signed_min = yaml.parse("-9223372036854775808").unwrap();
-    testing.assert_eq(signed_min.get_int().unwrap(), -9223372036854775808);
+    testing.assert_eq(signed_max.get_int().expect("get_int succeeds"), 9223372036854775807);
+    testing.assert_true(signed_max.get_u64().expect("get_u64 succeeds") == 9223372036854775807);
+    let signed_min = yaml.parse("-9223372036854775808").expect("parse succeeds");
+    testing.assert_eq(signed_min.get_int().expect("get_int succeeds"), -9223372036854775808);
     match signed_min.get_u64() {
         .Err(AccessError.IntegerRange) => {},
         _ => panic("negative unsigned conversion"),
     }
     testing.assert_false(yaml.from_int(9007199254740992) == yaml.from_int(9007199254740993));
-    testing.assert_eq(yaml.from_int(9007199254740993).get_int().unwrap(), 9007199254740993);
+    testing.assert_eq(yaml.from_int(9007199254740993).get_int().expect("get_int succeeds"), 9007199254740993);
     match yaml.from_string("1").get_u64() {
         .Err(AccessError.WrongKind(Kind.Integer, Kind.String)) => {},
         _ => panic("unsigned access must check kind"),
@@ -125,16 +125,16 @@ fn test_exact_signed_and_unsigned_integer_boundaries() {
 
 #[test]
 fn test_checked_scalars_and_format_equality() {
-    testing.assert_eq_str(yaml.from_string("").get_string().unwrap(), "");
-    testing.assert_false(yaml.from_bool(false).get_bool().unwrap());
-    let floating = yaml.parse("1.0").unwrap();
-    testing.assert_true(floating.get_float().unwrap() == 1.0);
+    testing.assert_eq_str(yaml.from_string("").get_string().expect("get_string succeeds"), "");
+    testing.assert_false(yaml.from_bool(false).get_bool().expect("get_bool succeeds"));
+    let floating = yaml.parse("1.0").expect("parse succeeds");
+    testing.assert_true(floating.get_float().expect("get_float succeeds") == 1.0);
     testing.assert_false(floating == yaml.from_int(1));
     match yaml.from_int(1).get_float() {
         .Err(AccessError.WrongKind(Kind.Float, Kind.Integer)) => {},
         _ => panic("integer must not silently become a float"),
     }
-    testing.assert_true(yaml.parse("-0.0").unwrap() == yaml.parse("0.0").unwrap());
+    testing.assert_true(yaml.parse("-0.0").expect("parse succeeds") == yaml.parse("0.0").expect("parse succeeds"));
 }
 
 #[test]
@@ -143,28 +143,28 @@ fn test_parse_error_then_successful_encoding() {
         .Err(ParseError.Invalid(message)) => testing.assert_true(!message.is_empty()),
         _ => panic("malformed input must return the parser diagnostic"),
     }
-    let encoded = yaml.null().stringify().unwrap();
-    testing.assert_true(yaml.parse(encoded).unwrap().type_of() == Kind.Null);
+    let encoded = yaml.null().stringify().expect("stringify succeeds");
+    testing.assert_true(yaml.parse(encoded).expect("parse succeeds").type_of() == Kind.Null);
 }
 
 #[test]
 fn test_yaml_tags_arbitrary_keys_and_mapping_order_survive_copy() {
-    let original = yaml.parse("? [a, b]\n: !Custom [1, 2]\nz: 3\na: 4\n").unwrap();
+    let original = yaml.parse("? [a, b]\n: !Custom [1, 2]\nz: 3\na: 4\n").expect("parse succeeds");
     let copy = original;
-    let encoded = copy.stringify().unwrap();
-    testing.assert_true(yaml.parse(encoded).unwrap() == original);
-    let ordered = yaml.parse("z: 3\na: 4\n").unwrap();
-    testing.assert_eq_str(ordered.stringify().unwrap(), "z: 3\na: 4\n");
+    let encoded = copy.stringify().expect("stringify succeeds");
+    testing.assert_true(yaml.parse(encoded).expect("parse succeeds") == original);
+    let ordered = yaml.parse("z: 3\na: 4\n").expect("parse succeeds");
+    testing.assert_eq_str(ordered.stringify().expect("stringify succeeds"), "z: 3\na: 4\n");
     match yaml.parse("a: 1\na: 2\n") {
         .Err(_) => {},
         _ => panic("duplicate mapping key"),
     }
-    testing.assert_true(yaml.parse("").unwrap().type_of() == Kind.Null);
+    testing.assert_true(yaml.parse("").expect("parse succeeds").type_of() == Kind.Null);
 }
 
 #[test]
 fn test_yaml_tagged_receivers_are_not_implicitly_unwrapped() {
-    var tagged = yaml.parse("!Custom {x: 1}").unwrap();
+    var tagged = yaml.parse("!Custom {x: 1}").expect("parse succeeds");
     let saved = tagged;
     testing.assert_true(tagged.type_of() == Kind.Tagged);
     match tagged.get_field("x") {
@@ -176,23 +176,23 @@ fn test_yaml_tagged_receivers_are_not_implicitly_unwrapped() {
         _ => panic("tagged mutation must fail"),
     }
     testing.assert_true(tagged == saved);
-    match yaml.parse("!Count 42").unwrap().get_int() {
+    match yaml.parse("!Count 42").expect("parse succeeds").get_int() {
         .Err(AccessError.WrongKind(Kind.Integer, Kind.Tagged)) => {},
         _ => panic("tagged integer must not be peeled"),
     }
-    match yaml.parse("!Items [1]").unwrap().array_len() {
+    match yaml.parse("!Items [1]").expect("parse succeeds").array_len() {
         .Err(AccessError.WrongKind(Kind.Sequence, Kind.Tagged)) => {},
         _ => panic("tagged sequence must not be peeled"),
     }
-    testing.assert_false(yaml.parse("!First 42").unwrap() == yaml.parse("!Second 42").unwrap());
+    testing.assert_false(yaml.parse("!First 42").expect("parse succeeds") == yaml.parse("!Second 42").expect("parse succeeds"));
 }
 
 #[test]
 fn test_yaml_nonfinite_values_round_trip() {
-    let infinity = yaml.parse(".inf").unwrap();
-    let constructed = yaml.from_float(infinity.get_float().unwrap());
+    let infinity = yaml.parse(".inf").expect("parse succeeds");
+    let constructed = yaml.from_float(infinity.get_float().expect("get_float succeeds"));
     testing.assert_true(constructed == infinity);
-    let nan = yaml.parse(".nan").unwrap();
-    testing.assert_true(yaml.parse(nan.stringify().unwrap()).unwrap() == nan);
-    testing.assert_true(yaml.from_float(nan.get_float().unwrap()) == nan);
+    let nan = yaml.parse(".nan").expect("parse succeeds");
+    testing.assert_true(yaml.parse(nan.stringify().expect("stringify succeeds")).expect("parse succeeds") == nan);
+    testing.assert_true(yaml.from_float(nan.get_float().expect("get_float succeeds")) == nan);
 }

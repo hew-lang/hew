@@ -82,6 +82,18 @@ impl InstanceService<'_> {
             .to_lowercase());
         }
         let overflow = actor_overflow(&source)?;
+        if let Some(field) = source
+            .state_fields
+            .iter()
+            .find(|field| super::generators::value_needs_close(self, &field.ty))
+        {
+            // Terminal cleanup releases state synchronously; a value that must
+            // drain cooperatively first cannot live there yet.
+            return Err(format!(
+                "actor state field `{}` owns a value that needs cooperative close",
+                field.name
+            ));
+        }
         let fields: Vec<_> = source
             .state_fields
             .iter()

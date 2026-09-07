@@ -199,5 +199,20 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             )));
         }
     }
+    // Init and lifecycle hooks run synchronously inside spawn and the
+    // terminal transition, outside any scheduler-owned frame.
+    for actor in &module.actors {
+        if actor
+            .init
+            .iter()
+            .chain(&actor.start)
+            .chain(&actor.stop)
+            .any(|body| expected.contains(body))
+        {
+            return Err(PhysicalError::new(
+                "actor init and lifecycle hooks cannot suspend",
+            ));
+        }
+    }
     Ok(())
 }

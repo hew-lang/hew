@@ -3069,6 +3069,9 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
 /// [`spawn_actor_internal`].
 struct ActorSpawnConfig {
     dispatch_ownership: HewDispatchOwnership,
+    /// The generated `#[on(stop)]` sequence, installed before publication so
+    /// no stop request can observe an actor without its hooks.
+    terminate_fn: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
     state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
     state_clone_fn: Option<HewStateCloneFn>,
     state: *mut c_void,
@@ -3210,7 +3213,7 @@ fn build_spawned_actor(
         init_state,
         init_state_size: config.state_size,
         coalesce_key_fn: config.coalesce_key_fn,
-        terminate_fn: None,
+        terminate_fn: config.terminate_fn,
         state_drop_fn: config.state_drop_fn,
         state_clone_fn: config.state_clone_fn,
         terminate_called: AtomicBool::new(false),
@@ -3543,6 +3546,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: actor_state,
@@ -3608,6 +3612,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: actor_state,
@@ -3709,6 +3714,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: cloned_state,
@@ -3744,6 +3750,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     dispatch: HewDispatchFn,
     state_drop: unsafe extern "C" fn(*mut c_void),
     state_clone: HewStateCloneFn,
+    terminate: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
     capacity: i32,
     overflow: i32,
     cap_bytes: usize,
@@ -3764,6 +3771,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
+            terminate_fn: terminate,
             state_drop_fn: Some(state_drop),
             state_clone_fn: Some(state_clone),
             state,
@@ -3902,6 +3910,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: cloned_state,
@@ -3948,6 +3957,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: actor_state,
@@ -7674,6 +7684,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: actor_state,
@@ -7715,6 +7726,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: actor_state,
@@ -7784,6 +7796,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
+            terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
             state: actor_state,

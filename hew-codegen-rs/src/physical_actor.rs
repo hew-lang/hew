@@ -240,7 +240,82 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
             }
             self.emit_actor_dispatch(actor)?;
+            if !actor.stop.is_empty() {
+                self.emit_actor_terminate(actor)?;
+            }
         }
+        Ok(())
+    }
+
+    /// `#[on(stop)]` hooks run in lexical order at the terminal transition
+    /// with the state still initialized. The first fault ends the sequence
+    /// and becomes the actor's retained lifecycle diagnostic.
+    fn emit_actor_terminate(&self, actor: &SemActor) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let terminate = self.llvm.add_function(
+            &symbol(actor.id, "terminate"),
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(terminate, "entry"));
+        let state = terminate.get_first_param().unwrap().into_pointer_value();
+        let fault = builder
+            .build_alloca(ptr, "hook.fault")
+            .llvm_ctx("allocate stop hook fault")?;
+        builder
+            .build_store(fault, ptr.const_null())
+            .llvm_ctx("initialize stop hook fault")?;
+        let failed = self.ctx.append_basic_block(terminate, "hook.failed");
+        let done = self.ctx.append_basic_block(terminate, "done");
+        for hook in &actor.stop {
+            let status = builder
+                .build_call(
+                    self.functions[hook],
+                    &[state.into(), fault.into()],
+                    "hook.status",
+                )
+                .llvm_ctx("run stop hook")?
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
+            let next = self.ctx.append_basic_block(terminate, "hook.next");
+            let ok = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "hook.ok",
+                )
+                .llvm_ctx("check stop hook outcome")?;
+            builder
+                .build_conditional_branch(ok, next, failed)
+                .llvm_ctx("continue stop hook sequence")?;
+            builder.position_at_end(next);
+        }
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish stop hooks")?;
+        builder.position_at_end(failed);
+        let returned = builder
+            .build_load(ptr, fault, "hook.returned.fault")
+            .llvm_ctx("load stop hook fault")?;
+        let publish = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_terminate_set_fault",
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+        )?;
+        builder
+            .build_call(publish, &[returned.into()], "")
+            .llvm_ctx("retain stop hook fault")?;
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish faulted stop hooks")?;
+        builder.position_at_end(done);
+        builder
+            .build_return(None)
+            .llvm_ctx("finish actor terminate")?;
         Ok(())
     }
 
@@ -815,43 +890,64 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("initialize actor field")?;
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let init_failure = if let Some(init) = actor.init {
-            let callable = callable(self.module, init)?;
-            let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
-            for (source, parameter) in sources
-                .iter()
-                .skip(actor.fields.len())
-                .zip(callable.params.iter().skip(1))
-            {
-                arguments.push(match parameter.carrier {
-                    ParamCarrier::Direct => self.load(*source, "init.argument")?.into(),
-                    ParamCarrier::Indirect => self.slots[source.0 as usize].into(),
-                });
+        // Init and then `#[on(start)]` run before publication; a fault in
+        // either destroys the unpublished state and fails the spawn.
+        let bodies: Vec<_> = actor.init.iter().chain(&actor.start).copied().collect();
+        let init_failure = if bodies.is_empty() {
+            None
+        } else {
+            let failed = self.ctx.append_basic_block(self.value, "actor.init.failed");
+            let mut failures = Vec::new();
+            for body in bodies {
+                let callable = callable(self.module, body)?;
+                let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
+                if Some(body) == actor.init {
+                    for (source, parameter) in sources
+                        .iter()
+                        .skip(actor.fields.len())
+                        .zip(callable.params.iter().skip(1))
+                    {
+                        arguments.push(match parameter.carrier {
+                            ParamCarrier::Direct => self.load(*source, "init.argument")?.into(),
+                            ParamCarrier::Indirect => self.slots[source.0 as usize].into(),
+                        });
+                    }
+                }
+                arguments.push(self.active_fault.into());
+                let status = self
+                    .builder
+                    .build_call(self.functions[&body], &arguments, "actor.init.status")
+                    .llvm_ctx("initialize actor before publication")?
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap()
+                    .into_int_value();
+                let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
+                let ok = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.ctx.i32_type().const_zero(),
+                        "actor.init.ok",
+                    )
+                    .llvm_ctx("check actor initialization")?;
+                self.builder
+                    .build_conditional_branch(ok, initialized, failed)
+                    .llvm_ctx("publish only successfully initialized actors")?;
+                failures.push((status, self.builder.get_insert_block().unwrap()));
+                self.builder.position_at_end(initialized);
             }
-            arguments.push(self.active_fault.into());
+            let initialized = self.builder.get_insert_block().unwrap();
+            self.builder.position_at_end(failed);
             let status = self
                 .builder
-                .build_call(self.functions[&init], &arguments, "actor.init.status")
-                .llvm_ctx("initialize actor before publication")?
-                .try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_int_value();
-            let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
-            let failed = self.ctx.append_basic_block(self.value, "actor.init.failed");
-            let ok = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_zero(),
-                    "actor.init.ok",
-                )
-                .llvm_ctx("check actor initialization")?;
-            self.builder
-                .build_conditional_branch(ok, initialized, failed)
-                .llvm_ctx("publish only successfully initialized actors")?;
-            self.builder.position_at_end(failed);
+                .build_phi(self.ctx.i32_type(), "actor.init.failure")
+                .llvm_ctx("join initialization failures")?;
+            for (value, block) in &failures {
+                status.add_incoming(&[(value, *block)]);
+            }
+            let status = status.as_basic_value().into_int_value();
             let drop = self
                 .llvm
                 .get_function(&symbol(actor.id, "state_drop"))
@@ -873,8 +969,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("propagate actor init failure")?;
             self.builder.position_at_end(initialized);
             Some((status, failed, joined))
-        } else {
-            None
         };
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
@@ -885,6 +979,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 &[
                     ptr.into(),
                     size_ty.into(),
+                    ptr.into(),
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
@@ -902,6 +997,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .map(|function| function.as_global_value().as_pointer_value())
                 .ok_or_else(|| CodegenError::FailClosed("missing actor callback".into()))
         };
+        let terminate = if actor.stop.is_empty() {
+            ptr.const_null()
+        } else {
+            callback("terminate")?
+        };
         let overflow = match actor.overflow {
             hew_mir::physical::SemActorOverflow::Block => 0,
             hew_mir::physical::SemActorOverflow::DropNew => 1,
@@ -918,6 +1018,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     callback("dispatch")?.into(),
                     callback("state_drop")?.into(),
                     callback("state_clone")?.into(),
+                    terminate.into(),
                     self.ctx
                         .i32_type()
                         .const_int(u64::from(actor.mailbox_capacity.unwrap_or(0)), false)

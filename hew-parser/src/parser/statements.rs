@@ -382,26 +382,19 @@ impl Parser<'_> {
 
                 let pattern = self.parse_pattern()?;
 
-                // `let r? = expr;` is syntactic sugar for `let r = expr?;`.
-                // The `?` must immediately follow a simple identifier pattern;
-                // complex patterns (tuples, constructors) cannot carry the
-                // propagation suffix — the binding site is ambiguous without a
-                // single name to anchor the unwrapped value to.
-                let propagate = if self.peek() == Some(&Token::Question) {
+                // One place carries error propagation: the `?` operator on the
+                // expression. A `?` on the binding name is refused.
+                if self.peek() == Some(&Token::Question) {
                     let q_span = self.peek_span();
-                    if !matches!(pattern.0, Pattern::Identifier(_)) {
-                        self.error_at(
-                            "`?` propagation suffix requires a simple identifier pattern"
-                                .to_string(),
-                            q_span,
-                        );
-                        return None;
-                    }
-                    self.advance();
-                    true
-                } else {
-                    false
-                };
+                    self.error_at_with_hint(
+                        "`?` on a `let` binding is not valid; propagation belongs on the \
+                         expression"
+                            .to_string(),
+                        q_span,
+                        "write `let value = call()?;`",
+                    );
+                    return None;
+                }
 
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
@@ -410,26 +403,7 @@ impl Parser<'_> {
                 };
 
                 let value = if self.eat(&Token::Equal) {
-                    let (expr, expr_span) = self.parse_expr()?;
-                    if propagate {
-                        // Desugar: wrap RHS in PostfixTry so `let r? = e;`
-                        // is exactly `let r = e?;` from the type-checker onward.
-                        // The span covers the full RHS so diagnostics from the
-                        // `?` type-check land on the expression, not on `r?`.
-                        let end = expr_span.end;
-                        Some((
-                            Expr::PostfixTry(Box::new((expr, expr_span))),
-                            pattern.1.start..end,
-                        ))
-                    } else {
-                        Some((expr, expr_span))
-                    }
-                } else if propagate {
-                    self.error(
-                        "`let r? = expr;` requires an initialiser; `let r?;` is not valid"
-                            .to_string(),
-                    );
-                    return None;
+                    Some(self.parse_expr()?)
                 } else {
                     None
                 };
@@ -438,20 +412,9 @@ impl Parser<'_> {
                 // fallback clause, parsed AFTER the value and BEFORE the
                 // terminating `;`. The else block is carried structurally so
                 // the checker can enforce that it diverges; it is NOT desugared
-                // away here. `let r? = e else {…}` is rejected: the `?`
-                // propagation suffix already supplies a fallback path, so an
-                // `else` clause would be contradictory. An `else` with no
-                // initialiser (`let x else {…}`) has nothing to bind, so it is
-                // also rejected.
+                // away here. An `else` with no initialiser (`let x else {…}`)
+                // has nothing to bind, so it is rejected.
                 let else_block = if self.eat(&Token::Else) {
-                    if propagate {
-                        self.error(
-                            "`?` propagation suffix and an `else` clause cannot both \
-                             appear on a `let`; use one or the other"
-                                .to_string(),
-                        );
-                        return None;
-                    }
                     if value.is_none() {
                         self.error(
                             "`let … else { … }` requires an initialiser before the \

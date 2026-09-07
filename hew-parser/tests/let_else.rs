@@ -114,12 +114,12 @@ fn let_else_inline_block_parses() {
 // -- Reject: contradictory or incomplete let-else forms ----------------------
 
 #[test]
-fn let_propagate_with_else_is_rejected() {
-    // `let r? = e else {...}` -- the `?` suffix already supplies a fallback, so
-    // an `else` clause is contradictory.
+fn question_on_let_binding_is_rejected() {
+    // Propagation belongs on the expression: `let r = e()?;`. A `?` on the
+    // binding name is refused so there is one spelling for one meaning.
     parse_err_contains(
-        "fn f() -> Result<i64, string> { let r? = e() else { return Err(\"x\") }; Ok(r) }",
-        "`?` propagation suffix and an `else` clause cannot both",
+        "fn f() -> Result<i64, string> { let r? = e(); Ok(r) }",
+        "`?` on a `let` binding is not valid",
     );
 }
 

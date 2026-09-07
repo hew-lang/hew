@@ -3042,7 +3042,7 @@ impl Checker {
                             span,
                             format!(
                                 "actor ask `{name}.{method_name}` requires `await`; \
-                                 write `let v? = await ref.{method_name}(...)` \
+                                 write `let v = await ref.{method_name}(...)?` \
                                  or `match await ref.{method_name}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
                             ),
                         );
@@ -8726,7 +8726,7 @@ impl Checker {
                                 span,
                                 format!(
                                     "actor ask `{actor_identity}.{method}` requires `await`; \
-                                     write `let v? = await ref.{method}(...)` \
+                                     write `let v = await ref.{method}(...)?` \
                                      or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
                                 ),
                             );
@@ -9544,7 +9544,7 @@ impl Checker {
                                 span,
                                 format!(
                                     "actor ask `{name}.{method}` requires `await`; \
-                                     write `let v? = await ref.{method}(...)` \
+                                     write `let v = await ref.{method}(...)?` \
                                      or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
                                 ),
                             );

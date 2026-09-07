@@ -2133,59 +2133,6 @@ fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
     );
 }
 
-#[test]
-fn let_propagate_sugar_on_non_result_rejected() {
-    // `let r? = expr;` requires the RHS to be Result<T,E> or Option<T>.
-    // A plain integer RHS must be rejected by the type-checker with the
-    // same diagnostic as a bare `expr?` on a non-Result expression.
-    let output = typecheck(
-        r"
-        fn plain() -> i64 {
-            let r? = 42;
-            r
-        }
-        fn main() { plain(); }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("requires Result or Option")),
-        "Expected InvalidOperation for `let r? = 42` (non-Result RHS), got errors: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn let_propagate_sugar_in_non_result_fn_rejected() {
-    // `let r? = result_expr;` inside a function that does not return
-    // Result or Option must be rejected — same rule as bare `?`.
-    let source = r"
-        fn make_result(x: i64) -> Result<i64, string> {
-            Ok(x)
-        }
-        fn plain(x: i64) -> i64 {
-            let r? = make_result(x);
-            r
-        }
-        fn main() { plain(5); }
-        ";
-    let output = typecheck(source);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && source
-                    .get(e.span.clone())
-                    .is_some_and(|span| span.contains("make_result(x)"))),
-        "Expected InvalidOperation for `let r?` in non-Result fn, got errors: {:?}",
-        output.errors
-    );
-}
-
 // ── 23. Vec layout-element accepted/fail-closed boundary ─────────────
 //
 // BitCopy Plain layout Vec push/get/set/pop are now backed by runtime + codegen

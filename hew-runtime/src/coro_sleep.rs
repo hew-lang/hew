@@ -131,6 +131,28 @@ pub unsafe extern "C" fn hew_coro_sleep_new(
     unsafe { start_on_wheel(duration_ns, &*waker, wheel) }
 }
 
+/// Start a nonblocking sleep that ends at a monotonic `instant`.
+///
+/// The remaining wait is measured here, against the same clock
+/// `hew_instant_now` reads, so a deadline that has already passed completes
+/// immediately rather than waiting a stale span.
+///
+/// # Safety
+/// `waker` must point to a live descriptor obeying [`HewWaker`]'s contract.
+/// The caller owns the returned operation until [`hew_coro_sleep_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_sleep_until_new(
+    deadline_ns: i64,
+    waker: *const HewWaker,
+) -> *mut HewCoroSleep {
+    // SAFETY: hew_instant_now has no preconditions.
+    let now_ns = unsafe { crate::io_time::hew_instant_now() };
+    let remaining_ns = deadline_ns.saturating_sub(now_ns);
+    // SAFETY: the caller's descriptor contract is unchanged by the deadline
+    // arithmetic; a non-positive remainder completes without a timer.
+    unsafe { hew_coro_sleep_new(remaining_ns, waker) }
+}
+
 /// Poll sleep completion without blocking an actor worker.
 ///
 /// # Safety

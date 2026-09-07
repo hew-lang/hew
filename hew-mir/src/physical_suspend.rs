@@ -165,6 +165,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::Sleep { .. }
+                | PhysicalTerminator::SleepUntil { .. }
                 | PhysicalTerminator::TaskSelect { .. }
                 | PhysicalTerminator::GeneratorYield { .. }
                 | PhysicalTerminator::GeneratorNext { .. }

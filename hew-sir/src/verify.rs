@@ -4697,6 +4697,14 @@ fn verify_terminator_shape(
                         if input.decision == crate::BoundaryDecision::Copy
                         && types.get(&input.operand.value) == Some(&ResolvedTy::Duration))
                 }
+                // A deadline, not a span: `instant` is `i64` here.
+                crate::SuspendKind::SleepUntil => {
+                    resumes.len() == 1
+                        && matches!(result, crate::CallResult::Unit)
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::Copy
+                        && types.get(&input.operand.value) == Some(&ResolvedTy::I64))
+                }
                 crate::SuspendKind::Await => {
                     resumes.len() == usize::from(!matches!(result, crate::CallResult::Never))
                         && matches!(inputs.as_slice(), [input]

@@ -426,6 +426,13 @@ pub fn checked_binary_types_match(
             Duration
         ) | (BinaryOp::Multiply, I64, Duration, Duration)
             | (BinaryOp::Divide, Duration, Duration, I64)
+            // `instant` is `I64` here: advancing or rewinding a timestamp by a
+            // duration keeps the timestamp, and the gap between two timestamps
+            // is a duration. SIR cannot tell an `instant` from any other `i64`,
+            // so these arms are stated in the canonical spelling.
+            | (BinaryOp::Add | BinaryOp::Subtract, I64, Duration, I64)
+            | (BinaryOp::Add, Duration, I64, I64)
+            | (BinaryOp::Subtract, I64, I64, Duration)
     )
 }
 

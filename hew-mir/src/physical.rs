@@ -1059,6 +1059,15 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// Suspend until a monotonic deadline. The operand is an `instant`, which
+    /// is `i64` at this boundary; the runtime measures the remaining wait when
+    /// it arms the timer.
+    SleepUntil {
+        deadline: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     ActorCall {
         operation: hew_sir::ActorOperation,
         args: Vec<ArgumentTransfer>,
@@ -3069,6 +3078,19 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::Sleep {
                 duration: self.value(inputs[0].operand.value)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::SleepUntil,
+                inputs,
+                resumes,
+                cancel,
+                unwind,
+                ..
+            } => Ok(PhysicalTerminator::SleepUntil {
+                deadline: self.value(inputs[0].operand.value)?,
                 normal: self.lower_edge(&resumes[0])?,
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
@@ -5942,12 +5964,18 @@ fn terminator_successors(
             Ok(successors)
         }
         PhysicalTerminator::Sleep {
-            duration,
+            duration: operand,
+            normal,
+            cancel,
+            unwind,
+        }
+        | PhysicalTerminator::SleepUntil {
+            deadline: operand,
             normal,
             cancel,
             unwind,
         } => {
-            initialized(function, &state, *duration, block, "sleep duration")?;
+            initialized(function, &state, *operand, block, "sleep input")?;
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new("sleep cannot overwrite an active fault"));
             }
@@ -6563,6 +6591,21 @@ fn verify_terminator(
             if slot(*duration)?.ty != ResolvedTy::Duration || slot(*duration)?.own != OwnKind::None
             {
                 return Err(PhysicalError::new("sleep input must be a trivial duration"));
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::SleepUntil {
+            deadline,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            if slot(*deadline)?.ty != ResolvedTy::I64 || slot(*deadline)?.own != OwnKind::None {
+                return Err(PhysicalError::new(
+                    "sleep-until input must be a trivial instant",
+                ));
             }
             edge(normal)?;
             edge(cancel)?;

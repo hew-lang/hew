@@ -4859,6 +4859,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_coro_sleep_until_new( i64, *const HewWaker, ) -> *mut HewCoroSleep"
+      },
+      "symbol": "hew_coro_sleep_until_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_coro_state_cancel( *const HewCoroState)"
       },
       "symbol": "hew_coro_state_cancel"

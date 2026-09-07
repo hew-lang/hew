@@ -2480,6 +2480,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_slice_owned( *const BytesTriple, i64, i64, *mut BytesTriple, )",
+        "wasm32-wasip1": "fn hew_bytes_slice_owned( *const BytesTriple, i64, i64, *mut BytesTriple, )"
+      },
+      "symbol": "hew_bytes_slice_owned"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -16206,6 +16221,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_slice_codepoints_from( *const HewString, i64, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_slice_codepoints_from( *const HewString, i64, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_slice_codepoints_from"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -19177,6 +19207,21 @@
         "wasm32-wasip1": "fn hew_vec_append( *mut HewVec, *const HewVec)"
       },
       "symbol": "hew_vec_append"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_borrow_owned( *const HewVec, i64, *mut core::ffi::c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_vec_borrow_owned( *const HewVec, i64, *mut core::ffi::c_void, ) -> bool"
+      },
+      "symbol": "hew_vec_borrow_owned"
     },
     {
       "availability": [

@@ -1632,6 +1632,10 @@ pub enum RuntimeCallFamily {
     StringGet,
     StringIndex,
     StringLen,
+    /// `s.repeat(n)` - a fresh string of `n` concatenated copies.
+    StringRepeat,
+    /// `s.split(sep)` - a fresh `Vec<string>` of the separated parts.
+    StringSplit,
     StringSliceCodepoints,
     StringSliceCodepointsFrom,
     StringSlice,
@@ -1785,6 +1789,7 @@ pub enum CanonicalExternTy {
     OptionU8,
     OptionI64,
     OptionChar,
+    VecString,
 }
 
 impl CanonicalExternTy {
@@ -1797,6 +1802,14 @@ impl CanonicalExternTy {
             Self::Bool => matches!(ty, crate::Ty::Bool),
             Self::String => matches!(ty, crate::Ty::String),
             Self::Unit => matches!(ty, crate::Ty::Unit),
+            Self::VecString => matches!(
+                ty,
+                crate::Ty::Named {
+                    builtin: Some(crate::BuiltinType::Vec),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [crate::Ty::String])
+            ),
             Self::OptionU8 => matches!(
                 ty,
                 crate::Ty::Named {
@@ -2027,6 +2040,22 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         family: Some(RuntimeCallFamily::StringToLowercase),
         params: EMPTY,
         result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::repeat",
+        symbol: "hew_string_repeat",
+        family: Some(RuntimeCallFamily::StringRepeat),
+        params: &[CanonicalExternTy::I64],
+        result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::split",
+        symbol: "hew_string_split",
+        family: Some(RuntimeCallFamily::StringSplit),
+        params: &[CanonicalExternTy::String],
+        result: CanonicalExternTy::VecString,
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
@@ -2273,6 +2302,25 @@ impl RuntimeCallFamily {
                 NO_FAILURES,
             ),
 
+            Self::StringRepeat => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: String,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: I64,
+                        effect: Copy,
+                    },
+                ],
+                FreshOwned(String),
+                NO_FAILURES,
+            ),
+            Self::StringSplit => RuntimeSemanticContract {
+                arguments: STRING_PAIR_BORROW,
+                result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
+                failures: NO_FAILURES,
+            },
             Self::StringToUppercase | Self::StringToLowercase | Self::StringTrim => {
                 RuntimeSemanticContract {
                     arguments: STRING_BORROW,
@@ -2667,6 +2715,8 @@ impl RuntimeCallFamily {
             Self::StringLen => "hew_string_length",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             Self::StringSliceCodepointsFrom => "hew_string_slice_codepoints_from",
+            Self::StringRepeat => "hew_string_repeat",
+            Self::StringSplit => "hew_string_split",
             Self::StringSlice => "hew_string_slice",
             Self::StringToLowercase => "hew_string_to_lowercase",
             Self::StringToBytes => "hew_string_to_bytes",
@@ -3073,6 +3123,8 @@ impl RuntimeCallFamily {
             "hew_string_length" => Self::StringLen,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             "hew_string_slice_codepoints_from" => Self::StringSliceCodepointsFrom,
+            "hew_string_repeat" => Self::StringRepeat,
+            "hew_string_split" => Self::StringSplit,
             "hew_string_slice" => Self::StringSlice,
             "hew_string_to_lowercase" => Self::StringToLowercase,
             "hew_string_to_bytes" => Self::StringToBytes,
@@ -4171,6 +4223,8 @@ impl RuntimeCallFamily {
             | F::StringIndex
             | F::StringLen
             | F::StringSlice
+            | F::StringRepeat
+            | F::StringSplit
             | F::StringToLowercase
             | F::StringSliceCodepoints
             | F::StringSliceCodepointsFrom

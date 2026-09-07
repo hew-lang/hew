@@ -1,0 +1,26 @@
+// `split` and `repeat` on the final path: both produce fresh owned values the
+// caller releases once, and the split parts stay usable after the source dies.
+import std.string;
+
+fn parts(line: string) -> Vec<string> {
+    line.split(",")
+}
+
+fn main() {
+    let fields = parts("alpha,beta,gamma");
+    println(fields.len());
+    println(fields[0]);
+    println(fields[2]);
+
+    println("ab".repeat(3));
+    println(string.repeat("-", 5));
+
+    var total = 0;
+    for row in ["a,b", "c,d,e"] {
+        let cells = row.split(",");
+        total = total + cells.len();
+    }
+    println(total);
+
+    println(string.split("one two", " ")[1]);
+}

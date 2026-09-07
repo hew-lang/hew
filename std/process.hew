@@ -140,7 +140,7 @@ fn last_process_error(default_message: string) -> ProcessError {
     }
 }
 
-fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
+fn take_command_output(consume result: ProcessResultHandle) -> CommandOutput {
     unsafe {
         let output = CommandOutput { exit_code: hew_process_result_exit_code(result) as i64, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
         hew_process_result_free(result);
@@ -154,7 +154,7 @@ fn legacy_packed_args_note() -> string {
 
 fn split_legacy_packed_args(args: string) -> Vec<string> {
     let raw_parts = string.split(args, " ");
-    let filtered: Vec<string> = Vec.new();
+    var filtered: Vec<string> = Vec.new();
     for i in 0 .. raw_parts.len() {
         let part = raw_parts[i];
         if part != "" {

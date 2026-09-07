@@ -3735,11 +3735,11 @@ fn check_closure_borrowed_element_store_fails_closed() {
     );
 }
 
-/// A forwarded fn-typed parameter's closure env is provably heap (the checker
-/// Escapes-classifies a closure crossing a call boundary as an argument), so
-/// storing it into an owning record field transfers env ownership into the
-/// record. The record becomes the sole owner that frees the env once at its
-/// drop, and the stored closure stays callable through the field.
+/// A `consume` fn-typed parameter stored into an owning record field transfers
+/// env ownership into the record. The record becomes the sole owner that frees
+/// the env once at its drop, and the stored closure stays callable through the
+/// field. Ownership comes from the declaration, not from the body: a borrowed
+/// parameter stored this way is `E_OWN_CONSUME_BORROWED`.
 /// `make_handler(make_adder(7))` then `h.action(35)` dispatches 35 + 7 = 42.
 #[test]
 fn closure_param_field_store_runs() {
@@ -3757,27 +3757,27 @@ fn closure_param_field_store_runs() {
     );
 }
 
-/// Storing a forwarded fn-typed parameter into a record field is the
+/// Storing a `consume` fn-typed parameter into a record field is the
 /// parameter's single consumption (the record becomes the sole env owner);
 /// using the parameter AFTER that store is a use-after-consume, rejected by
-/// the dataflow checker — never a silent miscompile or a runtime double-free.
-/// The diagnostic is `UseAfterConsume`, not the old `ClosurePairBorrowedStore`
-/// (the store itself is now legal; the later use is the error).
+/// the checker — never a silent miscompile or a runtime double-free. The
+/// declared store is legal, so the error names the later use and points back
+/// at the store, not a borrowed-store refusal.
 #[test]
 fn check_closure_param_use_after_store_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_param_use_after_store.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`"),
         "expected use-after-consume diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("UseAfterConsume"),
-        "expected UseAfterConsume MIR kind; got: {combined}"
+        combined.contains("value was consumed here"),
+        "expected the note pointing at the consuming store; got: {combined}"
     );
     assert!(
         !combined.contains("ClosurePairBorrowedStore"),
-        "store is now legal; the error must be the later use, not a borrowed-store: {combined}"
+        "the declared store is legal; the error must be the later use: {combined}"
     );
 }
 

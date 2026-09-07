@@ -149,7 +149,6 @@ impl Checker {
                     | Expr::ForkChild { .. }
                     | Expr::ForkBlock { .. }
                     | Expr::Select { .. }
-                    | Expr::Join(_)
                     | Expr::Race(_)
             )
         {
@@ -185,7 +184,7 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Join(_) | Expr::Race(_) => {
+            Expr::Scope { .. } | Expr::Race(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
             Expr::ForkChild { .. } => {
@@ -3249,94 +3248,6 @@ impl Checker {
                 result_ty.unwrap_or(Ty::Unit)
             }
             Expr::Race(branches) => self.synthesize_race(branches, span),
-            Expr::Join(exprs) => {
-                let mut types = Vec::with_capacity(exprs.len());
-                for branch in exprs {
-                    let ty = self.synthesize_actor_concurrency_source(
-                        &branch.0,
-                        &branch.1,
-                        "join expression element",
-                    );
-                    if ty != Ty::Error {
-                        let call = match &branch.0 {
-                            Expr::Await(inner) => inner.as_ref(),
-                            _ => branch,
-                        };
-                        self.record_fork_call_inputs(call);
-                    }
-                    types.push(ty);
-                }
-                if types.len() == 1 {
-                    types.remove(0)
-                } else {
-                    Ty::Tuple(types)
-                }
-            }
-            Expr::Timeout {
-                expr: inner,
-                duration,
-            } => {
-                self.check_against(&duration.0, &duration.1, &Ty::Duration);
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
-                // NEW-6: supported await deadlines resolve to the same Result shape
-                // their resume edge binds. Actor asks use `Result<R, AskError>`;
-                // raw connection reads use `Result<bytes, IoError>`. Other
-                // `| after d` forms are deferred and fail closed in HIR lowering;
-                // type them as the inner expression's type so the checker emits no
-                // spurious diagnostics here (the precise deferred diagnostic is
-                // raised during lowering).
-                if let Expr::Await(await_inner) = &inner.0 {
-                    let inner_key = SpanKey::in_module(&await_inner.1, self.current_module_idx);
-                    if let Some(ActorMethodKind::Ask { reply_ty, .. }) =
-                        self.actor_method_dispatch.get(&inner_key).cloned()
-                    {
-                        Ty::result(reply_ty, Ty::ask_error())
-                    } else if let Some(&to_string) = self.conn_await_reads.get(&inner_key) {
-                        // `await conn.read() | after d` → `Result<bytes, NetError>`
-                        // `await conn.read_string() | after d` → `Result<string, NetError>`
-                        let ok_ty = if to_string { Ty::String } else { Ty::Bytes };
-                        Ty::result(
-                            ok_ty,
-                            Ty::Named {
-                                name: crate::stdlib::STD_NET_ERROR.to_string(),
-                                args: Vec::new(),
-                                builtin: None,
-                            },
-                        )
-                    } else if self.listener_await_accepts.contains(&inner_key) {
-                        // `await ln.accept() | after d` → `Result<Connection, NetError>`
-                        // The Ok type mirrors the plain await's inner type (Connection).
-                        Ty::result(
-                            inner_ty,
-                            Ty::Named {
-                                name: crate::stdlib::STD_NET_ERROR.to_string(),
-                                args: Vec::new(),
-                                builtin: None,
-                            },
-                        )
-                    } else if matches!(
-                        self.method_call_rewrites.get(&inner_key),
-                        Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                            if c_symbol == "hew_channel_recv_layout"
-                    ) {
-                        // `await rx.recv() | after d` → `Result<Option<T>, TimeoutError>`
-                        // `inner_ty` is `Option<T>` from the plain `await rx.recv()` path.
-                        Ty::result(inner_ty, Ty::timeout_error())
-                    } else if matches!(
-                        self.method_call_rewrites.get(&inner_key),
-                        Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                            if c_symbol == "hew_stream_next_layout"
-                    ) {
-                        // `await stream.recv() | after d` → `Result<Option<T>, TimeoutError>`
-                        // `inner_ty` is `Option<T>` from the plain `await stream.recv()` path.
-                        Ty::result(inner_ty, Ty::timeout_error())
-                    } else {
-                        inner_ty
-                    }
-                } else {
-                    inner_ty
-                }
-            }
             Expr::GenBlock { body } => {
                 // A98 / Q98: generator blocks inside actor receive handlers are
                 // permanently forbidden.  The scheduler holds the actor-state lock
@@ -6929,9 +6840,7 @@ impl Checker {
             | Expr::MethodCall { .. }
             | Expr::StructInit { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
             | Expr::Race(_)
-            | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)

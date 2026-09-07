@@ -323,7 +323,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(v, calls);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
             for e in exprs {
                 collect_calls_in_expr(e, calls);
             }
@@ -370,10 +370,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             for (_, a) in args {
                 collect_calls_in_expr(a, calls);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
-            collect_calls_in_expr(duration.as_ref(), calls);
         }
         Expr::Is { lhs, rhs } => {
             collect_calls_in_expr(lhs.as_ref(), calls);

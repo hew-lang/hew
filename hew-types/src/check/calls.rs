@@ -2690,61 +2690,6 @@ impl Checker {
         (Ty::Error, None)
     }
 
-    pub(super) fn synthesize_actor_concurrency_source(
-        &mut self,
-        expr: &Expr,
-        span: &Span,
-        construct: &str,
-    ) -> Ty {
-        let (call, call_span) = match expr {
-            Expr::Await(inner) => (&inner.0, &inner.1),
-            _ => (expr, span),
-        };
-        if !matches!(call, Expr::MethodCall { .. }) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!("{construct} must be actor.method(args) or a channel receive"),
-            );
-            return Ty::Error;
-        }
-        let key = SpanKey::in_module(call_span, self.current_module_idx);
-        self.suspension_operands.insert(key.clone());
-        // Join authorizes suspension at this invocation. Check its receiver and
-        // arguments once, then consume the resulting dispatch and transfer facts.
-        let previous = self.inside_await_expr;
-        self.inside_await_expr = true;
-        let ty = self.synthesize(call, call_span);
-        self.inside_await_expr = previous;
-        let ty = self.subst.resolve(&ty);
-        if ty == Ty::Error {
-            return ty;
-        }
-        if matches!(
-            self.actor_method_dispatch.get(&key),
-            Some(ActorMethodKind::Ask { .. })
-        ) || matches!(
-            self.method_call_rewrites.get(&key),
-            Some(
-                MethodCallRewrite::RemoteActorAsk
-                    | MethodCallRewrite::RewriteToFunction {
-                        target: CallTarget::Runtime(
-                            crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout,
-                        ),
-                        ..
-                    }
-            )
-        ) {
-            return ty;
-        }
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!("{construct} must be actor.method(args) or a channel receive"),
-        );
-        Ty::Error
-    }
-
     /// Validates that a `Receiver<T>` element type is resolved and supported for
     /// `for await`.
     pub(super) fn check_receiver_element_type_for_await(&mut self, inner: &Ty, span: &Span) {

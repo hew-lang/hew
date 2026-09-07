@@ -1190,8 +1190,7 @@ mod ast_surface {
             }
             Expr::StructInit { .. } => Some("record StructInit + field access"),
             Expr::Select { .. } => Some("scope / structured-concurrency block"),
-            Expr::Join(_) | Expr::Race(_) => Some("scope / structured-concurrency block"),
-            Expr::Timeout { .. } => Some("scope / structured-concurrency block"),
+            Expr::Race(_) => Some("scope / structured-concurrency block"),
             Expr::UnsafeBlock(_) => Some("unsafe block"),
             Expr::Yield(_) => Some("scope / structured-concurrency block"),
             // `return` in expression position is reserved_runtime_feature in
@@ -1849,7 +1848,7 @@ fn walk_expr(
                 walk_expr(base, owners);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
             for item in items {
                 walk_expr(item, owners);
             }
@@ -2003,10 +2002,6 @@ fn walk_expr(
                 walk_expr(&timeout.duration, owners);
                 walk_expr(&timeout.body, owners);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            walk_expr(expr, owners);
-            walk_expr(duration, owners);
         }
         Expr::Yield(value) | Expr::Return(value) => {
             if let Some(value) = value {

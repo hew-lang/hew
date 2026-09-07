@@ -710,7 +710,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::SelectMultipleAfterArms => "SelectMultipleAfterArms",
         K::SelectNoArms => "SelectNoArms",
         K::SelectStreamNextArity { .. } => "SelectStreamNextArity",
-        K::JoinNoBranches => "JoinNoBranches",
         K::MachineEmitCycle { .. } => "MachineEmitCycle",
         K::MachineEmitNotInManifest { .. } => "MachineEmitNotInManifest",
         K::MethodCallNoRewrite { .. } => "MethodCallNoRewrite",

@@ -473,7 +473,7 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }
@@ -508,10 +508,6 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &timeout_clause.duration.0, tc, hints);
                 collect_inlay_hints_from_expr(source, &timeout_clause.body.0, tc, hints);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
-            collect_inlay_hints_from_expr(source, &duration.0, tc, hints);
         }
         Expr::FieldAccess { object, .. } => {
             collect_inlay_hints_from_expr(source, &object.0, tc, hints);
@@ -731,8 +727,6 @@ mod tests {
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),

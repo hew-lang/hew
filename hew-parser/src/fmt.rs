@@ -2405,9 +2405,7 @@ impl<'a> Formatter<'a> {
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
             | Expr::Race(_)
-            | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::MachineEmit { .. }
             | Expr::GenBlock { .. } => false,
@@ -3377,12 +3375,8 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write("}");
             }
-            Expr::Join(exprs) | Expr::Race(exprs) => {
-                self.write(if matches!(expr, Expr::Race(_)) {
-                    "race {\n"
-                } else {
-                    "join {\n"
-                });
+            Expr::Race(exprs) => {
+                self.write("race {\n");
                 self.indent += 1;
                 for e in exprs {
                     self.write_indent();
@@ -3392,11 +3386,6 @@ impl<'a> Formatter<'a> {
                 self.indent -= 1;
                 self.write_indent();
                 self.write("}");
-            }
-            Expr::Timeout { expr, duration } => {
-                self.format_expr(&expr.0);
-                self.write(" | after ");
-                self.format_expr(&duration.0);
             }
             Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");

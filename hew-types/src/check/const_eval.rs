@@ -271,9 +271,7 @@ fn eval_inner(
         | Expr::MethodCall { .. }
         | Expr::StructInit { .. }
         | Expr::Select { .. }
-        | Expr::Join(_)
         | Expr::Race(_)
-        | Expr::Timeout { .. }
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
         | Expr::Return(_)

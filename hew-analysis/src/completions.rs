@@ -828,7 +828,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         Expr::Unary { operand, .. } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_locals_from_spanned_expr(expr, offset, locals);
             }
@@ -856,10 +856,6 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         }
         Expr::SpawnLambdaActor { body, .. } | Expr::Lambda { body, .. } => {
             collect_locals_from_spanned_expr(body, offset, locals);
-        }
-        Expr::Timeout { expr, duration } => {
-            collect_locals_from_spanned_expr(expr, offset, locals);
-            collect_locals_from_spanned_expr(duration, offset, locals);
         }
         Expr::FieldAccess { object, .. } => {
             collect_locals_from_spanned_expr(object, offset, locals);

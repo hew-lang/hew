@@ -7976,41 +7976,7 @@ impl Checker {
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
         if let Ty::Named { name, .. } = &resolved {
-            // NEW-1: `await conn.read()` / `await conn.read_string()` is the
-            // non-blocking suspending read. Record the inner method-call span so
-            // HIR lowering emits `ConnAwaitRead` instead of the blocking method.
-            // Recognised ONLY directly under an `await` (the suspend point); a
-            // bare `conn.read()` stays the blocking FFI call (E8).
-            let is_conn_await_read = self.inside_await_expr
-                && name == "std.net.Connection"
-                && matches!(method, "read" | "read_string");
-            if is_conn_await_read {
-                let key = SpanKey::in_module(span, self.current_module_idx);
-                self.conn_await_reads
-                    .insert(key.clone(), method == "read_string");
-                self.suspending_io_receiver_nominals
-                    .insert(key, name.clone());
-            } else {
-                // NEW-2: `await listener.accept()` is the non-blocking suspending
-                // accept (the listener-readiness sibling of `await conn.read()`).
-                // Record the inner method-call span so HIR lowering emits
-                // `ListenerAwaitAccept` instead of the blocking `hew_tcp_accept`.
-                // Recognised ONLY directly under an `await`; a bare
-                // `listener.accept()` stays the blocking FFI call.
-                let is_listener_await_accept =
-                    self.inside_await_expr && name == "std.net.Listener" && method == "accept";
-                if is_listener_await_accept {
-                    let key = SpanKey::in_module(span, self.current_module_idx);
-                    self.listener_await_accepts.insert(key.clone());
-                    self.suspending_io_receiver_nominals
-                        .insert(key, name.clone());
-                } else {
-                    // The blocking-call warning is correct for a bare (non-awaited)
-                    // `conn.read()`; suppress it when the read is the non-blocking
-                    // suspending form (it no longer strands a worker).
-                    self.warn_if_blocking_handle_method(name, method, span);
-                }
-            }
+            self.warn_if_blocking_handle_method(name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
         // value enums. Collection clones keep their existing runtime rewrites,

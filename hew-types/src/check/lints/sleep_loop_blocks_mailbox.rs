@@ -209,10 +209,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_expr(ctx, levels, &duration.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Expr::Timeout { expr, duration } => {
-            find_in_expr(ctx, levels, &expr.0, out);
-            find_in_expr(ctx, levels, &duration.0, out);
-        }
         Expr::Call { function, args, .. } => {
             find_in_expr(ctx, levels, &function.0, out);
             for arg in args {
@@ -276,7 +272,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 }
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
             for item in items {
                 find_in_expr(ctx, levels, &item.0, out);
             }
@@ -402,9 +398,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::MethodCall { .. }
             | Expr::StructInit { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
             | Expr::Race(_)
-            | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
@@ -454,9 +448,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::MethodCall { .. }
         | Expr::StructInit { .. }
         | Expr::Select { .. }
-        | Expr::Join(_)
         | Expr::Race(_)
-        | Expr::Timeout { .. }
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
         | Expr::Return(_)
@@ -671,9 +663,6 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         Expr::ScopeDeadline { duration, body } => {
             bounded_expr_has_sleep(&duration.0) || bounded_contains_sleep(body)
         }
-        Expr::Timeout { expr, duration } => {
-            bounded_expr_has_sleep(&expr.0) || bounded_expr_has_sleep(&duration.0)
-        }
         Expr::MethodCall { receiver, args, .. } => {
             bounded_expr_has_sleep(&receiver.0) || bounded_call_args_have_sleep(args)
         }
@@ -698,7 +687,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                 bounded_expr_has_sleep(&expr.0)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
             items.iter().any(|item| bounded_expr_has_sleep(&item.0))
         }
         Expr::ArrayRepeat { value, count } => {
@@ -901,9 +890,6 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         Expr::ScopeDeadline { duration, body } => {
             expr_assigns_identifier(&duration.0, name) || assigns_identifier(body, name)
         }
-        Expr::Timeout { expr, duration } => {
-            expr_assigns_identifier(&expr.0, name) || expr_assigns_identifier(&duration.0, name)
-        }
         Expr::Call { function, args, .. } => {
             expr_assigns_identifier(&function.0, name) || call_args_assign_identifier(args, name)
         }
@@ -957,7 +943,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                 expr_assigns_identifier(&expr.0, name)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) | Expr::Race(items) => items
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => items
             .iter()
             .any(|item| expr_assigns_identifier(&item.0, name)),
         Expr::ArrayRepeat { value, count } => {

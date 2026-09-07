@@ -2461,11 +2461,12 @@ fn extern_unknown_abi_accepted_at_parse_level() {
 }
 
 #[test]
-fn parse_timeout_combinator() {
-    let source = "fn main() { let r = foo() | after 5000; }";
+fn join_is_an_ordinary_identifier() {
+    // `join` is retired as a keyword: `join(a, b)` now parses as a call to
+    // an ordinary function named `join`, not the removed batch-wait form.
+    let source = "fn main() { let r = join(a, b); }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    // Check the expression is Timeout wrapping a call
     let stmt = &result.program.items[0];
     if let Item::Function(f) = &stmt.0 {
         if let (
@@ -2476,8 +2477,9 @@ fn parse_timeout_combinator() {
         ) = &f.body.stmts[0]
         {
             assert!(
-                matches!(val.0, Expr::Timeout { .. }),
-                "expected Timeout, got {:?}",
+                matches!(&val.0, Expr::Call { function, .. }
+                    if matches!(&function.0, Expr::Identifier(name) if name == "join")),
+                "expected a call to identifier `join`, got {:?}",
                 val.0
             );
         } else {

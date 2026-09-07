@@ -18,7 +18,7 @@
 type Holder { items: Vec<string>, label: string }
 
 fn keep(h: Holder) -> i64 {
-    let v: Vec<Holder> = [];
+    var v: Vec<Holder> = [];
     v.push(h);
     v.len()
 }

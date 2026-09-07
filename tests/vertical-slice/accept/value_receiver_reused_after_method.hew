@@ -27,7 +27,7 @@ impl Item {
 }
 
 fn main() {
-    let tags: Vec<string> = Vec.new();
+    var tags: Vec<string> = Vec.new();
     tags.push("t" + "1");
     let it = Item.Full(Task { name: "n" + "m", tags: tags });
     println(it.label());

@@ -20,14 +20,14 @@ fn read_len(x: Holder) -> i64 {
 fn keep_via_closure(h: Holder) -> i64 {
     let probe: fn(Holder) -> i64 = |x: Holder| -> i64 { x.items.len() };
     let seen = probe(h);
-    let bag: Vec<Holder> = [];
+    var bag: Vec<Holder> = [];
     bag.push(h);
     seen + bag.len()
 }
 
 fn keep_via_direct(h: Holder) -> i64 {
     let seen = read_len(h);
-    let bag: Vec<Holder> = [];
+    var bag: Vec<Holder> = [];
     bag.push(h);
     seen + bag.len()
 }

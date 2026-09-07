@@ -10,7 +10,7 @@ enum Shade {
 }
 
 fn main() -> i64 {
-    let m: HashMap<string, Shade> = HashMap.new();
+    var m: HashMap<string, Shade> = HashMap.new();
     m.insert("present", Shade.Dark);
     // "absent" was never inserted: the read must trap before yielding a variant.
     let s = m["absent"];

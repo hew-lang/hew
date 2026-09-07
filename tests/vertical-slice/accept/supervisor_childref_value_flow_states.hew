@@ -135,7 +135,7 @@ fn main() {
     ok = ok && expect_live(live_returned);
     let live_holder = Holder { child: live };
     ok = ok && expect_live(live_holder.child);
-    let live_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var live_vec: Vec<ChildRef<Worker>> = Vec.new();
     live_vec.push(live);
     ok = ok && expect_live(live_vec[0]);
     let live_capture = || live;
@@ -168,7 +168,7 @@ fn main() {
     ok = ok && expect_unavailable(restarting_returned);
     let restarting_holder = Holder { child: restarting };
     ok = ok && expect_unavailable(restarting_holder.child);
-    let restarting_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var restarting_vec: Vec<ChildRef<Worker>> = Vec.new();
     restarting_vec.push(restarting);
     ok = ok && expect_unavailable(restarting_vec[0]);
     let restarting_capture = || restarting;
@@ -200,7 +200,7 @@ fn main() {
     ok = ok && expect_unavailable(exhausted_returned);
     let exhausted_holder = Holder { child: exhausted };
     ok = ok && expect_unavailable(exhausted_holder.child);
-    let exhausted_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var exhausted_vec: Vec<ChildRef<Worker>> = Vec.new();
     exhausted_vec.push(exhausted);
     ok = ok && expect_unavailable(exhausted_vec[0]);
     let exhausted_capture = || exhausted;
@@ -230,7 +230,7 @@ fn main() {
     ok = ok && expect_unavailable(stopped_returned);
     let stopped_holder = Holder { child: stopped };
     ok = ok && expect_unavailable(stopped_holder.child);
-    let stopped_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var stopped_vec: Vec<ChildRef<Worker>> = Vec.new();
     stopped_vec.push(stopped);
     ok = ok && expect_unavailable(stopped_vec[0]);
     let stopped_capture = || stopped;

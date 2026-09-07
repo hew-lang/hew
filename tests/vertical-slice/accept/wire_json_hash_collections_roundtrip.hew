@@ -16,15 +16,15 @@ type Registry {
 }
 
 fn main() -> i64 {
-    let features: HashMap<string, Feature> = HashMap.new();
+    var features: HashMap<string, Feature> = HashMap.new();
     features.insert("beta", Feature { enabled: false, note: "later" });
     features.insert("alpha", Feature { enabled: true, note: "now" });
 
-    let codes: HashMap<i64, string> = HashMap.new();
+    var codes: HashMap<i64, string> = HashMap.new();
     codes.insert(2, "two");
     codes.insert(1, "one");
 
-    let ids: HashSet<i64> = HashSet.new();
+    var ids: HashSet<i64> = HashSet.new();
     ids.insert(3);
     ids.insert(1);
     ids.insert(2);

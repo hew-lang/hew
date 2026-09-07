@@ -29,7 +29,7 @@ fn describe(s: Source) -> string {
 }
 
 fn main() {
-    let items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new();
     items.push("a" + "x");
     items.push("b");
     let empty: Vec<string> = Vec.new();

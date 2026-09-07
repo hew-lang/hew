@@ -49,7 +49,6 @@
       "join",
       "race",
       "after",
-      "from",
       "await",
       "await_restart"
     ],
@@ -164,7 +163,6 @@
     "select",
     "race",
     "join",
-    "from",
     "after",
     "gen",
     "yield",

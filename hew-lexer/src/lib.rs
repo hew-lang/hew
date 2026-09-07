@@ -292,8 +292,6 @@ pub enum Token<'src> {
     Race,
     #[token("join")]
     Join,
-    #[token("from")]
-    From,
     #[token("after")]
     After,
     #[token("gen")]
@@ -707,7 +705,6 @@ define_keywords! {
     Select     => "select",
     Race       => "race",
     Join       => "join",
-    From       => "from",
     After      => "after",
     Gen        => "gen",
     Yield      => "yield",

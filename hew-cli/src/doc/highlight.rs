@@ -85,7 +85,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Select
         | Token::Race
         | Token::Join
-        | Token::From
         | Token::After
         | Token::Gen
         | Token::Yield

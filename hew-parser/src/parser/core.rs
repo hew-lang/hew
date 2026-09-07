@@ -637,7 +637,6 @@ impl<'src> Parser<'src> {
     pub(crate) fn contextual_keyword_name(tok: &Token<'_>) -> Option<&'static str> {
         match tok {
             Token::After => Some("after"),
-            Token::From => Some("from"),
             Token::Init => Some("init"),
             Token::Child => Some("child"),
             Token::Restart => Some("restart"),

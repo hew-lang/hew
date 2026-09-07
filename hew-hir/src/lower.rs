@@ -13233,11 +13233,11 @@ impl LowerCtx {
                         Some(BuiltinType::Option) => decl.methods.iter().all(|m| {
                             matches!(
                                 m.name.as_str(),
-                                "is_some" | "is_none" | "unwrap" | "unwrap_or"
+                                "is_some" | "is_none" | "expect" | "unwrap_or"
                             )
                         }),
                         Some(BuiltinType::Result) => decl.methods.iter().all(|m| {
-                            matches!(m.name.as_str(), "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+                            matches!(m.name.as_str(), "is_ok" | "is_err" | "expect" | "unwrap_or")
                         }),
                         _ => false,
                     };

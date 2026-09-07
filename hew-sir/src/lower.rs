@@ -36,6 +36,9 @@ mod select;
 #[path = "lower_scalar_match.rs"]
 mod scalar_match;
 
+#[path = "lower_loops.rs"]
+mod loops;
+
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
     HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
@@ -2350,6 +2353,7 @@ impl PendingBlock {
 
 #[derive(Clone)]
 struct LoopScope {
+    label: Option<String>,
     header: BlockId,
     exit: BlockId,
     carried: Vec<BindingId>,
@@ -3709,30 +3713,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Ok(());
             }
             HirExprKind::Break { label, value } => {
-                if label.is_some() || value.is_some() {
-                    return Err(
-                        "loop exits with labels or values are not in the owned SIR slice".into(),
-                    );
-                }
-                return self.lower_loop_exit(false);
+                return self.lower_loop_exit(false, label.as_deref(), value.as_deref());
             }
             HirExprKind::Continue { label } => {
-                if label.is_some() {
-                    return Err("labelled loop exits are not in the owned SIR slice".into());
-                }
-                return self.lower_loop_exit(true);
+                return self.lower_loop_exit(true, label.as_deref(), None);
             }
             HirExprKind::While {
                 label,
                 condition,
                 body,
             } => {
-                if label.is_some() {
-                    return Err(
-                        "labelled while loops are not yet in the owned SIR slice".to_string()
-                    );
-                }
-                return self.lower_while(condition, body);
+                return self.lower_while(label.as_deref(), Some(condition), body);
+            }
+            HirExprKind::Loop { label, body } => {
+                return self.lower_while(label.as_deref(), None, body);
             }
             HirExprKind::ForRange {
                 label,
@@ -3744,13 +3738,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 descending,
                 body,
             } => {
-                if label.is_some() || *inclusive || *descending {
-                    return Err(
-                        "only unlabelled ascending exclusive ranges are in the owned SIR slice"
-                            .to_string(),
-                    );
-                }
-                return self.lower_for_range(binding, start, end, step, body);
+                return self.lower_for_range(
+                    label.as_deref(),
+                    binding,
+                    start,
+                    end,
+                    step,
+                    *inclusive,
+                    *descending,
+                    body,
+                );
             }
             _ => {}
         }
@@ -6720,208 +6717,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 Ok(())
             }
         }
-    }
-
-    fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
-        let saved = self.control_state();
-        let recovery = self.recovery_bodies.clone();
-        let preserved = self
-            .owned_live
-            .iter()
-            .filter(|(value, _)| scope.preserved.contains(value))
-            .map(|(value, ty)| (*value, ty.clone()))
-            .collect();
-        self.finish_recovery_scopes(scope.scope_floor, &preserved)?;
-        self.finish_task_scopes(scope.scope_floor, false)?;
-        let args = scope
-            .carried
-            .iter()
-            .map(|&binding| self.scalar_binding(binding).map(|value| Operand { value }))
-            .collect::<Result<Vec<_>, _>>()?;
-        let dead = self
-            .owned_live
-            .keys()
-            .filter(|value| !scope.preserved.contains(value))
-            .copied()
-            .collect::<Vec<_>>();
-        for value in dead.into_iter().rev() {
-            self.emit_destroy(value)?;
-        }
-        self.end_scopes(scope.scope_floor)?;
-        let terminal = self.current;
-        self.restore_control_state(&saved);
-        self.recovery_bodies = recovery;
-        self.current = terminal;
-        Ok(Edge { target, args })
-    }
-
-    fn lower_loop_exit(&mut self, continuing: bool) -> Result<(), String> {
-        self.check_deferred_loop_exit()?;
-        let scope = self
-            .loops
-            .last()
-            .and_then(Clone::clone)
-            .ok_or_else(|| "break/continue requires a supported enclosing loop".to_string())?;
-        let target = if continuing { scope.header } else { scope.exit };
-        let edge = self.loop_edge(&scope, target)?;
-        self.set_terminator(SemTerminator::Goto(edge))
-    }
-
-    /// Give each loop-carried binding a fresh SSA argument at a CFG join.
-    fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, String> {
-        let mut state = self.control_state();
-        let mut args = Vec::new();
-        for &binding in carried {
-            let source = self.scalar_binding(binding)?;
-            let ty = self
-                .value_ty(source)
-                .ok_or_else(|| "scalar loop binding has no type".to_string())?;
-            let own = self
-                .value_own_kind(source)
-                .ok_or_else(|| "scalar loop binding has no ownership facts".to_string())?;
-            let value = self.fresh_value();
-            args.push(BlockArg { value, ty, own });
-            state.bindings.insert(binding, BindingTarget::Value(value));
-            self.record_binding_version(binding, value)?;
-        }
-        state.block = self.new_block(args);
-        Ok(state)
-    }
-
-    fn lower_while(&mut self, condition: &HirExpr, body: &HirBlock) -> Result<(), String> {
-        let carried = self.mutable_bindings();
-        let header = self.loop_join(&carried)?;
-        let exit = self.loop_join(&carried)?;
-        let scope = LoopScope {
-            header: header.block,
-            exit: exit.block,
-            carried,
-            preserved: self.owned_live.keys().copied().collect(),
-            scope_floor: self.scopes.len(),
-        };
-        let entry = self.loop_edge(&scope, header.block)?;
-        self.set_terminator(SemTerminator::Goto(entry))?;
-        self.restore_control_state(&header);
-        let condition = self.lower_read_operand(condition, "while condition")?;
-        let exit_edge = self.loop_edge(&scope, exit.block)?;
-        let body_block = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Branch {
-            condition,
-            then_target: Edge {
-                target: body_block,
-                args: Vec::new(),
-            },
-            else_target: exit_edge,
-        })?;
-        self.current = body_block;
-        self.loops.push(Some(scope.clone()));
-        let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
-        if let Some(tail) = tail {
-            if self.owned_live.contains_key(&tail.value) {
-                self.emit_destroy(tail.value)?;
-            }
-        }
-        if self.is_open() {
-            let edge = self.loop_edge(&scope, header.block)?;
-            self.set_terminator(SemTerminator::Goto(edge))?;
-        }
-        self.loops.pop();
-        self.restore_control_state(&exit);
-        Ok(())
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "range setup, SSA-carried bindings and checked back-edge arithmetic form one lowering"
-    )]
-    fn lower_for_range(
-        &mut self,
-        loop_binding: &hew_hir::HirBinding,
-        start: &HirExpr,
-        end: &HirExpr,
-        step: &HirExpr,
-        body: &HirBlock,
-    ) -> Result<(), String> {
-        if self.ty(&loop_binding.ty) != ResolvedTy::I64
-            || self.ty(&start.ty) != ResolvedTy::I64
-            || self.ty(&end.ty) != ResolvedTy::I64
-            || self.ty(&step.ty) != ResolvedTy::I64
-        {
-            return Err("SIR range loops require checker-resolved i64 bounds".into());
-        }
-        if !matches!(step.kind, HirExprKind::Literal(HirLiteral::Integer(1))) {
-            return Err("SIR range loops require the default positive step".into());
-        }
-        let initial = self.lower_read_operand(start, "range start")?;
-        let bound = self.lower_read_operand(end, "range end")?;
-        let step_value = self.lower_read_operand(step, "range step")?;
-        let outer_floor = self.scopes.len();
-        self.scopes.push(Vec::new());
-        self.bind_source_value(loop_binding, initial.value)?;
-        let mut carried = self.mutable_bindings();
-        carried.push(loop_binding.id);
-        let header = self.loop_join(&carried)?;
-        let increment = self.loop_join(&carried)?;
-        let exit = self.loop_join(&carried)?;
-        let scope = LoopScope {
-            header: increment.block,
-            exit: exit.block,
-            carried,
-            preserved: self.owned_live.keys().copied().collect(),
-            scope_floor: self.scopes.len(),
-        };
-        let entry = self.loop_edge(&scope, header.block)?;
-        self.set_terminator(SemTerminator::Goto(entry))?;
-        self.restore_control_state(&header);
-        let counter = self.scalar_binding(loop_binding.id)?;
-        let condition = self.emit_typed(
-            Provenance::Synthesized,
-            &ResolvedTy::Bool,
-            SemOpKind::Binary {
-                op: hew_parser::ast::BinaryOp::Less,
-                lhs: Operand { value: counter },
-                rhs: bound,
-            },
-        )?;
-        let exit_edge = self.loop_edge(&scope, exit.block)?;
-        let body_block = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Branch {
-            condition: Operand { value: condition },
-            then_target: Edge {
-                target: body_block,
-                args: Vec::new(),
-            },
-            else_target: exit_edge,
-        })?;
-        self.current = body_block;
-        self.loops.push(Some(scope.clone()));
-        let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
-        if let Some(tail) = tail {
-            if self.owned_live.contains_key(&tail.value) {
-                self.emit_destroy(tail.value)?;
-            }
-        }
-        if self.is_open() {
-            let edge = self.loop_edge(&scope, increment.block)?;
-            self.set_terminator(SemTerminator::Goto(edge))?;
-        }
-        self.loops.pop();
-        self.restore_control_state(&increment);
-        let counter = self.scalar_binding(loop_binding.id)?;
-        let next = self.lower_checked_binary(
-            step,
-            hew_parser::ast::BinaryOp::Add,
-            Operand { value: counter },
-            step_value,
-        )?;
-        self.bindings
-            .insert(loop_binding.id, BindingTarget::Value(next));
-        let edge = self.loop_edge(&scope, header.block)?;
-        self.set_terminator(SemTerminator::Goto(edge))?;
-        self.restore_control_state(&exit);
-        self.end_scopes(outer_floor)?;
-        self.leave_scope();
-        Ok(())
     }
 
     fn lower_if(

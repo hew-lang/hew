@@ -113,13 +113,13 @@ f64__read_back	PASS
 f64__return_fn	PASS
 f64__store_map_value	PASS
 f64__store_vec	PASS
-generator__across_suspend	NYI-CLEAN	tests/core-matrix/cells/generator__across_suspend.hew:22:24: error: cannot send `Generator<i64, ()>` to actor: type is not Send
-generator__actor_send	NYI-CLEAN	tests/core-matrix/cells/generator__actor_send.hew:21:24: error: cannot send `Generator<i64, ()>` to actor: type is not Send
+generator__across_suspend	NYI-CLEAN	tests/core-matrix/cells/generator__across_suspend.hew:22:18: error: cannot send `Generator<i64, ()>` to actor: type is not Send
+generator__actor_send	NYI-CLEAN	tests/core-matrix/cells/generator__actor_send.hew:21:18: error: cannot send `Generator<i64, ()>` to actor: type is not Send
 generator__clone	NYI-CLEAN	tests/core-matrix/cells/generator__clone.hew:6:13: error: no method `clone` on `Generator<i64, ()>`
 generator__construct	PASS
 generator__equality	NYI-CLEAN	tests/core-matrix/cells/generator__equality.hew:14:16: error: `Generator<i64, ()>` has no selected Eq implementation for equality comparison
 generator__format	NYI-CLEAN	tests/core-matrix/cells/generator__format.hew:6:18: error: type `Generator<i64, ()>` does not implement `Display` (f-string interpolation requires `impl Display for Generator<i64, ()>`)
-generator__index	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime read cannot copy an affine element; use an owning removal
+generator__index	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: E_OWN_CONSUME_BORROWED: `e` is borrowed here; a value with no copy operation transfers only from an owning binding
 generator__iterate	PASS
 generator__map_key	NYI-CLEAN	tests/core-matrix/cells/generator__map_key.hew:7:5: error: `Generator<i64, ()>` does not satisfy the required bounds for `Map.insert` (K: Hash, K: Eq)
 generator__move	PASS
@@ -217,22 +217,22 @@ machine__store_vec	PASS
 opaque__across_suspend	NYI-CLEAN	tests/core-matrix/cells/opaque__across_suspend.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layou
 opaque__actor_send	NYI-CLEAN	tests/core-matrix/cells/opaque__actor_send.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layout. O
 opaque__clone	NYI-CLEAN	tests/core-matrix/cells/opaque__clone.hew:26:13: error: type `Dq` is `#[resource]` and cannot be cloned: member `value` contains `Dq`, which has an affine close contract and no semantic clone
-opaque__construct	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__construct.hew_deque_free" }, endpoint: "hew_deque_free",
-opaque__drop_early_return	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__drop_early_return.hew_deque_free" }, endpoint: "hew_dequ
-opaque__drop_panic	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__drop_panic.hew_deque_free" }, endpoint: "hew_deque_free"
-opaque__drop_scope	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__drop_scope.hew_deque_free" }, endpoint: "hew_deque_free"
-opaque__equality	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__equality.hew_deque_free" }, endpoint: "hew_deque_free",
+opaque__construct	PASS
+opaque__drop_early_return	PASS
+opaque__drop_panic	PASS
+opaque__drop_scope	PASS
+opaque__equality	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: `DqH` has no semantic structural capability recipe
 opaque__format	NYI-CLEAN	tests/core-matrix/cells/opaque__format.hew:26:18: error: type `Dq` does not implement `Display` (f-string interpolation requires `impl Display for Dq`)
-opaque__index	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__index.hew_deque_free" }, endpoint: "hew_deque_free", tru
-opaque__iterate	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__iterate.hew_deque_free" }, endpoint: "hew_deque_free", t
+opaque__index	PASS
+opaque__iterate	PASS
 opaque__map_key	NYI-CLEAN	tests/core-matrix/cells/opaque__map_key.hew:27:5: error: `Dq` does not satisfy the required bounds for `Map.insert` (K: Hash)
-opaque__move	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__move.hew_deque_free" }, endpoint: "hew_deque_free", trus
-opaque__mutate	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__mutate.hew_deque_free" }, endpoint: "hew_deque_free", tr
-opaque__pass_fn	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__pass_fn.hew_deque_free" }, endpoint: "hew_deque_free", t
-opaque__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__read_back.hew_deque_free" }, endpoint: "hew_deque_free",
-opaque__return_fn	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__return_fn.hew_deque_free" }, endpoint: "hew_deque_free",
+opaque__move	PASS
+opaque__mutate	PASS
+opaque__pass_fn	PASS
+opaque__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime read cannot copy an affine element; use an owning removal
+opaque__return_fn	PASS
 opaque__store_map_value	NYI-CLEAN	tests/core-matrix/cells/opaque__store_map_value.hew:26:12: error: `HashMap<_, Dq>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Dq` contains resource/linear value `Dq` which has no sema
-opaque__store_vec	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_Dq::close` is not implemented: call target Extern { declaration: DefId { full_path: "opaque__store_vec.hew_deque_free" }, endpoint: "hew_deque_free",
+opaque__store_vec	PASS
 option__across_suspend	PASS
 option__actor_send	PASS
 option__clone	NYI-INTERNAL	internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "__hew_fn_main", callable: Some(CallableId(0)), kind: InvalidOperation { op: OpId(3), reason: "ownership operation result `Option
@@ -311,12 +311,12 @@ result__store_map_value	PASS
 result__store_vec	NYI-CLEAN	tests/core-matrix/cells/result__store_vec.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec runtime
 string__across_suspend	PASS
 string__actor_send	PASS
-string__clone	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: call target Extern { declaration: DefId { full_path: "std.string.string::<impl inherent for std.string.string>::clone" }, e
+string__clone	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: extern `hew_string_clone` is named by an `#[extern_symbol]` method rather than an `extern` block, and an open-set extern me
 string__construct	PASS
 string__equality	PASS
 string__format	PASS
 string__index	PASS
-string__iterate	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: call target Extern { declaration: DefId { full_path: "std.string.string::<impl inherent for std.string.string>::split" }, e
+string__iterate	PASS
 string__map_key	PASS
 string__move	PASS
 string__mutate	PASS
@@ -325,8 +325,8 @@ string__read_back	PASS
 string__return_fn	PASS
 string__store_map_value	PASS
 string__store_vec	PASS
-traitobj__across_suspend	NYI-CLEAN	tests/core-matrix/cells/traitobj__across_suspend.hew:44:24: error: cannot send `dyn Named` to actor: type is not Send
-traitobj__actor_send	NYI-CLEAN	tests/core-matrix/cells/traitobj__actor_send.hew:43:24: error: cannot send `dyn Named` to actor: type is not Send
+traitobj__across_suspend	NYI-CLEAN	tests/core-matrix/cells/traitobj__across_suspend.hew:44:18: error: cannot send `dyn Named` to actor: type is not Send
+traitobj__actor_send	NYI-CLEAN	tests/core-matrix/cells/traitobj__actor_send.hew:43:18: error: cannot send `dyn Named` to actor: type is not Send
 traitobj__clone	NYI-CLEAN	tests/core-matrix/cells/traitobj__clone.hew:32:13: error: `clone` is not supported on `dyn Named`: a trait object erases its concrete type and its vtable carries no clone slot; clone the concrete value before erasing it
 traitobj__construct	PASS
 traitobj__equality	NYI-CLEAN	tests/core-matrix/cells/traitobj__equality.hew:34:16: error: `dyn Named` has no selected Eq implementation for equality comparison

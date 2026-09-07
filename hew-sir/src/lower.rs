@@ -7959,7 +7959,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                 })
             })
-            .ok_or_else(|| format!("extern call names no HIR declaration for `{endpoint}`"))
+            .ok_or_else(|| {
+                format!(
+                    "extern `{endpoint}` is named by an `#[extern_symbol]` method rather than an \
+                     `extern` block, and an open-set extern method has no declared C signature to \
+                     call through"
+                )
+            })
     }
 
     /// Refuse a declaration that disagrees with the generated ownership row.

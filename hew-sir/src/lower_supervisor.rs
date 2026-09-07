@@ -231,12 +231,42 @@ impl InstanceService<'_> {
 }
 
 impl Builder<'_, '_> {
+    /// `await_restart sup.child`: the same role, produced only once the child
+    /// is Live again or permanently gone.
+    pub(super) fn lower_supervisor_await_restart(
+        &mut self,
+        expression: &HirExpr,
+        child: &HirExpr,
+    ) -> Result<ValueId, String> {
+        let HirExprKind::FieldAccess { object, .. } = &child.kind else {
+            return Err("`await_restart` operand is not a supervised child".into());
+        };
+        let slot = self
+            .service
+            .module
+            .supervisor_child_slots
+            .get(&child.site)
+            .ok_or("`await_restart` operand names no supervised child")?
+            .clone();
+        self.lower_supervisor_role(expression, object, &slot, true)
+    }
+
     /// `sup.child`: a declared child resolved through its supervisor on every use.
     pub(super) fn lower_supervisor_child(
         &mut self,
         expression: &HirExpr,
         object: &HirExpr,
         slot: &hew_types::ChildSlot,
+    ) -> Result<ValueId, String> {
+        self.lower_supervisor_role(expression, object, slot, false)
+    }
+
+    fn lower_supervisor_role(
+        &mut self,
+        expression: &HirExpr,
+        object: &HirExpr,
+        slot: &hew_types::ChildSlot,
+        await_restart: bool,
     ) -> Result<ValueId, String> {
         if slot.kind == hew_types::ChildKind::Pool {
             return Err("pool children need their fungible-slot contract".into());
@@ -247,9 +277,11 @@ impl Builder<'_, '_> {
             .iter()
             .position(|child| child.name == slot.child_name)
             .ok_or("supervisor child lookup names no declared child")?;
-        let operation = ActorOperation::SupervisorChild {
-            supervisor,
-            child: u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?,
+        let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
+        let operation = if await_restart {
+            ActorOperation::SupervisorAwaitRestart { supervisor, child }
+        } else {
+            ActorOperation::SupervisorChild { supervisor, child }
         };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {

@@ -272,7 +272,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.emit_supervisor_spawn(*id, sources, result).map(Some)
             }
             ActorOperation::SupervisorChild { supervisor, child } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result)
+                .emit_supervisor_child(*supervisor, *child, sources, result, false)
+                .map(Some),
+            ActorOperation::SupervisorAwaitRestart { supervisor, child } => self
+                .emit_supervisor_child(*supervisor, *child, sources, result, true)
                 .map(Some),
             ActorOperation::SupervisorStop(_) => self.emit_supervisor_stop(sources).map(Some),
             _ => Ok(None),
@@ -457,6 +460,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         child: u32,
         sources: &[StorageId],
         result: Option<StorageId>,
+        await_restart: bool,
     ) -> CodegenResult<IntValue<'ctx>> {
         let supervisor = self.supervisor(id)?;
         actor_role(supervisor, child as usize)?;
@@ -471,6 +475,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .slot(child as usize)
             .ok_or_else(|| CodegenError::FailClosed("declared child has no runtime slot".into()))?;
         let token = self.load(*source, "role.supervisor")?;
+        if await_restart {
+            let wait = get_or_declare_external(
+                self.llvm,
+                "hew_supervisor_native_await_restart",
+                self.ctx.void_type().fn_type(
+                    &[token.get_type().into(), self.ctx.i32_type().into()],
+                    false,
+                ),
+            )?;
+            self.builder
+                .build_call(
+                    wait,
+                    &[
+                        token.into(),
+                        self.ctx.i32_type().const_int(u64::from(slot), false).into(),
+                    ],
+                    "",
+                )
+                .llvm_ctx("wait for the declared child to be live again")?;
+        }
         let role = self.slots[result.0 as usize];
         let role_ty = self
             .ctx

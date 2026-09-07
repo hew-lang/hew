@@ -4296,6 +4296,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::MachineVariantCtor {
                 state_idx, payload, ..
             } => self.lower_variant_make(expr, *state_idx, payload.as_deref()),
+            HirExprKind::AwaitRestart { child } => self.lower_supervisor_await_restart(expr, child),
             HirExprKind::FieldAccess { object, field } => {
                 if let Some(slot) = self.service.module.supervisor_child_slots.get(&expr.site) {
                     return self.lower_supervisor_child(expr, object, slot);

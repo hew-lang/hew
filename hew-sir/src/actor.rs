@@ -392,9 +392,59 @@ pub enum ActorOperation {
     /// Stop the supervisor and every child; each child's stop hooks run before
     /// its terminal cleanup.
     SupervisorStop(crate::SupervisorId),
+    /// Wait until one declared child is Live again after a crash, or is
+    /// permanently gone, then produce its role. The restart barrier: without
+    /// it a caller cannot tell a pre-crash incarnation from its replacement.
+    SupervisorAwaitRestart {
+        supervisor: crate::SupervisorId,
+        child: u32,
+    },
 }
 
 impl ActorOperation {
+    /// The supervisor boundaries: every one consumes handles and produces a
+    /// handle, a role or nothing.
+    fn supervisor_signature(
+        &self,
+        actors: &[SemActor],
+        supervisors: &[crate::SemSupervisor],
+    ) -> Result<crate::SemSignature, String> {
+        let (Self::SupervisorSpawn(id)
+        | Self::SupervisorChild { supervisor: id, .. }
+        | Self::SupervisorAwaitRestart { supervisor: id, .. }
+        | Self::SupervisorStop(id)) = self
+        else {
+            return Err("operation is not a supervisor boundary".into());
+        };
+        let supervisor = supervisors
+            .get(id.0 as usize)
+            .filter(|supervisor| supervisor.id == *id)
+            .ok_or("unknown supervisor identity")?;
+        let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
+            params: types
+                .into_iter()
+                .map(|ty| crate::SemAbiParam {
+                    ty,
+                    passing: crate::SemParamPassing::Consume,
+                    caller_visible_projection: false,
+                })
+                .collect(),
+            return_ty,
+        };
+        Ok(match self {
+            Self::SupervisorSpawn(_) => {
+                consume(supervisor.config.clone(), supervisor.handle_ty.clone())
+            }
+            Self::SupervisorChild { child, .. } | Self::SupervisorAwaitRestart { child, .. } => {
+                consume(
+                    vec![supervisor.handle_ty.clone()],
+                    supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
+                )
+            }
+            _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
+        })
+    }
+
     /// Project the exact boundary ABI from the demanded actor protocol.
     ///
     /// # Errors
@@ -422,24 +472,10 @@ impl ActorOperation {
             | Self::AwaitClosed(id)
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
-            Self::SupervisorSpawn(id)
-            | Self::SupervisorChild { supervisor: id, .. }
-            | Self::SupervisorStop(id) => {
-                let supervisor = supervisors
-                    .get(id.0 as usize)
-                    .filter(|supervisor| supervisor.id == *id)
-                    .ok_or("unknown supervisor identity")?;
-                return Ok(match self {
-                    Self::SupervisorSpawn(_) => {
-                        consume(supervisor.config.clone(), supervisor.handle_ty.clone())
-                    }
-                    Self::SupervisorChild { child, .. } => consume(
-                        vec![supervisor.handle_ty.clone()],
-                        supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
-                    ),
-                    _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
-                });
-            }
+            Self::SupervisorSpawn(_)
+            | Self::SupervisorChild { .. }
+            | Self::SupervisorAwaitRestart { .. }
+            | Self::SupervisorStop(_) => return self.supervisor_signature(actors, supervisors),
         };
         let actor = actors
             .get(id.0 as usize)
@@ -463,9 +499,10 @@ impl ActorOperation {
                 )
             }
             Self::Close(_) => (vec![actor.handle_ty.clone()], actor.handle_ty.clone()),
-            Self::SupervisorSpawn(_) | Self::SupervisorChild { .. } | Self::SupervisorStop(_) => {
-                unreachable!("supervisor boundaries return above")
-            }
+            Self::SupervisorSpawn(_)
+            | Self::SupervisorChild { .. }
+            | Self::SupervisorAwaitRestart { .. }
+            | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),
             Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
             Self::Spawn(_) => (
                 actor

@@ -778,6 +778,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::Submit { actor: id, .. } => *id,
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
+            | ActorOperation::SupervisorAwaitRestart { .. }
             | ActorOperation::SupervisorStop(_) => ActorId(u32::MAX),
         };
         let mut sources = Vec::new();
@@ -840,6 +841,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
+            | ActorOperation::SupervisorAwaitRestart { .. }
             | ActorOperation::SupervisorStop(_) => unreachable!("emitted above"),
             ActorOperation::StreamStart { message, .. } => {
                 self.emit_actor_stream_start(actor, message, &sources, unwind)?
@@ -1266,6 +1268,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_extract_value(object, 0, "submission.target")
             .llvm_ctx("read message target")?;
+        // A role addresses its actor through the supervisor: resolve the
+        // current incarnation here, at the send.
+        let target = if args[0].is_builtin(hew_types::BuiltinType::ChildRef) {
+            self.resolve_role_handle(target.into_struct_value())?.into()
+        } else {
+            target
+        };
         let member = self
             .builder
             .build_extract_value(object, 1, "submission.member")

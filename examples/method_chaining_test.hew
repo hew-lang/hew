@@ -6,7 +6,7 @@ type Point {
     y: f64,
 }
 
-impl PointMethods for Point {
+impl Point {
     fn translate(pt: Point, dx: f64, dy: f64) -> Point {
         return Point { x: pt.x + dx, y: pt.y + dy };
     }

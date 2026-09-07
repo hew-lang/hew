@@ -1236,6 +1236,17 @@ pub enum TypeErrorKind {
         /// or `"return type"`. Used by tests to pin diagnostic precision.
         detail: &'static str,
     },
+    /// An `impl <Trait> for <Type>` names a trait that no declaration in
+    /// scope defines. Nothing constrains the impl's method set, so admitting
+    /// it silently registers methods under a contract that does not exist.
+    ///
+    /// Envelope code: `E_UNKNOWN_TRAIT_IN_IMPL`.
+    UnknownTraitInImpl {
+        /// The unresolved trait name written on the impl block.
+        trait_name: String,
+        /// The impl target type.
+        type_name: String,
+    },
     /// An `impl <Trait> for <Type>` omits one or more REQUIRED (bodyless) trait
     /// methods. The required method set is resolved through the trait's
     /// owner-qualified identity, so a same-name trait collision cannot leak a
@@ -1566,6 +1577,7 @@ impl TypeErrorKind {
             Self::AmbiguousActorReference { .. } => "AmbiguousActorReference",
             Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
             Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
+            Self::UnknownTraitInImpl { .. } => "UnknownTraitInImpl",
             Self::TraitImplMissingMethods { .. } => "TraitImplMissingMethods",
             Self::TraitImplExtraMethods { .. } => "TraitImplExtraMethods",
             Self::ConflictingTraitImpl { .. } => "ConflictingTraitImpl",

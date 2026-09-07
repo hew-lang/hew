@@ -129,8 +129,15 @@ impl Builder<'_, '_> {
             match self.borrow_parents.get(&value).copied() {
                 Some(crate::PlaceBase::Value(parent)) => value = parent,
                 Some(crate::PlaceBase::Place(place)) => {
-                    return crate::projection::place_path(&self.places, place)
-                        .map(|(root, _)| root);
+                    return match self.places[place.0 as usize].origin {
+                        PlaceOrigin::Capture { environment, .. }
+                        | PlaceOrigin::ActorState {
+                            state: environment, ..
+                        } => Ok(crate::OwnerRoot::Value(environment)),
+                        _ => {
+                            crate::projection::place_path(&self.places, place).map(|(root, _)| root)
+                        }
+                    };
                 }
                 None => return Ok(crate::OwnerRoot::Value(value)),
             }

@@ -1352,13 +1352,7 @@ fn verify_callable_table<'a>(
             SemCallableKind::HewClosure
         } else if let SemCallableKind::HewActor(id) = callable.kind {
             match module.actor(id) {
-                Some(actor)
-                    if actor.init == Some(callable.id)
-                        || actor
-                            .handlers
-                            .iter()
-                            .any(|handler| handler.callable == callable.id) =>
-                {
+                Some(actor) if actor.bodies().any(|body| body == callable.id) => {
                     SemCallableKind::HewActor(id)
                 }
                 _ => SemCallableKind::HewDirect,
@@ -3157,7 +3151,27 @@ fn verify_direct_call_terminator(
         ));
         return;
     };
-    if target.call_conv != SemCallConv::Default || target.kind != SemCallableKind::HewDirect {
+    // An actor method is a direct callee only from a body of the same actor,
+    // which lends its own state seat exclusively as the first argument.
+    let admitted = match target.kind {
+        SemCallableKind::HewDirect => true,
+        SemCallableKind::HewClosure => false,
+        SemCallableKind::HewActor(actor) => {
+            callable_context
+                .actors
+                .get(actor.0 as usize)
+                .is_some_and(|descriptor| {
+                    descriptor.methods.contains(&callee)
+                        && descriptor.bodies().any(|body| body == function.callable)
+                })
+                && args.first().is_some_and(|seat| {
+                    seat.decision == crate::BoundaryDecision::BorrowMut
+                        && function.params.first().map(|param| param.value)
+                            == Some(seat.operand.value)
+                })
+        }
+    };
+    if target.call_conv != SemCallConv::Default || !admitted {
         invalid_operation(
             function,
             id,

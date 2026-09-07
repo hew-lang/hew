@@ -6456,12 +6456,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
-        let (callee, signature) = match target {
+        let (callee, signature, actor) = match target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                 let target =
                     self.service
                         .resolve_direct_call(declaration, expr.site, &self.substitution)?;
-                (PreparedCallee::Direct(target.id), target.signature)
+                let actor = match target.kind {
+                    SemCallableKind::HewActor(actor) => Some(actor),
+                    SemCallableKind::HewDirect | SemCallableKind::HewClosure => None,
+                };
+                (PreparedCallee::Direct(target.id), target.signature, actor)
             }
             CallTarget::IndirectFunctionValue => {
                 let ty = self.ty(&callee.ty);
@@ -6485,6 +6489,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         decision,
                     }),
                     signature,
+                    None,
                 )
             }
             _ => {
@@ -6494,7 +6499,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         };
         let result_ty = self.ty(&expr.ty);
-        if args.len() != signature.params.len() || result_ty != signature.return_ty {
+        // An actor method's first parameter is the caller's own state seat.
+        let seats = usize::from(actor.is_some());
+        if args.len() + seats != signature.params.len() || result_ty != signature.return_ty {
             let name = match target {
                 CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                     declaration.full_path()
@@ -6506,7 +6513,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 args.len(), signature.params.len(), signature.return_ty
             ));
         }
-        let lowered_args = self.lower_user_arguments(args, &signature.params, &mut loans)?;
+        let mut lowered_args =
+            self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;
+        if let Some(actor) = actor {
+            if self.callable.kind != SemCallableKind::HewActor(actor) {
+                return Err("actor method is entered only from its own actor's bodies".into());
+            }
+            let state = ValueId(0);
+            // The callee mutates state exclusively; arguments read from it
+            // travel as independent copies.
+            self.snapshot_arguments_rooted_at(
+                crate::OwnerRoot::Value(state),
+                &mut lowered_args,
+                &mut loans,
+                &Provenance::Site(expr.site),
+            )?;
+            lowered_args.insert(
+                0,
+                crate::BoundaryOperand {
+                    operand: Operand { value: state },
+                    decision: crate::BoundaryDecision::BorrowMut,
+                },
+            );
+        }
         self.finish_user_call(
             callee,
             signature,
@@ -6680,15 +6709,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(continuation.map(|(value, _)| value))
     }
 
-    /// Snapshot borrowed arguments which would otherwise overlap the receiver take.
-    fn snapshot_receiver_arguments(
+    /// Snapshot borrowed arguments which would otherwise overlap an exclusive
+    /// receiver rooted at `root`.
+    pub(super) fn snapshot_arguments_rooted_at(
         &mut self,
-        selected: crate::PlaceId,
+        root: crate::OwnerRoot,
         lowered_args: &mut [crate::BoundaryOperand],
         loans: &mut Vec<ValueId>,
         provenance: &Provenance,
     ) -> Result<(), String> {
-        let (root, _) = crate::projection::place_path(&self.places, selected)?;
         for argument in lowered_args {
             let value = argument.operand.value;
             if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
@@ -6925,8 +6954,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let selected = self
                 .owned_projection(place)?
                 .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
-            self.snapshot_receiver_arguments(
-                selected,
+            let (root, _) = crate::projection::place_path(&self.places, selected)?;
+            self.snapshot_arguments_rooted_at(
+                root,
                 &mut lowered_args,
                 &mut loans,
                 &Provenance::Site(expr.site),

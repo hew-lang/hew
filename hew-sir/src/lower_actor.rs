@@ -57,15 +57,29 @@ impl InstanceService<'_> {
         let source = declaration(self.module, ty)
             .ok_or("local actor handle lacks its exact declaration")?
             .clone();
-        if !source.type_params.is_empty()
-            || !source.methods.is_empty()
-            || !source.lifecycle_hooks.is_empty()
-            || source
-                .receive_handlers
-                .iter()
-                .any(|handler| handler.is_generator || handler.every_ns.is_some())
+        if !source.type_params.is_empty() {
+            return Err("generic actors need their instance contracts".into());
+        }
+        if source
+            .receive_handlers
+            .iter()
+            .any(|handler| handler.is_generator || handler.every_ns.is_some())
         {
-            return Err("actor methods, lifecycle hooks and generator receives need their semantic body contracts".into());
+            return Err(
+                "generator and periodic receives need their semantic body contracts".into(),
+            );
+        }
+        if let Some(hook) = source.lifecycle_hooks.iter().find(|hook| {
+            !matches!(
+                hook.kind,
+                hew_hir::HirLifecycleHookKind::Start | hew_hir::HirLifecycleHookKind::Stop
+            )
+        }) {
+            return Err(format!(
+                "`#[on({:?})]` needs the supervision and link notification contracts",
+                hook.kind
+            )
+            .to_lowercase());
         }
         let overflow = actor_overflow(&source)?;
         let fields: Vec<_> = source
@@ -89,23 +103,78 @@ impl InstanceService<'_> {
             state_ty,
             fields,
             init: None,
+            start: None,
+            stop: Vec::new(),
+            methods: Vec::new(),
             handlers: Vec::new(),
             mailbox_capacity: source.mailbox_capacity,
             overflow,
             max_heap_bytes: source.max_heap_bytes,
         });
+        self.register_actor_bodies(id, &source)?;
+        Ok(id)
+    }
+
+    fn register_actor_bodies(
+        &mut self,
+        id: crate::ActorId,
+        source: &hew_hir::HirActorDecl,
+    ) -> Result<(), String> {
         if let Some(init) = &source.init {
             let body = self.register_actor_body(
                 id,
-                &source,
+                source,
                 init.declaration.clone(),
                 &init.state_bindings,
                 &init.params,
                 ResolvedTy::Unit,
                 &init.body,
                 "init",
+                true,
             )?;
             self.actors[id.0 as usize].init = Some(body);
+        }
+        for hook in &source.lifecycle_hooks {
+            if !hook.params.is_empty() || hook.return_ty != ResolvedTy::Unit {
+                return Err("lifecycle hook takes no parameters and returns unit".into());
+            }
+            let body = self.register_actor_body(
+                id,
+                source,
+                hook.declaration.clone(),
+                &hook.state_bindings,
+                &[],
+                ResolvedTy::Unit,
+                &hook.body,
+                &format!("hook_{}", hook.name),
+                false,
+            )?;
+            match hook.kind {
+                hew_hir::HirLifecycleHookKind::Start => {
+                    self.actors[id.0 as usize].start = Some(body);
+                }
+                hew_hir::HirLifecycleHookKind::Stop => self.actors[id.0 as usize].stop.push(body),
+                _ => unreachable!("other hook kinds are refused above"),
+            }
+        }
+        for method in &source.methods {
+            let body = self.register_actor_body(
+                id,
+                source,
+                method.declaration.clone(),
+                &method.state_bindings,
+                &method.params,
+                method.return_ty.clone(),
+                &method.body,
+                &format!("method_{}", method.name),
+                false,
+            )?;
+            // Bare calls from this actor's bodies resolve through the ordinary
+            // direct-call table; the call site supplies the state seat.
+            self.table
+                .monomorphic_by_declaration
+                .insert(method.declaration.clone(), body);
+            self.actors[id.0 as usize].methods.push(body);
         }
         for handler in &source.receive_handlers {
             let row = source
@@ -128,13 +197,14 @@ impl InstanceService<'_> {
             }
             let callable = self.register_actor_body(
                 id,
-                &source,
+                source,
                 handler.declaration.clone(),
                 &handler.state_bindings,
                 &handler.params,
                 handler.return_ty.clone(),
                 &handler.body,
                 &row.symbol,
+                true,
             )?;
             self.actors[id.0 as usize]
                 .handlers
@@ -147,7 +217,7 @@ impl InstanceService<'_> {
                     return_ty: handler.return_ty.clone(),
                 });
         }
-        Ok(id)
+        Ok(())
     }
 
     #[allow(
@@ -164,6 +234,7 @@ impl InstanceService<'_> {
         return_ty: ResolvedTy,
         body: &HirBlock,
         symbol: &str,
+        transfers_arguments: bool,
     ) -> Result<CallableId, String> {
         let id = CallableId(
             u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
@@ -192,15 +263,19 @@ impl InstanceService<'_> {
         };
         for parameter in params {
             self.require_type_facts(&parameter.ty)?;
+            // Messages and spawn arguments transfer every owning field. A
+            // method call is an ordinary call and lends unless the source
+            // consumes.
+            let owned = OwnKind::of_ty(&parameter.ty, self.checked_facts.rows())? == OwnKind::Owned;
             signature.params.push(SemAbiParam {
                 ty: parameter.ty.clone(),
                 caller_visible_projection: false,
-                passing: if OwnKind::of_ty(&parameter.ty, self.checked_facts.rows())?
-                    == OwnKind::Owned
-                {
+                passing: if !owned {
+                    SemParamPassing::ReadOnly
+                } else if transfers_arguments || parameter.is_consume {
                     SemParamPassing::Consume
                 } else {
-                    SemParamPassing::ReadOnly
+                    SemParamPassing::Borrow
                 },
             });
         }

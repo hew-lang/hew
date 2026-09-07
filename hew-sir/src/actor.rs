@@ -44,6 +44,14 @@ pub struct SemActor {
     pub state_ty: ResolvedTy,
     pub fields: Vec<SemActorField>,
     pub init: Option<CallableId>,
+    /// `#[on(start)]`: runs once after init, before the handle is published.
+    pub start: Option<CallableId>,
+    /// `#[on(stop)]` bodies in lexical order, run at the terminal transition
+    /// with the state still initialized and before its cleanup.
+    pub stop: Vec<CallableId>,
+    /// Plain `fn` items, entered only from this actor's own bodies with the
+    /// same exclusive state seat.
+    pub methods: Vec<CallableId>,
     pub handlers: Vec<SemActorHandler>,
     pub mailbox_capacity: Option<u32>,
     pub overflow: SemActorOverflow,
@@ -60,6 +68,16 @@ impl SemModule {
 }
 
 impl SemActor {
+    /// Every private body entered with this actor's exclusive state seat.
+    pub fn bodies(&self) -> impl Iterator<Item = CallableId> + '_ {
+        self.init
+            .into_iter()
+            .chain(self.start)
+            .chain(self.stop.iter().copied())
+            .chain(self.methods.iter().copied())
+            .chain(self.handlers.iter().map(|handler| handler.callable))
+    }
+
     /// The receive protocol owns request parameter order and its full fallible
     /// reply type. Source and downstream verifiers consume this same signature.
     ///
@@ -116,11 +134,19 @@ impl SemActor {
         }
         let mut messages = std::collections::BTreeSet::new();
         let mut bodies = std::collections::BTreeSet::new();
-        for (body, handler) in self.init.iter().map(|id| (*id, None)).chain(
-            self.handlers
-                .iter()
-                .map(|handler| (handler.callable, Some(handler))),
-        ) {
+        let hooks = self.start.iter().chain(&self.stop);
+        for (body, handler) in self
+            .init
+            .iter()
+            .chain(hooks.clone())
+            .chain(&self.methods)
+            .map(|id| (*id, None))
+            .chain(
+                self.handlers
+                    .iter()
+                    .map(|handler| (handler.callable, Some(handler))),
+            )
+        {
             let callable = module
                 .callables
                 .iter()
@@ -154,19 +180,28 @@ impl SemActor {
                         "actor receive callable differs from its unique protocol member".into(),
                     );
                 }
-                for parameter in callable.signature.params.iter().skip(1) {
-                    let own = crate::OwnKind::of_ty(&parameter.ty, &module.type_facts)?;
-                    let passing = if own == crate::OwnKind::Owned {
-                        crate::SemParamPassing::Consume
-                    } else {
-                        crate::SemParamPassing::ReadOnly
-                    };
-                    if parameter.passing != passing {
-                        return Err("actor receive must own every message payload field".into());
-                    }
+            } else if self.init == Some(body) {
+                if callable.signature.return_ty != ResolvedTy::Unit {
+                    return Err("actor init must return unit".into());
                 }
-            } else if callable.signature.return_ty != ResolvedTy::Unit {
-                return Err("actor init must return unit".into());
+            } else if hooks.clone().any(|hook| *hook == body)
+                && (callable.signature.return_ty != ResolvedTy::Unit
+                    || callable.signature.params.len() != 1)
+            {
+                return Err("lifecycle hook takes no parameters and returns unit".into());
+            }
+            let lends = self.methods.contains(&body);
+            for parameter in callable.signature.params.iter().skip(1) {
+                let own = crate::OwnKind::of_ty(&parameter.ty, &module.type_facts)?;
+                let admitted = match parameter.passing {
+                    crate::SemParamPassing::ReadOnly => own == crate::OwnKind::None,
+                    crate::SemParamPassing::Consume => own == crate::OwnKind::Owned,
+                    crate::SemParamPassing::Borrow => lends && own == crate::OwnKind::Owned,
+                    crate::SemParamPassing::BorrowMut => false,
+                };
+                if !admitted {
+                    return Err("actor body parameter passing differs from its ownership".into());
+                }
             }
         }
         Ok(())
@@ -174,13 +209,9 @@ impl SemActor {
 }
 
 fn body_actor<'a>(function: &crate::SemFunction, actors: &'a [SemActor]) -> Option<&'a SemActor> {
-    actors.iter().find(|actor| {
-        actor.init == Some(function.callable)
-            || actor
-                .handlers
-                .iter()
-                .any(|handler| handler.callable == function.callable)
-    })
+    actors
+        .iter()
+        .find(|actor| actor.bodies().any(|body| body == function.callable))
 }
 
 pub(crate) fn verify_places(

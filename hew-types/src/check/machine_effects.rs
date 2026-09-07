@@ -228,8 +228,10 @@ fn collect_instantiations(
 ///
 /// A parameter reaches here spelled either as `TypeParam` or, resolved without
 /// a type-parameter scope, as a zero-argument user `Named`. The second spelling
-/// is told apart from a real unit-like type by asking the checker's declaration
-/// context, which is the authority for what was declared.
+/// is told apart from a declared type by asking the checker's own tables: a
+/// name it declared is a type, and a name it did not is a parameter. Asking
+/// both the fact context and `type_defs` matters because an actor is a
+/// declared type that carries no value facts.
 fn is_abstract(ty: &ResolvedTy, output: &TypeCheckOutput) -> bool {
     match ty {
         ResolvedTy::TypeParam { .. } => true,
@@ -238,10 +240,13 @@ fn is_abstract(ty: &ResolvedTy, output: &TypeCheckOutput) -> bool {
             args,
             builtin: None,
             ..
-        } if args.is_empty() => !output
-            .type_fact_context
-            .declarations()
-            .contains_key(name.as_str()),
+        } if args.is_empty() => {
+            !output
+                .type_fact_context
+                .declarations()
+                .contains_key(name.as_str())
+                && !output.type_defs.contains_key(name.as_str())
+        }
         ResolvedTy::Named { args, .. } => args.iter().any(|arg| is_abstract(arg, output)),
         ResolvedTy::Tuple(elements) => elements.iter().any(|element| is_abstract(element, output)),
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) | ResolvedTy::Task(element) => {

@@ -1,5 +1,7 @@
-// A full drop_new mailbox reports loss to its sender. The sender is itself an
-// actor handler: with one worker, that handler occupies the only thread that
+// A `.DropNewest` mailbox view reports the discard to its sender as the
+// submission's own outcome: the policy chose to lose the message, so it is a
+// described delivery, not a failure. The sender is itself
+// an actor handler: with one worker, that handler occupies the only thread that
 // could activate LossyWorker, so the first message is still queued when the
 // second send observes the full mailbox. `main` runs on the process main
 // thread, not on a scheduler worker, so sending from `main` would race the
@@ -15,27 +17,28 @@ actor LossyWorker {
 
 actor Driver {
     receive fn run(worker: LocalPid<LossyWorker>) {
-        match worker.work(1) {
+        let inbox = mailbox(worker, on_full: .DropNewest);
+        match inbox.work(1) {
             .Ok(_) => {},
             .Err(_) => {
                 println("FIRST_SEND_FAILED");
                 exit(41);
             },
         }
-        match worker.work(2) {
-            .Err(error) => match error {
-                SendError.MessageLost => {
+        match inbox.work(2) {
+            .Ok(delivery) => match delivery {
+                Delivery.Discarded => {
                     println("LOSS_VISIBLE");
                     exit(42);
                 },
-                _ => {
-                    println("UNEXPECTED_SEND_ERROR");
-                    exit(43);
+                Delivery.Accepted => {
+                    println("LOSS_HIDDEN");
+                    exit(44);
                 },
             },
-            .Ok(_) => {
-                println("LOSS_HIDDEN");
-                exit(44);
+            .Err(_) => {
+                println("UNEXPECTED_SEND_ERROR");
+                exit(43);
             },
         }
     }

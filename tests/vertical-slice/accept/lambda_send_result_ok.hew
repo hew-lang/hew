@@ -39,6 +39,7 @@ fn main() -> i64 {
             SendError.Unauthorized => 9,
             SendError.Backpressure => 10,
             SendError.MessageLost => 11,
+            SendError.Dead => 12,
         },
     }
 }

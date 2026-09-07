@@ -1,8 +1,9 @@
-// A full fail-policy mailbox rejects the send with SendError.Full. The sender
-// is itself an actor handler: with one worker, that handler occupies the only
-// thread that could activate RejectingWorker, so the capacity-one queue cannot
-// drain between the two sends. `main` runs on the process main thread, not on
-// a scheduler worker, so sending from `main` would race the worker's wake.
+// A `.Reject` mailbox view refuses a submission to a full queue with
+// SendError.Full. The sender is itself an actor handler: with one worker, that
+// handler occupies the only thread that could activate RejectingWorker, so the
+// capacity-one queue cannot drain between the two submissions. `main` runs on
+// the process main thread, not on a scheduler worker, so submitting from
+// `main` would race the worker's wake.
 actor RejectingWorker {
     mailbox 1 overflow fail,
     receive fn work(value: i64) {
@@ -14,15 +15,16 @@ actor RejectingWorker {
 
 actor Driver {
     receive fn run(worker: LocalPid<RejectingWorker>) {
-        match worker.work(1) {
+        let inbox = mailbox(worker, on_full: .Reject);
+        match inbox.work(1) {
             .Ok(_) => {},
             .Err(_) => {
                 println("FIRST_SEND_FAILED");
                 exit(41);
             },
         }
-        match worker.work(2) {
-            .Err(error) => match error {
+        match inbox.work(2) {
+            .Err(failure) => match failure.reason {
                 SendError.Full => {
                     println("FAIL_VISIBLE");
                     exit(43);

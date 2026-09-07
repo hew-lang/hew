@@ -202,7 +202,7 @@
     "mailbox": "Actor mailbox configuration block",
     "overflow": "Mailbox overflow policy",
     "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
-    "within": "Supervisor intensity window separator",
+    "within": "Scope deadline (scope within duration { ... }) and supervisor intensity window separator",
     "shutdown": "Supervisor child graceful-stop deadline clause",
     "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
     "wired_to": "Supervisor child sibling-wiring clause",

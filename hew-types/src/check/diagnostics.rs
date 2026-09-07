@@ -616,6 +616,33 @@ impl Checker {
             || self.canonical_owned_handle_type_name(name).is_some()
     }
 
+    /// A variant carrying an uninhabited payload has no values, so no `match`
+    /// needs an arm for it. `ActorError<Never, M>.Failed(Never)` is the case
+    /// this exists for: an infallible handler's completion call can never
+    /// report a declared failure.
+    fn variant_is_unconstructable(&self, shape: &super::patterns::VariantPayloadShape) -> bool {
+        use super::patterns::VariantPayloadShape;
+        match shape {
+            VariantPayloadShape::Unit => false,
+            VariantPayloadShape::Tuple(types) => types.iter().any(|ty| self.is_uninhabited(ty)),
+            VariantPayloadShape::Struct(fields) => {
+                fields.iter().any(|(_, ty)| self.is_uninhabited(ty))
+            }
+        }
+    }
+
+    /// A type with no values: `Never` itself, or any enum declared with no
+    /// variants (`std.builtins.Never` is exactly that declaration).
+    fn is_uninhabited(&self, ty: &Ty) -> bool {
+        match self.subst.resolve(ty) {
+            Ty::Never => true,
+            Ty::Named { ref name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
+                definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+            }),
+            _ => false,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "associated type resolution requires many cases"
@@ -689,7 +716,8 @@ impl Checker {
                 let missing: Vec<String> = variants
                     .iter()
                     .filter(|(name, shape)| {
-                        !self.variant_covered(&leaves, scrutinee_ty, name, shape)
+                        !self.variant_is_unconstructable(shape)
+                            && !self.variant_covered(&leaves, scrutinee_ty, name, shape)
                     })
                     .map(|(name, _)| name.clone())
                     .collect();
@@ -736,7 +764,8 @@ impl Checker {
                         let mut missing_names: Vec<String> = variants
                             .iter()
                             .filter(|(vname, shape)| {
-                                !self.variant_covered(&leaves, scrutinee_ty, vname, shape)
+                                !self.variant_is_unconstructable(shape)
+                                    && !self.variant_covered(&leaves, scrutinee_ty, vname, shape)
                             })
                             .map(|(vname, _)| vname.clone())
                             .collect();

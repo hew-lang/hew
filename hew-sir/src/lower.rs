@@ -757,6 +757,32 @@ fn concrete_builtin_variant_shape(
     Ok((layout.is_indirect, variants))
 }
 
+/// A variant no value can inhabit: one of its payload types has no values.
+/// `ActorError<Never, M>.Failed(Never)` is the case this exists for — an
+/// infallible handler's completion call can never report a declared failure.
+fn is_unconstructable_variant(module: &HirModule, variant: &SemVariant) -> bool {
+    variant
+        .fields
+        .iter()
+        .any(|field| is_uninhabited(module, &field.ty))
+}
+
+fn is_uninhabited(module: &HirModule, ty: &ResolvedTy) -> bool {
+    if matches!(ty, ResolvedTy::Never) {
+        return true;
+    }
+    let Some(instance) = ty.nominal_instance() else {
+        return false;
+    };
+    let declaration = instance.nominal.declaration();
+    module.items.iter().any(|item| {
+        matches!(item, HirItem::TypeDecl(decl)
+            if decl.declaration == *declaration
+                && decl.kind == hew_hir::HirTypeDeclKind::Enum
+                && decl.variants.is_empty())
+    })
+}
+
 fn concrete_user_variant_shape(
     module: &HirModule,
     enum_ty: &ResolvedTy,
@@ -2455,6 +2481,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || crate::sink_element(ty).is_some()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
+        || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
         || ty.is_builtin(hew_types::BuiltinType::ChildRef)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
@@ -5794,7 +5821,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .collect::<Vec<_>>();
         for (variant, arms) in candidates.iter().enumerate() {
-            if arms.is_empty() {
+            if arms.is_empty()
+                && !is_unconstructable_variant(self.service.module, &descriptor.variants[variant])
+            {
                 return Err(format!("match is missing exhaustive variant tag {variant}"));
             }
         }
@@ -5825,6 +5854,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let root_live = self.owned_live.clone();
             let branch_candidates = &candidates[usize::try_from(branch.variant)
                 .map_err(|_| "variant tag exceeds usize".to_string())?];
+            // A variant with an uninhabited payload has no values, so its
+            // branch is unreachable and the source needs no arm for it.
+            if branch_candidates.is_empty() {
+                self.destroy_all_live()?;
+                self.set_terminator(SemTerminator::Unreachable)?;
+                continue;
+            }
             for (candidate_position, arm_index) in branch_candidates.iter().enumerate() {
                 let arm = &source_arms[*arm_index];
                 let mut failures = Vec::new();

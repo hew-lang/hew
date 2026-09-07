@@ -43,7 +43,7 @@
 //! it does, a `fork` written directly in `fn main`, or in a free function
 //! `main` calls, is refused with `E_LIMIT_MAIN_CONTEXT` rather than parked on
 //! a contextless wait. Host the loop in an actor and park `main` on its ask,
-//! or use `join {}` for a fan-out from `main`.
+//! or use batch `fork` for a fan-out from `main`.
 //!
 //! Second, a statement in a `scope` body that is a bare call is read as a task
 //! spawn, not as an ordinary call. `println(f"{a},{b}")` inside the scope is
@@ -55,9 +55,10 @@
 //! `fork name = f(args)` requires a unit-returning `f`. Value propagation out
 //! of argument-bearing spawns is fail-closed rather than silently dropped.
 //!
-//! `join` is the actor-ask fan-out form. It issues every branch concurrently,
-//! waits for all replies, and binds a tuple in source order. Two branches have
-//! result shape `(R0, R1)`, not a list, map, or nested `Result`:
+//! Batch `fork` is the fan-out form for waiting on every branch. It issues
+//! every branch concurrently, waits for all replies, and binds a tuple in
+//! source order. Two branches have result shape `(R0, R1)`, not a list, map,
+//! or nested `Result`:
 //!
 //! ```hew
 //! actor Doubler {
@@ -67,16 +68,14 @@
 //! fn main() {
 //!     let a = spawn Doubler;
 //!     let b = spawn Doubler;
-//!     let (first, second) = join {
-//!         a.compute(10),
-//!         b.compute(11),
-//!     };
+//!     let (first, second) = await fork (a.compute(10), b.compute(11));
 //!     assert_eq(first, 20);
 //!     assert_eq(second, 22);
 //!     println(f"{first},{second}");
 //! }
 //! ```
 //!
-//! `scope` and `join` are distinct: scope manages task lifetime, while join
-//! collects ordered actor replies. Cancellation is cooperative at suspension
-//! points and is part of normal scope teardown, not an exception to the model.
+//! `scope` and batch `fork` are distinct: scope manages task lifetime, while
+//! `await fork (...)` collects ordered results. Cancellation is cooperative
+//! at suspension points and is part of normal scope teardown, not an
+//! exception to the model.

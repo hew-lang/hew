@@ -25,12 +25,17 @@ fn main() {
     println("select result:");
     println(result);
 
-    // Test join - both results
-    let results = join {
-        fast.compute(10),
-        slow.compute(10),
+    // Test batch fork - both results
+    let results = await fork (fast.compute(10), slow.compute(10));
+    let fast_result = match results.0 {
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
-    println("join results:");
-    println(results.0);
-    println(results.1);
+    let slow_result = match results.1 {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    println("fork results:");
+    println(fast_result);
+    println(slow_result);
 }

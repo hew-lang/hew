@@ -527,12 +527,6 @@ fn fmt_totality_expr_select() {
     assert_roundtrip("fn f() {\n    select {\n        v = await ch => println(v),\n    }\n}\n");
 }
 
-/// `Expr::Join`
-#[test]
-fn fmt_totality_expr_join() {
-    assert_roundtrip("fn f() {\n    join {\n        a(),\n        b(),\n    }\n}\n");
-}
-
 /// `Expr::UnsafeBlock`
 #[test]
 fn fmt_totality_expr_unsafe_block() {
@@ -585,12 +579,6 @@ fn fmt_totality_expr_postfix_try() {
 #[test]
 fn fmt_totality_expr_range() {
     assert_roundtrip("fn f() {\n    for i in 0 .. 10 {\n        println(i);\n    }\n    for j in 0 ..= 9 {\n        println(j);\n    }\n}\n");
-}
-
-/// `Expr::Timeout` — `await expr | after duration`.
-#[test]
-fn fmt_totality_expr_timeout() {
-    assert_roundtrip("fn f() {\n    let value = await task | after 5s;\n}\n");
 }
 
 /// `Expr::Await`

@@ -25,11 +25,10 @@ fn main() {
     let w1 = spawn FibWorker;
     let w2 = spawn FibWorker;
     let w3 = spawn FibWorker;
-    let (r1, r2, r3) = join {
-        w1.compute(5),
-        w2.compute(10),
-        w3.compute(15),
-    };
+    let (r1_result, r2_result, r3_result) = await fork (w1.compute(5), w2.compute(10), w3.compute(15));
+    let r1 = match r1_result { .Ok(value) => value, .Err(_) => -1 };
+    let r2 = match r2_result { .Ok(value) => value, .Err(_) => -1 };
+    let r3 = match r3_result { .Ok(value) => value, .Err(_) => -1 };
     print_result(1, 5, r1);
     print_result(2, 10, r2);
     print_result(3, 15, r3);

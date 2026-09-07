@@ -1,0 +1,20 @@
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+}
+
+fn main() {
+    let early = Token { label: "e", id: 1 };
+    early.close();
+    println("released early");
+
+    let late = Token { label: "l", id: 2 };
+    println(f"late live {late.id}");
+}

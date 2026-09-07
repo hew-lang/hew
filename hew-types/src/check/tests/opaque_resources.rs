@@ -31,6 +31,68 @@ extern "C" {
 "#;
 
 #[test]
+fn borrowing_close_on_resource_type_is_rejected() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(self) {}
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("`close` on a resource type must consume its receiver")),
+        "a borrowing `close` on a `#[resource]` type must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn borrowing_close_on_opaque_type_is_rejected() {
+    let output = check_source(
+        r"
+        #[opaque]
+        type Handle {}
+
+        impl Handle {
+            fn close(self) {}
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("`close` on a resource type must consume its receiver")),
+        "a borrowing `close` on an `#[opaque]` type must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn borrowing_close_on_unmarked_type_stays_legal() {
+    let output = check_source(
+        r"
+        type Widget { fd: i64 }
+
+        impl Widget {
+            fn close(self) {}
+        }
+        ",
+    );
+    assert!(
+        !output.errors.iter().any(|error| error
+            .message
+            .contains("`close` on a resource type must consume its receiver")),
+        "a borrowing `close` on an unmarked type is legal, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn resource_close_discharges_and_moves_the_receiver() {
     let output = check_source(
         r"
@@ -1233,7 +1295,7 @@ fn machine_state_resource_payload_rejects() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
         "type Tok { id: i64 }\n",
-        "impl Tok { fn close(self) { } }\n",
+        "impl Tok { fn close(consume self) { } }\n",
         "machine Gate {\n",
         "    events { Open, Shut, }\n",
         "    state Closed,\n",
@@ -1260,7 +1322,7 @@ fn machine_state_resource_payload_rejects_transitively() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
         "type Tok { id: i64 }\n",
-        "impl Tok { fn close(self) { } }\n",
+        "impl Tok { fn close(consume self) { } }\n",
         "type Wrap { t: Tok }\n",
         "machine Gate {\n",
         "    events { Open, }\n",
@@ -1306,7 +1368,7 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
         "type Tok { id: i64 }\n",
-        "impl Tok { fn close(self) { } }\n",
+        "impl Tok { fn close(consume self) { } }\n",
         "type Phantom<T> { id: i64 }\n",
         "machine Gate {\n",
         "    events { Open, }\n",

@@ -805,6 +805,10 @@ pub enum TypeErrorKind {
     OwnMutateBorrowed,
     /// A projection's enclosing value cannot be split into independent owners.
     OwnPartialConsume,
+    /// A `#[resource]` / `#[opaque]` type's `close` method borrows its
+    /// receiver instead of consuming it (D442). A borrowing `close` runs the
+    /// implicit scope-exit release a second time when called explicitly.
+    ResourceCloseMustConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
     /// A `gen fn` return-type annotation spells the generator handle
@@ -1524,6 +1528,7 @@ impl TypeErrorKind {
             Self::OwnConsumeBorrowed => "E_OWN_CONSUME_BORROWED",
             Self::OwnMutateBorrowed => "E_OWN_MUTATE_BORROWED",
             Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
+            Self::ResourceCloseMustConsume => "E_RESOURCE_CLOSE_MUST_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::SendResultDropped => "E_SEND_RESULT_DROPPED",

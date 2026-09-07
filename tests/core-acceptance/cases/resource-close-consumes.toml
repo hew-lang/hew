@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-consumes"
+intent = "A user `#[resource]` value closed early via `close(consume self)` releases exactly once at the explicit call site, and a second binding still releases exactly once at its own scope exit."
+source = "cases/resource-close-consumes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "close e1\nreleased early\nlate live 2\nclose l2\n"
+stderr = ""
+exit = 0

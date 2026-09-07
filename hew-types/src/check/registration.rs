@@ -7416,6 +7416,33 @@ impl Checker {
             self.extern_method_origins.insert(registered_key, origin);
         }
         self.publish_impl_method_sig(type_name, &method.name, &sig);
+        // D442: a `#[resource]` / `#[opaque]` type's inherent `close` must
+        // consume its receiver. A borrowing `close(self)` runs the implicit
+        // scope-exit release a second time when a caller invokes `close()`
+        // explicitly — the receiver is still live afterward, so the
+        // scope-exit drop dispatches `close` again. Only the inherent form is
+        // checked here (mirrors the HIR W3.030 discipline, which only walks
+        // trait-free `impl T { fn close }` blocks); a `Closable` trait impl's
+        // ownership contract is validated against the trait signature
+        // elsewhere.
+        if method.name == "close"
+            && !method.consumes_self
+            && trait_bound.is_none()
+            && (self.registry.is_resource(type_name)
+                || self.user_opaque_type_names.contains(type_name))
+        {
+            let span = if method.decl_span.start == method.decl_span.end {
+                method.fn_span.clone()
+            } else {
+                method.decl_span.clone()
+            };
+            self.errors.push(TypeError::new(
+                TypeErrorKind::ResourceCloseMustConsume,
+                span,
+                "`close` on a resource type must consume its receiver; write \
+                 `fn close(consume self)`",
+            ));
+        }
         // A `consume self` inherent method moves its receiver at every call
         // site. Register the qualified `Type::method` name into the
         // consume-receiver set so the dispatch site marks the receiver moved

@@ -93,7 +93,7 @@ fn consumed_resource_record_supports_mutation() {
     assert_check_clean(concat!(
         "#[resource]\n",
         "type Conn { fd: i64, }\n",
-        "impl Conn { fn close(c: Conn) { println(c.fd); } }\n",
+        "impl Conn { fn close(consume self) { println(self.fd); } }\n",
         "fn retag(consume var c: Conn) { c.fd = 9; }\n",
     ));
 }
@@ -103,7 +103,7 @@ fn borrowed_resource_mutation_requires_ownership() {
     for body in ["c.fd = 9;", "c.retag();"] {
         let (errors, _) = parse_and_check(&format!(
             "#[resource] type Conn {{ fd: i64 }}
-             impl Conn {{ fn close(c: Conn) {{ println(c.fd); }} }}
+             impl Conn {{ fn close(consume self) {{ println(self.fd); }} }}
              trait Retag {{ fn retag(var self); }}
              impl Retag for Conn {{ fn retag(var self) {{ self.fd = 9; }} }}
              fn retag(var c: Conn) {{ {body} }}"
@@ -117,7 +117,7 @@ fn borrowed_resource_mutation_requires_ownership() {
     }
     assert_check_clean(
         "#[resource] type Conn { fd: i64 }
-         impl Conn { fn close(c: Conn) { println(c.fd); } }
+         impl Conn { fn close(consume self) { println(self.fd); } }
          fn retag(var c: Conn) { c = Conn { fd: 1 }; c.fd = 9; }",
     );
 }

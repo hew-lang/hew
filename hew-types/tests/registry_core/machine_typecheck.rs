@@ -1729,6 +1729,83 @@ fn machine_state_entry_reads_the_selected_input_payload() {
 /// The same scope is fail-closed: a field the selected input does not declare
 /// is refused rather than resolved against some other input.
 #[test]
+fn machine_transition_supervisor_spawn_refused_as_impure() {
+    // Spawning a supervisor from a transition body is refused by machine
+    // normalization, which runs before HIR. This replaces the HIR pre-pass
+    // walker's `Item::Machine` arm: a machine that normalizes has no machine
+    // item left to walk, and one that does not never reaches HIR.
+    let output = typecheck_isolated(
+        r"
+        supervisor Root {
+            strategy: one_for_one,
+            child worker: Worker(),
+        }
+        actor Worker {
+            receive fn work() {}
+        }
+        machine M {
+            events {
+                Tick,
+            }
+
+            state Active,
+            on Tick: Active => Active reenter {
+                let s = spawn Root(value: 1);
+                .Active
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("pure machine evaluator")),
+        "a supervisor spawn in a transition body must be refused as impure: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_state_entry_supervisor_spawn_refused_as_impure() {
+    // The same refusal from a state `entry` hook, the other user-expression
+    // position the retired HIR walker covered.
+    let output = typecheck_isolated(
+        r"
+        supervisor Root {
+            strategy: one_for_one,
+            child worker: Worker(),
+        }
+        actor Worker {
+            receive fn work() {}
+        }
+        machine M {
+            events {
+                Tick,
+            }
+
+            state Idle {
+                entry {
+                    let s = spawn Root(value: 1);
+                }
+            },
+            on Tick: Idle => Idle reenter { .Idle }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("pure machine evaluator")),
+        "a supervisor spawn in a state entry hook must be refused as impure: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn machine_state_entry_unknown_input_field_errors() {
     let output = typecheck_isolated(
         r"

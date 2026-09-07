@@ -30375,31 +30375,10 @@ fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
                 }
             }
-            // A242 invariant: HIR pre-pass walkers that visit user expression
-            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
-            // FOUR Item::Machine positions:
-            //   1. each state's `entry` block
-            //   2. each state's `exit` block
-            //   3. each transition's `guard` expression (if any)
-            //   4. each transition's `body` expression (action)
-            // Partial coverage (e.g. transitions but not states) is a BLOCK in
-            // the independent review.
-            Item::Machine(machine) => {
-                for state in &machine.states {
-                    if let Some(entry) = &state.entry {
-                        scan_block_for_blocking_recv(entry, &mut ctx.diagnostics);
-                    }
-                    if let Some(exit) = &state.exit {
-                        scan_block_for_blocking_recv(exit, &mut ctx.diagnostics);
-                    }
-                }
-                for transition in &machine.transitions {
-                    if let Some(guard) = &transition.guard {
-                        scan_expr_for_blocking_recv(&guard.0, &mut ctx.diagnostics);
-                    }
-                    scan_expr_for_blocking_recv(&transition.body.0, &mut ctx.diagnostics);
-                }
-            }
+            // Machine bodies never reach here: normalization rewrites a
+            // machine into ordinary declarations before checking, and a
+            // machine it refuses fails type check before HIR. The expanded
+            // bodies are walked through `Item::Impl` like any other method.
             // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
             // do not carry user expression bodies that can call `.recv()`.
             _ => {}
@@ -30949,31 +30928,10 @@ fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_binop_gates(&method.body, &mut gate_ctx);
                 }
             }
-            Item::Machine(machine_decl) => {
-                // State entry/exit blocks and transition guards/bodies are
-                // lowered to HIR (see `lower_machine` at lower.rs:4057+ —
-                // `lower_machine_block_filtered` walks entry/exit, and
-                // `lower_machine_expr_filtered` walks the transition body
-                // around lower.rs:4201). A gated binop in any of these
-                // positions would otherwise escape FC-P1-D and surface at
-                // the MIR producer. Reference: hew-parser/src/ast.rs
-                // MachineDecl / MachineState (entry, exit) / MachineTransition
-                // (guard, body).
-                for state in &machine_decl.states {
-                    if let Some(entry) = &state.entry {
-                        scan_block_for_binop_gates(entry, &mut gate_ctx);
-                    }
-                    if let Some(exit) = &state.exit {
-                        scan_block_for_binop_gates(exit, &mut gate_ctx);
-                    }
-                }
-                for tr in &machine_decl.transitions {
-                    if let Some(guard) = &tr.guard {
-                        scan_expr_for_binop_gates(&guard.0, &guard.1, false, &mut gate_ctx);
-                    }
-                    scan_expr_for_binop_gates(&tr.body.0, &tr.body.1, false, &mut gate_ctx);
-                }
-            }
+            // Machine bodies never reach here: normalization rewrites a machine
+            // into ordinary declarations before checking, and a machine it refuses
+            // fails type check before HIR. The expanded bodies are walked through
+            // `Item::Impl` like any other method.
             // Variants below carry no user expression bodies that reach MIR
             // in v0.5; each is explicit (no `_` catch-all) so a future
             // `Item` variant trips compilation and forces an audit instead of
@@ -31000,6 +30958,7 @@ fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
             | Item::ExternBlock(_)
             | Item::Supervisor(_)
             | Item::Record(_)
+            | Item::Machine(_)
             | Item::Import(_) => {}
         }
     }
@@ -31726,36 +31685,10 @@ fn scan_item_for_supervisor_spawn(
                 );
             }
         }
-        // A242 invariant: HIR pre-pass walkers that visit user expression
-        // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
-        // FOUR Item::Machine positions:
-        //   1. each state's `entry` block
-        //   2. each state's `exit` block
-        //   3. each transition's `guard` expression (if any)
-        //   4. each transition's `body` expression (action)
-        // Partial coverage (e.g. transitions but not states) is a BLOCK in
-        // the independent review.
-        Item::Machine(machine) => {
-            for state in &machine.states {
-                if let Some(entry) = &state.entry {
-                    scan_block_for_supervisor_spawn(entry, current_module, registry, diagnostics);
-                }
-                if let Some(exit) = &state.exit {
-                    scan_block_for_supervisor_spawn(exit, current_module, registry, diagnostics);
-                }
-            }
-            for transition in &machine.transitions {
-                if let Some(guard) = &transition.guard {
-                    scan_expr_for_supervisor_spawn(&guard.0, current_module, registry, diagnostics);
-                }
-                scan_expr_for_supervisor_spawn(
-                    &transition.body.0,
-                    current_module,
-                    registry,
-                    diagnostics,
-                );
-            }
-        }
+        // Machine bodies never reach here: normalization rewrites a machine
+        // into ordinary declarations before checking, and a machine it refuses
+        // fails type check before HIR. The expanded bodies are walked through
+        // `Item::Impl` like any other method.
         // Const, Trait, Supervisor, Record, TypeDecl, TypeAlias, Wire,
         // Import, ExternBlock: no user expression bodies that can call
         // `spawn`.
@@ -32565,28 +32498,10 @@ fn scan_item_for_vec_index_gate(
                 scan_block_for_vec_index_gate(&method.body, expr_types, diagnostics);
             }
         }
-        Item::Machine(machine_decl) => {
-            // Machine walkers must cover all four user-expression positions:
-            // state entry, state exit, transition guard, transition body.
-            // Skipping any of state.entry / state.exit lets unsupported
-            // `Vec<T>` index/slice expressions slip past this gate (see
-            // `.tmp/orchestration/dispatch-invariants.md` →
-            // `machine-body-walker-coverage`).
-            for state in &machine_decl.states {
-                if let Some(entry) = &state.entry {
-                    scan_block_for_vec_index_gate(entry, expr_types, diagnostics);
-                }
-                if let Some(exit) = &state.exit {
-                    scan_block_for_vec_index_gate(exit, expr_types, diagnostics);
-                }
-            }
-            for transition in &machine_decl.transitions {
-                if let Some(guard) = &transition.guard {
-                    scan_expr_for_vec_index_gate(guard, expr_types, diagnostics);
-                }
-                scan_expr_for_vec_index_gate(&transition.body, expr_types, diagnostics);
-            }
-        }
+        // Machine bodies never reach here: normalization rewrites a machine
+        // into ordinary declarations before checking, and a machine it refuses
+        // fails type check before HIR. The expanded bodies are walked through
+        // `Item::Impl` like any other method.
         // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc. do not
         // carry user expression bodies that can contain `Expr::Index`.
         _ => {}

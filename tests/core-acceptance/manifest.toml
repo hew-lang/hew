@@ -36,6 +36,17 @@ stdout = "Established\nFailed\nexchange:41:HELLO\naccepted:HELLO\nunexpected ack
 exit = 0
 
 [[case]]
+id = "machine-generic-values"
+intent = "A generic machine instantiated at two type arguments in one program keeps its own state, event and output layouts and copies its payloads independently."
+source = "cases/machine-generic-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "stored\nnumber 7\ncleared\nstored\nword hew\ncleared\n"
+exit = 0
+
+[[case]]
 id = "machine-self-target"
 intent = "A transition whose source and target are the same state produces that state by naming `state`, and the staged payload survives the identity fallback."
 source = "cases/machine-self-target.hew"

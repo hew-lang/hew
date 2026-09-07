@@ -37,7 +37,7 @@ fn fallible_returns_reject_wrong_boundary_and_nested_context() {
 
 #[test]
 fn fallible_receive_completion_carries_its_declared_failure() {
-    let source = "actor Worker { receive fn read() -> i64 fails string { Ok(7) } } \
+    let source = "actor Worker { receive fn read() -> i64 fails string { 7 } } \
          fn main() { let w = spawn Worker(); let _ = w.read(); }";
     let checked = check_source(source);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);

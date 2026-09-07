@@ -347,7 +347,7 @@ fn an_infallible_completion_envelope_needs_no_failed_arm() {
 #[test]
 fn a_fails_completion_envelope_still_requires_its_failed_arm() {
     let output = check_source(
-        "actor Worker { receive fn total() -> i64 fails string { Ok(1) } } \
+        "actor Worker { receive fn total() -> i64 fails string { 1 } } \
          fn main() { let w = spawn Worker(); \
            match w.total() { \
              .Ok(n) => {}, \

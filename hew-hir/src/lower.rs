@@ -2993,6 +2993,15 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
+    // The actor delivery declarations are authored in the embedded
+    // `std/builtins.hew` program rather than the module graph, but they are
+    // lowered under the same `std.builtins` owner every downstream stage looks
+    // them up by. Publish their identities alongside the graph's.
+    ctx.source_type_identities.extend(
+        hew_types::actor_delivery::DECLARATIONS
+            .iter()
+            .map(|name| format!("std.builtins.{name}")),
+    );
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
             if *module_id == module_graph.root {
@@ -23151,12 +23160,6 @@ impl LowerCtx {
             // order only; it is not declaration-identity authority.
             if self.record_registry.contains_key(&qualified)
                 || self.source_type_identities.contains(&qualified)
-                // The actor delivery declarations are enums and records of
-                // `std/builtins.hew`; the source-identity scan above never sees
-                // that module, and every downstream stage looks them up by
-                // their `std.builtins` owner.
-                || (module_full_path == "std.builtins"
-                    && hew_types::actor_delivery::DECLARATIONS.contains(&name))
             {
                 return qualified;
             }

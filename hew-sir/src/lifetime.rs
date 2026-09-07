@@ -802,11 +802,25 @@ impl<'a> Flow<'a> {
                 mark_trap(&mut state);
                 successors.extend(self.edge(id, cleanup, state, emit));
             }
-            SemTerminator::ActorCall { normal, unwind, .. }
-            | SemTerminator::Call { normal, unwind, .. }
-            | SemTerminator::RtCall { normal, unwind, .. }
-            | SemTerminator::ValueCall { normal, unwind, .. }
+            SemTerminator::Call { normal, unwind, .. }
             | SemTerminator::IndirectCall { normal, unwind, .. } => {
+                Self::require_fault(id, DEAD, &state, emit);
+                let mut returned = state.clone();
+                block
+                    .terminator
+                    .visit_results(|result| self.define(id, result.id, &mut returned, emit));
+                if let Some(normal) = normal {
+                    successors.extend(self.edge(id, normal, returned, emit));
+                }
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    state.fault = LIVE;
+                    mark_trap(&mut state);
+                    successors.extend(self.edge(id, edge, state, emit));
+                }
+            }
+            SemTerminator::ActorCall { normal, unwind, .. }
+            | SemTerminator::RtCall { normal, unwind, .. }
+            | SemTerminator::ValueCall { normal, unwind, .. } => {
                 Self::require_fault(id, DEAD, &state, emit);
                 let mut returned = state.clone();
                 block
@@ -2004,7 +2018,7 @@ mod tests {
                         },
                         args: vec![],
                         result: CallResult::Unit,
-                        normal: edge(1, &[]),
+                        normal: Some(edge(1, &[])),
                         unwind: CallUnwind::Cleanup(edge(2, &[])),
                     },
                 ),
@@ -2111,7 +2125,7 @@ mod tests {
                         decision: BoundaryDecision::Borrow,
                     }],
                     result: CallResult::Unit,
-                    normal: edge(1, &[]),
+                    normal: Some(edge(1, &[])),
                     unwind: CallUnwind::Cleanup(edge(2, &[])),
                 },
             ),
@@ -2342,7 +2356,7 @@ mod tests {
                     callee: CallableId(1),
                     args: vec![boundary(0)],
                     result: CallResult::Value(owned(1)),
-                    normal: edge(1, &[]),
+                    normal: Some(edge(1, &[])),
                     unwind: CallUnwind::Cleanup(edge(2, &[])),
                 },
             ),
@@ -2371,7 +2385,7 @@ mod tests {
                     callee: CallableId(1),
                     args: Vec::new(),
                     result: CallResult::Unit,
-                    normal: edge(1, &[]),
+                    normal: Some(edge(1, &[])),
                     unwind: CallUnwind::Cleanup(edge(2, &[])),
                 },
             ),
@@ -2527,7 +2541,7 @@ mod tests {
             },
             args: vec![],
             result: CallResult::Unit,
-            normal: edge(1, &[]),
+            normal: Some(edge(1, &[])),
             unwind: CallUnwind::Cleanup(edge(2, &[])),
         };
         let cleanup = vec![end_borrow(3, 1), destroy(4, 0)];

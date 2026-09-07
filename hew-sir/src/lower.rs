@@ -1614,7 +1614,9 @@ impl<'a> InstanceService<'a> {
             ));
         }
         for (index, argument) in type_args.iter().enumerate() {
-            if !is_supported_call_value(self.module, &self.checked_facts, argument) {
+            if *argument != ResolvedTy::Never
+                && !is_supported_call_value(self.module, &self.checked_facts, argument)
+            {
                 return Err(format!(
                     "generic direct callee `{}` type argument {index} is `{}`; SIR generic instances require a concrete semantic value contract",
                     declaration.full_path(),
@@ -1623,7 +1625,9 @@ impl<'a> InstanceService<'a> {
             }
         }
         for argument in &type_args {
-            self.require_type_facts(argument)?;
+            if *argument != ResolvedTy::Never {
+                self.require_type_facts(argument)?;
+            }
         }
         let key = SirInstanceKey {
             template: template.id,
@@ -2209,7 +2213,7 @@ impl PreparedCallee {
         signature: SemSignature,
         args: Vec<crate::BoundaryOperand>,
         result: CallResult,
-        normal: Edge,
+        normal: Option<Edge>,
         unwind: CallUnwind,
     ) -> SemTerminator {
         match self {
@@ -6125,16 +6129,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .copied()
             .collect();
         let return_ty = signature.return_ty.clone();
-        let (result, normal, continuation) = if return_ty == ResolvedTy::Unit {
+        let (result, normal, continuation) = if return_ty == ResolvedTy::Never {
+            (CallResult::Never, None, None)
+        } else if return_ty == ResolvedTy::Unit {
             if value_required {
                 return Err("unit-valued call cannot produce an SSA value".to_string());
             }
             (
                 CallResult::Unit,
-                Edge {
+                Some(Edge {
                     target: self.new_block(Vec::new()),
                     args: vec![],
-                },
+                }),
                 None,
             )
         } else {
@@ -6153,14 +6159,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     ty: return_ty.clone(),
                     own,
                 }),
-                Edge {
+                Some(Edge {
                     target: normal,
                     args: vec![Operand { value: raw }],
-                },
+                }),
                 Some((continuation, own)),
             )
         };
-        let normal_block = normal.target;
+        let normal_block = normal.as_ref().map(|edge| edge.target);
         let unwind = self.new_block(Vec::new());
         let id = OpId(self.ops);
         self.ops += 1;
@@ -6179,6 +6185,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.owned_live = live_at_call.clone();
         self.end_call_loans(loans)?;
         self.finish_fault_exit()?;
+        let Some(normal_block) = normal_block else {
+            self.current = self.new_block(Vec::new());
+            self.set_terminator(SemTerminator::Unreachable)?;
+            return Ok(None);
+        };
         self.current = normal_block;
         self.owned_live = live_at_call;
         self.end_call_loans(loans)?;

@@ -134,10 +134,10 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
                 }),
-                normal: Edge {
+                normal: Some(Edge {
                     target: BlockId(1),
                     args: vec![Operand { value: ValueId(8) }],
-                },
+                }),
                 unwind: CallUnwind::Cleanup(Edge {
                     target: BlockId(2),
                     args: Vec::new(),
@@ -263,10 +263,10 @@ fn no_unwind_call_visits_only_its_normal_cfg_edge() {
         callee: CallableId(0),
         args: Vec::new(),
         result: CallResult::Unit,
-        normal: Edge {
+        normal: Some(Edge {
             target: BlockId(1),
             args: Vec::new(),
-        },
+        }),
         unwind: CallUnwind::NotApplicable,
     };
 
@@ -361,10 +361,10 @@ fn indirect_callee_rewrites_without_shifting_arguments_or_result_edges() {
             ty: ResolvedTy::I64,
             own: OwnKind::None,
         }),
-        normal: Edge {
+        normal: Some(Edge {
             target: BlockId(1),
             args: vec![Operand { value: ValueId(8) }],
-        },
+        }),
         unwind: CallUnwind::Cleanup(Edge {
             target: BlockId(2),
             args: vec![Operand { value: ValueId(6) }],

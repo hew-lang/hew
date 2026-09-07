@@ -40,11 +40,42 @@ fn direct_calls(
             ..
         } = &block.terminator
         {
-            Some((*callee, result, normal, unwind))
+            Some((
+                *callee,
+                result,
+                normal.as_ref().expect("returning call"),
+                unwind,
+            ))
         } else {
             None
         }
     })
+}
+
+#[test]
+fn returning_calls_require_a_successful_edge() {
+    for source in [
+        "fn identity(x: i64) -> i64 { x } fn main() -> i64 { identity(41) }",
+        "fn main() { let identity = |x: i64| x; println(identity(41)); }",
+    ] {
+        let mut module = lower_source(source).module;
+        assert!(verify_module(&module).is_empty());
+        let call = module
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator {
+                SemTerminator::Call { normal, .. } | SemTerminator::IndirectCall { normal, .. } => {
+                    Some(normal)
+                }
+                _ => None,
+            })
+            .expect("source must invoke a callable");
+        *call = None;
+        assert!(verify_module(&module)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}").contains("normal edge")));
+    }
 }
 
 #[test]
@@ -106,7 +137,7 @@ fn call_result_outside_its_normal_edge_is_rejected() {
                 edge.args.push(hew_sir::Operand { value });
                 None
             }
-            "continuation" => Some(normal.target),
+            "continuation" => Some(normal.as_ref().expect("returning call").target),
             _ => unreachable!(),
         };
         if let Some(target) = target {

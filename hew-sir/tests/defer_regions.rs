@@ -224,7 +224,7 @@ fn defer_rejects_active_fault_calls_and_failed_result_reads() {
     let SemTerminator::Call { normal, unwind, .. } = &mut call else {
         unreachable!()
     };
-    *normal = fixture::edge(3);
+    *normal = Some(fixture::edge(3));
     *unwind = CallUnwind::Cleanup(fixture::edge(3));
     function.blocks.push(fixture::block(16, vec![], call));
     rejects(active, "active fault cannot be abandoned or overwritten");
@@ -265,7 +265,11 @@ fn defer_rejects_active_fault_calls_and_failed_result_reads() {
         ty: hew_types::ResolvedTy::I64,
         own: OwnKind::None,
     });
-    normal.args.push(fixture::operand(90));
+    normal
+        .as_mut()
+        .expect("returning call")
+        .args
+        .push(fixture::operand(90));
     function.blocks[6].args.push(BlockArg {
         value: ValueId(92),
         ty: hew_types::ResolvedTy::I64,

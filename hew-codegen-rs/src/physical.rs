@@ -2618,9 +2618,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 normal,
                 unwind,
-            } => {
-                self.emit_indirect_call(*callee, signature, args, *result, normal, unwind.as_ref())
-            }
+            } => self.emit_indirect_call(
+                *callee,
+                signature,
+                args,
+                *result,
+                normal.as_ref(),
+                unwind.as_ref(),
+            ),
 
             PhysicalTerminator::Return { value } => self.emit_return(*value),
             PhysicalTerminator::Goto(edge) => self.emit_edge(edge),
@@ -2675,7 +2680,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 normal,
                 unwind,
-            } => self.emit_call(*callee, args, *result, normal, unwind.as_ref()),
+            } => self.emit_call(*callee, args, *result, normal.as_ref(), unwind.as_ref()),
             PhysicalTerminator::ValueCall {
                 ty,
                 capability,
@@ -3033,7 +3038,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         callee_id: CallableId,
         transfers: &[ArgumentTransfer],
         result: Option<StorageId>,
-        normal: &PhysicalEdge,
+        normal: Option<&PhysicalEdge>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let callee = callable(self.module, callee_id)?;
@@ -3158,14 +3163,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("store selected value call status")?;
-        self.emit_call_outcome(status, Some(result), normal, Some(unwind))
+        self.emit_call_outcome(status, Some(result), Some(normal), Some(unwind))
     }
 
     fn emit_call_outcome(
         &self,
         status: IntValue<'ctx>,
         result: Option<StorageId>,
-        normal: &PhysicalEdge,
+        normal: Option<&PhysicalEdge>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let success = self.ctx.append_basic_block(self.value, "call.success");
@@ -3183,7 +3188,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(ok, success, failure)
             .llvm_ctx("branch on physical call status")?;
         self.builder.position_at_end(success);
-        self.emit_result_edge(result, normal)?;
+        if let Some(normal) = normal {
+            self.emit_result_edge(result, normal)?;
+        } else {
+            self.reject_invalid_task_state()?;
+        }
         self.builder.position_at_end(failure);
         if let Some(unwind) = unwind {
             self.emit_edge(unwind)

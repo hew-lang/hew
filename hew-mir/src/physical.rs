@@ -928,7 +928,7 @@ pub enum PhysicalTerminator {
         signature: PhysicalCallSignature,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
-        normal: PhysicalEdge,
+        normal: Option<PhysicalEdge>,
         unwind: Option<PhysicalEdge>,
     },
     Return {
@@ -955,12 +955,13 @@ pub enum PhysicalTerminator {
     },
     /// Calls use the module's fixed status/result/fault ABI. A non-zero status
     /// writes a non-null owned fault and enters `unwind`; a zero status enters
-    /// `normal`, where `result` (when present) is initialized.
+    /// `normal`, where `result` (when present) is initialized. Never-returning
+    /// calls have neither result storage nor a normal edge; success is invalid.
     Call {
         callee: CallableId,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
-        normal: PhysicalEdge,
+        normal: Option<PhysicalEdge>,
         unwind: Option<PhysicalEdge>,
     },
     /// Execute the exact selected value callback with borrowed slots. Success
@@ -2515,7 +2516,10 @@ impl FunctionLowerer<'_> {
                     CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
-                normal: self.lower_edge(normal)?,
+                normal: normal
+                    .as_ref()
+                    .map(|edge| self.lower_edge(edge))
+                    .transpose()?,
                 unwind: match unwind {
                     CallUnwind::NotApplicable => None,
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
@@ -4878,7 +4882,7 @@ fn call_successors(
     function: &PhysicalFunction,
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
-    normal: &PhysicalEdge,
+    normal: Option<&PhysicalEdge>,
     unwind: Option<&PhysicalEdge>,
     mut state: FlowState,
     block: BlockId,
@@ -4918,8 +4922,10 @@ fn call_successors(
     if let Some(result) = result {
         define(function, &mut normal_state, result, block, "call result")?;
     }
-    let normal_state = apply_edge(function, normal, normal_state, block)?;
-    let mut successors = vec![normal_state];
+    let mut successors = Vec::new();
+    if let Some(normal) = normal {
+        successors.push(apply_edge(function, normal, normal_state, block)?);
+    }
     if let Some(unwind) = unwind {
         let mut failure_state = state;
         if let Some(result) = result {
@@ -5187,7 +5193,7 @@ fn terminator_successors(
                 function,
                 &transfers,
                 *result,
-                normal,
+                normal.as_ref(),
                 unwind.as_ref(),
                 state,
                 block,
@@ -5277,8 +5283,16 @@ fn terminator_successors(
             normal,
             unwind,
             ..
-        }
-        | PhysicalTerminator::ActorCall {
+        } => call_successors(
+            function,
+            args,
+            *result,
+            normal.as_ref(),
+            unwind.as_ref(),
+            state,
+            block,
+        ),
+        PhysicalTerminator::ActorCall {
             args,
             result,
             normal,
@@ -5288,7 +5302,7 @@ fn terminator_successors(
             function,
             args,
             *result,
-            normal,
+            Some(normal),
             unwind.as_ref(),
             state,
             block,
@@ -5303,7 +5317,7 @@ fn terminator_successors(
             function,
             args,
             Some(*result),
-            normal,
+            Some(normal),
             Some(unwind),
             state,
             block,
@@ -5679,7 +5693,14 @@ fn verify_terminator(
             unwind,
         } => {
             callable::verify_indirect_call(module, function, *callee, signature, args, *result)?;
-            edge(normal)?;
+            if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
+                return Err(PhysicalError::new(
+                    "call normal edge differs from its return type",
+                ));
+            }
+            if let Some(normal) = normal {
+                edge(normal)?;
+            }
             edge(unwind.as_ref().ok_or_else(|| {
                 PhysicalError::new("indirect invocation requires a fault cleanup edge")
             })?)?;
@@ -5868,8 +5889,8 @@ fn verify_terminator(
                 }
             }
             match (&callee.return_ty, result) {
-                (ResolvedTy::Unit, None) => {}
-                (ResolvedTy::Unit, Some(_)) | (_, None) => {
+                (ResolvedTy::Unit | ResolvedTy::Never, None) => {}
+                (ResolvedTy::Unit | ResolvedTy::Never, Some(_)) | (_, None) => {
                     return Err(PhysicalError::new(
                         "physical call result-out presence disagrees with callee ABI",
                     ));
@@ -5881,7 +5902,14 @@ fn verify_terminator(
                     ));
                 }
             }
-            edge(normal)?;
+            if normal.is_none() != (callee.return_ty == ResolvedTy::Never) {
+                return Err(PhysicalError::new(
+                    "call normal edge differs from its return type",
+                ));
+            }
+            if let Some(normal) = normal {
+                edge(normal)?;
+            }
             if let Some(unwind) = unwind {
                 edge(unwind)?;
             }
@@ -6979,10 +7007,10 @@ mod tests {
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
                     }),
-                    normal: Edge {
+                    normal: Some(Edge {
                         target: BlockId(1),
                         args: vec![Operand { value: ValueId(0) }],
-                    },
+                    }),
                     unwind: CallUnwind::Cleanup(Edge {
                         target: BlockId(2),
                         args: vec![],
@@ -8957,7 +8985,7 @@ mod tests {
                             capability,
                             args,
                             result: result.clone(),
-                            normal: normal.clone(),
+                            normal: normal.clone().expect("returning call"),
                             unwind: unwind.clone(),
                         };
                         converted += 1;

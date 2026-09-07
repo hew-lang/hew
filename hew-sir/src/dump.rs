@@ -488,7 +488,13 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
                 || format!("<invalid-callable:{}>", callee.0),
                 |callable| callable.symbol.clone(),
             );
-            (format!("call @{target}"), args, result, normal, unwind)
+            (
+                format!("call @{target}"),
+                args,
+                result,
+                normal.as_ref(),
+                unwind,
+            )
         }
         SemTerminator::IndirectCall {
             callee,
@@ -501,7 +507,7 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             format!("indirect.call {}", boundary_operand(callee)),
             args,
             result,
-            normal,
+            normal.as_ref(),
             unwind,
         ),
         SemTerminator::ValueCall {
@@ -516,7 +522,7 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             format!("value.call{{{capability:?} {}}}", ty.user_facing()),
             args,
             result,
-            normal,
+            Some(normal),
             unwind,
         ),
         SemTerminator::ActorCall {
@@ -530,7 +536,7 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             format!("actor.call{{{operation:?}}}"),
             args,
             result,
-            normal,
+            Some(normal),
             unwind,
         ),
         SemTerminator::RtCall {
@@ -544,7 +550,7 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             format!("rt.call{{{family:?}}}"),
             args,
             result,
-            normal,
+            Some(normal),
             unwind,
         ),
         _ => unreachable!("call formatter requires a call terminator"),
@@ -646,7 +652,7 @@ fn dump_call(
     name: &str,
     args: &[crate::BoundaryOperand],
     result: &CallResult,
-    normal: &crate::Edge,
+    normal: Option<&crate::Edge>,
     unwind: &CallUnwind,
 ) {
     write!(out, "    {name}(").expect("write to String");
@@ -668,7 +674,9 @@ fn dump_call(
         ),
     }
     .expect("write to String");
-    write!(out, " normal bb{}{}", normal.target.0, edge_args(normal)).expect("write to String");
+    if let Some(normal) = normal {
+        write!(out, " normal bb{}{}", normal.target.0, edge_args(normal)).expect("write to String");
+    }
     match unwind {
         CallUnwind::NotApplicable => writeln!(out, " unwind none"),
         CallUnwind::Cleanup(edge) => {

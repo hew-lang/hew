@@ -141,7 +141,7 @@ fn argument_alias_and_nested_mutation_precede_the_receiver_take() {
             .ops
             .iter()
             .any(|op| matches!(op.kind, SemOpKind::LoadTake { place } if place == receiver)));
-        let normal = &main.blocks[normal.target.0 as usize];
+        let normal = &main.blocks[normal.as_ref().expect("returning call").target.0 as usize];
         assert!(normal.ops.iter().any(
             |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == receiver)
         ));

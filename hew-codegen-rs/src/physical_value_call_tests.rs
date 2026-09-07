@@ -81,7 +81,7 @@ fn selected_calls(source: &str, triple: &str) -> PhysicalModule {
                     capability: *capability,
                     args,
                     result: result.clone(),
-                    normal: normal.clone(),
+                    normal: normal.clone().expect("returning call"),
                     unwind: unwind.clone(),
                 };
                 converted += 1;

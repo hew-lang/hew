@@ -725,7 +725,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("record actor boundary status")?;
-        self.emit_call_outcome(status, result, normal, unwind)
+        self.emit_call_outcome(status, result, Some(normal), unwind)
     }
 
     fn emit_actor_spawn(

@@ -26,6 +26,15 @@ pub enum ResourceRelease {
     Stream,
     /// `Sink<T>`: closing the write half is the consumer's end of stream.
     Sink,
+    /// A `#[resource]` record whose release is the user's consuming `close`.
+    ///
+    /// The lifecycle is the checker/HIR fact; `close` is the semantic callable
+    /// that realizes it, resolved once when the module is published so no
+    /// later stage joins a release to a body by symbol name.
+    RecordClose {
+        lifecycle: Box<hew_hir::ResourceRecordLifecycle>,
+        close: crate::CallableId,
+    },
 }
 
 /// An exact HIR extern declaration retained as part of the release proof.
@@ -43,6 +52,8 @@ pub struct ResourceExtern {
 pub enum ResourceCarrier {
     Pointer,
     I32,
+    /// A field-bearing record released by calling its own `close`.
+    Record,
 }
 
 impl ResourceRelease {
@@ -51,6 +62,9 @@ impl ResourceRelease {
     /// # Errors
     /// Refuses a release without an executable runtime contract.
     pub fn carrier(&self) -> Result<ResourceCarrier, String> {
+        if matches!(self, Self::RecordClose { .. }) {
+            return Ok(ResourceCarrier::Record);
+        }
         Ok(
             if matches!(self.runtime_family()?, RuntimeCallFamily::Tcp(_)) {
                 ResourceCarrier::I32
@@ -65,6 +79,9 @@ impl ResourceRelease {
     /// # Errors
     /// Refuses a release without an executable runtime contract.
     pub fn release_result(&self) -> Result<ResolvedTy, String> {
+        if matches!(self, Self::RecordClose { .. }) {
+            return Ok(ResolvedTy::Unit);
+        }
         Ok(
             if matches!(self.runtime_family()?, RuntimeCallFamily::Tcp(_)) {
                 ResolvedTy::I32
@@ -93,6 +110,9 @@ impl ResourceRelease {
             }
             Self::Stream => Ok(RuntimeCallFamily::StreamClose),
             Self::Sink => Ok(RuntimeCallFamily::SinkClose),
+            Self::RecordClose { .. } => Err(
+                "a record resource is released by its own close body, not a runtime call".into(),
+            ),
         }
     }
 }
@@ -113,6 +133,11 @@ pub(crate) fn resource_release_from_hir(
     } else if ty.is_builtin(hew_types::BuiltinType::Sink) {
         Some(ResourceRelease::Sink)
     } else {
+        if record_resource_lifecycle(module, ty).is_some() {
+            // A record resource's release is a semantic callable, so its
+            // authority is published where the callable table is resolved.
+            return None;
+        }
         let lifecycle = module
             .type_classes
             .lifecycle_registry()
@@ -144,6 +169,33 @@ pub(crate) fn resource_release_from_hir(
             producers,
         })
     }
+}
+
+/// The checked `#[resource]` record lifecycle for one exact nominal type.
+///
+/// Keyed by the resource's qualified declaration path, which is the same
+/// identity `ResolvedTy::Named` carries; no short or leaf name is retried.
+pub(crate) fn record_resource_lifecycle<'a>(
+    module: &'a hew_hir::HirModule,
+    ty: &ResolvedTy,
+) -> Option<&'a hew_hir::ResourceRecordLifecycle> {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin: None,
+        is_opaque: false,
+    } = ty
+    else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    module
+        .type_classes
+        .lifecycle_registry()
+        .resource_records()
+        .find(|lifecycle| lifecycle.resource_declaration.full_path() == name)
 }
 
 /// Check the release contract independently before any target layout is selected.
@@ -185,6 +237,22 @@ pub fn verify_resource_release(
             Err("pipe half release requires its exact Stream or Sink type".into())
         };
     }
+    if let ResourceRelease::RecordClose { lifecycle, .. } = release {
+        let ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+            is_opaque: false,
+        } = ty
+        else {
+            return Err("a record release requires an exact non-opaque nominal type".into());
+        };
+        return if args.is_empty() && lifecycle.resource_declaration.full_path() == name {
+            Ok(())
+        } else {
+            Err("record release declaration does not match its nominal owner".into())
+        };
+    }
     let family = release.runtime_family()?;
     let contract = family
         .semantic_contract()
@@ -206,8 +274,9 @@ pub fn verify_resource_release(
         ResourceRelease::Generator
         | ResourceRelease::Task
         | ResourceRelease::Stream
-        | ResourceRelease::Sink => {
-            unreachable!("handled exact builtin releases above")
+        | ResourceRelease::Sink
+        | ResourceRelease::RecordClose { .. } => {
+            unreachable!("handled exact builtin and record releases above")
         }
         ResourceRelease::Nominal {
             lifecycle,

@@ -316,3 +316,60 @@ fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
         .unwrap_or_else(|| panic!("expected the mailbox-view refusal: {:?}", output.errors));
     assert!(message.contains("fork target.total(..)"), "{message}");
 }
+
+/// `Never` has no values, so an infallible handler's completion envelope needs
+/// no `Failed` arm.
+#[test]
+fn an_infallible_completion_envelope_needs_no_failed_arm() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = spawn Worker(); \
+           match w.total() { \
+             .Ok(n) => {}, \
+             .Err(e) => match e { \
+               ActorError.Rejected(_) => {}, \
+               ActorError.Trapped => {}, \
+               ActorError.Dead => {}, \
+               ActorError.Timeout => {}, \
+               ActorError.NodeNotRunning => {}, \
+               ActorError.RoutingFailed => {}, \
+               ActorError.EncodeFailed => {}, \
+               ActorError.ConnectionDropped => {}, \
+               ActorError.Partition => {}, \
+             }, \
+           } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+/// The negative control: a `fails` handler's envelope carries an inhabited
+/// error, so omitting `Failed` is still a non-exhaustive match.
+#[test]
+fn a_fails_completion_envelope_still_requires_its_failed_arm() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 fails string { Ok(1) } } \
+         fn main() { let w = spawn Worker(); \
+           match w.total() { \
+             .Ok(n) => {}, \
+             .Err(e) => match e { \
+               ActorError.Rejected(_) => {}, \
+               ActorError.Trapped => {}, \
+               ActorError.Dead => {}, \
+               ActorError.Timeout => {}, \
+               ActorError.NodeNotRunning => {}, \
+               ActorError.RoutingFailed => {}, \
+               ActorError.EncodeFailed => {}, \
+               ActorError.ConnectionDropped => {}, \
+               ActorError.Partition => {}, \
+             }, \
+           } }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("missing Failed")),
+        "{:?}",
+        output.errors
+    );
+}

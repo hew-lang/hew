@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-never-exhaustive"
+intent = "An infallible handler's completion envelope carries `Never`, so its match needs no `Failed` arm, while a `fails` handler's envelope still requires one."
+source = "cases/actor-never-exhaustive.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "4\ndivide by zero\nclosed\n"
+exit = 0

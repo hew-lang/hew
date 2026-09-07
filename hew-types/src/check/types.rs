@@ -2931,6 +2931,11 @@ pub struct Checker {
     /// failure (which a completion call reports as `ActorError.Failed`) or an
     /// ordinary `Result` value the handler happens to return.
     pub(super) receive_fails_methods: HashSet<String>,
+    /// Completion calls made from inside a receive fn body, as
+    /// `(caller handler, callee handler, call span)`. A cycle among these is a
+    /// deadlock every participant waits in, so it is reported once the whole
+    /// program has been checked.
+    pub(super) completion_call_edges: Vec<(String, String, Span)>,
     /// Qualified `Actor::method` names declared with `receive fn` (including
     /// generator receives). Used by the actor-mailbox boundary enforcement
     /// to distinguish receive handlers from non-receive `methods` declared
@@ -3912,6 +3917,7 @@ impl Checker {
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
             receive_fails_methods: HashSet::new(),
+            completion_call_edges: Vec::new(),
             actor_receive_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),

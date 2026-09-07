@@ -2041,6 +2041,7 @@ impl Checker {
                 .collect();
         // Effect and transfer checks consume capture and actor-dispatch facts
         // before those facts are moved into the checked-program handoff.
+        self.report_completion_call_cycles();
         let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()

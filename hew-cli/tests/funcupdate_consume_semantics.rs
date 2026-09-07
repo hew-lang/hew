@@ -92,11 +92,12 @@ fn main() {
     let b = Inner { label: "b", ..t.0 };
     let c = Inner { label: "c", ..o.pair.0 };
     let d = Inner { label: "d", ..o.items[0].inner };
-    println(f"{a.label}:{a.n} {b.label}:{b.n} {c.label}:{c.n} {d.label}:{d.n}");
+    let e = Inner { n: 8, ..o.inner.clone() };
+    println(f"{a.label}:{a.n} {b.label}:{b.n} {c.label}:{c.n} {d.label}:{d.n} {e.label}:{e.n}");
     println(f"{o.inner.label} {t.0.label} {o.pair.0.label} {o.items[0].inner.label} {o.tag}");
 }
 "#,
-        "a:1 b:3 c:2 d:7\ninner tuple paired indexed outer\n",
+        "a:1 b:3 c:2 d:7 inner:8\ninner tuple paired indexed outer\n",
     );
 }
 
@@ -179,7 +180,7 @@ fn main() {
 #[test]
 fn reassign_loop_idiom_keeps_one_live_owner() {
     assert_runs(
-        r"
+        r#"
 type VecHolder { items: Vec<i64>, tag: i64 }
 fn main() {
     var init: Vec<i64> = Vec.new(); init.push(99);
@@ -190,10 +191,11 @@ fn main() {
         h = VecHolder { items: next, ..h };
         i = i + 1;
     }
-    println(h.items.len());
+    let snapshot = VecHolder { items: h.items.clone(), ..h };
+    println(f"{h.items.len()} {snapshot.items.len()} {snapshot.tag}");
 }
-",
-        "1\n",
+"#,
+        "1 1 0\n",
     );
 }
 

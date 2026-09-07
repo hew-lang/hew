@@ -3882,14 +3882,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if endpoint == "panic" => return self.lower_panic(expr, args),
             _ => {}
         }
-        if !matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
-            || expr.intent != IntentKind::Consume
-        {
+        if expr.intent != IntentKind::Consume {
             require_initial_scalar_read(expr.intent)
                 .map_err(|reason| format!("discarded expression: {reason}"))?;
         }
         let live_before_expression: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
+        if expr.intent == IntentKind::Consume
+            && !matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+        {
+            // `let _ = value` takes the value and releases it here.
+            let value =
+                lower_initial_value_transfer(self, expr, "discarded value", OwnedBindingUse::Move)?;
+            if self.owned_live.contains_key(&value) && !live_before_expression.contains(&value) {
+                self.emit_destroy(value)?;
+            }
+            return Ok(());
+        }
         match &expr.kind {
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(_),
@@ -4147,12 +4156,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent recovery cannot produce a SIR value".into()),
             },
-            HirExprKind::RecordCloneCall { src, .. }
-                if matches!(
-                    self.ty(&src.ty),
-                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
-                ) =>
-            {
+            HirExprKind::RecordCloneCall { src, .. } => {
                 let mut loans = Vec::new();
                 let source = self.lower_borrowed_read(src, &mut loans)?;
                 let copy = self.emit(expr, SemOpKind::CopyValue { source })?;
@@ -4194,6 +4198,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                     BindingTarget::Place(place) => self.emit(expr, SemOpKind::LoadCopy { place }),
                 }
+            }
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Const(item),
+                ..
+            } => {
+                let constant = self
+                    .service
+                    .module
+                    .items
+                    .iter()
+                    .find_map(|candidate| match candidate {
+                        HirItem::Const(constant) if constant.id == *item => Some(constant),
+                        _ => None,
+                    })
+                    .ok_or("const reference has no HIR declaration")?;
+                let literal = match &constant.value {
+                    hew_hir::HirConstValue::Integer(value) => HirLiteral::Integer(*value),
+                    hew_hir::HirConstValue::String(value) => HirLiteral::String(value.clone()),
+                    hew_hir::HirConstValue::Float(value) => HirLiteral::Float(*value),
+                };
+                self.lower_literal(expr, &literal)
             }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Item(item),
@@ -4379,7 +4404,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 target:
                     CallTarget::RuntimeCollection(
                         hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Clone)
-                        | hew_types::MethodTargetFamily::HashSet(hew_types::HashSetMethod::Clone),
+                        | hew_types::MethodTargetFamily::HashSet(hew_types::HashSetMethod::Clone)
+                        | hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Clone),
                     ),
                 receiver,
                 args,

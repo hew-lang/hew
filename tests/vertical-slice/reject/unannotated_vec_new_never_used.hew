@@ -1,0 +1,7 @@
+// Negative control for the unannotated collection constructors: `Vec.new()`
+// takes its element type from later use, so a constructor nothing ever uses
+// has no element type and the diagnostic names the binding.
+fn main() {
+    var pending = Vec.new();
+    println("unused");
+}

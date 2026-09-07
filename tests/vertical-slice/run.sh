@@ -936,6 +936,16 @@ expect_check_fail_contains \
     "keep the resource inside one owning actor and send that actor a message instead" \
     "vec_iter_actor_field_non_send"
 
+# Negative control for the unannotated collection constructors: the element
+# type comes from later use, so a `Vec.new()` nothing ever uses stays
+# unresolved and the diagnostic names the binding rather than inventing one.
+_fcb=${fail_count}
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unannotated_vec_new_never_used.hew" \
+    "cannot infer type for local binding \`pending\`" \
+    "unannotated_vec_new_never_used"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "unannotated_vec_new_never_used (reject)"
+
 # g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into
 # an owned Vec via to_vec() and drives a VecIter cursor.
 # Scalar elements: 10+20+30 → exit 60.

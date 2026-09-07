@@ -1277,43 +1277,40 @@ impl Checker {
         // Option/Result constructors are handled specially in check_call
         // (they need fresh linked type vars per invocation)
 
-        // Collection constructors (path-style calls: Vec::new(), HashMap::new())
-        // These also need fresh vars per call but are less critical
-        self.register_builtin_fn(
+        // Collection constructors (path-style calls: Vec::new(), HashMap::new()).
+        // Declared generic so every call site instantiates its own element
+        // variables: `var a = Vec.new()` and `var b = Vec.new()` in one body
+        // must be free to settle on different element types. The constructor
+        // family is the executable identity whatever those variables become,
+        // so it is published here rather than reconstructed from a spelling.
+        self.register_collection_constructor(
             "Vec::new",
-            vec![],
-            Ty::Named {
-                builtin: Some(BuiltinType::Vec),
-                name: "Vec".to_string(),
-                args: vec![Ty::Var(TypeVar::fresh())],
-            },
+            BuiltinType::Vec,
+            &["T"],
+            crate::runtime_call::RuntimeCallFamily::VecNew,
         );
-        self.register_builtin_fn(
+        self.register_builtin_fn_with_bounds(
             "Vec::with_capacity",
+            vec!["T".to_string()],
+            HashMap::new(),
             vec![Ty::I64],
             Ty::Named {
                 builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
-                args: vec![Ty::Var(TypeVar::fresh())],
+                args: vec![Ty::named("T", vec![])],
             },
         );
-        self.register_builtin_fn(
+        self.register_collection_constructor(
             "HashMap::new",
-            vec![],
-            Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                name: "HashMap".to_string(),
-                args: vec![Ty::Var(TypeVar::fresh()), Ty::Var(TypeVar::fresh())],
-            },
+            BuiltinType::HashMap,
+            &["K", "V"],
+            crate::runtime_call::RuntimeCallFamily::HashMapNew,
         );
-        self.register_builtin_fn(
+        self.register_collection_constructor(
             "HashSet::new",
-            vec![],
-            Ty::Named {
-                builtin: Some(BuiltinType::HashSet),
-                name: "HashSet".to_string(),
-                args: vec![Ty::Var(TypeVar::fresh())],
-            },
+            BuiltinType::HashSet,
+            &["T"],
+            crate::runtime_call::RuntimeCallFamily::HashSetNew,
         );
         self.register_builtin_fn("bytes::new", vec![], Ty::Bytes);
 
@@ -1960,6 +1957,37 @@ impl Checker {
                 "std.builtins".to_string(),
             );
         }
+    }
+
+    /// Register a builtin collection constructor: a nullary generic function
+    /// returning the canonical collection over its own type parameters, with
+    /// the constructor's runtime family as its executable call target.
+    fn register_collection_constructor(
+        &mut self,
+        name: &str,
+        builtin: BuiltinType,
+        type_params: &[&str],
+        family: crate::runtime_call::RuntimeCallFamily,
+    ) {
+        self.register_builtin_fn_with_bounds(
+            name,
+            type_params
+                .iter()
+                .map(|param| (*param).to_string())
+                .collect(),
+            HashMap::new(),
+            vec![],
+            Ty::Named {
+                builtin: Some(builtin),
+                name: builtin.canonical_name().to_string(),
+                args: type_params
+                    .iter()
+                    .map(|param| Ty::named(*param, vec![]))
+                    .collect(),
+            },
+        );
+        self.builtin_call_targets
+            .insert(name.to_string(), CallTarget::Runtime(family));
     }
 
     pub(super) fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {

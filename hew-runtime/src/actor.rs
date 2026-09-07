@@ -7448,9 +7448,10 @@ pub extern "C-unwind" fn hew_panic() {
             panic!("hew_panic: actor panic");
         }
         // JUSTIFIED: wasm32 non-actor Hew panic terminates the process
-        // immediately with Rust's panic exit convention, so bypassing Rust Drop
-        // is deliberate and the WASI host reclaims process resources.
-        std::process::exit(101);
+        // immediately, so bypassing Rust Drop is deliberate and the WASI host
+        // reclaims process resources. The status is `1`, as it is natively: an
+        // unrecovered panic is a fault under the one exit rule.
+        std::process::exit(1);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

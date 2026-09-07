@@ -1830,8 +1830,8 @@ fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic), got {:?}",
         output.status.code()
     );
 }
@@ -1877,8 +1877,8 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic), got {:?}",
         output.status.code()
     );
 }
@@ -1941,8 +1941,8 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic via WASM), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic via WASM), got {:?}",
         output.status.code()
     );
 }
@@ -1994,8 +1994,8 @@ fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic via WASM), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic via WASM), got {:?}",
         output.status.code()
     );
 }

@@ -108,9 +108,20 @@ impl FunctionEmitter<'_, '_> {
         result: Option<StorageId>,
         normal: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        // `bytes` is the runtime's `{ptr, u32, u32}` triple, and every C-side
+        // declaration takes it by pointer (`*const BytesTriple`). Everything
+        // else - scalars, pointer-width handles, `string`, collections -
+        // passes by value out of its storage.
         let values = transfers
             .iter()
-            .map(|transfer| self.load(argument_source(transfer), "extern.argument"))
+            .map(|transfer| {
+                let source = argument_source(transfer);
+                if self.storage(source)?.ty == ResolvedTy::Bytes {
+                    Ok(self.slots[source.0 as usize].into())
+                } else {
+                    self.load(source, "extern.argument")
+                }
+            })
             .collect::<CodegenResult<Vec<_>>>()?;
         let parameters = values
             .iter()

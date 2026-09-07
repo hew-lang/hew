@@ -701,6 +701,16 @@ impl<'a> Flow<'a> {
             }
         }
         self.operations(id, &block.ops, &mut state, cleanup_exit, emit, lifetimes);
+        let failure_inputs = match &block.terminator {
+            SemTerminator::RtCall { family, .. }
+                if family.semantic_contract().is_some_and(
+                    hew_types::RuntimeSemanticContract::preserves_inputs_on_failure,
+                ) =>
+            {
+                Some(state.clone())
+            }
+            _ => None,
+        };
         self.boundary_inputs(id, &block.terminator, &mut state, emit);
         let mut successors = Vec::new();
         match &block.terminator {
@@ -828,6 +838,9 @@ impl<'a> Flow<'a> {
                     .visit_results(|result| self.define(id, result.id, &mut returned, emit));
                 successors.extend(self.edge(id, normal, returned, emit));
                 if let CallUnwind::Cleanup(edge) = unwind {
+                    if let Some(preserved) = failure_inputs {
+                        state = preserved;
+                    }
                     let transfers_fault = match &block.terminator {
                         SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
@@ -868,7 +881,7 @@ impl<'a> Flow<'a> {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
             SemTerminator::Suspend {
-                kind: crate::SuspendKind::ValueClose { place },
+                kind: crate::SuspendKind::ValueClose { place, .. },
                 resumes,
                 ..
             } => {

@@ -483,9 +483,18 @@ pub enum SuspendKind {
     /// Preserve initialization and combine cleanup faults before ordinary release.
     ValueClose {
         place: Option<crate::PlaceId>,
+        selection: ValueCloseSelection,
     },
     Sleep,
     SleepUntil,
+}
+
+/// Which children of an owner must finish cleanup before execution continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ValueCloseSelection {
+    Whole,
+    /// The second suspension operand is the copied vector index.
+    VectorElement,
 }
 
 /// How an owning value crosses an actor or task boundary (§2 rule 5).

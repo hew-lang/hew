@@ -159,6 +159,9 @@ pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
                     .map(|(param, arg)| sir::BoundaryOperand {
                         operand: operand(param.value.0),
                         decision: match arg.effect {
+                            RuntimeArgumentEffect::Value => {
+                                unreachable!("encoding contracts have fixed transfers")
+                            }
                             RuntimeArgumentEffect::Borrow => sir::BoundaryDecision::Borrow,
                             RuntimeArgumentEffect::Copy => sir::BoundaryDecision::Copy,
                             RuntimeArgumentEffect::Move => sir::BoundaryDecision::Move,

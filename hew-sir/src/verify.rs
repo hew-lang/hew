@@ -504,6 +504,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
                 &module.type_facts,
                 &module.aggregate_shapes,
                 &module.variant_shapes,
+                &module.resources,
             ) {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCollectionType {
                     ty: key.0.clone(),
@@ -3127,7 +3128,14 @@ fn verify_runtime_call_terminator(
         }
     };
     for (index, (argument, expected)) in args.iter().zip(contract.arguments).enumerate() {
-        let expected_decision = match expected.effect {
+        let Some(facts) = shapes
+            .facts
+            .get(&hew_types::TypeInstanceKey(parameter_types[index].clone()))
+        else {
+            continue;
+        };
+        let expected_decision = match expected.effect.resolve(facts.clone) {
+            RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
             RuntimeArgumentEffect::Borrow => crate::BoundaryDecision::Borrow,
             RuntimeArgumentEffect::Copy => crate::BoundaryDecision::Copy,
             RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
@@ -3153,6 +3161,19 @@ fn verify_runtime_call_terminator(
         | RuntimeResultEffect::FreshOwnedVariant(_)
         | RuntimeResultEffect::UpdatedReceiverAndValue(_) => Some(crate::OwnKind::Owned),
         RuntimeResultEffect::IndependentValue(_) => {
+            if shapes
+                .facts
+                .get(&hew_types::TypeInstanceKey(instantiated.result_ty.clone()))
+                .is_some_and(|facts| facts.clone == hew_types::CloneKind::None)
+            {
+                invalid_operation(
+                    function,
+                    id,
+                    "runtime read has no semantic copy for its result".into(),
+                    diagnostics,
+                );
+                return;
+            }
             match crate::OwnKind::of_ty(&instantiated.result_ty, shapes.facts) {
                 Ok(own) => Some(own),
                 Err(reason) => {
@@ -4130,32 +4151,37 @@ fn verify_terminator_shape(
                             .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
                 }
-                crate::SuspendKind::ValueClose { place } => {
+                crate::SuspendKind::ValueClose { place, selection } => {
                     resumes.len() == 1
                         && resumes.first() == Some(cancel)
                         && resumes.first() == Some(unwind)
                         && matches!(result, crate::CallResult::Unit)
-                        && match place {
-                            Some(place) => {
-                                inputs.is_empty()
-                                    && function.places.iter().any(|declaration| {
-                                        declaration.id == *place
-                                            && matches!(
-                                                declaration.origin,
-                                                crate::PlaceOrigin::Local
-                                                    | crate::PlaceOrigin::Aggregate { .. }
-                                            )
-                                            && crate::OwnKind::of_ty(
-                                                &declaration.ty,
-                                                variants.facts,
-                                            )
+                        && if let Some(place) = place {
+                            *selection == crate::ValueCloseSelection::Whole
+                                && inputs.is_empty()
+                                && function.places.iter().any(|declaration| {
+                                    declaration.id == *place
+                                        && matches!(declaration.origin, crate::PlaceOrigin::Local | crate::PlaceOrigin::Aggregate { .. })
+                                        && crate::OwnKind::of_ty(&declaration.ty, variants.facts)
                                             .ok()
-                                                == Some(crate::OwnKind::Owned)
+                                            == Some(crate::OwnKind::Owned)
+                                })
+                        } else {
+                            let expected_len = if *selection == crate::ValueCloseSelection::Whole {
+                                1
+                            } else {
+                                2
+                            };
+                            inputs.len() == expected_len
+                                    && inputs[0].decision == crate::BoundaryDecision::Borrow
+                                    && types.get(&inputs[0].operand.value).is_some_and(|ty| {
+                                        crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned)
+                                            && (*selection == crate::ValueCloseSelection::Whole
+                                                || matches!(ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Vec), args, .. } if args.len() == 1))
                                     })
-                            }
-                            None => matches!(inputs.as_slice(), [input]
-                                if input.decision == crate::BoundaryDecision::Borrow
-                                && types.get(&input.operand.value).is_some_and(|ty| crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned))),
+                                    && (*selection == crate::ValueCloseSelection::Whole
+                                        || (inputs[1].decision == crate::BoundaryDecision::Copy
+                                            && types.get(&inputs[1].operand.value) == Some(&ResolvedTy::I64)))
                         }
                 }
                 crate::SuspendKind::Join { .. } => {

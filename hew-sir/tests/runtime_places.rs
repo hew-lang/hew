@@ -336,53 +336,62 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         }),
         "fixture must retain an owned sibling in the root partition"
     );
-    let destroyed: Vec<ValueId> = main.blocks[cleanup.0 as usize]
-        .ops
+    let mut pending = vec![cleanup];
+    let mut reachable = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if reachable.insert(id) {
+            main.blocks[id.0 as usize]
+                .terminator
+                .visit_successors(|edge| pending.push(edge.target));
+        }
+    }
+    let cleanup_ops = reachable
         .iter()
-        .filter_map(|operation| match &operation.kind {
-            SemOpKind::DestroyValue { value } => Some(value.value),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        main.blocks[cleanup.0 as usize].ops
-            .iter()
-            .filter(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root))
-            .count(),
-        1,
-        "the partially initialized root must clean up its remaining fields exactly once"
+        .flat_map(|id| &main.blocks[id.0 as usize].ops)
+        .collect::<Vec<_>>();
+    assert!(
+        cleanup_ops.iter().any(|op| matches!(op.kind,
+        SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root)),
+        "failure must clean the partially initialized root's remaining fields"
     );
-    assert!(!main.blocks[cleanup.0 as usize].ops.iter().any(|op| matches!(op.kind,
+    assert!(!cleanup_ops.iter().any(|op| matches!(op.kind,
         SemOpKind::StoreAssign { place: p, .. } | SemOpKind::StoreInit { place: p, .. } if p == place)),
-        "failure cannot reinstall the consumed receiver");
+        "failure cannot reinstall the receiver");
     let mut missing_cleanup = module.clone();
-    let fault = missing_cleanup
+    let function = missing_cleanup
         .functions
         .iter_mut()
         .find(|f| f.declaration.full_path() == "main")
-        .unwrap()
-        .blocks
-        .iter_mut()
-        .find(|block| block.id == cleanup)
         .unwrap();
-    fault.ops.retain(
-        |op| !matches!(op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root),
-    );
+    for block in &mut function.blocks {
+        if reachable.contains(&block.id) {
+            block.ops.retain(|op| {
+                !matches!(op.kind,
+                SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root)
+            });
+        }
+    }
+    assert!(verify_module(&missing_cleanup).iter().any(|error| matches!(error.kind,
+        hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. }
+            if hew_sir::OwnerRoot::Local(place) == field.root && reason == "local storage remains active at exit")),
+        "omitting remaining-root cleanup must be rejected");
+    let destroyed = |value| {
+        cleanup_ops.iter().any(|op| {
+            matches!(&op.kind,
+        SemOpKind::DestroyValue { value: operand } if operand.value == value)
+        })
+    };
     assert!(
-        verify_module(&missing_cleanup)
-            .iter()
-            .any(|error| matches!(error.kind,
-        hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. } if hew_sir::OwnerRoot::Local(place) == field.root && reason == "local storage remains active at exit")),
-        "omitting remaining-root cleanup must be rejected"
+        !destroyed(leaf),
+        "the pre-transfer receiver cannot be destroyed again"
     );
-    assert!(
-        !destroyed.contains(&leaf) && !destroyed.contains(&moved),
-        "runtime consumes the receiver on failure"
+    assert_eq!(
+        destroyed(moved),
+        family
+            .semantic_contract()
+            .unwrap()
+            .preserves_inputs_on_failure()
     );
-    assert!(matches!(
-        main.blocks[cleanup.0 as usize].terminator,
-        SemTerminator::ResumeUnwind
-    ));
 }
 
 #[test]

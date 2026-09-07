@@ -3253,6 +3253,31 @@ pub unsafe extern "C" fn hew_vec_visit_close(v: *mut HewVec, context: *mut c_voi
     }
 }
 
+/// Visit one initialized element before replacement. Invalid indices collect
+/// nothing; the subsequent mutation reports its ordinary bounds fault.
+/// # Safety
+/// The vector remains exclusively borrowed until collected cleanup completes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_visit_element_close(
+    v: *mut HewVec,
+    index: i64,
+    context: *mut c_void,
+) {
+    // SAFETY: the caller retains the vector and its exact element descriptor.
+    unsafe {
+        let vec = &*v;
+        if let Ok(index) = usize::try_from(index) {
+            if index < vec.len {
+                if let Some(layout) = vec.layout.as_ref() {
+                    if let Some(visit) = layout.visit_close {
+                        visit(vec.data.add(index * layout.size).cast(), context);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
     // SAFETY: hew_vec_new allocates a valid HewVec.

@@ -64,20 +64,27 @@ impl FunctionLowerer<'_> {
                     unwind: self.lower_edge(unwind)?,
                 }
             }
-            hew_sir::SuspendKind::ValueClose { place } => PhysicalTerminator::ValueClose {
-                generator: if let Some(place) = place {
-                    self.place(*place)?
-                } else {
-                    self.value(inputs[0].operand.value)?
-                },
-                destroy: self.optional_destroy(if let Some(place) = place {
-                    self.place(*place)?
-                } else {
-                    self.value(inputs[0].operand.value)?
-                })?,
-                conditional: place.is_some(),
-                next: normal,
-            },
+            hew_sir::SuspendKind::ValueClose { place, selection } => {
+                PhysicalTerminator::ValueClose {
+                    index: if *selection == hew_sir::ValueCloseSelection::VectorElement {
+                        Some(self.value(inputs[1].operand.value)?)
+                    } else {
+                        None
+                    },
+                    generator: if let Some(place) = place {
+                        self.place(*place)?
+                    } else {
+                        self.value(inputs[0].operand.value)?
+                    },
+                    destroy: self.optional_destroy(if let Some(place) = place {
+                        self.place(*place)?
+                    } else {
+                        self.value(inputs[0].operand.value)?
+                    })?,
+                    conditional: place.is_some(),
+                    next: normal,
+                }
+            }
             _ => unreachable!(),
         })
     }
@@ -159,12 +166,23 @@ pub(super) fn verify_suspend(
             }
         }
         PhysicalTerminator::ValueClose {
+            index,
             destroy,
             generator,
             conditional,
             ..
         } => {
             let slot = storage(function, *generator)?;
+            if let Some(index) = index {
+                if *conditional
+                    || storage(function, *index)?.ty != ResolvedTy::I64
+                    || !matches!(&slot.ty, ResolvedTy::Named { builtin: Some(BuiltinType::Vec), args, .. } if args.len() == 1)
+                {
+                    return Err(PhysicalError::new(
+                        "selected value close requires a vector owner and copied i64 index",
+                    ));
+                }
+            }
             let action = destroy.ok_or_else(|| {
                 PhysicalError::new("value close lacks its owning destruction recipe")
             })?;
@@ -207,11 +225,15 @@ pub(super) fn successors(
             unwind,
         } => (*generator, Some(*result), normal, cancel, unwind),
         PhysicalTerminator::ValueClose {
+            index,
             generator,
             conditional,
             next,
             ..
         } => {
+            if let Some(index) = index {
+                initialized(function, &state, *index, block, "value close index")?;
+            }
             if *conditional {
                 super::partial::require_root(function, &state, *generator, block, "value close")?;
             } else {

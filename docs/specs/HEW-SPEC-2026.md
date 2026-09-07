@@ -658,6 +658,17 @@ The "declared mutable but never reassigned" warning reads "declared `var` but
 never mutated; use `let`" and counts a `var self` call as a mutation, so
 `var v: Vec<i64> = Vec.new(); v.push(1)` warns nothing.
 
+A vector can own elements that have no copy operation, including generators.
+`push` and `set` copy copyable elements and consume non-copyable elements.
+`pop` transfers an element out. Reading an independent element through indexing
+or `get` requires a copy operation. A vector of non-copyable elements cannot
+itself be copied.
+
+Replacing, clearing or dropping elements completes their cleanup before
+execution continues. A failed bounds check leaves the receiver and any new
+element owned by the caller's fault-cleanup path; neither is lost or transferred
+into an invalid slot.
+
 ### 3.3 Sendability / isolation rule
 
 A value may cross an actor boundary only if it satisfies **Send**.

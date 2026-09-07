@@ -868,6 +868,7 @@ pub enum PhysicalTerminator {
         unwind: PhysicalEdge,
     },
     ValueClose {
+        index: Option<StorageId>,
         destroy: Option<DestroyAction>,
         generator: StorageId,
         conditional: bool,
@@ -1385,9 +1386,7 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
         .vectors()
         .map(|descriptor| {
             let element = value_recipe(&descriptor.element)?;
-            if element.clone.is_none()
-                || (element.own == OwnKind::Owned && element.destroy.is_none())
-            {
+            if element.own == OwnKind::Owned && element.destroy.is_none() {
                 return Err(PhysicalError::new(format!(
                     "vector element `{}` lacks a complete value recipe",
                     descriptor.element.user_facing()
@@ -3345,14 +3344,9 @@ fn verify_vector_glue(
         ));
     }
     let vector_facts = semantic_type_facts(module, &glue.ty)?;
-    if OwnKind::of_class(vector_facts.class) != OwnKind::Owned
-        || !matches!(
-            vector_facts.clone,
-            CloneKind::DeepCopy | CloneKind::FieldWise
-        )
-    {
+    if OwnKind::of_class(vector_facts.class) != OwnKind::Owned {
         return Err(PhysicalError::new(
-            "physical vector has no semantic owning copy contract",
+            "physical vector has no semantic owning contract",
         ));
     }
     if required_layout(&module.target, &glue.ty)?.repr != PhysicalRepr::Pointer {
@@ -3369,7 +3363,7 @@ fn verify_vector_glue(
     // Zero-sized elements retain their exact target size. The runtime owns
     // allocation bookkeeping; no payload byte is invented here.
     verify_value_recipe(module, &glue.element)?;
-    if glue.element.clone.is_none() {
+    if vector_facts.clone != CloneKind::None && glue.element.clone.is_none() {
         return Err(PhysicalError::new(
             "physical vector element has no clone action",
         ));
@@ -5337,6 +5331,11 @@ fn terminator_successors(
             failure,
             ..
         } => {
+            let failure_inputs = action
+                .semantic_family()
+                .semantic_contract()
+                .is_some_and(hew_types::RuntimeSemanticContract::preserves_inputs_on_failure)
+                .then(|| state.clone());
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(format!(
                     "physical bb{} issues a runtime call while an earlier fault is active",
@@ -5377,6 +5376,9 @@ fn terminator_successors(
             }
             let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
             if let Some(failure) = failure {
+                if let Some(preserved) = failure_inputs {
+                    state = preserved;
+                }
                 state.exit = defer::TRAP;
                 if action
                     .semantic_family()
@@ -6078,7 +6080,11 @@ fn verify_terminator(
                     }
                 };
                 let _ = slot(id)?;
-                if actual_effect != expected.effect {
+                if actual_effect
+                    != expected
+                        .effect
+                        .resolve(semantic_type_facts(module, &slot(id)?.ty)?.clone)
+                {
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} argument disagrees with its semantic contract"
                     )));
@@ -6216,6 +6222,15 @@ fn verify_vector_call(
     result: &ResolvedTy,
 ) -> Result<(), PhysicalError> {
     let glue = vector_glue(module, id)?;
+    if matches!(
+        operation,
+        PhysicalVectorOp::Index | PhysicalVectorOp::Get { .. }
+    ) && glue.element.clone.is_none()
+    {
+        return Err(PhysicalError::new(
+            "vector read requires an element copy recipe",
+        ));
+    }
     let receiver = if operation == PhysicalVectorOp::New {
         result
     } else {
@@ -8418,6 +8433,29 @@ mod tests {
         .expect_err("set drop cannot consume a map");
     }
 
+    #[test]
+    fn verifier_rejects_selected_close_with_a_non_integer_index() {
+        let mut module = vector_fixture();
+        module.callables[0].is_resumable = true;
+        let descriptor = module.vector_glue[0].id;
+        let block = vector_block(&mut module.functions[0], VecValueOp::Set);
+        let PhysicalTerminator::RuntimeCall { args, normal, .. } = &block.terminator else {
+            unreachable!()
+        };
+        let ArgumentTransfer::Move(owner) = args[0] else {
+            panic!("set must own its receiver");
+        };
+        block.terminator = PhysicalTerminator::ValueClose {
+            index: Some(owner),
+            generator: owner,
+            destroy: Some(DestroyAction::Vector(descriptor)),
+            conditional: false,
+            next: normal.clone(),
+        };
+        let error = verify_physical_module(&module).expect_err("vector pointer cannot be an index");
+        assert!(error.message.contains("copied i64 index"), "{error}");
+    }
+
     fn vector_fixture() -> PhysicalModule {
         let module = lower_source(
             r#"
@@ -8799,7 +8837,7 @@ mod tests {
     }
 
     #[test]
-    fn transferred_vector_receiver_is_unavailable_on_both_successors() {
+    fn vector_transfers_on_success_and_retains_inputs_on_failure() {
         let original = vector_fixture();
         for operation in [VecValueOp::Set, VecValueOp::Pop] {
             for failed in [false, true] {
@@ -8841,7 +8879,11 @@ mod tests {
                 let error =
                     verify_physical_module(&physical).expect_err("transferred receiver was reused");
                 assert!(
-                    error.message.contains("uninitialized"),
+                    error.message.contains(if failed {
+                        "overwrites initialized"
+                    } else {
+                        "uninitialized"
+                    }),
                     "{operation:?} failed={failed}: {error}"
                 );
             }

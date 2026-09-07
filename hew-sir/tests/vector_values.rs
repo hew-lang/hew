@@ -366,17 +366,25 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
         SemTerminator::CheckedRaiseFault { cleanup, .. } => cleanup.target,
         other => panic!("index failure must create the fault before cleanup: {other:?}"),
     };
-    let block = function
-        .blocks
-        .iter_mut()
-        .find(|block| block.id == failure)
-        .unwrap();
-    let destroy = block
-        .ops
-        .iter()
-        .position(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == owner))
-        .unwrap();
-    block.ops.remove(destroy);
+    let mut pending = vec![failure];
+    let mut seen = std::collections::BTreeSet::new();
+    let (cleanup, destroy) =
+        loop {
+            let id = pending.pop().expect("failure must reach owner cleanup");
+            if !seen.insert(id) {
+                continue;
+            }
+            let block = &function.blocks[id.0 as usize];
+            if let Some(index) = block.ops.iter().position(
+                |op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == owner),
+            ) {
+                break (id, index);
+            }
+            block
+                .terminator
+                .visit_successors(|edge| pending.push(edge.target));
+        };
+    function.blocks[cleanup.0 as usize].ops.remove(destroy);
     assert!(
         verify_module(&missing_cleanup).iter().any(|diagnostic| matches!(diagnostic.kind,
             hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. } if place == owner && reason == "local storage remains active at exit")),
@@ -413,10 +421,8 @@ fn verifier_requires_recursive_vector_shape_and_type_facts() {
 }
 
 #[test]
-fn non_clone_callable_vector_cannot_publish_copy_capability() {
-    // A plain erased function type does not promise Clone. Even an empty
-    // nested vector must not publish element-copy glue without that evidence.
-    let parsed = hew_parser::parse(
+fn affine_vector_accepts_nested_non_clone_values_without_copy_capability() {
+    let module = lower_source(
         r"
         type Holder { callbacks: Vec<fn() -> i64>, }
         fn main() -> i64 {
@@ -427,26 +433,59 @@ fn non_clone_callable_vector_cannot_publish_copy_capability() {
         }
         ",
     );
-    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
-    let facts = checker.check_program(&parsed.program);
-    assert!(facts.errors.is_empty(), "{:#?}", facts.errors);
-    let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
-    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
-    let lowered = lower_module(&hir.module, &facts);
-    let status = &lowered
-        .statuses
+    let pushed = module
+        .functions
         .iter()
-        .find(|status| status.name == "main")
-        .unwrap()
-        .status;
-    assert!(matches!(status, SirLoweringStatus::Lowered), "{status:#?}");
-    let diagnostics = verify_module(&lowered.module);
-    assert!(
-        diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            hew_sir::SirDiagnosticKind::InvalidCollectionType { .. }
-        )),
-        "{diagnostics:#?}"
+        .flat_map(|function| &function.blocks)
+        .find_map(|block| match &block.terminator {
+            SemTerminator::RtCall {
+                family: RuntimeCallFamily::Vector(VecValueOp::Push),
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(pushed[1].decision, hew_sir::BoundaryDecision::Move);
+    assert!(module
+        .type_facts
+        .iter()
+        .filter(|(key, _)| hew_types::runtime_call::vector_element_type(&key.0).is_some())
+        .all(|(_, facts)| facts.clone == hew_types::CloneKind::None));
+}
+
+#[test]
+fn selected_value_close_rejects_an_owner_used_as_its_index() {
+    let mut module = lower_source(
+        r"
+        gen fn numbers() -> i64 { yield 1; }
+        fn main() {
+            var values: Vec<Generator<i64, ()>> = [];
+            values.push(numbers());
+            values.set(0, numbers());
+        }
+        ",
     );
+    let inputs = module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            SemTerminator::Suspend {
+                kind:
+                    hew_sir::SuspendKind::ValueClose {
+                        selection: hew_sir::ValueCloseSelection::VectorElement,
+                        ..
+                    },
+                inputs,
+                ..
+            } => Some(inputs),
+            _ => None,
+        })
+        .expect("replacement must close its selected element");
+    inputs[1].operand.value = inputs[0].operand.value;
+    assert!(verify_module(&module)
+        .iter()
+        .any(|diagnostic| format!("{diagnostic:?}")
+            .contains("no matching input/result/resume contract")));
 }

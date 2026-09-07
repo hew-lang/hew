@@ -20,7 +20,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -153,7 +153,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -182,7 +182,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -195,7 +195,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -249,7 +249,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -542,7 +542,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -555,7 +555,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -664,7 +664,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -799,7 +799,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -814,7 +814,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -829,7 +829,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1023,7 +1023,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1141,7 +1141,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1196,7 +1196,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1211,7 +1211,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1226,7 +1226,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1241,7 +1241,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1256,7 +1256,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1271,7 +1271,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1286,7 +1286,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1301,7 +1301,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1316,7 +1316,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2031,7 +2031,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2044,7 +2044,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2057,7 +2057,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2070,7 +2070,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2083,7 +2083,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2096,7 +2096,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2109,7 +2109,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2122,7 +2122,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2135,7 +2135,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2148,7 +2148,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2161,7 +2161,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2174,7 +2174,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2187,7 +2187,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2200,7 +2200,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2213,7 +2213,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2226,7 +2226,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2239,7 +2239,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2252,7 +2252,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2265,7 +2265,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2902,7 +2902,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2917,7 +2917,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2997,7 +2997,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3916,7 +3916,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3929,7 +3929,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3942,7 +3942,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3955,7 +3955,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3968,7 +3968,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3981,7 +3981,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3995,7 +3995,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4010,7 +4010,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4025,7 +4025,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4040,7 +4040,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4055,7 +4055,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4070,7 +4070,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4085,7 +4085,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4100,7 +4100,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4115,7 +4115,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4130,7 +4130,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4145,7 +4145,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4160,7 +4160,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4175,7 +4175,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4190,7 +4190,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4205,7 +4205,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4220,7 +4220,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4235,7 +4235,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4250,7 +4250,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4265,7 +4265,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4280,7 +4280,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4294,7 +4294,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4307,7 +4307,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4320,7 +4320,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5106,7 +5106,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5119,7 +5119,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5132,7 +5132,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5145,7 +5145,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5158,7 +5158,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5171,7 +5171,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5184,7 +5184,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5197,7 +5197,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5210,7 +5210,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5223,7 +5223,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5236,7 +5236,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5249,7 +5249,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5262,7 +5262,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5275,7 +5275,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5288,7 +5288,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5301,7 +5301,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5314,7 +5314,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5327,7 +5327,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5340,7 +5340,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5353,7 +5353,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6858,7 +6858,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6962,7 +6962,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7668,7 +7668,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7893,7 +7893,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11220,7 +11220,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14065,7 +14065,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14080,7 +14080,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19384,7 +19384,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19397,7 +19397,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19410,7 +19410,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19423,7 +19423,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -21372,7 +21372,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -21387,7 +21387,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",

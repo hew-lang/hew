@@ -259,8 +259,8 @@ error; there is no `must_use` lint tier below that widening (hew-lang/hew#3254).
 
 A bare statement that discards any send or ask result is
 `E_SEND_RESULT_DROPPED`, a compile error. The caller MUST handle it with
-`match` or `?`, or explicitly acknowledge the decision with the fix-it
-`_ = pid.m();`. This explicit discard exists for metrics/sampling workloads,
+`match`, `handle` or `?`, or explicitly acknowledge the decision with the
+fix-it `_ = send pid.m();`. This explicit discard exists for metrics/sampling workloads,
 but loss can no longer be introduced by changing an actor declaration while
 leaving an ordinary bare send apparently successful.
 

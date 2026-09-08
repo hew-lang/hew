@@ -1,0 +1,10 @@
+[[case]]
+id = "channel-halves-nested"
+intent = "A channel half rides in a record field and in a Vec, is used from either container and is closed exactly once, proving the endpoint has one type identity across the declaration and the constructor."
+source = "cases/channel-halves-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "record through a record\nrecord closed\nvec through a vec\n"
+exit = 0

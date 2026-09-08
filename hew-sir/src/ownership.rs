@@ -658,20 +658,19 @@ pub fn receiver_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 
 /// Whether two checked types are the same value at a call boundary.
 ///
-/// WHY: `std.channel` declares its endpoints bare (`type Sender {}`) while the
-/// checker attaches the message type per call site, so one callable's
-/// signature says `Sender` where its caller's expression says `Sender<string>`.
-/// The handle is a pointer word whose class, clone recipe and close are
-/// element-independent, so the two spellings denote the same value; only the
-/// spelled side carries the element fact a receive or send needs.
+/// A channel endpoint may still be spelled with or without its message type:
+/// `std.channel` declares the halves without one, and a caller that annotates
+/// supplies it. The handle is a pointer word whose class, clone recipe and
+/// close are element-independent, so the two spellings denote the same value;
+/// only the spelled side carries the element fact a receive or send needs.
 ///
 /// A bare endpoint only ever comes from `std.channel`'s own declarations, so
 /// this never equates two different spelled elements.
 ///
 /// WHEN OBSOLETE: when `std.channel` declares `Sender<T>` / `Receiver<T>` and
-/// `new<T>` and the checker's two channel special cases
-/// (`instantiate_channel_constructor_return`, the bare-handle auto-parameter
-/// in type resolution) are deleted. WHAT THE REAL FIX IS: that declaration.
+/// `new<T>`, and `instantiate_channel_constructor_return` (hew-types
+/// check/methods.rs) and the bare-handle auto-parameter (check/resolution.rs)
+/// are deleted. WHAT THE REAL FIX IS: that declaration.
 /// The endpoint identity and message arguments of a channel handle.
 fn channel_endpoint(ty: &ResolvedTy) -> Option<(hew_types::BuiltinType, &[ResolvedTy])> {
     match ty {
@@ -689,9 +688,9 @@ pub fn call_boundary_types_match(left: &ResolvedTy, right: &ResolvedTy) -> bool 
     if left == right {
         return true;
     }
-    // `builtin` is the identity fact for an endpoint; the module-qualified
-    // spelling and the opacity flag differ between the checker's annotation
-    // and inference paths and say nothing about the value.
+    // `builtin` is the identity fact for an endpoint. Name and opacity now
+    // agree everywhere; a declaration that omits the message type still
+    // meets a caller that spells it.
     match (channel_endpoint(left), channel_endpoint(right)) {
         (Some((left_kind, left_args)), Some((right_kind, right_args))) => {
             left_kind == right_kind

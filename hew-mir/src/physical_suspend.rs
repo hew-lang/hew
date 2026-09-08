@@ -125,6 +125,10 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .filter(|block| lifetimes.is_reachable(block.id))
         {
             match &block.terminator {
+                hew_sir::SemTerminator::Suspend {
+                    kind: hew_sir::SuspendKind::ChannelRecv { park: false },
+                    ..
+                } => {}
                 hew_sir::SemTerminator::RecoverFault { .. }
                 | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::IndirectCall { .. } => {
@@ -172,7 +176,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { .. }
                 | PhysicalTerminator::StreamSend { .. }
-                | PhysicalTerminator::ChannelRecv { .. }
+                | PhysicalTerminator::ChannelRecv { park: true, .. }
                 | PhysicalTerminator::ChannelSend { .. }
                 | PhysicalTerminator::ValueClose { .. }
                 | PhysicalTerminator::IndirectCall { .. }

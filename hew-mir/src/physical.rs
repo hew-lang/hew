@@ -917,6 +917,7 @@ pub enum PhysicalRuntimeAction {
     StreamClose,
     /// The channel substrate's non-suspending entries: allocating and
     /// splitting a pair, and closing either half.
+    ChannelSenderClone,
     ChannelSenderClose,
     ChannelReceiverClose,
     ChannelPairNew,
@@ -1008,6 +1009,7 @@ impl PhysicalRuntimeAction {
             Self::FileRead(op) => RuntimeCallFamily::FileRead(op),
             Self::Tcp(op) => RuntimeCallFamily::Tcp(op),
             Self::StreamClose => RuntimeCallFamily::StreamClose,
+            Self::ChannelSenderClone => RuntimeCallFamily::ChannelSenderClone,
             Self::ChannelSenderClose => RuntimeCallFamily::ChannelSenderClose,
             Self::ChannelReceiverClose => RuntimeCallFamily::ChannelReceiverClose,
             Self::ChannelPairNew => RuntimeCallFamily::ChannelPairNew,
@@ -2502,6 +2504,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::FileRead(op) => PhysicalRuntimeAction::FileRead(op),
         RuntimeCallFamily::Tcp(op) => PhysicalRuntimeAction::Tcp(op),
         RuntimeCallFamily::StreamClose => PhysicalRuntimeAction::StreamClose,
+        RuntimeCallFamily::ChannelSenderClone => PhysicalRuntimeAction::ChannelSenderClone,
         RuntimeCallFamily::ChannelSenderClose => PhysicalRuntimeAction::ChannelSenderClose,
         RuntimeCallFamily::ChannelReceiverClose => PhysicalRuntimeAction::ChannelReceiverClose,
         RuntimeCallFamily::ChannelPairNew => PhysicalRuntimeAction::ChannelPairNew,

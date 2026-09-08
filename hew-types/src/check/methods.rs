@@ -1773,30 +1773,6 @@ impl Checker {
         }
     }
 
-    /// Attach the shared inferred element type to channel endpoints without
-    /// reconstructing the declaration's surrounding return type.
-    fn instantiate_channel_constructor_return(return_type: &Ty, element: &Ty) -> Ty {
-        match return_type {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } if args.is_empty() => {
-                match (*builtin).or_else(|| crate::builtin_type::lookup_builtin_type(name)) {
-                    Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)) => Ty::Named {
-                        name: name.clone(),
-                        args: vec![element.clone()],
-                        builtin: Some(kind),
-                    },
-                    _ => return_type.clone(),
-                }
-            }
-            _ => return_type.map_children_pub(&|child| {
-                Self::instantiate_channel_constructor_return(child, element)
-            }),
-        }
-    }
-
     /// Apply exact function policy after a named import has resolved its
     /// declaration owner.  Unlike a bare surface spelling this carries the
     /// source identity (`std.fs.read`) and cannot be captured by a user
@@ -7757,17 +7733,6 @@ impl Checker {
                     ) {
                         return applied_sig.return_type;
                     }
-                    // Channel constructor: inject a shared type variable so
-                    // Sender<T> and Receiver<T> from the same `new` call are
-                    // linked through unification, while preserving the resolved
-                    // declaration's outer return shape.
-                    if canonical_owner == "std.channel" && method == "new" {
-                        let t = Ty::Var(TypeVar::fresh());
-                        return Self::instantiate_channel_constructor_return(
-                            &applied_sig.return_type,
-                            &t,
-                        );
-                    }
                     if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(
                             span,
@@ -9240,7 +9205,6 @@ impl Checker {
                         ) else {
                             return Ty::Error;
                         };
-                        self.warn_if_blocking_in_receive_fn("Receiver.recv", span);
                         if matches!(resolved_inner, Ty::Var(_)) {
                             // No argument to unify against — the return-type
                             // constraint (e.g. `let v: int = rx.recv()`) is

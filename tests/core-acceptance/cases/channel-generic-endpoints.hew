@@ -1,0 +1,36 @@
+import std.channel.channel;
+
+fn numbers() -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {
+    channel.new(2)
+}
+
+// This function has no suspension point. Physical verification must not
+// require a coroutine merely because it contains a channel receive.
+fn receive_now(rx: channel.Receiver<i64>) -> Option<i64> {
+    rx.try_recv()
+}
+
+fn main() {
+    let (tx, rx) = numbers().expect("integer channel");
+    let other_tx = tx.clone();
+    assert(receive_now(rx).is_none());
+    tx.send(73);
+    assert(receive_now(rx).expect("queued number") == 73);
+    tx.close();
+    other_tx.send(91);
+    assert(receive_now(rx).expect("other producer") == 91);
+    other_tx.close();
+    assert(receive_now(rx).is_none());
+    rx.close();
+
+    // Independent instantiations must retain different element types even
+    // though both endpoints use the same pointer representation.
+    let (text_tx, text_rx) = channel.new(2).expect("text channel");
+    text_tx.send("typed\0text");
+    text_tx.close();
+    let text = text_rx.recv().expect("queued text");
+    assert(text == "typed\0text");
+    assert(text_rx.recv().is_none());
+    text_rx.close();
+    println("typed channels and immediate receive");
+}

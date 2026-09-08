@@ -3488,22 +3488,6 @@ impl Checker {
                         }
                     }
                 }
-                // Auto-parameterise channel handle types: bare `Sender`
-                // becomes `Sender<T>` with a fresh type variable so that
-                // function parameters accept any channel element type.
-                // Skip when the source spelling is locally defined as
-                // non-generic — standalone `hew check` on channel.hew
-                // defines `type Sender {}` with zero type params, and
-                // injecting fresh vars causes unification failures between
-                // extern decls and impl bodies. Local resolution may now
-                // canonicalise the identity to `channel.Sender`, so test the
-                // original bare spelling against `local_type_defs` while
-                // reading arity from the resolved definition.
-                let locally_non_generic = self.local_type_defs.contains(name.as_str())
-                    && self
-                        .type_defs
-                        .get(resolved_name.as_str())
-                        .is_some_and(|td| td.type_params.is_empty());
                 let generated_prelude_builtin = (!name.contains('.'))
                     .then(|| self.published_bare_type_qualified(name))
                     .flatten()
@@ -3514,16 +3498,6 @@ impl Checker {
                 let resolved_builtin = self
                     .resolved_builtin_type(resolved_name.as_str())
                     .or(generated_prelude_builtin);
-                let is_channel_handle = resolved_builtin
-                    .is_some_and(BuiltinType::is_channel_handle)
-                    || builtin_named_type(resolved_name.as_str()).is_some_and(
-                        super::super::builtin_names::BuiltinNamedType::is_channel_handle,
-                    );
-                let args = if is_channel_handle && args.is_empty() && !locally_non_generic {
-                    vec![Ty::Var(TypeVar::fresh())]
-                } else {
-                    args
-                };
                 if resolved_builtin == Some(crate::BuiltinType::Rc) {
                     if let Some(type_args) = type_args.as_ref() {
                         if let (Some(payload_ty), Some((_, payload_span))) =
@@ -3566,7 +3540,9 @@ impl Checker {
                     )
                     || (resolved_name.contains('.')
                         && builtin.is_some_and(|kind| {
-                            kind.is_collection() || kind.is_substrate_handle()
+                            kind.is_collection()
+                                || kind.is_substrate_handle()
+                                || kind.is_channel_handle()
                         }));
                 // Preserve the lexical declaration decision made above. A
                 // local source type may be owner-qualified before this point,
@@ -3631,9 +3607,16 @@ impl Checker {
                             .filter(|declaration| {
                                 crate::lookup_builtin_type(declaration.name) == Some(builtin)
                             })
-                            .map_or(resolved_name.clone(), |declaration| {
-                                declaration.canonical_name.to_string()
-                            });
+                            .map_or_else(
+                                || {
+                                    if builtin.is_channel_handle() {
+                                        builtin.canonical_name().to_string()
+                                    } else {
+                                        resolved_name.clone()
+                                    }
+                                },
+                                |declaration| declaration.canonical_name.to_string(),
+                            );
                     Ty::Named {
                         name: canonical_name,
                         args,

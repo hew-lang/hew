@@ -286,7 +286,7 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn receive_fn_channel_recv_warns_blocking() {
+    fn native_channel_receive_does_not_warn_worker_blocking() {
         let source = concat!(
             "import std.channel.channel;\n",
             "actor Worker {\n",
@@ -310,11 +310,11 @@ mod wasm_rejects {
         let mut checker = Checker::new(test_registry());
         let output = checker.check_program(&result.program);
         assert!(
-            output
+            !output
                 .warnings
                 .iter()
                 .any(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn),
-            "rx.recv() in a receive fn must warn as blocking: {:?}",
+            "native rx.recv() suspends without blocking a worker: {:?}",
             output.warnings
         );
     }

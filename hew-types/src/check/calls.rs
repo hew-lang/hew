@@ -334,6 +334,7 @@ impl Checker {
 
     #[expect(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "call application needs the signature, its associated-type side table, source args, span, and arity mode"
     )]
     pub(super) fn apply_instantiated_call_signature_with_assoc(
@@ -347,8 +348,14 @@ impl Checker {
         record_call_type_args: bool,
         callee: Option<GenericCallee<'_>>,
     ) -> AppliedCallSignature {
+        let receiver_type_args = match &callee {
+            Some(GenericCallee::Method {
+                owner_type_args, ..
+            }) => *owner_type_args,
+            _ => &[],
+        };
         let (freshened_params, freshened_ret, resolved_type_args) =
-            self.instantiate_fn_sig_for_call(sig, type_args, span);
+            self.instantiate_fn_sig_for_receiver_call(sig, type_args, span, receiver_type_args);
 
         match arg_application {
             SignatureArgApplication::PositionalOnly { arity_context } => {

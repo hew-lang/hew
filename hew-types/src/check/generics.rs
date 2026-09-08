@@ -142,6 +142,16 @@ impl Checker {
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> (Vec<Ty>, Ty, Vec<Ty>) {
+        self.instantiate_fn_sig_for_receiver_call(sig, type_args, span, &[])
+    }
+
+    pub(super) fn instantiate_fn_sig_for_receiver_call(
+        &mut self,
+        sig: &FnSig,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+        receiver_type_args: &[Ty],
+    ) -> (Vec<Ty>, Ty, Vec<Ty>) {
         let mut params = sig.params.clone();
         let mut ret = sig.return_type.clone();
         let mut resolved_type_args = Vec::new();
@@ -204,6 +214,15 @@ impl Checker {
         // to make generic builtins like println work with different types each call.
         // Use a shared mapping so params and return type share the same fresh vars.
         let mut mapping: HashMap<u32, Ty> = HashMap::new();
+        // Receiver arguments already belong to the caller's inference graph.
+        // Freshening them would detach `factory().expect(...)` from later
+        // constraints on the extracted value.
+        let mut receiver_vars = HashSet::new();
+        for argument in receiver_type_args {
+            collect_unresolved_inference_vars(&self.subst.resolve(argument), &mut receiver_vars);
+        }
+        mapping.extend(receiver_vars.into_iter().map(|var| (var.0, Ty::Var(var))));
+
         let freshened_params = params
             .iter()
             .map(|param| self.freshen_inner(param, &mut mapping))

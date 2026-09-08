@@ -13986,7 +13986,11 @@ impl LowerCtx {
         {
             if let Some(contract) = family.semantic_contract() {
                 let matches = self.fn_registry.get(qualified).is_some_and(|signature| {
-                    signature.type_params.is_empty()
+                    signature
+                        .type_params
+                        .iter()
+                        .map(String::as_str)
+                        .eq(family.source_intrinsic_type_params().iter().copied())
                         && !func.is_async
                         && !func.is_generator
                         && !func

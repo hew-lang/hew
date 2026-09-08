@@ -263,7 +263,8 @@ const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 ///   These are ordinary typed Hew declarations whose exact canonical source
 ///   identity selects a closed runtime operation; the raw status/out ABI is
 ///   not exposed to source programs.
-const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math", "std.mem", "std.encoding.utf8"];
+const INTRINSIC_FLOOR_MODULES: &[&str] =
+    &["std.math", "std.mem", "std.encoding.utf8", "std.channel"];
 
 #[must_use]
 pub fn intrinsic_floor_modules() -> &'static [&'static str] {
@@ -2546,11 +2547,8 @@ impl Checker {
     /// Pass 1: Collect type definitions
     pub(super) fn collect_types(&mut self, program: &Program) {
         // Pre-register TypeDecls from non-root module_graph modules into
-        // `type_defs` so that:
-        //   (a) `locally_non_generic` in `resolve_type_expr` can suppress
-        //       fresh-var injection for opaque handle types (Sender, Receiver)
-        //   (b) non-root module body-checking can access struct fields and
-        //       enum variants of types defined within those modules
+        // `type_defs` so non-root module body checking can access struct
+        // fields and enum variants of types defined within those modules.
         //
         // Uses `pre_register_type_decl` which populates `type_defs` with
         // correct field/variant data but skips `type_def_spans` (so the
@@ -5432,11 +5430,7 @@ impl Checker {
                         .iter()
                         .map(|import| (import.target.path.join("."), import.spec.clone()))
                         .collect();
-                    // Temporarily scope local_type_defs to this module so
-                    // that register_channel_recv_builtins (called from
-                    // register_extern_block) can detect module-local types
-                    // like Receiver, and locally_non_generic suppresses
-                    // fresh-var injection for handle types like Sender.
+                    // Scope local declarations to the module being registered.
                     let saved_local_type_defs = self.local_type_defs.clone();
                     let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
@@ -6830,18 +6824,39 @@ impl Checker {
             return true;
         };
         let signature_matches = self.fn_sigs.get(key).is_some_and(|signature| {
+            let resolve = |ty: &Ty| {
+                crate::ResolvedTy::from_ty_with_type_params(
+                    ty,
+                    &signature.type_params.iter().cloned().collect(),
+                )
+                .map(|ty| {
+                    super::resolve_member_ty(
+                        ty,
+                        self.current_module.as_deref(),
+                        &self.type_defs,
+                        &|name| {
+                            self.user_opaque_type_names.contains(name)
+                                || self.module_registry.is_handle_type(name)
+                        },
+                    )
+                })
+            };
             let Ok(params) = signature
                 .params
                 .iter()
-                .map(crate::ResolvedTy::from_ty)
+                .map(resolve)
                 .collect::<Result<Vec<_>, _>>()
             else {
                 return false;
             };
-            let Ok(result) = crate::ResolvedTy::from_ty(&signature.return_type) else {
+            let Ok(result) = resolve(&signature.return_type) else {
                 return false;
             };
-            signature.type_params.is_empty()
+            signature
+                .type_params
+                .iter()
+                .map(String::as_str)
+                .eq(family.source_intrinsic_type_params().iter().copied())
                 && !signature.is_async
                 && !fd.is_generator
                 && !fd
@@ -10004,12 +10019,6 @@ impl Checker {
 
             self.record_root_value_binding(&f.name);
         }
-
-        // Register codegen-intercepted channel functions that use
-        // out-parameter ABI and cannot appear in extern blocks.
-        // Without these entries standalone `hew check` on channel.hew
-        // reports "undefined function" for recv/try_recv calls.
-        self.register_channel_recv_builtins();
     }
 
     /// Join generated owned-result contracts to exact source extern
@@ -10049,126 +10058,6 @@ impl Checker {
             contracts,
             &self.identity,
         )
-    }
-
-    /// Registers synthetic `fn_sigs` entries for the channel layout-witness
-    /// `send`/`recv`/`try_recv` entries, whose calling convention is handled
-    /// entirely by codegen.
-    ///
-    /// The real runtime ABI carries an out-parameter and an element-layout
-    /// witness pointer (`hew_channel_recv_layout(rx, out, witness)`), which
-    /// cannot be expressed in an `extern "C"` block — codegen intercepts the
-    /// call by name and emits the witness ABI. We register them here so the
-    /// type checker can resolve the stdlib impl-body calls inside `unsafe`
-    /// blocks (the declared `string` element types are placeholders; the
-    /// intercept derives the element type from the call site).
-    ///
-    /// Only activates when we're actually in the channel module: the local
-    /// module must define `Receiver` AND the extern block must have already
-    /// registered the `hew_channel_new` constructor.
-    pub(super) fn register_channel_recv_builtins(&mut self) {
-        let marker_key = scoped_module_item_name(self.current_module.as_deref(), "hew_channel_new")
-            .unwrap_or_else(|| "hew_channel_new".to_string());
-        if !self.local_type_defs.contains("Receiver") || !self.fn_sigs.contains_key(&marker_key) {
-            return;
-        }
-
-        // These codegen-intercepted signatures are part of the standard
-        // channel source implementation, not a name-based ambient builtin.
-        // A user module may define `channel.Receiver`; grant the builtin
-        // discriminator only when the module graph proved the canonical
-        // `std.channel` owner came from the shipped stdlib source. The body
-        // annotations then share the same nominal identity as these synthetic
-        // signatures.
-        let canonical_channel_source = self.current_module.as_deref().is_some_and(|module| {
-            module == "std.channel" && self.canonical_std_module_sources.contains(module)
-        });
-        let receiver_ty = if canonical_channel_source {
-            Ty::Named {
-                builtin: Some(BuiltinType::Receiver),
-                name: "std.channel.Receiver".to_string(),
-                args: Vec::new(),
-            }
-        } else {
-            Ty::Named {
-                builtin: None,
-                name: "Receiver".to_string(),
-                args: Vec::new(),
-            }
-        };
-        let sender_ty = if canonical_channel_source {
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                name: "std.channel.Sender".to_string(),
-                args: Vec::new(),
-            }
-        } else {
-            Ty::Named {
-                builtin: None,
-                name: "Sender".to_string(),
-                args: Vec::new(),
-            }
-        };
-
-        let builtins: &[(&str, &str, Ty, Ty)] = &[
-            (
-                "hew_channel_recv_layout",
-                "rx",
-                receiver_ty.clone(),
-                Ty::option(Ty::String),
-            ),
-            (
-                "hew_channel_try_recv_layout",
-                "rx",
-                receiver_ty.clone(),
-                Ty::option(Ty::String),
-            ),
-        ];
-
-        // The witnesses are calls across the FFI boundary even though codegen,
-        // not an extern block, supplies their ABI. They are declared in the
-        // module currently being registered so the `unsafe` gate reads them
-        // out of the one extern-declaration index.
-        let witness_module = match self.current_module.clone() {
-            Some(path) => self.identity.mint_module(&path, &[]),
-            None => self.identity.mint_synthetic_root(),
-        };
-        let witness_module_path = self.identity.module_path(witness_module).to_string();
-
-        for (name, param_name, param_ty, ret_ty) in builtins {
-            let key = scoped_module_item_name(self.current_module.as_deref(), name)
-                .unwrap_or_else(|| (*name).to_string());
-            if self.fn_sigs.contains_key(&key) {
-                continue;
-            }
-            let sig = FnSig {
-                param_names: vec![(*param_name).to_string()],
-                params: vec![param_ty.clone()],
-                return_type: ret_ty.clone(),
-                ..FnSig::default()
-            };
-            self.fn_sigs.insert(key.clone(), sig);
-            self.declare_contractless_extern(witness_module, &witness_module_path, &key);
-        }
-
-        // The typed-serialise send takes the value by reference plus the
-        // witness in the real ABI; the placeholder 2-arg shape carries arity
-        // for the stdlib impl body.
-        let send_key =
-            scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send_layout")
-                .unwrap_or_else(|| "hew_channel_send_layout".to_string());
-        if !self.fn_sigs.contains_key(&send_key) {
-            self.fn_sigs.insert(
-                send_key.clone(),
-                FnSig {
-                    param_names: vec!["tx".to_string(), "data".to_string()],
-                    params: vec![sender_ty, Ty::String],
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            );
-            self.declare_contractless_extern(witness_module, &witness_module_path, &send_key);
-        }
     }
 
     /// Snapshot the compiler-assumed part of the implicit prelude before source
@@ -11032,13 +10921,7 @@ impl Checker {
 
         self.record_trait_import_bindings(module_short, items);
 
-        // Temporarily scope local_type_defs so that locally_non_generic in
-        // resolve_type_expr suppresses fresh-var injection for opaque handle
-        // types (e.g. Sender, Receiver) declared in this module.  Without
-        // this, impl-method signatures resolved here would get Sender<?T>
-        // while the same signatures registered during collect_functions
-        // (module_graph traversal) use bare Sender — causing a type mismatch
-        // when body-checking the non-root module.
+        // Resolve imported declarations in the defining module's lexical scope.
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
@@ -12086,9 +11969,7 @@ impl Checker {
         // already registered by the time this module's sub-trait edge is built.
         self.record_trait_import_bindings(module_full_path, items);
 
-        // Temporarily scope local_type_defs so that locally_non_generic
-        // suppresses fresh-var injection for handle types defined in this
-        // module, matching the resolution context used during collect_functions.
+        // Match the defining module's lexical scope during registration.
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
@@ -13565,140 +13446,6 @@ mod node_builtin_catalog_tests {
                 "registered Node builtin {name:?} is not classified for wasm rejection"
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod channel_recv_builtin_provenance_tests {
-    use super::*;
-
-    fn checker_with_channel_surface(canonical_source: bool) -> Checker {
-        let mut checker = Checker {
-            current_module: Some("std.channel".to_string()),
-            ..Checker::default()
-        };
-        checker.local_type_defs.insert("Receiver".to_string());
-        checker
-            .fn_sigs
-            .insert("std.channel.hew_channel_new".to_string(), FnSig::default());
-        if canonical_source {
-            checker
-                .canonical_std_module_sources
-                .insert("std.channel".to_string());
-        }
-        checker
-    }
-
-    #[test]
-    fn channel_layout_shims_require_canonical_source_provenance() {
-        let mut canonical = checker_with_channel_surface(true);
-        canonical.register_channel_recv_builtins();
-        assert!(matches!(
-            canonical.fn_sigs["std.channel.hew_channel_recv_layout"]
-                .params
-                .as_slice(),
-            [Ty::Named {
-                builtin: Some(BuiltinType::Receiver),
-                ..
-            }]
-        ));
-
-        // A user package can spell both the std owner and the channel leaves.
-        // It must retain ordinary nominal types rather than gaining the
-        // compiler's Receiver identity from those spellings alone.
-        let mut user_channel = checker_with_channel_surface(false);
-        user_channel.register_channel_recv_builtins();
-        assert!(matches!(
-            user_channel.fn_sigs["std.channel.hew_channel_recv_layout"].params.as_slice(),
-            [Ty::Named {
-                builtin: None,
-                name,
-                ..
-            }] if name == "Receiver"
-        ));
-    }
-
-    /// The layout witnesses cross the FFI boundary: codegen, not an extern
-    /// block, supplies their ABI, but a call to one is still an unsafe call.
-    /// They gate `unsafe` through a minted declaration in the one extern
-    /// table, so a stdlib impl body that drops its `unsafe` block is refused.
-    #[test]
-    fn channel_layout_witnesses_gate_unsafe() {
-        let mut checker = checker_with_channel_surface(true);
-        checker.register_channel_recv_builtins();
-        for witness in [
-            "std.channel.hew_channel_recv_layout",
-            "std.channel.hew_channel_try_recv_layout",
-            "std.channel.hew_channel_send_layout",
-        ] {
-            assert!(
-                checker.extern_table.requires_unsafe(witness),
-                "`{witness}` must gate `unsafe` like any other FFI call"
-            );
-            assert!(
-                checker.identity.declaration_by_path(witness).is_some(),
-                "`{witness}` must gate through a minted declaration, not a name set"
-            );
-        }
-        // Negative control: the ordinary channel constructor signature this
-        // fixture seeds is not an extern declaration here, so the assertions
-        // above are reading the extern table rather than every known key.
-        assert!(
-            !checker
-                .extern_table
-                .requires_unsafe("std.channel.hew_channel_new"),
-            "a plain fn_sigs entry must not acquire an unsafe gate"
-        );
-    }
-
-    /// Two source-less extern inventories declare into one module: the layout
-    /// witnesses, and the registry mirror of a shipped module's C surface.
-    /// Each counted its occurrences from its own zero, so the two inventories
-    /// collided occurrence-for-occurrence — and a collision resolves to the
-    /// ESTABLISHED declaration, so the witness rows adopted the mirror rows'
-    /// identities and endpoints (`Sender::send` emitted a call to whichever C
-    /// symbol sat at the witness's ordinal). Every source-less extern
-    /// declaration must keep its own occurrence.
-    #[test]
-    fn a_registry_mirror_row_does_not_adopt_a_layout_witness_declaration() {
-        let mut checker = checker_with_channel_surface(true);
-        checker.register_channel_recv_builtins();
-        let module = checker.identity.mint_module("std.channel", &[]);
-        let module_path = checker.identity.module_path(module).to_string();
-
-        // The registry mirror publishes the shipped module's C surface under
-        // its bare symbols, in the order the metadata lists them.
-        let mirrored = ["hew_channel_new", "hew_channel_pair_sender"];
-        for symbol in mirrored {
-            checker.declare_contractless_extern(module, &module_path, symbol);
-        }
-
-        let witnesses = [
-            "std.channel.hew_channel_recv_layout",
-            "std.channel.hew_channel_try_recv_layout",
-            "std.channel.hew_channel_send_layout",
-        ];
-        let mut established: Vec<String> = Vec::new();
-        for key in witnesses.into_iter().chain(mirrored) {
-            let declaration = checker
-                .identity
-                .declaration_by_path(key)
-                .unwrap_or_else(|| panic!("`{key}` must mint a declaration"));
-            assert_eq!(
-                declaration.full_path(),
-                key,
-                "`{key}` must keep its own identity rather than adopting another inventory's"
-            );
-            established.push(declaration.full_path().to_string());
-        }
-        established.sort_unstable();
-        let distinct = established.len();
-        established.dedup();
-        assert_eq!(
-            established.len(),
-            distinct,
-            "each source-less extern declaration must mint a distinct identity"
-        );
     }
 }
 

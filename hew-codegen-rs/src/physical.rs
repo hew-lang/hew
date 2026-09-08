@@ -3993,6 +3993,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
+            PhysicalRuntimeAction::ChannelSenderClone => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelSenderClone,
+                    transfers,
+                    result,
+                )?;
+            }
             PhysicalRuntimeAction::ChannelPairSender => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ChannelPairSender,

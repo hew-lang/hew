@@ -139,9 +139,7 @@ pub enum RuntimeValueKind {
     /// A file-read owner, with exact source or builtin identity supplied by the signature.
     FileReadHandle(FileReadHandleKind),
     IoHandle(IoHandleKind),
-    /// One half of a channel. `std.channel` declares the halves bare and the
-    /// checker attaches the message type per call site, so the kind matches
-    /// either spelling and resolves to the receiver's own type.
+    /// One generic channel half, resolved to the receiver's checked type.
     ChannelHalf(ChannelHalfKind),
     /// A freshly extracted channel half named by the operation, not by the
     /// receiver: `hew_channel_pair_sender` borrows a pair and returns a half.
@@ -224,7 +222,7 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::ChannelHalfResult(kind) => kind.bare_ty(),
+            Self::ChannelHalfResult(_) => return None,
             Self::ChannelPair => channel_pair_ty()?,
             Self::ActorRequestOwner => actor_request_owner_ty(),
             Self::ActorRequestAdmission => {
@@ -503,6 +501,7 @@ impl RuntimeSemanticContract {
             | RuntimeResultEffect::UpdatedReceiver(kind)
             | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
                 let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                    || matches!(kind, RuntimeValueKind::ChannelHalfResult(half) if half.matches(result_hint))
                 {
                     Some(result_hint.clone())
                 } else {
@@ -560,9 +559,7 @@ pub enum ChannelHalfKind {
 }
 
 impl ChannelHalfKind {
-    /// Match the checked handle identity. The message type is a semantic
-    /// parameter the handle's ABI and ownership do not depend on, so a bare
-    /// `std.channel` declaration and a spelled call site both match.
+    /// Match a checked generic endpoint with exactly one message type.
     #[must_use]
     pub fn matches(self, ty: &ResolvedTy) -> bool {
         let expected = match self {
@@ -570,7 +567,7 @@ impl ChannelHalfKind {
             Self::Receiver => BuiltinType::Receiver,
         };
         matches!(ty, ResolvedTy::Named { builtin: Some(builtin), args, .. }
-            if *builtin == expected && args.len() <= 1)
+            if *builtin == expected && args.len() == 1)
     }
 
     /// The channel half one checked type is, if it is one.
@@ -579,16 +576,6 @@ impl ChannelHalfKind {
         [Self::Sender, Self::Receiver]
             .into_iter()
             .find(|kind| kind.matches(ty))
-    }
-
-    /// The unspelled handle type `std.channel`'s own declarations use.
-    #[must_use]
-    pub fn bare_ty(self) -> ResolvedTy {
-        let builtin = match self {
-            Self::Sender => BuiltinType::Sender,
-            Self::Receiver => BuiltinType::Receiver,
-        };
-        ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new())
     }
 }
 
@@ -1507,6 +1494,7 @@ pub enum RuntimeCallFamily {
     ChannelRecvLayout,
     ChannelSendLayout,
     ChannelTryRecvLayout,
+    ChannelSenderClone,
     ChannelSenderClose,
     ChannelReceiverClose,
     // The paired allocation `channel.new` splits into its two halves. It never
@@ -2654,9 +2642,20 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn source_intrinsic_declaration(self) -> Option<&'static str> {
         match self {
+            Self::ChannelPairSender => Some("std.channel.pair_sender"),
+            Self::ChannelPairReceiver => Some("std.channel.pair_receiver"),
             Self::BytesDecodeUtf8 => Some("std.encoding.utf8.decode"),
             Self::BytesDecodeUtf8Lossy => Some("std.encoding.utf8.decode_lossy"),
             _ => None,
+        }
+    }
+
+    /// Generic parameters admitted by a source-owned floor operation.
+    #[must_use]
+    pub const fn source_intrinsic_type_params(self) -> &'static [&'static str] {
+        match self {
+            Self::ChannelPairSender | Self::ChannelPairReceiver => &["T"],
+            _ => &[],
         }
     }
 
@@ -2666,6 +2665,8 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
+            "channel.pair_sender" => Some(Self::ChannelPairSender),
+            "channel.pair_receiver" => Some(Self::ChannelPairReceiver),
             "println_i32" => Some(Self::Print {
                 kind: PrintKind::I32,
                 newline: true,
@@ -2812,6 +2813,7 @@ impl RuntimeCallFamily {
             Self::ChannelRecvLayout => "hew_channel_recv_layout",
             Self::ChannelSendLayout => "hew_channel_send_layout",
             Self::ChannelTryRecvLayout => "hew_channel_try_recv_layout",
+            Self::ChannelSenderClone => "hew_channel_sender_clone",
             Self::ChannelSenderClose => "hew_channel_sender_close",
             Self::ChannelReceiverClose => "hew_channel_receiver_close",
             Self::ChannelPairNew => "hew_channel_new",
@@ -3221,6 +3223,7 @@ impl RuntimeCallFamily {
             "hew_channel_recv_layout" => Self::ChannelRecvLayout,
             "hew_channel_send_layout" => Self::ChannelSendLayout,
             "hew_channel_try_recv_layout" => Self::ChannelTryRecvLayout,
+            "hew_channel_sender_clone" => Self::ChannelSenderClone,
             "hew_channel_sender_close" => Self::ChannelSenderClose,
             "hew_channel_receiver_close" => Self::ChannelReceiverClose,
             "hew_channel_new" => Self::ChannelPairNew,
@@ -4066,6 +4069,16 @@ impl RuntimeCallFamily {
             Self::FileRead(op) => op.contract(),
             Self::Tcp(op) => op.contract(),
             Self::StreamClose => file_resources::stream_close_contract(),
+            Self::ChannelSenderClone => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Sender),
+                    effect: RuntimeArgumentEffect::Borrow,
+                }],
+                RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelHalf(
+                    ChannelHalfKind::Sender,
+                )),
+                &[],
+            ),
             Self::ChannelSenderClose => channel_sender_close_contract(),
             Self::ChannelReceiverClose => channel_receiver_close_contract(),
             Self::ChannelPairNew => channel_pair_new_contract(),
@@ -4386,6 +4399,7 @@ impl RuntimeCallFamily {
             | F::ActorGenSinkRegister
             | F::ChannelSendLayout
             | F::ChannelTryRecvLayout
+            | F::ChannelSenderClone
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::ChannelPairNew
@@ -5330,6 +5344,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelRecvLayout
             | F::ChannelSendLayout
             | F::ChannelTryRecvLayout
+            | F::ChannelSenderClone
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::ChannelPairNew

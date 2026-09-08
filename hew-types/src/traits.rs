@@ -735,6 +735,24 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
+            // A channel transfers its element between threads. The sender can
+            // be shared; the single consumer moves to one receiving thread.
+            Ty::Named {
+                builtin: Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)),
+                args,
+                ..
+            } if args.len() == 1 => match marker {
+                MarkerTrait::Send => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Sync if *kind == BuiltinType::Sender => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Clone => *kind == BuiltinType::Sender,
+                MarkerTrait::Resource | MarkerTrait::Debug => true,
+                _ => false,
+            },
+
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
             Ty::Named {
                 builtin: Some(BuiltinType::Stream | BuiltinType::Sink),

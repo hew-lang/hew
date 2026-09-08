@@ -659,84 +659,9 @@ pub fn receiver_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 }
 
 /// Whether two checked types are the same value at a call boundary.
-///
-/// A channel endpoint may still be spelled with or without its message type:
-/// `std.channel` declares the halves without one, and a caller that annotates
-/// supplies it. The handle is a pointer word whose class, clone recipe and
-/// close are element-independent, so the two spellings denote the same value;
-/// only the spelled side carries the element fact a receive or send needs.
-///
-/// A bare endpoint only ever comes from `std.channel`'s own declarations, so
-/// this never equates two different spelled elements.
-///
-/// WHEN OBSOLETE: when `std.channel` declares `Sender<T>` / `Receiver<T>` and
-/// `new<T>`, and `instantiate_channel_constructor_return` (hew-types
-/// check/methods.rs) and the bare-handle auto-parameter (check/resolution.rs)
-/// are deleted. WHAT THE REAL FIX IS: that declaration.
-/// The endpoint identity and message arguments of a channel handle.
-fn channel_endpoint(ty: &ResolvedTy) -> Option<(hew_types::BuiltinType, &[ResolvedTy])> {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(kind),
-            args,
-            ..
-        } if kind.is_channel_handle() => Some((*kind, args.as_slice())),
-        _ => None,
-    }
-}
-
 #[must_use]
 pub fn call_boundary_types_match(left: &ResolvedTy, right: &ResolvedTy) -> bool {
-    if left == right {
-        return true;
-    }
-    // `builtin` is the identity fact for an endpoint. Name and opacity agree
-    // for declared members; `std.channel`'s own bare declarations still meet a
-    // caller that spells the element here.
-    match (channel_endpoint(left), channel_endpoint(right)) {
-        (Some((left_kind, left_args)), Some((right_kind, right_args))) => {
-            left_kind == right_kind
-                && (left_args.is_empty()
-                    || right_args.is_empty()
-                    || left_args
-                        .iter()
-                        .zip(right_args)
-                        .all(|(left, right)| call_boundary_types_match(left, right)))
-        }
-        _ => match (left, right) {
-            (ResolvedTy::Tuple(left), ResolvedTy::Tuple(right)) => {
-                left.len() == right.len()
-                    && left
-                        .iter()
-                        .zip(right)
-                        .all(|(left, right)| call_boundary_types_match(left, right))
-            }
-            (
-                ResolvedTy::Named {
-                    name: left_name,
-                    args: left_args,
-                    builtin: left_builtin,
-                    is_opaque: left_opaque,
-                },
-                ResolvedTy::Named {
-                    name: right_name,
-                    args: right_args,
-                    builtin: right_builtin,
-                    is_opaque: right_opaque,
-                },
-            ) => {
-                left_name == right_name
-                    && left_builtin == right_builtin
-                    && left_opaque == right_opaque
-                    && left_args.len() == right_args.len()
-                    && left_args
-                        .iter()
-                        .zip(right_args)
-                        .all(|(left, right)| call_boundary_types_match(left, right))
-            }
-            _ => false,
-        },
-    }
+    left == right
 }
 
 /// The shared element type of one pipe's `Stream<T>` and `Sink<T>` halves.

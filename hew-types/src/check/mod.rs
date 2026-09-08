@@ -400,22 +400,7 @@ pub(crate) fn resolve_member_ty(
             } else {
                 name
             };
-            // WHY: a channel endpoint is a pointer word whose identity is its
-            // builtin. The annotation path qualifies and marks it opaque while
-            // `channel.new`'s own signature spells it bare and transparent, and
-            // the physical glue recipe keys on the exact type — a half stored
-            // in a record, a Vec or actor state then failed to lower. Name and
-            // opacity are not identity facts for this builtin, so both take the
-            // canonical form.
-            // WHEN OBSOLETE: when `std.channel` declares `Sender<T>`,
-            // `Receiver<T>` and `new<T>` as ordinary generics, so both paths
-            // resolve one declaration. WHAT THE REAL FIX IS: that declaration,
-            // with `instantiate_channel_constructor_return` (check/methods.rs)
-            // and the bare-handle auto-parameter (check/resolution.rs) deleted.
-            if let Some(kind) = builtin.filter(|kind| kind.is_channel_handle()) {
-                return ResolvedTy::named_builtin(kind.canonical_name(), kind, args);
-            }
-            let is_opaque = is_opaque || is_opaque_type(&name);
+            let is_opaque = builtin.is_none() && (is_opaque || is_opaque_type(&name));
             ResolvedTy::Named {
                 name,
                 args,

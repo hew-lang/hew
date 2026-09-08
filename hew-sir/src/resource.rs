@@ -250,15 +250,12 @@ pub fn verify_resource_release(
             Err("task release requires an exact Task result type".into())
         };
     }
-    // A pipe half always spells its element. A channel half is spelled with
-    // its message type at a user site and bare inside `std.channel`'s own
-    // declarations; both are the same affine handle with the same close, so
-    // the release admits either arity.
+    // Both pipe and channel endpoints carry exactly one checked element type.
     if let Some((builtin, elements)) = match release {
         ResourceRelease::Stream => Some((hew_types::BuiltinType::Stream, 1..=1)),
         ResourceRelease::Sink => Some((hew_types::BuiltinType::Sink, 1..=1)),
-        ResourceRelease::Sender => Some((hew_types::BuiltinType::Sender, 0..=1)),
-        ResourceRelease::Receiver => Some((hew_types::BuiltinType::Receiver, 0..=1)),
+        ResourceRelease::Sender => Some((hew_types::BuiltinType::Sender, 1..=1)),
+        ResourceRelease::Receiver => Some((hew_types::BuiltinType::Receiver, 1..=1)),
         _ => None,
     } {
         return if matches!(ty, ResolvedTy::Named { builtin: Some(kind), args, .. } if *kind == builtin && elements.contains(&args.len()))

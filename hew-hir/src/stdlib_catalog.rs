@@ -2588,6 +2588,22 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
+    // Typed channel extraction uses the checked source signature. These are
+    // dispatch identities; their pointer ABI is owned by the runtime contract.
+    direct(
+        "channel.pair_sender",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "channel.pair_receiver",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     // Compiler-owned UTF-8 source declarations carry their real signatures.
     // These rows are exact dispatch identities only: validating decode's
     // nominal Result type is checked by RuntimeSemanticContract, so the Unit

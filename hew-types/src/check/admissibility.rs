@@ -303,99 +303,19 @@ fn ty_contains_error(ty: &Ty) -> bool {
     ty.contains_error()
 }
 
-fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
-    match ty {
-        Ty::Named { name, args, .. } => {
-            let normalized_args: Vec<Ty> = args
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect();
-            if matches!(
-                builtin_named_type(name.as_str()),
-                Some(kind) if kind.is_channel_handle()
-            ) && matches!(normalized_args.as_slice(), [Ty::Var(_)])
-            {
-                return Ty::normalize_named(name.clone(), vec![]);
-            }
-            Ty::normalize_named(name.clone(), normalized_args)
-        }
-        Ty::Tuple(elems) => Ty::Tuple(
-            elems
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-        ),
-        Ty::Array(elem, size) => Ty::Array(
-            Box::new(normalize_synthetic_channel_handle_type(elem)),
-            *size,
-        ),
-        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_type(elem))),
-        Ty::Function {
-            capabilities,
-            params,
-            ret,
-        } => Ty::Function {
-            capabilities: *capabilities,
-            params: params
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
-        },
-        Ty::Closure {
-            capabilities,
-            params,
-            ret,
-            captures,
-            identity,
-        } => Ty::Closure {
-            capabilities: *capabilities,
-            params: params
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
-            captures: captures
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-            identity: identity.clone(),
-        },
-        Ty::Pointer {
-            is_mutable,
-            pointee,
-        } => Ty::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(normalize_synthetic_channel_handle_type(pointee)),
-        },
-        _ => ty.clone(),
-    }
-}
-
-fn normalized_variant_def_has_inference_var(variant: &VariantDef) -> bool {
+fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
     match variant {
         VariantDef::Unit => false,
-        VariantDef::Tuple(fields) => fields
-            .iter()
-            .map(normalize_synthetic_channel_handle_type)
-            .any(|field| field.has_inference_var()),
+        VariantDef::Tuple(fields) => fields.iter().any(Ty::has_inference_var),
         VariantDef::Struct(fields) => fields
             .iter()
-            .map(|(_, field)| normalize_synthetic_channel_handle_type(field))
-            .any(|field| field.has_inference_var()),
+            .map(|(_, field)| field)
+            .any(Ty::has_inference_var),
     }
 }
 
 fn fn_sig_has_inference_var(sig: &FnSig) -> bool {
-    sig.params
-        .iter()
-        .map(normalize_synthetic_channel_handle_type)
-        .any(|param| param.has_inference_var())
-        || normalize_synthetic_channel_handle_type(&sig.return_type).has_inference_var()
-}
-
-fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
-    normalized_variant_def_has_inference_var(variant)
+    sig.params.iter().any(Ty::has_inference_var) || sig.return_type.has_inference_var()
 }
 
 fn variant_def_contains_error_type(variant: &VariantDef) -> bool {
@@ -415,11 +335,7 @@ fn type_def_shape_contains_error_type(type_def: &TypeDef) -> bool {
 }
 
 fn type_def_shape_has_inference_var(type_def: &TypeDef) -> bool {
-    type_def
-        .fields
-        .values()
-        .map(normalize_synthetic_channel_handle_type)
-        .any(|field| field.has_inference_var())
+    type_def.fields.values().any(Ty::has_inference_var)
         || type_def
             .variants
             .values()
@@ -620,18 +536,6 @@ impl Checker {
             collect_unresolved_inference_vars(ty, &mut unresolved);
             if unresolved.is_empty() {
                 continue;
-            }
-            if !unresolved.is_subset(covered_inference_vars) {
-                let normalized = normalize_synthetic_channel_handle_type(ty);
-                if normalized != *ty {
-                    let mut normalized_unresolved = HashSet::new();
-                    collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
-                    *ty = normalized;
-                    unresolved = normalized_unresolved;
-                    if unresolved.is_empty() {
-                        continue;
-                    }
-                }
             }
             leaked_expr_type_spans.push(span.clone());
             if unresolved.is_subset(covered_inference_vars) {
@@ -2051,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_checker_output_contract_retains_channel_handles_and_prunes_other_ty_vars() {
+    fn validate_checker_output_contract_prunes_unresolved_channel_signature_elements() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let normalized_param_var = TypeVar::fresh();
         let normalized_return_var = TypeVar::fresh();
@@ -2123,22 +2027,8 @@ mod tests {
             fn_sigs.contains_key("good_fn"),
             "clean signature must survive the contract check"
         );
-        assert!(matches!(
-            &fn_sigs["normalized_param_fn"].params[0],
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                args,
-                ..
-            } if args.len() == 1
-        ));
-        assert!(matches!(
-            fn_sigs["normalized_return_fn"].return_type,
-            Ty::Named {
-                builtin: Some(BuiltinType::Receiver),
-                ref args,
-                ..
-            } if args.len() == 1
-        ));
+        assert!(!fn_sigs.contains_key("normalized_param_fn"));
+        assert!(!fn_sigs.contains_key("normalized_return_fn"));
         assert!(
             !fn_sigs.contains_key("leaked_param_fn"),
             "signature with a real untracked Ty::Var in params must be pruned"
@@ -2154,7 +2044,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "exercise channel handle fields, variants, and methods in one focused regression"
     )]
-    fn validate_checker_output_contract_retains_channel_handles_and_prunes_other_type_defs() {
+    fn validate_checker_output_contract_prunes_unresolved_channel_member_elements() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let normalized_field_var = TypeVar::fresh();
         let normalized_variant_var = TypeVar::fresh();
@@ -2270,37 +2160,9 @@ mod tests {
             "concrete type definitions must survive the contract check"
         );
         assert!(
-            type_defs.contains_key("NormalizedHandles"),
-            "synthetic bare channel handles must survive the output contract"
+            !type_defs.contains_key("NormalizedHandles"),
+            "a channel endpoint with an unresolved element must be pruned, not erased"
         );
-        assert!(matches!(
-            &type_defs["NormalizedHandles"].fields["tx"],
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                args,
-                ..
-            } if args.len() == 1
-        ));
-        assert!(matches!(
-            &type_defs["NormalizedHandles"].variants["Recv"],
-            VariantDef::Tuple(fields)
-                if matches!(
-                    fields.as_slice(),
-                    [Ty::Named {
-                        builtin: Some(BuiltinType::Receiver),
-                        args,
-                        ..
-                    }] if args.len() == 1
-                )
-        ));
-        assert!(matches!(
-            &type_defs["NormalizedHandles"].methods["close"].params[0],
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                args,
-                ..
-            } if args.len() == 1
-        ));
         assert!(
             !type_defs.contains_key("LeakedField"),
             "type definitions with real untracked Ty::Var fields must be pruned"

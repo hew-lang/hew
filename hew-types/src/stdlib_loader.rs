@@ -1858,41 +1858,6 @@ mod tests {
     }
 
     #[test]
-    fn channel_signatures_use_canonical_builtin_names() {
-        let info = load_module("std::channel", &test_root()).unwrap();
-
-        let clone_sig = info
-            .functions
-            .iter()
-            .find(|f| f.name == "hew_channel_sender_clone")
-            .expect("channel module should expose sender clone");
-        assert_eq!(
-            clone_sig.params,
-            vec![Ty::normalize_named("Sender".to_string(), vec![])]
-        );
-        assert_eq!(
-            clone_sig.return_type,
-            Ty::normalize_named("Sender".to_string(), vec![])
-        );
-
-        let new_sig = info
-            .wrapper_fns
-            .iter()
-            .find(|f| f.name == "new")
-            .expect("channel module should expose new()");
-        assert_eq!(
-            new_sig.return_type,
-            Ty::result(
-                Ty::Tuple(vec![
-                    Ty::normalize_named("Sender".to_string(), vec![]),
-                    Ty::normalize_named("Receiver".to_string(), vec![]),
-                ]),
-                Ty::String,
-            )
-        );
-    }
-
-    #[test]
     fn wrapper_fns_extracted() {
         let info = load_module("std::misc::log", &test_root()).unwrap();
 

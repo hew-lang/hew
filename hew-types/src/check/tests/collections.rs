@@ -85,12 +85,12 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
         let expected = Ty::result(
             Ty::Tuple(vec![
                 Ty::Named {
-                    name: "std.channel.Sender".to_string(),
+                    name: BuiltinType::Sender.canonical_name().to_string(),
                     args: vec![element_type.clone()],
                     builtin: Some(BuiltinType::Sender),
                 },
                 Ty::Named {
-                    name: "std.channel.Receiver".to_string(),
+                    name: BuiltinType::Receiver.canonical_name().to_string(),
                     args: vec![element_type],
                     builtin: Some(BuiltinType::Receiver),
                 },

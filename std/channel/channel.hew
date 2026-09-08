@@ -52,10 +52,10 @@
 /// Created by `channel.new(capacity)`. Can be cloned for multi-producer
 /// use. Scope exit releases the handle; `close()` releases it early.
 ///
-/// The type parameter is managed by the compiler — the underlying runtime
-/// handle is type-erased.
+/// The element type is shared with the paired receiver; the runtime handle
+/// itself uses a type-erased pointer.
 #[opaque]
-pub type Sender {
+pub type Sender<T> {
 }
 
 /// An opaque receiver handle.
@@ -63,96 +63,10 @@ pub type Sender {
 /// Created by `channel.new(capacity)`. Scope exit releases the handle;
 /// `close()` releases it early.
 ///
-/// The type parameter is managed by the compiler — the underlying runtime
-/// handle is type-erased.
+/// The element type is shared with the paired sender; the runtime handle
+/// itself uses a type-erased pointer.
 #[opaque]
-pub type Receiver {
-}
-
-// ── Sender methods ───────────────────────────────────────────────────
-/// Methods available on a `Sender<T>`.
-trait SenderMethods {
-    /// Send a message through the channel.
-    ///
-    /// SUSPENDS the calling coroutine worker-free while a bounded channel is
-    /// full (backpressure), and resumes when the consumer frees capacity. On
-    /// wasm32, a full send traps because blocking is pending cooperative
-    /// scheduler yield/resume.
-    fn send(self, data: string);
-
-    /// Clone this sender for multi-producer use.
-    fn clone(self) -> Sender;
-
-    /// Close this sender and release resources.
-    ///
-    /// When the last sender is closed the receiver sees channel closure.
-    fn close(self);
-}
-
-impl SenderMethods for Sender {
-    /// Send a string message through the channel.
-    ///
-    /// The compiler lowers `tx.send(value)` to the channel send contract: the
-    /// element crosses the queue through its own layout witness, so this body
-    /// is the declaration's shape rather than the executed path.
-    fn send(tx: Sender, data: string) {
-        unsafe {
-            hew_channel_send_layout(tx, data)
-        };
-    }
-    /// Clone this sender for multi-producer use.
-    fn clone(tx: Sender) -> Sender {
-        unsafe {
-            hew_channel_sender_clone(tx)
-        }
-    }
-    /// Close this sender and release resources.
-    fn close(tx: Sender) {
-        unsafe {
-            hew_channel_sender_close(tx)
-        };
-    }
-}
-
-// ── Receiver methods ─────────────────────────────────────────────────
-/// Methods available on a `Receiver<T>`.
-trait ReceiverMethods {
-    /// Receive the next message, suspending if necessary.
-    ///
-    /// Suspends the calling coroutine worker-free until a message arrives or
-    /// the channel closes. Returns `Some(value)` on a message, or `None` when
-    /// the channel is closed (all senders dropped).
-    fn recv(self) -> Option<string>;
-
-    /// Try to receive a message without blocking.
-    ///
-    /// Returns `Some(value)` if a message was available, or `None` if
-    /// the channel is empty or closed.
-    fn try_recv(self) -> Option<string>;
-
-    /// Close this receiver and release resources.
-    fn close(self);
-}
-
-impl ReceiverMethods for Receiver {
-    /// Receive the next string message, suspending if necessary.
-    fn recv(rx: Receiver) -> Option<string> {
-        unsafe {
-            hew_channel_recv_layout(rx)
-        }
-    }
-    /// Try to receive a string without blocking.
-    fn try_recv(rx: Receiver) -> Option<string> {
-        unsafe {
-            hew_channel_try_recv_layout(rx)
-        }
-    }
-    /// Close this receiver and release resources.
-    fn close(rx: Receiver) {
-        unsafe {
-            hew_channel_receiver_close(rx)
-        };
-    }
+pub type Receiver<T> {
 }
 
 // ── Module-level functions ───────────────────────────────────────────
@@ -160,7 +74,7 @@ impl ReceiverMethods for Receiver {
 ///
 /// Returns `Err` when the capacity is invalid instead of returning null-backed
 /// sender and receiver handles.
-pub fn new(capacity: i64) -> Result<(Sender, Receiver), string> {
+pub fn new<T>(capacity: i64) -> Result<(Sender<T>, Receiver<T>), string> {
     if capacity < 0 {
         return Err(f"channel.new: invalid capacity {capacity} (must be >= 0)");
     }
@@ -173,8 +87,8 @@ pub fn new(capacity: i64) -> Result<(Sender, Receiver), string> {
             }
             return Err(detail);
         }
-        let tx = hew_channel_pair_sender(pair);
-        let rx = hew_channel_pair_receiver(pair);
+        let tx = pair_sender(pair);
+        let rx = pair_receiver(pair);
         hew_channel_pair_free(pair);
         Ok((tx, rx))
     }
@@ -198,15 +112,16 @@ impl ChannelPair {
 extern "C" {
     fn hew_channel_new(capacity: i64) -> ChannelPair;
     fn hew_channel_pair_is_valid(pair: ChannelPair) -> bool;
-    fn hew_channel_pair_sender(pair: ChannelPair) -> Sender;
-    fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(consume pair: ChannelPair);
     fn hew_stream_last_error() -> string;
     // hew_channel_send_layout, hew_channel_recv_layout, and
     // hew_channel_try_recv_layout use an out-parameter + element-layout
     // witness ABI and are declared by codegen with the correct calling
     // convention.
-    fn hew_channel_sender_clone(tx: Sender) -> Sender;
-    fn hew_channel_sender_close(tx: Sender);
-    fn hew_channel_receiver_close(rx: Receiver);
 }
+
+#[intrinsic("channel.pair_sender")]
+fn pair_sender<T>(pair: ChannelPair) -> Sender<T> {}
+
+#[intrinsic("channel.pair_receiver")]
+fn pair_receiver<T>(pair: ChannelPair) -> Receiver<T> {}

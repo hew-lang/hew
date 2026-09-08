@@ -403,14 +403,6 @@ fn accessor_wrong_arity_returns_none() {
     };
     assert_eq!(bad_gen.as_generator(), None);
 
-    // AsyncGenerator with wrong arity
-    let bad_async_gen = Ty::Named {
-        builtin: None,
-        name: "AsyncGenerator".to_string(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
-    assert_eq!(bad_async_gen.as_async_generator(), None);
-
     // LocalPid with wrong arity — the accessor's arity guard rejects it even
     // when the builtin discriminator is stamped.
     let bad_pid = Ty::Named {

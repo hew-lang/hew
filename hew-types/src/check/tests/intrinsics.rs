@@ -420,7 +420,7 @@ fn utf8_floor_rejects_wrong_signatures_and_declaration_identities() {
             "utf8",
             "pub fn decode<T>(data: bytes) -> string fails Utf8Error;",
         ),
-        ("utf8", "pub async gen fn decode(data: bytes) -> string;"),
+        ("utf8", "pub gen fn decode(data: bytes) -> string;"),
         (
             "utf8",
             "pub fn decode(consume data: bytes) -> string fails Utf8Error;",

@@ -639,9 +639,6 @@ impl<'a> Formatter<'a> {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.format_attributes(&decl.attributes);
         self.write_indent();
-        if decl.is_async {
-            self.write("async ");
-        }
         if decl.is_generator {
             self.write("gen ");
         }
@@ -1881,9 +1878,6 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
 
-        if decl.is_async {
-            self.write("async ");
-        }
         if decl.is_generator {
             self.write("gen ");
         }
@@ -4591,8 +4585,7 @@ fn main() -> i32 {
 
     #[test]
     fn async_gen_fn_roundtrip() {
-        // `async gen fn` is the only accepted async modifier; it round-trips cleanly.
-        let src = "async gen fn stream() -> i32 {\n    yield 1;\n}\n";
+        let src = "gen fn stream() -> i32 {\n    yield 1;\n}\n";
         assert_eq!(roundtrip(src), src);
     }
 

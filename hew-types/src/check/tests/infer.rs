@@ -17,7 +17,6 @@ mod non_root_module_inference_scope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: fn_name.to_string(),
@@ -159,7 +158,6 @@ mod non_root_module_inference_scope {
         let root_fn = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "root_fn".to_string(),
@@ -216,7 +214,6 @@ mod non_root_module_inference_scope {
             let fd = FnDecl {
                 origin: hew_parser::ast::DeclarationOrigin::Authored,
                 attributes: vec![],
-                is_async: false,
                 is_generator: false,
                 visibility: Visibility::Private,
                 name: name.to_string(),
@@ -297,7 +294,6 @@ mod non_root_module_inference_scope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "foo".to_string(),
@@ -377,7 +373,6 @@ mod non_root_module_inference_scope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "bar".to_string(),
@@ -845,7 +840,6 @@ mod non_root_module_inference_scope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "foo".to_string(),

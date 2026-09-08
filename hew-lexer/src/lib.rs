@@ -248,8 +248,6 @@ pub enum Token<'src> {
     Fork,
     #[token("spawn")]
     Spawn,
-    #[token("async")]
-    Async,
     #[token("await")]
     Await,
     #[token("await_restart")]
@@ -681,7 +679,6 @@ define_keywords! {
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
-    Async      => "async",
     Await      => "await",
     AwaitRestart => "await_restart",
     Receive    => "receive",
@@ -839,16 +836,21 @@ mod tests {
                    import pub package super struct enum trait impl actor \
                    supervisor child restart budget strategy permanent transient temporary \
                    one_for_one one_for_all rest_for_one simple_one_for_one pool \
-                   scope fork spawn async await receive \
+                   scope fork spawn await receive \
                    init type this dyn move try true false reserved optional deprecated \
                    default unsafe extern foreign in select race from after gen yield \
                    where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 69);
+        assert_eq!(toks.len(), 68);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
         assert_eq!(toks[3], Token::Mut);
-        assert_eq!(toks[68], Token::Is);
+        assert_eq!(toks[67], Token::Is);
+    }
+
+    #[test]
+    fn async_is_an_identifier() {
+        assert_eq!(tokens("async"), vec![Token::Identifier("async")]);
     }
 
     #[test]

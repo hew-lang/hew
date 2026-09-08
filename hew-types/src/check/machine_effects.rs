@@ -94,8 +94,7 @@ pub(super) fn validate(output: &TypeCheckOutput) -> Vec<TypeError> {
             callee_spans: HashSet::new(),
             type_params: body.type_params.clone(),
         };
-        if body.function.is_async
-            || body.function.is_generator
+        if body.function.is_generator
             || body.function.intrinsic.is_some()
             || body
                 .function

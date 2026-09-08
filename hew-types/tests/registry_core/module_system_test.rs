@@ -22,7 +22,6 @@ fn make_pub_fn(name: &str) -> FnDecl {
     FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: name.to_string(),
@@ -368,7 +367,6 @@ fn test_private_items_not_visible() {
     let private_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private, // private
         name: "private_fn".to_string(),
@@ -688,7 +686,6 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
     let consumer = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "take_alpha".to_string(),
@@ -998,7 +995,6 @@ fn colliding_unqualified_imports_are_typed_error() {
     let consumer = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "use_value".to_string(),
@@ -1076,7 +1072,6 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
     let consumer = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "use_value".to_string(),

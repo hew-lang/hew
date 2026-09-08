@@ -5538,8 +5538,8 @@ carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 (§3.2).
 
 **Current lexer limitation.** Some words intended as ordinary or contextual
-identifiers remain reserved by the lexer, including `try`, `catch`, `async`,
-`default`, `emit` and `pool`. This does not reinstate their retired constructs.
+identifiers remain reserved by the lexer, including `try`, `catch`, `default`,
+`emit` and `pool`. This does not reinstate their retired constructs.
 `send` has no keyword role, `this` has no receiver role, and neither `join` nor
 `for await` is a language construct. Parser diagnostics for old spellings do
 not make them recommended alternatives.

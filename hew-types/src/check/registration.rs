@@ -5894,7 +5894,6 @@ impl Checker {
                             self.resolve_registered_annotation_ty_no_holes(ret)
                         });
                         self.exit_primary_sig_scope(method_sig_scope);
-                        let is_async = method.is_async;
                         let method_name = method.name.clone();
                         let type_name = td.name.clone();
                         if let Some(type_def) = self.lookup_type_def_mut(&type_name) {
@@ -5904,7 +5903,6 @@ impl Checker {
                                     param_names,
                                     params,
                                     return_type,
-                                    is_async,
                                     ..FnSig::default()
                                 },
                             );
@@ -6255,7 +6253,6 @@ impl Checker {
         let decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes,
-            is_async: false,
             is_generator: false,
             visibility: hew_parser::ast::Visibility::Private,
             name: method.name.clone(),
@@ -6695,7 +6692,6 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_async: fd.is_async,
             doc_comment: fd.doc_comment.clone(),
             extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
             // Receiver mutability flag — see `FnSig::requires_mutable_receiver`.
@@ -6790,7 +6786,6 @@ impl Checker {
                 .iter()
                 .map(String::as_str)
                 .eq(family.source_intrinsic_type_params().iter().copied())
-                && !signature.is_async
                 && !fd.is_generator
                 && !fd
                     .params
@@ -7350,7 +7345,6 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_async: method.is_async,
             extern_symbol,
             // Mirror `register_fn_sig_with_name`'s computation so that
             // `lookup_named_method_sig` (which prefers `td.methods` before
@@ -9044,7 +9038,7 @@ impl Checker {
     ///   dispatch agree on a single key.  `int` and `Int` are no longer
     ///   accepted; the resolver hard-errors at the type-position lookup.
     /// * Compiler-builtin generics `Vec`, `HashMap`, `HashSet`, `Generator`,
-    ///   `AsyncGenerator`, and the synthetic iterator cursors — keyed by their
+    ///   and the synthetic iterator cursors — keyed by their
     ///   catalog name; these lack a user-selectable nominal declaration entry
     ///   that executable impl dispatch can safely attach methods to.
     ///
@@ -9071,7 +9065,6 @@ impl Checker {
                 || matches!(
                     builtin,
                     BuiltinType::Generator
-                        | BuiltinType::AsyncGenerator
                         | BuiltinType::ChildRef
                         | BuiltinType::LocalPid
                         | BuiltinType::RemotePid
@@ -9121,12 +9114,7 @@ impl Checker {
             return Self::canonical_primitive_or_builtin_key(&prim);
         }
         if let Some(builtin) = crate::lookup_builtin_type(name) {
-            if builtin.is_collection()
-                || matches!(
-                    builtin,
-                    BuiltinType::Generator | BuiltinType::AsyncGenerator
-                )
-            {
+            if builtin.is_collection() || matches!(builtin, BuiltinType::Generator) {
                 return Some(builtin.canonical_name().to_string());
             }
         }
@@ -12784,7 +12772,6 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_async: fd.is_async,
             doc_comment: fd.doc_comment.clone(),
             ..FnSig::default()
         };

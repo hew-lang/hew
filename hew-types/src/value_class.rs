@@ -785,7 +785,6 @@ fn classify(
             }
             BuiltinType::Rc | BuiltinType::Weak => affine_retain,
             BuiltinType::Generator
-            | BuiltinType::AsyncGenerator
             | BuiltinType::StreamPair
             | BuiltinType::BoxedActor
             | BuiltinType::Duplex

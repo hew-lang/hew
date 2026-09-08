@@ -3694,7 +3694,6 @@ fn test_file_import_private_items_not_visible() {
     let private_fn = Item::Function(FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "private_func".to_string(),

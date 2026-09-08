@@ -26,7 +26,6 @@ pub enum BuiltinType {
     ActorCall,
     StreamPair,
     Generator,
-    AsyncGenerator,
     Range,
     Rc,
     Weak,
@@ -215,7 +214,6 @@ builtin_types! {
     ActorCall => "__ActorCall",
     StreamPair => "StreamPair",
     Generator => "Generator",
-    AsyncGenerator => "AsyncGenerator",
     Range => "Range",
     Rc => "Rc",
     Weak => "Weak",
@@ -364,7 +362,6 @@ impl BuiltinType {
                 | Self::HewSendHalf
                 | Self::HewRecvHalf
                 | Self::Generator
-                | Self::AsyncGenerator
                 | Self::CancellationToken
                 | Self::LambdaPid
                 | Self::BoxedActor
@@ -510,7 +507,6 @@ impl BuiltinType {
             | Self::Task
             | Self::ActorCall
             | Self::Generator
-            | Self::AsyncGenerator
             | Self::Range
             | Self::Rc
             | Self::Weak
@@ -658,7 +654,6 @@ impl BuiltinType {
                 | Self::LocalPid
                 | Self::LambdaPid
                 | Self::Generator
-                | Self::AsyncGenerator
         )
     }
 }
@@ -963,7 +958,6 @@ mod tests {
             BuiltinType::LocalPid,
             BuiltinType::LambdaPid,
             BuiltinType::Generator,
-            BuiltinType::AsyncGenerator,
         ];
 
         for info in builtin_types() {

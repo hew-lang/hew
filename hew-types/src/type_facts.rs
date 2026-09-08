@@ -1358,7 +1358,6 @@ mod tests {
                     Some((ValueClass::AffineResource, CloneKind::Retain))
                 }
                 BuiltinType::Generator
-                | BuiltinType::AsyncGenerator
                 | BuiltinType::StreamPair
                 | BuiltinType::BoxedActor
                 | BuiltinType::Duplex

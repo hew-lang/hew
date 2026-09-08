@@ -1771,9 +1771,7 @@ impl Checker {
                 // Generator iteration advances the deferred body; constructing
                 // the iterable does not execute that body.
                 let resolved_iter_ty = self.subst.resolve(&iter_ty);
-                if resolved_iter_ty.as_generator().is_some()
-                    || resolved_iter_ty.as_async_generator().is_some()
-                {
+                if resolved_iter_ty.as_generator().is_some() {
                     self.mark_body_suspends("generator iteration");
                     if self.deferred_body.is_some() {
                         self.report_error(

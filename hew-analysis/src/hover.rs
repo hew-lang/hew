@@ -994,7 +994,6 @@ fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
                     BuiltinType::Stream
                     | BuiltinType::Receiver
                     | BuiltinType::Generator
-                    | BuiltinType::AsyncGenerator
                     | BuiltinType::Vec,
                 ),
             args,
@@ -1284,16 +1283,15 @@ fn span_contains_offset(span: &Span, offset: usize) -> bool {
     span.is_empty() || (span.start <= offset && offset <= span.end)
 }
 
-/// Format a bare function signature line: `[async] fn name(params)[-> ret]`.
+/// Format a bare function signature line: `fn name(params)[-> ret]`.
 #[must_use]
 pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
-    let async_prefix = if sig.is_async { "async " } else { "" };
     let ret = if sig.return_type == Ty::Unit {
         String::new()
     } else {
         format!(" -> {}", sig.return_type.user_facing())
     };
-    format!("{async_prefix}fn {name}({}){ret}", params.join(", "))
+    format!("fn {name}({}){ret}", params.join(", "))
 }
 
 /// Format a function signature in a markdown code block for hover display.
@@ -1479,14 +1477,6 @@ mod tests {
         let line = format_fn_sig_line("run", &[], &sig);
         assert_eq!(line, "fn run()");
         assert!(!line.contains("->"));
-    }
-
-    #[test]
-    fn format_sig_line_async() {
-        let mut sig = make_fn_sig(vec![], vec![], Ty::Unit);
-        sig.is_async = true;
-        let line = format_fn_sig_line("fetch", &[], &sig);
-        assert!(line.starts_with("async fn fetch"));
     }
 
     #[test]

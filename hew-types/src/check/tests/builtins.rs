@@ -66,7 +66,6 @@ fn test_yield_outside_generator() {
     let fd = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "not_a_gen".to_string(),
@@ -252,9 +251,9 @@ fn typecheck_generator_yield_uses_element_type() {
 }
 
 #[test]
-fn typecheck_async_generator_yield_uses_element_type() {
+fn typecheck_second_generator_yield_uses_element_type() {
     let source = concat!(
-        "async gen fn count_up() -> i64 {\n",
+        "gen fn count_up() -> i64 {\n",
         "    yield 1;\n",
         "    yield 2;\n",
         "}\n"
@@ -369,7 +368,6 @@ fn test_stream_annotation_resolves_to_stream_type() {
     let fn_decl = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "foo".to_string(),
@@ -423,7 +421,6 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
     let fn_decl = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "bar".to_string(),
@@ -487,7 +484,6 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
     let fn_decl = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "baz".to_string(),

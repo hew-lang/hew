@@ -3754,7 +3754,6 @@ fn builtin_generic_type_params(name: &str) -> Option<&'static [&'static str]> {
         "HashMap" => Some(&["K", "V"]),
         "Vec" | "HashSet" => Some(&["T"]),
         "Generator" => Some(&["Y", "R"]),
-        "AsyncGenerator" => Some(&["Y"]),
         _ => None,
     }
 }

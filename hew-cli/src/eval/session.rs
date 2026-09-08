@@ -360,9 +360,6 @@ fn summarize_import(import: &hew_parser::ast::ImportDecl) -> String {
 
 fn summarize_function(function: &hew_parser::ast::FnDecl) -> String {
     let mut summary = String::new();
-    if function.is_async {
-        summary.push_str("async ");
-    }
     if function.is_generator {
         summary.push_str("gen ");
     }

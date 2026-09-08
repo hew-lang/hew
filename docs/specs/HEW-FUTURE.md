@@ -247,7 +247,7 @@ Edition 2026 ships the lazy `Iterator`/`IntoIterator` trait hierarchy
 (`std/builtins.hew`) with chainable adapter types — `Map`, `Filter`,
 `Take`, `Skip` (`std/iter.hew`) — and terminals (`fold`, `count`,
 `collect`, `any`, `all`, `sum`, `product`) over `Vec`, `HashMap`,
-`Generator`, and `AsyncGenerator`. The earlier eager per-type helper
+`Generator`. The earlier eager per-type helper
 table (`map_int`, `filter_int`, `fold_int`, ...) has been retired. The
 only member of the hierarchy still absent is `DoubleEndedIterator`
 (back-to-front adapters like `.rev()`), which is deferred to Cluster 6's

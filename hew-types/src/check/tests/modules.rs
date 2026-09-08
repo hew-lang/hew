@@ -345,7 +345,6 @@ fn module_graph_body_type_error_is_reported() {
     let bad_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "bad".to_string(),
@@ -401,7 +400,6 @@ fn module_graph_body_infer_return_resolves_without_error() {
     let inferred_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "inferred".to_string(),
@@ -438,7 +436,6 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
     let ok_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "ok".to_string(),
@@ -581,7 +578,6 @@ fn module_graph_body_private_local_type_is_available() {
     let ok_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "ok".to_string(),
@@ -660,7 +656,6 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     let helper_i64 = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "helper".to_string(),
@@ -682,7 +677,6 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     let ok_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "ok".to_string(),
@@ -712,7 +706,6 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     let helper_string = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "helper".to_string(),
@@ -985,7 +978,6 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     let ok_fn = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "ok".to_string(),
@@ -1188,7 +1180,6 @@ mod module_body_diagnostic_envelope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Pub,
             name: name.to_string(),
@@ -1248,7 +1239,6 @@ mod module_body_diagnostic_envelope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "bad".to_string(),
@@ -1303,7 +1293,6 @@ mod module_body_diagnostic_envelope {
             let fd = FnDecl {
                 origin: hew_parser::ast::DeclarationOrigin::Authored,
                 attributes: vec![],
-                is_async: false,
                 is_generator: false,
                 visibility: Visibility::Pub,
                 name: fn_name.to_string(),
@@ -1414,7 +1403,6 @@ mod module_body_diagnostic_envelope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "foo".to_string(),
@@ -1479,7 +1467,6 @@ mod module_body_diagnostic_envelope {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "helper".to_string(),
@@ -1678,7 +1665,6 @@ mod warning_source_attribution {
         FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: name.to_string(),
@@ -1706,7 +1692,6 @@ mod warning_source_attribution {
         let fn_decl = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: name.to_string(),
@@ -2068,7 +2053,6 @@ mod warning_source_attribution {
         let helper_fn = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Pub,
             name: "helper".to_string(),
@@ -2102,7 +2086,6 @@ mod warning_source_attribution {
         let caller_fn = FnDecl {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "caller".to_string(),
@@ -2820,15 +2803,10 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
 /// import registered `oracle_mod.shared_helper` — the same declaration had
 /// two identities depending on how the file was handed to the compiler.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "compare declaration and signature identity across root and imported sources"
-)]
 fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let shared_helper = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "shared_helper".to_string(),

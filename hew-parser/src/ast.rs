@@ -1012,7 +1012,6 @@ pub struct FnDecl {
     #[serde(skip)]
     pub origin: DeclarationOrigin,
     pub attributes: Vec<Attribute>,
-    pub is_async: bool,
     pub is_generator: bool,
     #[serde(default)]
     pub visibility: Visibility,

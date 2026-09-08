@@ -7,7 +7,7 @@
 //! not exist yet.
 //!
 //! - `generator_iteration_creates_no_os_threads` passes today: all four
-//!   generator surfaces (`gen fn`, `gen {}`, `async gen fn`, `receive gen fn`)
+//!   generator surfaces (`gen fn`, `gen {}`, `receive gen fn`)
 //!   already run on `llvm.coro` frames, not OS threads. It is a regression
 //!   fence so the P4 concurrency lane cannot quietly re-thread the pump.
 //! - `fork_children_create_no_os_threads` FAILS today: every `fork` child
@@ -110,7 +110,7 @@ gen fn counter(n: i64) -> i64 {
     }
 }
 
-async gen fn aticks(n: i64) -> i64 {
+gen fn aticks(n: i64) -> i64 {
     for i in 0..n {
         yield i;
     }
@@ -164,7 +164,7 @@ fn main() {
     println("iters-genblock");
     println(iters_genblock);
 
-    // async gen fn + for
+    // second gen fn + for
     let pre_asyncgen = threads();
     var peak_asyncgen = pre_asyncgen;
     var iters_asyncgen = 0;

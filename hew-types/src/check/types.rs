@@ -2484,7 +2484,7 @@ pub enum ReceiverUpdate {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "FnSig is the canonical fn-signature record; each bool encodes \
-              a distinct cross-cutting attribute (async/kwargs/mutable-receiver) \
+              a distinct cross-cutting attribute (kwargs/mutable-receiver) \
               that downstream passes need to query individually — collapsing into \
               an enum would force per-flag enum-variant matches at every read site"
 )]
@@ -2497,7 +2497,6 @@ pub struct FnSig {
     /// Callable value types cannot preserve consuming slots, so erasure is refused.
     pub param_ownership: Vec<crate::env::ParameterOwnership>,
     pub return_type: Ty,
-    pub is_async: bool,
     pub accepts_kwargs: bool,
     pub doc_comment: Option<String>,
     /// Structured `#[extern_symbol("…")]` attribute attached to the
@@ -2577,7 +2576,6 @@ impl Default for FnSig {
             params: vec![],
             param_ownership: vec![],
             return_type: Ty::Unit,
-            is_async: false,
             accepts_kwargs: false,
             doc_comment: None,
             extern_symbol: None,

@@ -2088,7 +2088,7 @@ fn check_dual_module_same_type_name_impl_resource_qualified_compiles() {
     );
 }
 
-/// Known limitation (#2352): `Generator`/`AsyncGenerator` formally implement
+/// Known limitation (#2352): `Generator` formally implements
 /// `Iterator`, so a generator value type-checks against `std::iter`'s
 /// generic adapters (`iter::map`, `iter::filter`, ...). Passing one in
 /// aggregates the owned handle into the adapter's own struct, and the drop

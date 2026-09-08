@@ -228,8 +228,8 @@ impl Parser<'_> {
         }
     }
 
-    /// Parse a function declaration with optional `async`/`gen` modifiers.
-    /// The current token must be `fn`, `async`, or `gen`.
+    /// Parse a function declaration with an optional `gen` modifier.
+    /// The current token must be `fn` or `gen`.
     #[expect(clippy::ref_option, reason = "avoids cloning option contents")]
     pub(crate) fn parse_fn_with_modifiers(
         &mut self,
@@ -237,25 +237,11 @@ impl Parser<'_> {
         attrs: Vec<Attribute>,
         doc_comment: &Option<String>,
     ) -> Option<Item> {
-        let (fn_start, is_async, is_gen) = match self.peek() {
+        let (fn_start, is_gen) = match self.peek() {
             Some(Token::Fn) => {
                 let fn_start = self.peek_span().start;
                 self.advance();
-                (fn_start, false, false)
-            }
-            Some(Token::Async) => {
-                self.advance();
-                if self.eat(&Token::Gen) {
-                    let fn_start = self.peek_span().start;
-                    if !self.eat(&Token::Fn) {
-                        self.error("expected 'fn' after 'async gen'".to_string());
-                        return None;
-                    }
-                    (fn_start, true, true)
-                } else {
-                    self.error("expected 'gen fn' after 'async'".to_string());
-                    return None;
-                }
+                (fn_start, false)
             }
             Some(Token::Gen) => {
                 self.advance();
@@ -264,13 +250,42 @@ impl Parser<'_> {
                     self.error("expected 'fn' after 'gen'".to_string());
                     return None;
                 }
-                (fn_start, false, true)
+                (fn_start, true)
             }
-            _ => unreachable!("parse_fn_with_modifiers called without fn/async/gen"),
+            _ => unreachable!("parse_fn_with_modifiers called without fn/gen"),
         };
-        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, attrs)?;
+        let mut f = self.parse_function(fn_start, is_gen, vis, attrs)?;
         f.doc_comment.clone_from(doc_comment);
         Some(Item::Function(f))
+    }
+
+    /// Reject the retired `async fn` spellings while keeping `async` available
+    /// as an ordinary identifier everywhere else.
+    fn retired_async_fn(&mut self) -> bool {
+        if !matches!(self.peek(), Some(Token::Identifier(name)) if *name == "async") {
+            return false;
+        }
+        let is_generator = matches!(self.peek_at(self.pos + 1), Some(Token::Gen));
+        let is_function = matches!(self.peek_at(self.pos + 1), Some(Token::Fn))
+            || (is_generator && matches!(self.peek_at(self.pos + 2), Some(Token::Fn)));
+        if !is_function {
+            return false;
+        }
+
+        let span = self.peek_span();
+        let code = if is_generator {
+            "E_NO_ASYNC_GEN"
+        } else {
+            "E_NO_ASYNC_FN"
+        };
+        self.error_at_with_hint(
+            format!(
+                "{code}: `async` no longer marks a callable; suspension is inferred from its body"
+            ),
+            span,
+            "delete `async`",
+        );
+        true
     }
 
     /// Redirect a foreign-language keyword found where an item was expected
@@ -358,7 +373,7 @@ impl Parser<'_> {
         };
 
         match self.peek_at(target_pos) {
-            Some(Token::Fn | Token::Async | Token::Gen) => Some(AttrPosition::FreeFn),
+            Some(Token::Fn | Token::Gen) => Some(AttrPosition::FreeFn),
             Some(Token::Enum | Token::Indirect) => Some(AttrPosition::TypeDecl),
             Some(Token::Type)
                 if !self.is_type_alias_lookahead_at(target_pos)
@@ -416,7 +431,7 @@ impl Parser<'_> {
             Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
-                    Some(Token::Fn | Token::Async | Token::Gen) => {
+                    Some(Token::Fn | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
                     Some(Token::Indirect) => {
@@ -476,6 +491,9 @@ impl Parser<'_> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
+                        if self.retired_async_fn() {
+                            return None;
+                        }
                         if let Some(Token::Identifier(id)) = self.peek() {
                             let id = *id;
                             if self.foreign_keyword_redirect(id, has_wire_attr) {
@@ -489,8 +507,15 @@ impl Parser<'_> {
                     }
                 }
             }
-            Some(Token::Fn | Token::Async | Token::Gen) => {
+            Some(Token::Fn | Token::Gen) => {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
+            }
+            Some(Token::Identifier("async")) => {
+                if self.retired_async_fn() {
+                    return None;
+                }
+                self.error("expected item declaration".to_string());
+                return None;
             }
             Some(Token::Indirect) => {
                 let mut t = self.parse_indirect_enum(Visibility::Private, &attrs)?;
@@ -607,7 +632,6 @@ impl Parser<'_> {
     pub(crate) fn parse_function(
         &mut self,
         fn_start: usize,
-        is_async: bool,
         is_gen: bool,
         visibility: Visibility,
         attributes: Vec<Attribute>,
@@ -686,7 +710,6 @@ impl Parser<'_> {
         Some(FnDecl {
             origin: crate::ast::DeclarationOrigin::Authored,
             attributes,
-            is_async,
             is_generator: is_gen,
             visibility,
             name,
@@ -732,7 +755,6 @@ impl Parser<'_> {
         let decl = FnDecl {
             origin: crate::ast::DeclarationOrigin::Authored,
             attributes,
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name,
@@ -1453,8 +1475,7 @@ impl Parser<'_> {
                     self.advance();
                     let prev_allow_implicit_self =
                         std::mem::replace(&mut self.allow_implicit_self_params, true);
-                    let parsed_method =
-                        self.parse_function(fn_start, false, false, vis, method_attrs);
+                    let parsed_method = self.parse_function(fn_start, false, vis, method_attrs);
                     self.allow_implicit_self_params = prev_allow_implicit_self;
                     if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {

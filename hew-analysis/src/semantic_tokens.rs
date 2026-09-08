@@ -124,11 +124,6 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
             }
         }
 
-        // Mark `async` keyword with ASYNC modifier.
-        if matches!(token, Token::Async) {
-            modifiers |= token_modifiers::ASYNC;
-        }
-
         // Mark labels at definition sites ('label:) with DECLARATION modifier.
         if matches!(token, Token::Label(_)) {
             let next = lexer_tokens.get(i + 1).map(|(t, _)| t);
@@ -273,11 +268,11 @@ mod tests {
     }
 
     #[test]
-    fn async_keyword_gets_async_modifier() {
-        let tokens = build_semantic_tokens("async fn foo() {}");
-        let async_tok = &tokens[0];
-        assert_eq!(async_tok.token_type, token_types::KEYWORD);
-        assert_ne!(async_tok.modifiers & token_modifiers::ASYNC, 0);
+    fn async_is_a_variable_identifier() {
+        let tokens = build_semantic_tokens("let async = 1;");
+        let async_tok = tokens.iter().find(|token| token.start == 4).unwrap();
+        assert_eq!(async_tok.token_type, token_types::VARIABLE);
+        assert_eq!(async_tok.modifiers & token_modifiers::ASYNC, 0);
     }
 
     #[test]

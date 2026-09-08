@@ -8868,7 +8868,7 @@ impl Checker {
             // .next() returns Option<yielded type>.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                    builtin: Some(BuiltinType::Generator),
                     args: type_args,
                     ..
                 },

@@ -217,7 +217,6 @@ pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<No
                 hew_types::BuiltinType::VecIter => "std.builtins.VecIter",
                 hew_types::BuiltinType::HashMapIter => "std.builtins.HashMapIter",
                 hew_types::BuiltinType::Generator => "Generator",
-                hew_types::BuiltinType::AsyncGenerator => "AsyncGenerator",
                 hew_types::BuiltinType::Vec => "Vec",
                 hew_types::BuiltinType::HashMap => "HashMap",
                 hew_types::BuiltinType::ChildRef => "ChildRef",

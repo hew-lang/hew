@@ -23,7 +23,6 @@
       "mut",
       "fn",
       "gen",
-      "async",
       "pub",
       "import",
       "package",
@@ -140,7 +139,6 @@
     "scope",
     "fork",
     "spawn",
-    "async",
     "await",
     "await_restart",
     "receive",
@@ -326,8 +324,7 @@
       "Sink",
       "Task",
       "Scope",
-      "Generator",
-      "AsyncGenerator"
+      "Generator"
     ],
     "marker_traits": [
       "Send",

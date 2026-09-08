@@ -191,7 +191,6 @@ pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>)
     FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: name.to_string(),
@@ -216,7 +215,6 @@ pub(super) fn make_priv_fn(name: &str) -> FnDecl {
     FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: name.to_string(),

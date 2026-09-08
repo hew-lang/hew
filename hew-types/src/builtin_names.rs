@@ -378,7 +378,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::ChildRef
             | BuiltinType::StreamPair
             | BuiltinType::Generator
-            | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
             | BuiltinType::Weak

@@ -1955,7 +1955,6 @@ fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
     FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: hew_parser::ast::Visibility::Private,
         name: method.name.clone(),
@@ -2089,10 +2088,7 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     };
     matches!(
         (trait_name, name.as_str()),
-        (
-            "Iterator",
-            "VecIter" | "HashMapIter" | "Generator" | "AsyncGenerator"
-        ) | ("IntoIterator", "Vec")
+        ("Iterator", "VecIter" | "HashMapIter" | "Generator") | ("IntoIterator", "Vec")
     )
 }
 
@@ -14004,7 +14000,6 @@ impl LowerCtx {
                         .iter()
                         .map(String::as_str)
                         .eq(family.source_intrinsic_type_params().iter().copied())
-                        && !func.is_async
                         && !func.is_generator
                         && !func
                             .params
@@ -26173,7 +26168,7 @@ impl LowerCtx {
             // `.next()` per iteration; the binding's scope-exit drop frees it.
             ResolvedTy::Named {
                 ref args,
-                builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                builtin: Some(BuiltinType::Generator),
                 ..
             } if !args.is_empty() => {
                 let elem_ty = args[0].clone();

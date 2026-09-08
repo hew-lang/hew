@@ -130,7 +130,7 @@ impl Checker {
 
     /// A function declaration's final return type: `E_GEN_RETURN_SPELLING`
     /// recovery (see [`Self::recover_gen_return_spelling`]) followed by the
-    /// generator/async-generator wrap (`Generator<Y, R>` / `AsyncGenerator<Y>`).
+    /// generator wrap (`Generator<Y, R>`).
     /// `span` is the return-type annotation's span, if any.
     pub(super) fn wrap_fn_return_type(
         &mut self,
@@ -150,9 +150,7 @@ impl Checker {
         }
         let declared_return =
             self.recover_gen_return_spelling(fd.is_generator, declared_return, span);
-        if fd.is_generator && fd.is_async {
-            Ty::async_generator(declared_return)
-        } else if fd.is_generator {
+        if fd.is_generator {
             Ty::generator(declared_return, Ty::Unit)
         } else {
             declared_return

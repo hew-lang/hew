@@ -1786,8 +1786,6 @@ impl Checker {
                 let resolved = self.subst.resolve(return_ty);
                 let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
                     yields.clone()
-                } else if let Some(yields) = resolved.as_async_generator() {
-                    yields.clone()
                 } else {
                     resolved
                 };

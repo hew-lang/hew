@@ -1214,7 +1214,6 @@ impl Checker {
                     let fn_decl = FnDecl {
                         origin: hew_parser::ast::DeclarationOrigin::Authored,
                         attributes: vec![],
-                        is_async: false,
                         is_generator: false,
                         visibility: Visibility::Private,
                         name: method.name.clone(),

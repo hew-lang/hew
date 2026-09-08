@@ -1191,10 +1191,6 @@ fn parse_for_over_a_stream_loop() {
 
 #[test]
 fn parse_async_fn_is_rejected() {
-    // `async fn` has no meaning in Hew — async-ness comes from fork{} context
-    // (architecture §4.1, D2 ratification). Only `async gen fn` is accepted.
-    // The parser emits a generic "expected 'gen fn' after 'async'" error and
-    // returns None, so the item is absent from the parsed program.
     let source = "async fn fetch() -> i32 { 42 }";
     let result = parse(source);
     assert!(
@@ -1202,33 +1198,33 @@ fn parse_async_fn_is_rejected() {
         "expected a parse error for bare `async fn`"
     );
     assert!(
-        result.errors[0]
-            .message
-            .contains("expected 'gen fn' after 'async'"),
+        result.errors[0].message.contains("E_NO_ASYNC_FN"),
         "expected rejection diagnostic, got: {:?}",
         result.errors[0].message
     );
+    assert_eq!(result.errors[0].hint.as_deref(), Some("delete `async`"));
 }
 
 #[test]
-fn parse_async_gen_fn() {
+fn parse_async_gen_fn_is_rejected() {
     let source = "async gen fn count_up() -> i32 { yield 1; yield 2; }";
     let result = parse(source);
-    for _e in &result.errors {}
-    match &result.program.items[0].0 {
-        Item::Function(_f) => {}
-        _ => panic!("expected Function item"),
-    }
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.message.contains("E_NO_ASYNC_GEN")));
+    assert_eq!(result.errors[0].hint.as_deref(), Some("delete `async`"));
 }
 
 #[test]
-fn parse_pub_async_gen_fn() {
-    let source = "pub async gen fn numbers() -> i32 { yield 42; }";
+fn async_is_accepted_as_an_identifier() {
+    let source = "fn async(async: i32) -> i32 { async }";
     let result = parse(source);
-    match &result.program.items[0].0 {
-        Item::Function(_f) => {}
-        _ => panic!("expected Function item"),
-    }
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected Function item");
+    };
+    assert_eq!(function.name, "async");
 }
 
 #[test]

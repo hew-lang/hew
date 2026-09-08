@@ -41,7 +41,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::ChildRef
             | BuiltinType::StreamPair
             | BuiltinType::Generator
-            | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
             | BuiltinType::Weak
@@ -1164,12 +1163,6 @@ impl Ty {
         Self::builtin_named(BuiltinType::Generator, vec![yields, returns])
     }
 
-    /// Construct `AsyncGenerator<yields>`.
-    #[must_use]
-    pub fn async_generator(yields: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::AsyncGenerator, vec![yields])
-    }
-
     /// Construct `Range<inner>`.
     #[must_use]
     pub fn range(inner: Ty) -> Ty {
@@ -1333,19 +1326,6 @@ impl Ty {
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
-            _ => None,
-        }
-    }
-
-    /// If this is `AsyncGenerator<Y>`, return `Some(&Y)`.
-    #[must_use]
-    pub fn as_async_generator(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(BuiltinType::AsyncGenerator),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }

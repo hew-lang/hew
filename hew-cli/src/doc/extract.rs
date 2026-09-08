@@ -277,9 +277,6 @@ fn visibility_prefix(v: Visibility) -> &'static str {
 fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     let mut sig = String::new();
     sig.push_str(visibility_prefix(f.visibility));
-    if f.is_async {
-        sig.push_str("async ");
-    }
     if f.is_generator {
         sig.push_str("gen ");
     }

@@ -132,7 +132,7 @@ impl Parser<'_> {
                 let fn_start = self.peek_span().start;
                 self.advance();
                 if let Some(mut method) =
-                    self.parse_function(fn_start, false, false, Visibility::Private, hook_attrs)
+                    self.parse_function(fn_start, false, Visibility::Private, hook_attrs)
                 {
                     method.doc_comment = doc_comment;
                     methods.push(method);

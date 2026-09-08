@@ -914,7 +914,6 @@ impl<'src> Parser<'src> {
                 | Token::Supervisor
                 | Token::Const
                 | Token::Indirect
-                | Token::Async
                 | Token::Gen
                 | Token::Extern
                 | Token::HashBracket

@@ -110,7 +110,6 @@ fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
         "std.builtins.VecIter",
         "std.builtins.HashMapIter",
         "Generator",
-        "AsyncGenerator",
     ] {
         assert!(
             receivers.iter().any(|receiver| receiver == expected),

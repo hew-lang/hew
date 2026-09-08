@@ -417,7 +417,7 @@ impl ValueClass {
             | ResolvedTy::Bytes
             | ResolvedTy::Array(_, _)
             | ResolvedTy::Tuple(_) => Self::CowValue,
-            // A `Generator<Y, R>` / `AsyncGenerator<Y>` value is an owned, affine
+            // A `Generator<Y, R>` value is an owned, affine
             // runtime handle (`*mut HewGenCtx`), same as CancellationToken: it
             // has exactly one owner, must be released exactly once on scope exit
             // (via `hew_gen_free`), and is never bit-copied. Classifying it as
@@ -428,7 +428,6 @@ impl ValueClass {
             | ResolvedTy::Named {
                 builtin: Some(
                     BuiltinType::Generator
-                        | BuiltinType::AsyncGenerator
                         | BuiltinType::Rc
                         | BuiltinType::Weak,
                 ),

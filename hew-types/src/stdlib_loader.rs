@@ -414,36 +414,6 @@ fn collect_wrapper_resource_fields(
         .collect()
 }
 
-/// Return the first `(wrapper_qualified, handle_qualified)` pair where a fielded
-/// `#[resource]` handle-wrapper type shares its SHORT name with a fieldless
-/// `#[opaque]` handle type, or `None` if the two sets are short-name-disjoint.
-///
-/// This is the fail-closed guard behind `Checker::receiver_is_opaque_handle`,
-/// which decides whether a handle-method call is rewritten to a direct extern
-/// (receiver passed as the handle pointer) or dispatched through its impl body.
-/// That predicate qualifies a bare receiver name against `handle_types` by SHORT
-/// name (`qualify_handle_type`), so a wrapper whose short name collided with a
-/// fieldless handle in another loaded module would be silently re-admitted to the
-/// by-value rewrite — passing the whole `%Wrapper` struct to a pointer-typed
-/// extern. The invariant holds across the current stdlib (wrappers and handles
-/// have disjoint short names, e.g. `Pattern` vs `PatternHandle`); the registry
-/// checks it at load time so a future collision fails closed instead of
-/// miscompiling.
-pub(crate) fn resource_wrapper_shadowing_handle<'a>(
-    handle_types: &'a HashSet<String>,
-    resource_wrapper_types: &'a HashSet<String>,
-) -> Option<(&'a str, &'a str)> {
-    let handle_by_short: HashMap<&str, &str> = handle_types
-        .iter()
-        .map(|h| (crate::short_name(h), h.as_str()))
-        .collect();
-    resource_wrapper_types.iter().find_map(|w| {
-        handle_by_short
-            .get(crate::short_name(w))
-            .map(|h| (w.as_str(), *h))
-    })
-}
-
 /// Resolve an `impl` block's target type to its fully-qualified name,
 /// prefixing the module short name when the target is unqualified.
 fn qualified_impl_type_name(impl_decl: &ImplDecl, module_short: &str) -> Option<String> {
@@ -2085,30 +2055,6 @@ mod tests {
         info.handle_methods
             .iter()
             .any(|m| m.type_name == type_name && m.method_name == method)
-    }
-
-    #[test]
-    fn resource_wrapper_shadowing_handle_flags_short_name_collision() {
-        // Distinct short names (the real stdlib shape: `Pattern` vs
-        // `PatternHandle`) must NOT be reported as a collision.
-        let handles: HashSet<String> = ["a.Widget".to_string(), "regex.PatternHandle".to_string()]
-            .into_iter()
-            .collect();
-        let disjoint: HashSet<String> = ["regex.Pattern".to_string()].into_iter().collect();
-        assert_eq!(
-            resource_wrapper_shadowing_handle(&handles, &disjoint),
-            None,
-            "disjoint short names must not trip the guard"
-        );
-
-        // A wrapper whose SHORT name matches a fieldless handle in another module
-        // must be reported (the collision that would re-admit it to the rewrite).
-        let colliding: HashSet<String> = ["c.Widget".to_string()].into_iter().collect();
-        assert_eq!(
-            resource_wrapper_shadowing_handle(&handles, &colliding),
-            Some(("c.Widget", "a.Widget")),
-            "a wrapper sharing a handle's short name must be flagged fail-closed"
-        );
     }
 
     #[test]

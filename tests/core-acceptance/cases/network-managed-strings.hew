@@ -1,6 +1,7 @@
 import std.net.http;
 import std.net.http.http_client;
 import std.net.websocket;
+import std.encoding.protobuf;
 import std.process;
 import std.os;
 
@@ -114,6 +115,9 @@ fn websocket_exchange(executable: string) -> string {
 }
 
 fn main() -> i64 {
+    let metadata = protobuf.new();
+    assert(metadata.get_varint(1, 42) == 42);
+    metadata.close();
     let arguments = os.args();
     if arguments.len() > 1 {
         match arguments[1] {

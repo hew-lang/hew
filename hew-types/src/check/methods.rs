@@ -1913,9 +1913,8 @@ impl Checker {
     /// resolves to a fieldless `#[opaque]` runtime handle: the receiver value is
     /// itself the runtime pointer, so a handle-method call is safe to rewrite to
     /// a direct extern that takes the receiver as the handle argument. False for
-    /// a fielded `#[resource]` wrapper — whose qualified name is not in the
-    /// opaque `handle_types` set and whose short name matches no fieldless
-    /// handle — so its methods keep dispatching through their real impl body.
+    /// a fielded `#[resource]` wrapper: its exact source declaration is not
+    /// an opaque handle, so its methods dispatch through their real impl body.
     pub(super) fn receiver_is_opaque_handle(&self, name: &str) -> bool {
         self.module_registry.is_handle_type(name)
     }

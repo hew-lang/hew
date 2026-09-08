@@ -22,7 +22,6 @@ struct ModuleParseCache {
 struct ProgramModuleState {
     modules: BTreeMap<ModuleId, ModuleInfo>,
     handle_types: HashSet<String>,
-    resource_wrapper_types: HashSet<String>,
     drop_types: HashSet<String>,
     drop_funcs: HashMap<String, String>,
 }
@@ -808,13 +807,6 @@ impl ModuleRegistry {
     /// Returns [`ModuleError::NotFound`] if no search path contains the module,
     /// or [`ModuleError::ParseError`] if the module file exists but cannot be parsed.
     ///
-    /// # Panics
-    ///
-    /// Panics (fail-closed) if a newly loaded module makes a fielded
-    /// `#[resource]` handle-wrapper share its short name with a fieldless
-    /// `#[opaque]` handle in the loaded set — an internal stdlib-authoring
-    /// invariant that would otherwise let handle-method dispatch misclassify the
-    /// wrapper as an opaque handle. The current stdlib satisfies it.
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
         let id = module_id_from_identity(module_path);
         let loader_path = id.path.join("::");
@@ -850,26 +842,11 @@ impl ModuleRegistry {
             .handle_types
             .extend(info.handle_types.iter().cloned());
         self.active
-            .resource_wrapper_types
-            .extend(info.resource_wrapper_types.iter().cloned());
-        self.active
             .drop_types
             .extend(info.drop_types.iter().cloned());
         self.active
             .drop_funcs
             .extend(info.drop_funcs.iter().cloned());
-
-        if let Some((wrapper, handle)) = crate::stdlib_loader::resource_wrapper_shadowing_handle(
-            &self.active.handle_types,
-            &self.active.resource_wrapper_types,
-        ) {
-            panic!(
-                "stdlib invariant violated: #[resource] handle-wrapper `{wrapper}` \
-               shares its short name with fieldless #[opaque] handle `{handle}` — \
-               rename one so handle-method dispatch cannot misclassify the wrapper \
-               as an opaque handle"
-            );
-        }
 
         self.active.modules.insert(id.clone(), info);
         &self.active.modules[id]

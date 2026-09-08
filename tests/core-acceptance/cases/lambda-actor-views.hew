@@ -16,8 +16,12 @@ fn main() {
     };
     let inbox = mailbox(log, on_full: .Reject);
     let submission = inbox("submitted");
-    // Close waits for the handler, so the submitted line is printed before
-    // the caller reports the delivery outcome.
+    // A completion call on the same lambda waits behind the submitted work.
+    // Close waits for termination and may discard work still in the mailbox.
+    match log("barrier") {
+        .Ok(_) => {},
+        .Err(_) => panic("the logger completion call failed"),
+    }
     close(log);
     match submission {
         .Ok(_) => println("accepted"),

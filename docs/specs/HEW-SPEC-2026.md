@@ -423,11 +423,19 @@ resource handle: it is `Send`/`Sync` iff both `M` and `R` are `Send`, and the
 runtime stops the actor when the last strong handle drops.
 
 A lambda actor is an actor, not a channel: `LambdaPid` exposes only the actor
-surface (`handle(msg)` call-syntax, `.send(msg)`, `.close()`). It deliberately
-has no `.recv()` / `.send_half()` / `.recv_half()` surface — the caller never
-reads the actor's mailbox, and an actor handle cannot be split in two. The reply
-for an ask-shaped actor is delivered through the call-site `Result`, never a
-separate receive.
+surface (`handle(msg)` call-syntax, `.send(msg)`, `close(handle)`). It
+deliberately has no `.recv()` / `.send_half()` / `.recv_half()` surface — the
+caller never reads the actor's mailbox, and an actor handle cannot be split in
+two. The reply for an ask-shaped actor is delivered through the call-site
+`Result`, never a separate receive.
+
+`handle(msg)` is the completion call, exactly as a call on a named actor's
+handle is: it waits for the handler's turn to finish and yields
+`Result<R, ActorError>`, with `R` the unit reply when the lambda declares no
+`-> R`. A lambda that names the binding holding its own handle is refused: the
+handle would live inside the state it addresses, so the actor would own the
+only way to reach itself. A recursive actor gets a name and is spawned, which
+keeps the handle and the state separate.
 
 **Spawning:**
 

@@ -372,6 +372,14 @@ pub enum HirDiagnosticKind {
         /// Receive handler name.
         handler: String,
     },
+    /// A lambda actor's body names the binding that holds its own handle.
+    /// The handle would then live in the state it addresses, so the actor
+    /// owns the only way to reach itself. A recursive actor gets a name and
+    /// is spawned, which keeps the handle and the state separate.
+    RecursiveLambdaActorHandle {
+        /// The captured binding that names the lambda's own handle.
+        name: String,
+    },
     /// A checker-owned `expr_types` entry failed the `ResolvedTy::from_ty`
     /// boundary conversion.  This means the checker left an unresolved
     /// inference variable, a `Ty::Error` placeholder, or an unmaterialized

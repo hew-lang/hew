@@ -717,6 +717,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::TraitObjectMethodNoSideTableEntry { .. } => "TraitObjectMethodNoSideTableEntry",
         K::TraitObjectCoercionMissing { .. } => "TraitObjectCoercionMissing",
         K::ActorStateGuardMissing { .. } => "ActorStateGuardMissing",
+        K::RecursiveLambdaActorHandle { .. } => "RecursiveLambdaActorHandle",
         K::CheckerBoundaryViolation { .. } => "CheckerBoundaryViolation",
         K::MonomorphisationCallTypeArgsViolation { .. } => "MonomorphisationCallTypeArgsViolation",
         K::MonomorphisationCapExceeded { .. } => "MonomorphisationCapExceeded",

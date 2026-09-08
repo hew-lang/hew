@@ -1059,6 +1059,12 @@ fn require_type_shapes(
                 );
             }
         }
+        // The actor parameter of `RemotePid<T>` is phantom at the ABI
+        // boundary. It selects checked dispatch and codec contracts elsewhere,
+        // but is not an independently carried value that needs a SIR shape.
+        if ty.is_builtin(hew_types::BuiltinType::RemotePid) {
+            continue;
+        }
         if actor::declaration(module, &ty).is_none()
             && supervisor::declaration(module, &ty).is_none()
         {
@@ -2677,6 +2683,12 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
         || ty.is_builtin(hew_types::BuiltinType::ChildRef)
+        // Distributed identity carriers are fixed-width BitCopy values. Their
+        // source fields are intentionally not constructible, so they enter SIR
+        // as exact compiler-owned ABI carriers rather than user records.
+        || ty.is_builtin(hew_types::BuiltinType::NodeId)
+        || ty.is_builtin(hew_types::BuiltinType::Location)
+        || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
 }

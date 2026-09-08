@@ -1008,6 +1008,8 @@ pub enum PhysicalRuntimeAction {
     },
     /// Source-visible node lifecycle operation returning Result<(), `NodeError`>.
     NodeShutdown,
+    /// Register a local actor handle under a source-visible name.
+    NodeRegister,
     NodeLifecycle {
         family: RuntimeCallFamily,
         result: PhysicalVariantId,
@@ -1055,6 +1057,7 @@ impl PhysicalRuntimeAction {
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
             Self::TimeScalar(family) | Self::NodeLifecycle { family, .. } => family,
             Self::NodeShutdown => RuntimeCallFamily::NodeShutdown,
+            Self::NodeRegister => RuntimeCallFamily::NodeRegister,
             Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
             Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
@@ -2586,6 +2589,7 @@ fn physical_runtime_action(
         | RuntimeCallFamily::DurationIsZero) => PhysicalRuntimeAction::TimeScalar(family),
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
         RuntimeCallFamily::NodeShutdown => PhysicalRuntimeAction::NodeShutdown,
+        RuntimeCallFamily::NodeRegister => PhysicalRuntimeAction::NodeRegister,
         _ => {
             return Err(PhysicalError::new(format!(
                 "runtime family `{family:?}` has no physical no-unwind ABI action"

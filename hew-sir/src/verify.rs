@@ -2542,6 +2542,9 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         // no source declaration to match against `module.actors`, so it names
         // its own value contract here.
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
+        || ty.is_builtin(hew_types::BuiltinType::NodeId)
+        || ty.is_builtin(hew_types::BuiltinType::Location)
+        || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || matches!(
             ty,
             ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)

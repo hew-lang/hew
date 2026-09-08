@@ -452,8 +452,8 @@ impl RuntimeSemanticContract {
             ));
         }
         let receiver = params
-            .first()
-            .filter(|ty| {
+            .iter()
+            .find(|ty| {
                 runtime_receiver_builtin(ty).is_some()
                     || matches!(ty, ResolvedTy::Array(_, _))
                     || FileReadHandleKind::of_ty(ty).is_some()
@@ -529,7 +529,7 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
     match ty {
         ResolvedTy::Named {
-            builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink)),
+            builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink | BuiltinType::LocalPid)),
             args,
             ..
         } if args.len() == 1 => Some(*kind),
@@ -2747,6 +2747,7 @@ impl RuntimeCallFamily {
             "utf8.decode_lossy" => Some(Self::BytesDecodeUtf8Lossy),
             "Node::start" => Some(Self::NodeStart),
             "Node::connect" => Some(Self::NodeConnect),
+            "Node::register" => Some(Self::NodeRegister),
             "Node::shutdown" => Some(Self::NodeShutdown),
             _ => None,
         }
@@ -4223,6 +4224,20 @@ impl RuntimeCallFamily {
                         RuntimeValueKind::MonomorphicBuiltin(BuiltinType::NodeError),
                     ],
                 )),
+                SIR_NO_FAILURES,
+            ),
+            Self::NodeRegister => runtime_semantic_contract(
+                &[
+                    RuntimeArgumentContract {
+                        ty: String,
+                        effect: Borrow,
+                    },
+                    RuntimeArgumentContract {
+                        ty: RuntimeValueKind::Receiver(BuiltinType::LocalPid),
+                        effect: Borrow,
+                    },
+                ],
+                BitCopy(RuntimeValueKind::I32),
                 SIR_NO_FAILURES,
             ),
             Self::NodeShutdown => runtime_semantic_contract(&[], Unit, SIR_NO_FAILURES),

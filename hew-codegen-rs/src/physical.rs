@@ -653,6 +653,24 @@ fn primitive_repr(
         {
             PhysicalRepr::Integer { bits: pointer_bits }
         }
+        node if node.is_builtin(hew_types::BuiltinType::NodeId) => PhysicalRepr::Struct(vec![
+            integer_layout(ctx, target, 64)?,
+            integer_layout(ctx, target, 64)?,
+        ]),
+        location
+            if location.is_builtin(hew_types::BuiltinType::Location)
+                || location.is_builtin(hew_types::BuiltinType::RemotePid) =>
+        {
+            // Matches `HewLocation` / `HewRemotePid`: the NodeId words are
+            // flattened, and reserved remains an explicit zeroed u32.
+            PhysicalRepr::Struct(vec![
+                integer_layout(ctx, target, 64)?,
+                integer_layout(ctx, target, 64)?,
+                integer_layout(ctx, target, 64)?,
+                integer_layout(ctx, target, 32)?,
+                integer_layout(ctx, target, 32)?,
+            ])
+        }
         // A supervised role addresses its actor through the supervisor that
         // owns it: the supervisor's handle and the declared slot.
         role if role.is_builtin(hew_types::BuiltinType::ChildRef) => PhysicalRepr::Struct(vec![
@@ -4073,6 +4091,48 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.ctx.i32_type().fn_type(&[], false),
                 )?;
                 let _ = self.runtime_call_value(function, &[], "node.shutdown")?;
+            }
+            PhysicalRuntimeAction::NodeRegister => {
+                let status_ty = self.ctx.i32_type();
+                let ptr = self.ctx.ptr_type(AddressSpace::default());
+                let pid_accessor = get_or_declare_external(
+                    self.llvm,
+                    "hew_local_pid_actor_id",
+                    status_ty.fn_type(&[self.ctx.i64_type().into(), ptr.into()], false),
+                )?;
+                let register = get_or_declare_external(
+                    self.llvm,
+                    "hew_node_api_register_by_pid",
+                    status_ty.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+                )?;
+                let local = self
+                    .load(source(1)?, "node.register.local")?
+                    .into_int_value();
+                let pid_out = self
+                    .value_emitter()
+                    .entry_scratch(self.ctx.i64_type().into(), "node.register.pid")?;
+                self.builder
+                    .build_store(pid_out, self.ctx.i64_type().const_zero())
+                    .llvm_ctx("initialize node registration pid output")?;
+                let _ = self.runtime_call_value(
+                    pid_accessor,
+                    &[local.into(), pid_out.into()],
+                    "node.register.pid",
+                )?;
+                let pid = self
+                    .builder
+                    .build_load(self.ctx.i64_type(), pid_out, "node.register.pid.value")
+                    .llvm_ctx("load resolved local actor pid")?
+                    .into_int_value();
+                let status = self.runtime_call_value(
+                    register,
+                    &[
+                        self.load(source(0)?, "node.register.name")?.into(),
+                        pid.into(),
+                    ],
+                    "node.register",
+                )?;
+                self.store(required_result()?, status)?;
             }
             PhysicalRuntimeAction::NodeLifecycle {
                 family,

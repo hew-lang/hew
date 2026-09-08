@@ -56,7 +56,7 @@ runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	stage-1	reviewed remaining owner-shortening sink
 signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
 signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	stage-1	actor field default initialisers checked against declared field types
-signature-application	check_actor_mailbox	hew-types/src/check/actor_delivery.rs	stage-1	sender policy checks its option against the declared OnFull enum
+signature-application	check_actor_delivery_view	hew-types/src/check/actor_delivery.rs	stage-1	both delivery views check their option against the declared OnFull enum
 signature-application	check_against_inner	hew-types/src/check/expressions.rs	stage-1	general expression checking against an expected type; the recursive spine of the primitive itself, no signature involved
 signature-application	check_binary_op	hew-types/src/check/expressions.rs	stage-1	operand checking against the operator's own expected operand type
 signature-application	check_block	hew-types/src/check/statements.rs	stage-1	block tail checked against the block's expected type

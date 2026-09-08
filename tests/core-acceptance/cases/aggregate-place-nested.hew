@@ -1,0 +1,11 @@
+type Inner { total: i64, note: string }
+type Outer { inner: Inner, label: string }
+
+fn main() {
+    var report = Outer { inner: Inner { total: 0, note: "fresh" }, label: "report" };
+    report.inner.total = 41;
+    report.inner.total += 1;
+    report.inner.note = "settled";
+    report.label = report.label.to_upper();
+    println(f"{report.label}:{report.inner.note}:{report.inner.total}");
+}

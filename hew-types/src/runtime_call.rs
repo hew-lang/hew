@@ -1457,32 +1457,6 @@ pub enum RuntimeCallFamily {
     InstantElapsed,
     InstantNow,
 
-    // --- Lambda-actor surface (overlays Duplex<Msg, Reply>) -----------------
-    LambdaActorAsk,
-    /// Body-side reply-buffer allocator: lambda-actor body fns publish
-    /// their reply payload via a Box-allocated `*mut u8` that the runtime
-    /// (`hew_reply`) copies into a libc-allocated buffer before publishing
-    /// to the waiter; the body's Box-allocated original is then freed
-    /// runtime-internally. Distinct from the waiter-side `hew_reply_payload_free`.
-    LambdaBodyAllocReplyBuf,
-    LambdaActorClone,
-    LambdaActorDowngrade,
-    /// Process-exit drain for detached lambda-actor dispatch threads
-    /// (`hew-runtime/src/lambda_actor.rs`). Lambda actors run on
-    /// dedicated OS threads NOT the work-stealing scheduler, so
-    /// `hew_shutdown_wait` cannot drain them; codegen emits
-    /// `hew_lambda_drain_all(0)` in main's Return epilogue so any
-    /// in-flight body work completes before process exit.
-    LambdaDrainAll,
-    LambdaActorNew,
-    /// Lambda-actor handle release; consumes receiver (mirrors
-    /// `runtime_symbol_consumes_receiver` in `hew-types/src/builtin_names.rs`).
-    LambdaActorRelease,
-    LambdaActorSend,
-    LambdaActorWeakClone,
-    LambdaActorWeakDrop,
-    LambdaActorWeakSend,
-
     // --- Math intrinsics ---------------------------------------------------
     // User-visible callee identities carried on MIR `Terminator::Call`; not
     // runtime C-ABI symbols and therefore absent from `known_runtime_symbols`.
@@ -2755,18 +2729,6 @@ impl RuntimeCallFamily {
             Self::InstantDurationSince => "hew_instant_duration_since",
             Self::InstantElapsed => "hew_instant_elapsed",
             Self::InstantNow => "hew_instant_now",
-            // Lambda actor
-            Self::LambdaActorAsk => "hew_lambda_actor_ask",
-            Self::LambdaBodyAllocReplyBuf => "hew_lambda_body_alloc_reply_buf",
-            Self::LambdaActorClone => "hew_lambda_actor_clone",
-            Self::LambdaActorDowngrade => "hew_lambda_actor_downgrade",
-            Self::LambdaDrainAll => "hew_lambda_drain_all",
-            Self::LambdaActorNew => "hew_lambda_actor_new",
-            Self::LambdaActorRelease => "hew_lambda_actor_release",
-            Self::LambdaActorSend => "hew_lambda_actor_send",
-            Self::LambdaActorWeakClone => "hew_lambda_actor_weak_clone",
-            Self::LambdaActorWeakDrop => "hew_lambda_actor_weak_drop",
-            Self::LambdaActorWeakSend => "hew_lambda_actor_weak_send",
             // Math intrinsics (user-visible callee names)
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => "sqrt",
             Self::MathIntrinsic(MathIntrinsic::Exp) => "exp",
@@ -3166,18 +3128,6 @@ impl RuntimeCallFamily {
             "hew_instant_duration_since" => Self::InstantDurationSince,
             "hew_instant_elapsed" => Self::InstantElapsed,
             "hew_instant_now" => Self::InstantNow,
-            // Lambda actor
-            "hew_lambda_actor_ask" => Self::LambdaActorAsk,
-            "hew_lambda_body_alloc_reply_buf" => Self::LambdaBodyAllocReplyBuf,
-            "hew_lambda_actor_clone" => Self::LambdaActorClone,
-            "hew_lambda_actor_downgrade" => Self::LambdaActorDowngrade,
-            "hew_lambda_drain_all" => Self::LambdaDrainAll,
-            "hew_lambda_actor_new" => Self::LambdaActorNew,
-            "hew_lambda_actor_release" => Self::LambdaActorRelease,
-            "hew_lambda_actor_send" => Self::LambdaActorSend,
-            "hew_lambda_actor_weak_clone" => Self::LambdaActorWeakClone,
-            "hew_lambda_actor_weak_drop" => Self::LambdaActorWeakDrop,
-            "hew_lambda_actor_weak_send" => Self::LambdaActorWeakSend,
             // Math intrinsics
             "sqrt" => Self::MathIntrinsic(MathIntrinsic::Sqrt),
             "exp" => Self::MathIntrinsic(MathIntrinsic::Exp),
@@ -3748,7 +3698,7 @@ impl RuntimeCallFamily {
     /// in `hew-types/src/builtin_names.rs` for the 7-symbol set:
     /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
     /// `hew_channel_receiver_close`, `hew_duplex_close`,
-    /// `hew_duplex_close_half`, `hew_lambda_actor_release`, plus the TCP
+    /// `hew_duplex_close_half`, plus the TCP
     /// active-mode handoff. The latter is not a close call: its consume fact
     /// comes from the generated FFI contract for `hew_tcp_attach_local`,
     /// because the reactor becomes the connection's sole close authority.
@@ -3795,7 +3745,6 @@ impl RuntimeCallFamily {
                 // set and closes a direction the half now owns — a double-close.
                 | Self::DuplexSendHalf
                 | Self::DuplexRecvHalf
-                | Self::LambdaActorRelease
         )
     }
 
@@ -4315,17 +4264,6 @@ impl RuntimeCallFamily {
             | F::InstantDurationSince
             | F::InstantElapsed
             | F::InstantNow
-            | F::LambdaActorAsk
-            | F::LambdaBodyAllocReplyBuf
-            | F::LambdaActorClone
-            | F::LambdaActorDowngrade
-            | F::LambdaDrainAll
-            | F::LambdaActorNew
-            | F::LambdaActorRelease
-            | F::LambdaActorSend
-            | F::LambdaActorWeakClone
-            | F::LambdaActorWeakDrop
-            | F::LambdaActorWeakSend
             | F::MathIntrinsic(_)
             | F::MetricCounterRegister
             | F::MetricCounterInc
@@ -4710,10 +4648,6 @@ pub enum RuntimeDropDescriptor {
     SenderClose,
     /// `Receiver::close` → `hew_channel_receiver_close`.
     ReceiverClose,
-    /// `LambdaActorHandle::close` → `hew_lambda_actor_release`. NB the
-    /// type-class seeding calls the method "close" but the runtime
-    /// C-ABI symbol is "release"; an explicit table entry is required.
-    LambdaActorHandleClose,
     /// `SendHalf::close` → `hew_duplex_close_half`. Direction
     /// discriminant materialised at the call site from the Place
     /// variant (`SendHalf` vs `RecvHalf`), not encoded in the symbol.
@@ -4776,9 +4710,6 @@ impl RuntimeDropDescriptor {
             BuiltinType::Sink => Some(Self::SinkClose),
             BuiltinType::Sender => Some(Self::SenderClose),
             BuiltinType::Receiver => Some(Self::ReceiverClose),
-            BuiltinType::LambdaActorHandle | BuiltinType::LambdaPid => {
-                Some(Self::LambdaActorHandleClose)
-            }
             BuiltinType::SendHalf | BuiltinType::HewSendHalf => Some(Self::SendHalfClose),
             BuiltinType::RecvHalf | BuiltinType::HewRecvHalf => Some(Self::RecvHalfClose),
             BuiltinType::CancellationToken => Some(Self::CancellationTokenRelease),
@@ -4803,7 +4734,6 @@ impl RuntimeDropDescriptor {
             | Self::SinkClose
             | Self::SenderClose
             | Self::ReceiverClose
-            | Self::LambdaActorHandleClose
             | Self::CancellationTokenRelease => RuntimeDropOperandShape::HandlePtr,
         }
     }
@@ -4821,7 +4751,6 @@ impl RuntimeDropDescriptor {
             Self::SinkClose => "hew_sink_close",
             Self::SenderClose => "hew_channel_sender_close",
             Self::ReceiverClose => "hew_channel_receiver_close",
-            Self::LambdaActorHandleClose => "hew_lambda_actor_release",
             Self::SendHalfClose | Self::RecvHalfClose => "hew_duplex_close_half",
             Self::CancellationTokenRelease => "hew_cancel_token_release",
             Self::MonitorRefClose => "hew_actor_demonitor",
@@ -4841,7 +4770,6 @@ impl RuntimeDropDescriptor {
             Self::SinkClose => "Sink::close",
             Self::SenderClose => "Sender::close",
             Self::ReceiverClose => "Receiver::close",
-            Self::LambdaActorHandleClose => "LambdaActorHandle::close",
             Self::SendHalfClose => "SendHalf::close",
             Self::RecvHalfClose => "RecvHalf::close",
             Self::CancellationTokenRelease => "CancellationToken::release",
@@ -4864,7 +4792,6 @@ impl RuntimeDropDescriptor {
             "Sink::close" => Some(Self::SinkClose),
             "Sender::close" => Some(Self::SenderClose),
             "Receiver::close" => Some(Self::ReceiverClose),
-            "LambdaActorHandle::close" => Some(Self::LambdaActorHandleClose),
             "SendHalf::close" => Some(Self::SendHalfClose),
             "RecvHalf::close" => Some(Self::RecvHalfClose),
             "CancellationToken::release" => Some(Self::CancellationTokenRelease),
@@ -5067,14 +4994,13 @@ pub fn all_vec_contains_scalar_families() -> Vec<RuntimeCallFamily> {
 /// See the bijection / parity tests; same coverage discipline as
 /// [`all_runtime_call_families`].
 #[must_use]
-pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
+pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
     [
         RuntimeDropDescriptor::DuplexClose,
         RuntimeDropDescriptor::StreamClose,
         RuntimeDropDescriptor::SinkClose,
         RuntimeDropDescriptor::SenderClose,
         RuntimeDropDescriptor::ReceiverClose,
-        RuntimeDropDescriptor::LambdaActorHandleClose,
         RuntimeDropDescriptor::SendHalfClose,
         RuntimeDropDescriptor::RecvHalfClose,
         RuntimeDropDescriptor::CancellationTokenRelease,
@@ -5617,7 +5543,6 @@ mod tests {
             "hew_duplex_close_half",
             "hew_duplex_send_half",
             "hew_duplex_recv_half",
-            "hew_lambda_actor_release",
             "vec.value.push",
             "vec.value.set",
             "vec.value.pop",
@@ -5802,7 +5727,6 @@ mod tests {
             ("Sink::close", "hew_sink_close"),
             ("Sender::close", "hew_channel_sender_close"),
             ("Receiver::close", "hew_channel_receiver_close"),
-            ("LambdaActorHandle::close", "hew_lambda_actor_release"),
             ("SendHalf::close", "hew_duplex_close_half"),
             ("RecvHalf::close", "hew_duplex_close_half"),
             ("CancellationToken::release", "hew_cancel_token_release"),
@@ -5852,14 +5776,8 @@ mod tests {
             (HewSendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
             (RecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
             (HewRecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
-            (
-                LambdaActorHandle,
-                Some(RuntimeDropDescriptor::LambdaActorHandleClose),
-            ),
-            (
-                LambdaPid,
-                Some(RuntimeDropDescriptor::LambdaActorHandleClose),
-            ),
+            (LambdaActorHandle, None),
+            (LambdaPid, None),
             (
                 CancellationToken,
                 Some(RuntimeDropDescriptor::CancellationTokenRelease),
@@ -5894,7 +5812,6 @@ mod tests {
             (SinkClose, HandlePtr),
             (SenderClose, HandlePtr),
             (ReceiverClose, HandlePtr),
-            (LambdaActorHandleClose, HandlePtr),
             (SendHalfClose, DuplexHalf { direction: Send }),
             (RecvHalfClose, DuplexHalf { direction: Recv }),
             (CancellationTokenRelease, HandlePtr),

@@ -33,24 +33,11 @@ static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
 
-/// Force the next `alloc_reply_buffer` call to fail (return null), simulating
-/// OOM in the reply-buffer copy path inside `hew_reply`. Exposed to other
-/// runtime modules (e.g. `lambda_actor` tests) so they can pin the
-/// status=Ok / payload=null edge case the codegen ask-payload guard catches.
-/// Auto-clears after the next call to `alloc_reply_buffer`.
-#[cfg(test)]
-pub(crate) fn force_reply_alloc_failure_for_test() {
-    FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
-}
-
 // ── Debug allocator-pairing tracker ────────────────────────────────────────
 //
 // Reply payloads allocated here via `libc::malloc` are registered in the
-// runtime-wide tracker (crate::alloc_tracker).  Lambda-actor body reply
-// buffers use Rust's `GlobalAlloc` (`Box::into_raw`) and are freed via
-// `lambda_actor::free_body_reply_buf` — each free site in that module asserts
-// the pointer is NOT in the set, catching any allocator crossing before it
-// reaches `Box::from_raw`.
+// runtime-wide tracker (crate::alloc_tracker), so a free through the wrong
+// allocator is caught before it reaches the deallocator.
 //
 // Active only in debug builds; zero overhead in release.
 
@@ -737,8 +724,8 @@ pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
 
 // ── Reply payload free ────────────────────────────────────────────────────
 
-/// Free a reply payload returned by [`hew_reply_wait`], [`hew_reply_wait_timeout`],
-/// or [`hew_lambda_actor_ask`].
+/// Free a reply payload returned by [`hew_reply_wait`] or
+/// [`hew_reply_wait_timeout`].
 ///
 /// # Allocator pairing contract
 ///
@@ -748,16 +735,12 @@ pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
 /// produce **undefined behaviour** on any platform where `GlobalAlloc ≠ libc
 /// malloc` (e.g. jemalloc, mimalloc).
 ///
-/// Lambda-actor body reply buffers use `GlobalAlloc` (`Box::into_raw`) and are
-/// freed via `lambda_actor::free_body_reply_buf` — see that module for the
-/// counterpart free path. The two allocators must never be crossed.
-///
 /// Passing `ptr = null` is safe and a no-op.
 ///
 /// # Safety
 ///
-/// `ptr` must be a pointer previously returned by a successful reply wait call
-/// (or `hew_lambda_actor_ask`). The pointer is invalid after this call.
+/// `ptr` must be a pointer previously returned by a successful reply wait
+/// call. The pointer is invalid after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_payload_free(ptr: *mut u8, _len: usize) {
     if ptr.is_null() {
@@ -768,8 +751,7 @@ pub unsafe extern "C" fn hew_reply_payload_free(ptr: *mut u8, _len: usize) {
         debug_assert!(
             debug_is_libc_tracked(ptr),
             "allocator-pairing contract violation: {ptr:p} is not libc-tracked; \
-             use hew_reply_payload_free only for reply-wait payloads (libc::malloc). \
-             Body reply buffers (Box/GlobalAlloc) are freed by lambda_actor::free_body_reply_buf.",
+             use hew_reply_payload_free only for reply-wait payloads (libc::malloc).",
         );
         debug_untrack_libc_alloc(ptr);
     }

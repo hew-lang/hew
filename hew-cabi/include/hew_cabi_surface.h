@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1624u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1613u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1624] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1613] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -3509,60 +3509,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1624] = {
      "{\"native\": \"fn hew_jwt_validate( *const c_char, *const c_char, i32, ) "
      "-> i32\"}",
      "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_ask",
-     "{\"native\": \"fn hew_lambda_actor_ask( *mut HewLambdaActorHandle, "
-     "*const u8, usize, *mut *mut u8, *mut usize, ) -> i32\"}",
-     "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_clone",
-     "{\"native\": \"fn hew_lambda_actor_clone( *mut HewLambdaActorHandle, ) "
-     "-> *mut HewLambdaActorHandle\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_downgrade",
-     "{\"native\": \"fn hew_lambda_actor_downgrade( *mut HewLambdaActorHandle, "
-     ") -> *mut HewLambdaActorWeakHandle\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_new",
-     "{\"native\": \"fn hew_lambda_actor_new( usize, i32, "
-     "Option<HewLambdaActorBody>, *mut core::ffi::c_void, "
-     "Option<HewLambdaActorStateDrop>, ) -> *mut HewLambdaActorHandle\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_release",
-     "{\"native\": \"fn hew_lambda_actor_release( *mut HewLambdaActorHandle) "
-     "-> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_send",
-     "{\"native\": \"fn hew_lambda_actor_send( *mut HewLambdaActorHandle, "
-     "*const u8, usize, ) -> i32\"}",
-     "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_weak_clone",
-     "{\"native\": \"fn hew_lambda_actor_weak_clone( *mut "
-     "HewLambdaActorWeakHandle, ) -> *mut HewLambdaActorWeakHandle\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_weak_drop",
-     "{\"native\": \"fn hew_lambda_actor_weak_drop( *mut "
-     "HewLambdaActorWeakHandle) -> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_actor_weak_send",
-     "{\"native\": \"fn hew_lambda_actor_weak_send( *mut "
-     "HewLambdaActorWeakHandle, *const u8, usize, ) -> i32\"}",
-     "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_body_alloc_reply_buf",
-     "{\"native\": \"fn hew_lambda_body_alloc_reply_buf( usize) -> *mut u8\"}",
-     "native", "codegen-stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_lambda_drain_all",
-     "{\"native\": \"fn hew_lambda_drain_all( i64) -> i32\"}", "native",
-     "codegen-stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_last_error",
      "{\"native\": \"fn hew_last_error() -> *const c_char\", "

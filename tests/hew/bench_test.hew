@@ -6,7 +6,7 @@ import std.testing;
 
 #[test]
 fn test_imported_bench_suite_add_and_report() {
-    let s = bench.suite("Imported Bench");
+    var s = bench.suite("Imported Bench");
     s.add("noop", 1, || {});
     testing.assert_eq(s.results.len(), 1);
     testing.assert_eq_str(s.results[0].name, "noop");

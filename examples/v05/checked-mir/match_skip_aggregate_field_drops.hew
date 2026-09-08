@@ -44,7 +44,7 @@ type HoldsEnum {
 }
 
 fn skip_record_field(k: i64) -> i64 {
-    let t = HoldsRecord { n: k, inner: Inner { value: ("agg-r-" + "payload") } };
+    let t = HoldsRecord { n: k, inner: Inner { value: "agg-r-" + "payload" } };
     let x = match t {
         HoldsRecord { n: x, inner: _ } => x,
     };
@@ -52,7 +52,7 @@ fn skip_record_field(k: i64) -> i64 {
 }
 
 fn skip_tuple_field(k: i64) -> i64 {
-    let t = HoldsTuple { n: k, pair: (("agg-t-" + "payload"), k) };
+    let t = HoldsTuple { n: k, pair: ("agg-t-" + "payload", k) };
     let x = match t {
         HoldsTuple { n: x, pair: _ } => x,
     };
@@ -60,7 +60,7 @@ fn skip_tuple_field(k: i64) -> i64 {
 }
 
 fn skip_enum_field(k: i64) -> i64 {
-    let t = HoldsEnum { n: k, shade: Shade.Named(("agg-e-" + "payload")) };
+    let t = HoldsEnum { n: k, shade: Shade.Named("agg-e-" + "payload") };
     let x = match t {
         HoldsEnum { n: x, shade: _ } => x,
     };

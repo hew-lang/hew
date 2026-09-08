@@ -36,7 +36,7 @@ type TaggedBytes {
 }
 
 fn skip_string_record(k: i64) -> i64 {
-    let t = TaggedString { n: k, s: ("leaf-s-" + "payload") };
+    let t = TaggedString { n: k, s: "leaf-s-" + "payload" };
     let x = match t {
         TaggedString { n: x, s: _ } => x,
     };
@@ -44,7 +44,7 @@ fn skip_string_record(k: i64) -> i64 {
 }
 
 fn skip_string_tuple(k: i64) -> i64 {
-    let t = (k, ("leaf-t-" + "payload"));
+    let t = (k, "leaf-t-" + "payload");
     let x = match t {
         (x, _) => x,
     };
@@ -53,7 +53,7 @@ fn skip_string_tuple(k: i64) -> i64 {
 
 fn skip_vec_record(k: i64) -> i64 {
     var v: Vec<string> = Vec.new();
-    v.push(("leaf-v-" + "payload"));
+    v.push("leaf-v-" + "payload");
     let t = TaggedVec { n: k, items: v };
     let x = match t {
         TaggedVec { n: x, items: _ } => x,

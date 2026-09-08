@@ -28,7 +28,7 @@ type Duo {
 }
 
 fn make(n: i64) -> Duo {
-    Duo { n: n, inner: Inner { value: ("cf-inner-" + "payload") }, s: ("cf-s-" + "payload") }
+    Duo { n: n, inner: Inner { value: "cf-inner-" + "payload" }, s: "cf-s-" + "payload" }
 }
 
 fn loop_backedge(frames: i64) -> i64 {

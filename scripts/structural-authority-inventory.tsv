@@ -60,6 +60,7 @@ signature-application	check_actor_delivery_view	hew-types/src/check/actor_delive
 signature-application	check_against_inner	hew-types/src/check/expressions.rs	stage-1	general expression checking against an expected type; the recursive spine of the primitive itself, no signature involved
 signature-application	check_binary_op	hew-types/src/check/expressions.rs	stage-1	operand checking against the operator's own expected operand type
 signature-application	check_block	hew-types/src/check/statements.rs	stage-1	block tail checked against the block's expected type
+signature-application	check_lambda_actor_call	hew-types/src/check/calls.rs	stage-1	the one argument-check path for a lambda actor call, shared by the bare handle, the delivery views and a record field holding a handle
 signature-application	check_call	hew-types/src/check/calls.rs	stage-1	call-shape paths that check a callee value or constructor operand, not a named signature's parameters
 signature-application	check_call_against_expected_constructor	hew-types/src/check/calls.rs	stage-1	constructor payloads checked against the expected enum or record shape
 signature-application	check_call_with_type	hew-types/src/check/calls.rs	stage-1	explicitly annotated call operands checked against the annotation

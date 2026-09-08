@@ -43,6 +43,39 @@ where
     f"{shape.label()} = {shape.area()}"
 }
 
+// A third implementation whose receiver owns a heap value, so the bound-driven
+// call transfers an owned receiver rather than a bit-copied one.
+type Tag {
+    text: string,
+    weight: i64,
+}
+
+impl Shape for Tag {
+    fn area(val: Tag) -> i64 {
+        val.weight
+    }
+    fn label(val: Tag) -> string {
+        f"tag({val.text})"
+    }
+}
+
+// A generic implementation whose parameter list is spelled in the opposite
+// order to its self type. Selecting the instance positionally would bind `A`
+// and `B` the wrong way round and give the receiver the wrong type.
+type Pair<L, R> {
+    left: L,
+    right: R,
+}
+
+impl<A, B> Shape for Pair<B, A> {
+    fn area(val: Pair<B, A>) -> i64 {
+        7
+    }
+    fn label(val: Pair<B, A>) -> string {
+        "pair"
+    }
+}
+
 // A second bound-driven body, so the resolution is proven for more than one
 // generic caller shape.
 fn combined_area<A, B>(first: A, second: B) -> i64
@@ -57,6 +90,8 @@ fn main() {
     println(report(Square { side: 4 }));
     println(report(Rect { width: 3, height: 5 }));
     println(combined_area(Square { side: 2 }, Rect { width: 6, height: 7 }));
+    println(report(Tag { text: "hinge", weight: 11 }));
+    println(report(Pair { left: 3, right: "side" }));
 
     // Contrast: the same impls reached through vtable dispatch.
     let erased: dyn Shape = Square { side: 9 };

@@ -108,8 +108,7 @@ impl InstanceService<'_> {
             None => 10,
             Some(count) => u32::try_from(count)
                 .ok()
-                .filter(|count| *count > 0)
-                .ok_or("restart intensity must be a positive count")?,
+                .ok_or("restart intensity must be a non-negative count")?,
         };
         let window_secs = restart_window_secs(source.window.as_deref())?;
         let config: Vec<ResolvedTy> = source
@@ -357,16 +356,18 @@ impl Builder<'_, '_> {
         &mut self,
         handle: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
-        if self
+        let supervisor = self.service.require_supervisor(&self.ty(&handle.ty))?;
+        let operation = if self
             .ty(&handle.ty)
             .is_builtin(hew_types::BuiltinType::ChildRef)
         {
-            return Err(
-                "closing a nested supervisor role needs its role lifecycle contract".into(),
-            );
-        }
-        let supervisor = self.service.require_supervisor(&self.ty(&handle.ty))?;
-        let operation = ActorOperation::SupervisorStop(supervisor);
+            ActorOperation::SupervisorRoleAwaitClosed {
+                supervisor,
+                closing: true,
+            }
+        } else {
+            ActorOperation::SupervisorStop(supervisor)
+        };
         let signature = self.actor_signature(&operation)?;
         let value =
             lower_initial_value_transfer(self, handle, "supervisor handle", OwnedBindingUse::Copy)?;

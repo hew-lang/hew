@@ -384,7 +384,26 @@ mod tests {
         assert!(local_handles::pin_current_supervisor(role).is_some());
         // SAFETY: the wake descriptor stays live and this test owns the observer.
         let observer = unsafe { hew_actor_wait_new(parent, wake.descriptor()) };
-        let child_close = std::thread::spawn(move || hew_local_pid_supervisor_stop(child));
+        let (_, child_wake) = crate::wake::blocking::Readiness::new();
+        // SAFETY: this test retains the wake descriptor and owns both observers.
+        let child_observer = unsafe {
+            crate::supervisor::hew_supervisor_native_role_wait_new(
+                parent,
+                0,
+                child_wake.descriptor(),
+                0,
+            )
+        };
+        assert!(local_handles::pin_current_supervisor(child).is_some());
+        // SAFETY: the closing observer retains the same incarnation before stop.
+        let child_close = unsafe {
+            crate::supervisor::hew_supervisor_native_role_wait_new(
+                parent,
+                0,
+                child_wake.descriptor(),
+                1,
+            )
+        };
         entered.wait();
         let (finished, completion) = std::sync::mpsc::channel();
         let parent_close = std::thread::spawn(move || {
@@ -395,8 +414,14 @@ mod tests {
         let early_drops = drops.load(Ordering::SeqCst);
         // SAFETY: the observer remains owned by this test through its last poll.
         let early_ready = unsafe { hew_actor_wait_poll(observer) };
+        // SAFETY: both observers remain owned while child cleanup is paused.
+        let early_child_ready = unsafe {
+            (
+                hew_actor_wait_poll(child_observer),
+                hew_actor_wait_poll(child_close),
+            )
+        };
         release.wait();
-        assert_eq!(child_close.join().expect("child cleanup owner"), 0);
         parent_close.join().expect("parent cleanup owner");
         assert!(matches!(
             early,
@@ -404,14 +429,20 @@ mod tests {
         ));
         assert_eq!(early_drops, 0);
         assert_eq!(early_ready, 0);
+        assert_eq!(early_child_ready, (0, 0));
         assert_eq!(completion.recv().expect("parent result"), 0);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         // SAFETY: the observer has one owner and the cleanup threads have finished.
         unsafe {
             assert_eq!(hew_actor_wait_poll(observer), 1);
             hew_actor_wait_free(observer);
+            assert_eq!(hew_actor_wait_poll(child_observer), 1);
+            assert_eq!(hew_actor_wait_poll(child_close), 1);
+            hew_actor_wait_free(child_observer);
+            hew_actor_wait_free(child_close);
         }
         assert!(local_handles::pin_current_supervisor(role).is_none());
+        crate::lifetime::live_actors::drain_deferred_teardown_threads();
         assert_eq!(local_handles::current_supervisor_counts_for_test(), (0, 0));
     }
 }

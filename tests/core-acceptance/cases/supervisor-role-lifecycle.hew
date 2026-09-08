@@ -1,0 +1,44 @@
+actor Worker {
+    var label: string = "",
+    var count: i64 = 0,
+    init(seed: string) { label = seed; }
+    #[on(stop)] fn stopped() { println(label); }
+    receive fn put(next: i64) { count = next; }
+    receive fn get() -> i64 { count }
+}
+
+supervisor Branch(seed: string) {
+    child worker: Worker(seed: seed),
+}
+
+supervisor Root(seed: string) {
+    child persistent: Branch(seed: seed),
+    child recoverable: Branch(seed: seed) restart: transient,
+    child short_lived: Branch(seed: seed) restart: temporary,
+}
+
+fn main() {
+    let root = spawn Root(seed: "owned child stopped".to_upper());
+    let role = root.persistent;
+    let worker = role.worker;
+    for _ in 0..2 {
+        worker.put(42).expect("mutate current incarnation");
+        close(role);
+        let _ = await_restart root.persistent;
+        assert(worker.get().expect("role reaches replacement") == 0);
+    }
+    let retiring = root.recoverable;
+    close(retiring);
+    closed(retiring);
+    let _ = await_restart root.recoverable;
+    assert(retiring.worker.get().is_err());
+    close(root.short_lived);
+    closed(root.short_lived);
+    let _ = await_restart root.short_lived;
+    assert(root.short_lived.worker.get().is_err());
+    assert(worker.get().expect("permanent child stays live") == 0);
+    close(root);
+    closed(role);
+    assert(worker.get().is_err());
+    println("nested role lifecycle observes one incarnation");
+}

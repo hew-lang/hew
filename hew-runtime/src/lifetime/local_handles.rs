@@ -146,6 +146,7 @@ pub(crate) struct SupervisorControl {
     access_state: AtomicUsize,
     teardown_claimed: AtomicBool,
     completion: Arc<crate::actor_native::NativeActorCompletion>,
+    parent_stop_notification: Mutex<Option<(HewLocalPidId, u32)>>,
     drain_mutex: Mutex<()>,
     drained: Condvar,
 }
@@ -164,13 +165,29 @@ impl SupervisorControl {
             access_state: AtomicUsize::new(0),
             teardown_claimed: AtomicBool::new(false),
             completion: Arc::default(),
+            parent_stop_notification: Mutex::new(None),
             drain_mutex: Mutex::new(()),
             drained: Condvar::new(),
         }
     }
 
     pub(crate) fn finish_terminal(&self) {
+        let parent = self
+            .parent_stop_notification
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some((parent, slot)) = parent {
+            crate::supervisor::notify_child_supervisor_stopped(parent, slot, self.direct_id);
+        }
         self.completion.finish(0);
+    }
+
+    pub(crate) fn notify_parent_on_stop(&self, parent: HewLocalPidId, slot: u32) {
+        *self
+            .parent_stop_notification
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((parent, slot));
     }
 
     pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {

@@ -143,8 +143,8 @@ impl SemSupervisor {
         {
             return Err("supervisor handle refers to another declaration".into());
         }
-        if self.max_restarts == 0 || self.window_secs == 0 {
-            return Err("supervisor restart budget requires a positive intensity".into());
+        if self.window_secs == 0 {
+            return Err("supervisor restart budget requires a positive window".into());
         }
         let mut names = std::collections::BTreeSet::new();
         for (index, child) in self.children.iter().enumerate() {

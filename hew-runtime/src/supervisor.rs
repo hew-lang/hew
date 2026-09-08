@@ -724,11 +724,19 @@ struct ChildEvent {
 #[derive(Debug, Clone, Copy)]
 struct ChildSupervisorEscalation {
     supervisor_index: u32,
+    child_token: crate::lifetime::local_handles::HewLocalPidId,
     exit_state: c_int,
     crash_code: c_int,
     /// The escalated crash record. The escalation TRANSFERS ownership; this
     /// parent's ruling — not the send — settles it.
     fault_record: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ChildSupervisorStopped {
+    supervisor_index: u32,
+    child_token: crate::lifetime::local_handles::HewLocalPidId,
 }
 
 // ---------------------------------------------------------------------------
@@ -789,6 +797,7 @@ struct SupervisorChildSpec {
     spawn: SupervisorChildSpawn,
     identity: u64,
     restart_policy: c_int,
+    spent: bool,
 }
 
 /// All mutable child, nested-supervisor, pool, restart-budget, and child-config
@@ -1666,6 +1675,8 @@ fn escalate_to_parent(sup: *mut HewSupervisor, record: FaultRecord) -> bool {
     };
     let event = ChildSupervisorEscalation {
         supervisor_index,
+        // SAFETY: the child remains live throughout escalation.
+        child_token: unsafe { (*sup).local_pid_id },
         fault_record: record.as_raw(),
         exit_state: HewActorState::Crashed as c_int,
         // Child-supervisor escalation: no single trap code applies to the
@@ -2078,51 +2089,18 @@ fn stop_and_maybe_escalate(sup: *mut HewSupervisor, record: FaultRecord) -> Faul
     }
 }
 
-fn stop_deferred_supervisor(deferred: DeferredSupervisorStop) {
-    // SAFETY: ownership was transferred to this background thread.
-    unsafe { hew_supervisor_stop(deferred.0) };
-}
-
 fn stop_owned_deferred_supervisor(
     deferred: DeferredSupervisorStop,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 ) {
+    // SAFETY: the claimed supervisor and its owning runtime remain live until
+    // this teardown lease is released; leave that runtime before releasing it.
+    let context = unsafe { crate::runtime::enter(&*(*deferred.0).runtime) };
     // SAFETY: teardown ownership was claimed by the caller before this thread
     // was spawned, so this background thread is the unique destructor.
     unsafe { stop_supervisor_owned(deferred.0, &teardown) };
+    drop(context);
     drop(teardown);
-}
-
-fn spawn_deferred_supervisor_stop(
-    child_sup: *mut HewSupervisor,
-    allow_sync_fallback: bool,
-) -> bool {
-    if child_sup.is_null() {
-        return true;
-    }
-
-    let child_addr = child_sup as usize;
-    if let Ok(handle) = std::thread::Builder::new()
-        .name("deferred-sup-stop".into())
-        .spawn(move || {
-            stop_deferred_supervisor(DeferredSupervisorStop(child_addr as *mut HewSupervisor));
-        })
-    {
-        // Register the teardown thread so `cleanup_all_actors` joins it
-        // before sweeping the actors this thread still dereferences.
-        crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
-        true
-    } else {
-        if allow_sync_fallback {
-            eprintln!(
-                "hew: warning: failed to spawn deferred supervisor-stop thread, cleaning up synchronously"
-            );
-            stop_deferred_supervisor(DeferredSupervisorStop(child_sup));
-        } else {
-            eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
-        }
-        false
-    }
 }
 
 fn spawn_owned_deferred_supervisor_stop(
@@ -2233,11 +2211,6 @@ fn current_thread_owns_supervisor_tree(sup: *mut HewSupervisor) -> bool {
         current_sup = unsafe { (*current_sup).parent };
     }
     false
-}
-
-/// Stop a child supervisor without blocking the current scheduler worker.
-fn defer_stop_child_supervisor(child_sup: *mut HewSupervisor) {
-    let _ = spawn_deferred_supervisor_stop(child_sup, true);
 }
 
 fn retain_nested_completion(
@@ -3212,6 +3185,9 @@ unsafe fn restart_child_supervisor_from_spec(
         let Some(spec) = s.child_supervisor_specs.get(index).and_then(Option::as_ref) else {
             return ptr::null_mut();
         };
+        if spec.spent {
+            return ptr::null_mut();
+        }
         (
             spec.spawn,
             s.child_supervisors[index],
@@ -3219,9 +3195,9 @@ unsafe fn restart_child_supervisor_from_spec(
         )
     };
 
-    let new_child = match spawn {
+    let (new_child, _new_child_pin) = match spawn {
         // SAFETY: the constructor was registered alongside this child.
-        SupervisorChildSpawn::Legacy(init) => unsafe { init() },
+        SupervisorChildSpawn::Legacy(init) => (unsafe { init() }, None),
         SupervisorChildSpawn::Native { spawn, config } => {
             let mut fault = ptr::null_mut();
             // SAFETY: the parent owns the config throughout this restart.
@@ -3230,8 +3206,12 @@ unsafe fn restart_child_supervisor_from_spec(
                 // SAFETY: the adapter transferred the diagnostic here.
                 unsafe { crate::fault::hew_fault_drop(fault) };
             }
-            crate::lifetime::local_handles::pin_current_supervisor(token)
-                .map_or(ptr::null_mut(), |pin| pin.supervisor())
+            let pin = crate::lifetime::local_handles::pin_current_supervisor(token);
+            let child = pin.as_ref().map_or(
+                ptr::null_mut(),
+                crate::lifetime::local_handles::SupervisorPin::supervisor,
+            );
+            (child, pin)
         }
     };
     if new_child.is_null() {
@@ -3274,7 +3254,7 @@ unsafe fn restart_child_supervisor_from_spec(
     if !old_child.is_null() && old_child != new_child {
         debug_assert_ne!(old_token, new_token);
         retain_nested_completion(sup, old_token);
-        defer_stop_child_supervisor(old_child);
+        stop_local_supervisor(old_token, true);
     }
 
     new_child
@@ -3314,9 +3294,11 @@ unsafe fn restart_children_for_strategy(
                 .map(|spec| RestartChildRole::Actor(spec.identity))
                 .chain(roster.child_supervisor_specs.iter().enumerate().filter_map(
                     |(index, spec)| {
-                        spec.as_ref().map(|spec| RestartChildRole::Supervisor {
-                            index,
-                            identity: spec.identity,
+                        spec.as_ref().filter(|spec| !spec.spent).map(|spec| {
+                            RestartChildRole::Supervisor {
+                                index,
+                                identity: spec.identity,
+                            }
                         })
                     },
                 ))
@@ -3958,6 +3940,69 @@ unsafe fn dispatch_child_lifecycle_event(
     };
 }
 
+/// Retire only the incarnation named by a normal-stop notification.
+unsafe fn dispatch_child_supervisor_stopped(
+    sup: *mut HewSupervisor,
+    event: &ChildSupervisorStopped,
+) {
+    let index = event.supervisor_index as usize;
+    let restart = {
+        // SAFETY: dispatch retains the parent throughout this roster transition.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        if roster.child_supervisor_tokens.get(index).copied() != Some(event.child_token) {
+            return;
+        }
+        let Some(spec) = roster
+            .child_supervisor_specs
+            .get_mut(index)
+            .and_then(Option::as_mut)
+        else {
+            return;
+        };
+        let restart = spec.restart_policy == RESTART_PERMANENT;
+        spec.spent = !restart;
+        roster.child_supervisors[index] = ptr::null_mut();
+        roster.child_supervisor_tokens[index] =
+            crate::lifetime::local_handles::HewLocalPidId::INVALID;
+        restart
+    };
+    retain_nested_completion(sup, event.child_token);
+    if restart {
+        // SAFETY: the notification named this parent's retained declaration.
+        unsafe { restart_child_supervisor_with_budget(sup, index, FaultRecord::NONE) };
+    } else {
+        notify_restart(sup);
+    }
+}
+
+pub(crate) fn notify_child_supervisor_stopped(
+    parent: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+    child: crate::lifetime::local_handles::HewLocalPidId,
+) {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(parent) else {
+        return;
+    };
+    // SAFETY: the parent pin protects the self actor through mailbox admission.
+    let self_actor = unsafe { (*pin.supervisor()).self_actor };
+    if self_actor.is_null() {
+        return;
+    }
+    let event = ChildSupervisorStopped {
+        supervisor_index: slot,
+        child_token: child,
+    };
+    // SAFETY: the parent pin retains the target; admission copies this event.
+    unsafe {
+        actor::send_system_message(
+            self_actor,
+            HewSysMsg::ChildSupervisorStopped,
+            (&raw const event).cast_mut().cast(),
+            std::mem::size_of::<ChildSupervisorStopped>(),
+        );
+    }
+}
+
 unsafe fn supervisor_sys_dispatch_impl(
     ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
@@ -3997,12 +4042,32 @@ unsafe fn supervisor_sys_dispatch_impl(
             crate::tracing::ensure_supervisor_trace_root();
             let idx = event.supervisor_index as usize;
             let record = FaultRecord::from_raw(event.fault_record);
+            // SAFETY: dispatch retains the parent while its slot identity is checked.
+            let current = unsafe { &(*sup).roster }
+                .lock_or_recover()
+                .child_supervisor_tokens
+                .get(idx)
+                .copied()
+                == Some(event.child_token);
+            if !current {
+                crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
+                return;
+            }
             // SAFETY: parent supervisor is valid for the lifetime of this dispatch.
             // This is the parent's RULING on the escalated record: it settles
             // the very record the child transferred, clearing it when the
             // subtree comes back.
             let ruling = unsafe { restart_child_supervisor_with_budget(sup, idx, record) };
             crate::exit_status::settle_supervised_fault(record, ruling);
+        }
+        HewSysMsg::ChildSupervisorStopped => {
+            if data.is_null() || data_size < std::mem::size_of::<ChildSupervisorStopped>() {
+                return;
+            }
+            // SAFETY: the envelope contains this typed notification.
+            let event = unsafe { &*data.cast::<ChildSupervisorStopped>() };
+            // SAFETY: this dispatch retains the supervisor across its child transition.
+            unsafe { dispatch_child_supervisor_stopped(sup, event) };
         }
         HewSysMsg::SupervisorStop => {
             // SAFETY: dispatch keeps the supervisor live.
@@ -4452,8 +4517,16 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
         return;
     }
 
+    // SAFETY: the caller retains the supervisor while its current slot is copied.
+    let child_token = unsafe { &(*sup).roster }
+        .lock_or_recover()
+        .child_supervisor_tokens
+        .get(supervisor_index as usize)
+        .copied()
+        .unwrap_or(crate::lifetime::local_handles::HewLocalPidId::INVALID);
     let event = ChildSupervisorEscalation {
         supervisor_index,
+        child_token,
         exit_state,
         crash_code,
         fault_record,
@@ -4481,7 +4554,17 @@ unsafe fn stop_claimed_supervisor(
     root_unregistered: bool,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 ) -> bool {
-    if current_thread_owns_supervisor_tree(sup) {
+    // SAFETY: forward the caller's unique teardown ownership.
+    unsafe { finish_claimed_supervisor(sup, root_unregistered, teardown, false) }
+}
+
+unsafe fn finish_claimed_supervisor(
+    sup: *mut HewSupervisor,
+    root_unregistered: bool,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+    defer: bool,
+) -> bool {
+    if defer || current_thread_owns_supervisor_tree(sup) {
         if !spawn_owned_deferred_supervisor_stop(sup, teardown.clone()) {
             if root_unregistered {
                 // SAFETY: the failed handoff leaves the top-level allocation
@@ -4600,6 +4683,13 @@ pub extern "C" fn hew_local_pid_supervisor_is_running(
 pub extern "C" fn hew_local_pid_supervisor_stop(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> c_int {
+    stop_local_supervisor(token, false)
+}
+
+fn stop_local_supervisor(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    defer: bool,
+) -> c_int {
     let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
         return 1;
     };
@@ -4630,7 +4720,7 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
         unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
     }
     drop(pin);
-    if !control.wait_for_pins(SUPERVISOR_PIN_DRAIN_TIMEOUT) {
+    if !defer && !control.wait_for_pins(SUPERVISOR_PIN_DRAIN_TIMEOUT) {
         // Restore canonical cleanup ownership for a top-level allocation whose
         // operation could not safely reach reclamation.
         if top_level {
@@ -4648,7 +4738,7 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
     drop(control);
     // SAFETY: this token operation claimed teardown while pinned and already
     // removed the supervisor from the runtime cleanup root set.
-    c_int::from(!unsafe { stop_claimed_supervisor(sup, top_level, teardown) }) * 2
+    c_int::from(!unsafe { finish_claimed_supervisor(sup, top_level, teardown, defer) }) * 2
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -8996,6 +9086,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
         spawn: SupervisorChildSpawn::Legacy(init_fn),
         identity,
         restart_policy: RESTART_PERMANENT,
+        spent: false,
     }));
     // SAFETY: child and parent are valid pointers per caller contract.
     unsafe {
@@ -9860,6 +9951,13 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
         return ChildLookupResult::live(child_sup.cast::<HewActor>());
     }
 
+    if s.child_supervisor_specs
+        .get(i)
+        .and_then(Option::as_ref)
+        .is_some_and(|spec| spec.spent)
+    {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
     // Null slot — child supervisor is being restarted or was never started.
     ChildLookupResult::transient(ChildSlotReason::Restarting)
 }
@@ -11468,6 +11566,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
             },
             identity: s.next_child_spec_identity,
             restart_policy: child.restart_policy,
+            spent: false,
         }));
         index
     } else {
@@ -11669,6 +11768,41 @@ pub extern "C" fn hew_supervisor_native_role_owner(
     slot: u32,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     crate::lifetime::local_handles::current_supervisor_role_owner(owner, slot)
+}
+
+/// Observe the incarnation occupying a nested role at this call's resolution.
+/// A closing observer retains completion before requesting cooperative stop.
+///
+/// # Safety
+/// `waker` describes a live wake target for registration.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_role_wait_new(
+    owner: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+    waker: *const crate::wake::HewWaker,
+    closing: c_int,
+) -> *mut crate::actor_native::HewNativeActorWait {
+    let owner_pin = crate::lifetime::local_handles::pin_current_supervisor(owner);
+    let target = owner_pin
+        .as_ref()
+        .and_then(|pin| nested_child_token(pin.supervisor(), slot))
+        .unwrap_or(crate::lifetime::local_handles::HewLocalPidId::INVALID);
+    // SAFETY: registration clones completion and the caller supplied the waker.
+    let wait = unsafe { crate::actor_native::hew_actor_wait_new(target, waker) };
+    if closing != 0 {
+        if let (Some(owner_pin), Some(child_pin)) = (
+            owner_pin.as_ref(),
+            crate::lifetime::local_handles::pin_current_supervisor(target),
+        ) {
+            child_pin
+                .control()
+                .notify_parent_on_stop(owner_pin.control().direct_id(), slot);
+        }
+        // Teardown must never drain a pin retained by its own caller.
+        drop(owner_pin);
+        stop_local_supervisor(target, true);
+    }
+    wait
 }
 
 /// Copy a nested incarnation identity while the caller pins its owner.

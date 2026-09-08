@@ -78,6 +78,8 @@ pub enum HewSysMsg {
     /// `-1` — which silently changed the meaning of the sibling `child_id`
     /// field. Payload: `ChildSupervisorEscalation`.
     ChildSupervisorEscalated = 7,
+    /// A declared supervisor incarnation finished a requested normal stop.
+    ChildSupervisorStopped = 8,
 }
 
 impl HewSysMsg {
@@ -100,6 +102,7 @@ impl HewSysMsg {
             5 => Some(Self::Down),
             6 => Some(Self::DelayedRestart),
             7 => Some(Self::ChildSupervisorEscalated),
+            8 => Some(Self::ChildSupervisorStopped),
             _ => None,
         }
     }
@@ -125,6 +128,7 @@ impl HewSysMsg {
             Self::Down => "Down",
             Self::DelayedRestart => "DelayedRestart",
             Self::ChildSupervisorEscalated => "ChildSupervisorEscalated",
+            Self::ChildSupervisorStopped => "ChildSupervisorStopped",
         }
     }
 }
@@ -198,6 +202,7 @@ mod tests {
             HewSysMsg::Down,
             HewSysMsg::DelayedRestart,
             HewSysMsg::ChildSupervisorEscalated,
+            HewSysMsg::ChildSupervisorStopped,
         ] {
             assert_eq!(HewSysMsg::from_raw(kind.as_i32()), Some(kind));
         }
@@ -211,7 +216,7 @@ mod tests {
             i32::MIN,
             -1,
             0,
-            8,
+            9,
             99,
             100,
             101,
@@ -243,6 +248,7 @@ mod tests {
                 HewSysMsg::Down,
                 HewSysMsg::DelayedRestart,
                 HewSysMsg::ChildSupervisorEscalated,
+                HewSysMsg::ChildSupervisorStopped,
             ],
             "the system message set must contain no self-stop signal"
         );

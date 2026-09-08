@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-zero-budget"
+intent = "Zero restart intensity is valid for both a child subtree and its parent, admits only initial construction and preserves the original unrecovered fault."
+source = "cases/supervisor-zero-budget.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ONE INITIAL INCARNATION\nzero budget performs no restart\n"
+stderr = "hew: failure: UserPanic (212): zero budget child failed\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 1

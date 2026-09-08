@@ -1108,11 +1108,16 @@ impl Ty {
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
     ///
     /// The struct is declared in `std/link_monitor.hew` and registered via
-    /// `register_builtin_monitor_ref_surface`. At the checker layer this is a
-    /// named-type marker, consistent with how `SendError` is encoded.
+    /// `register_builtin_monitor_ref_surface`. Keep the source declaration
+    /// identity here: a bare `MonitorRef` could be a user type and cannot
+    /// select the runtime lifecycle.
     #[must_use]
     pub fn monitor_ref() -> Ty {
-        Self::builtin_named(BuiltinType::MonitorRef, vec![])
+        Ty::Named {
+            builtin: Some(BuiltinType::MonitorRef),
+            name: "std.link_monitor.MonitorRef".to_string(),
+            args: vec![],
+        }
     }
 
     /// Return the fixed bit-width of this integer type, or `None` for
@@ -1732,6 +1737,18 @@ fn source_spelling(ty: &Ty) -> Ty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_ref_preserves_its_source_declaration_identity() {
+        assert_eq!(
+            Ty::monitor_ref(),
+            Ty::Named {
+                builtin: Some(BuiltinType::MonitorRef),
+                name: "std.link_monitor.MonitorRef".to_string(),
+                args: vec![],
+            }
+        );
+    }
 
     #[test]
     fn reserved_type_names_cover_every_bare_compiler_type_fragment() {

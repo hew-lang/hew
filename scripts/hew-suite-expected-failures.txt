@@ -15,9 +15,652 @@
 # the ratchet: a known compiler refusal cannot silently become a hung,
 # unstartable, or crashing binary under the same test identity.
 #
-# Priority-1 upstream reductions from Goobers-Hew.  Each is intentionally an
-# executable desired-behaviour test: remove its row when the failure is fixed.
-# #3173 currently refuses indirect owned call scrutinees with E_NOT_YET_IMPLEMENTED.
-tests/hew/call_scrutinee_indirect_ownership_test.hew::indirect_owned_result_call_scrutinee_preserves_payload compile
-# #3173 reports the ownership-generation lowering invariant as E_MIR_ICE.
-tests/hew/json_value_loop_reassign_test.hew::reassigns_json_resource_builder_in_loop compile
+
+# E_SIR_UNSUPPORTED/E_SIR_VERIFY: dyn trait dispatch has no published dispatch table or source declaration for the impl method
+tests/hew/dyn_import_same_leaf_test.hew::same_leaf_imported_traits_dispatch_to_their_own_impls compile
+tests/hew/dyn_owned_heap_drop_test.hew::test_borrowed_dyn_argument_temporary_drops_clean compile
+tests/hew/dyn_owned_heap_drop_test.hew::test_dyn_enum_bitcopy_payload_drops_clean compile
+tests/hew/dyn_owned_heap_drop_test.hew::test_dyn_enum_owned_payload_drops_clean compile
+tests/hew/dyn_owned_heap_drop_test.hew::test_dyn_string_field_record_drops_clean compile
+tests/hew/dyn_owned_heap_drop_test.hew::test_dyn_vec_field_record_drops_clean compile
+tests/hew/dyn_trait_return_test.hew::test_dyn_param_passes_through_without_reboxing compile
+tests/hew/dyn_trait_return_test.hew::test_returned_dyn_drops_during_panic_unwind compile
+tests/hew/dyn_trait_return_test.hew::test_returned_dyn_transfers_to_caller compile
+tests/hew/dyn_trait_vec_test.hew::test_heterogeneous_dyn_vec_moves_out_and_drops_remainder compile
+tests/hew/dyn_trait_vec_test.hew::test_partial_consuming_iteration_drops_moved_and_remaining_elements compile
+
+# E_SIR_UNSUPPORTED: E_OWN_CONSUME_BORROWED on a forwarded resource argument
+tests/hew/net_try_api_test.hew::test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowing compile
+tests/hew/resource_conditional_close_drop_test.hew::test_conditional_move_not_taken_releases compile
+tests/hew/resource_conditional_close_drop_test.hew::test_conditional_then_move_into_fn compile
+tests/hew/resource_conditional_close_drop_test.hew::test_unconditional_move_into_fn compile
+
+# E_SIR_UNSUPPORTED: HIR expression kind RegexLiteralRef is outside the initial SIR subset
+tests/hew/regex_pattern_method_dispatch_test.hew::test_literal_pattern_dispatch compile
+
+# E_SIR_UNSUPPORTED: HIR expression kind ResolvedImplCall is outside the initial SIR subset
+tests/hew/generic_vec_contains_surface_test.hew::test_generic_vec_contains_i64_string_owned_record compile
+tests/hew/iter_test.hew::test_claims_ledger_filter_collect_keeps_non_terminal_claims compile
+tests/hew/structural_eq_test.hew::vec_contains_copy_record_stays_structural compile
+tests/hew/vec_layout_remove.hew::test_remove_first_shifts_all_remaining compile
+tests/hew/vec_layout_remove.hew::test_remove_last_element_leaves_prefix_intact compile
+tests/hew/vec_layout_remove.hew::test_remove_middle_shrinks_length_and_shifts_tail compile
+tests/hew/vec_layout_remove.hew::test_remove_sole_element_leaves_empty_vec compile
+tests/hew/vec_layout_remove.hew::test_sequential_removals_reach_empty compile
+tests/hew/vec_remove_test.hew::test_remove_bitcopy_record_element compile
+tests/hew/vec_remove_test.hew::test_remove_bool_element compile
+tests/hew/vec_remove_test.hew::test_remove_first_shifts_tail_down compile
+tests/hew/vec_remove_test.hew::test_remove_last_leaves_prefix compile
+tests/hew/vec_remove_test.hew::test_remove_middle_returns_element_and_shifts compile
+tests/hew/vec_remove_test.hew::test_remove_single_element_empties_vec compile
+tests/hew/vec_remove_test.hew::test_remove_string_first_then_last compile
+tests/hew/vec_remove_test.hew::test_remove_string_returns_owned_and_survivors_intact compile
+
+# E_SIR_UNSUPPORTED: HIR expression kind TryWidthCast is outside the initial SIR subset
+tests/hew/numeric_try_to_test.hew::test_try_to_float_to_int_rejects_lossy_values compile
+tests/hew/numeric_try_to_test.hew::test_try_to_int_boundaries compile
+
+# E_SIR_UNSUPPORTED: HIR expression kind WireCodec is outside the initial SIR subset
+tests/hew/imported_wire_codec_test.hew::defining_module_helper_serializes_when_module_is_imported compile
+tests/hew/imported_wire_codec_test.hew::imported_wire_enum_json_round_trip compile
+tests/hew/imported_wire_codec_test.hew::imported_wire_struct_binary_and_yaml_round_trips compile
+tests/hew/imported_wire_codec_test.hew::imported_wire_struct_json_round_trip compile
+tests/hew/imported_wire_identity_collision_test.hew::same_leaf_wire_types_binary_round_trip_independently compile
+tests/hew/imported_wire_identity_collision_test.hew::same_leaf_wire_types_round_trip_independently compile
+tests/hew/wire_json_unknown_field_behavior_test.hew::generated_wire_json_ignores_unknown_field_by_default compile
+
+# E_SIR_UNSUPPORTED: LocalPid type facts refused for a nested actor type
+tests/hew/imported_same_file_supervisor_test.hew::imported_supervisor_runs_its_same_file_actor compile
+
+# E_SIR_UNSUPPORTED: `#[extern_symbol]` method externs (hew_string_char_count) have no declared C signature to call through
+tests/hew/fmt_test.hew::test_pad_left_adds_leading_zeros compile
+tests/hew/fmt_test.hew::test_pad_left_already_at_width compile
+tests/hew/fmt_test.hew::test_pad_left_empty_string compile
+tests/hew/fmt_test.hew::test_pad_left_space_fill compile
+tests/hew/fmt_test.hew::test_pad_left_wider_than_width compile
+tests/hew/fmt_test.hew::test_pad_right_adds_trailing_dots compile
+tests/hew/fmt_test.hew::test_pad_right_already_at_width compile
+tests/hew/fmt_test.hew::test_pad_right_empty_string compile
+tests/hew/fmt_test.hew::test_pad_right_wider_than_width compile
+tests/hew/fmt_test.hew::test_zero_padded_hex_byte_representation compile
+tests/hew/string_test.hew::test_pad_left_adds_padding_until_width compile
+tests/hew/string_test.hew::test_pad_right_adds_padding_until_width compile
+tests/hew/string_test.hew::test_padding_counts_unicode_characters_not_utf8_bytes compile
+tests/hew/string_test.hew::test_padding_rejects_multi_character_pad compile
+
+# E_SIR_UNSUPPORTED: `#[extern_symbol]` method externs (hew_string_clone) have no declared C signature to call through
+tests/hew/generic_record_clone_actor_state_test.hew::actor_holds_cloned_generic_pair_values compile
+tests/hew/generic_record_clone_actor_state_test.hew::actor_reclones_state_field_each_store compile
+tests/hew/numeric_ergonomics_surface_test.hew::test_password_hash_custom_accepts_int_cost compile
+tests/hew/process_test.hew::test_child_drop_reaps_running_process compile
+tests/hew/semver_test.hew::test_compare_equal_versions_returns_zero compile
+tests/hew/semver_test.hew::test_compare_greater_major_returns_one compile
+tests/hew/semver_test.hew::test_compare_lesser_major_returns_neg_one compile
+tests/hew/semver_test.hew::test_compare_minor_difference compile
+tests/hew/semver_test.hew::test_compare_patch_difference compile
+tests/hew/semver_test.hew::test_compare_prerelease_alpha_less_than_beta compile
+tests/hew/semver_test.hew::test_compare_prerelease_equal_labels compile
+tests/hew/semver_test.hew::test_compare_prerelease_full_chain compile
+tests/hew/semver_test.hew::test_compare_prerelease_lower_than_release compile
+tests/hew/semver_test.hew::test_compare_prerelease_numeric_ids_compared_numerically compile
+tests/hew/semver_test.hew::test_compare_prerelease_numeric_lower_than_alphanumeric compile
+tests/hew/semver_test.hew::test_compare_prerelease_shorter_has_lower_precedence compile
+tests/hew/semver_test.hew::test_longer_numeric_pre_release_identifiers_have_higher_precedence compile
+tests/hew/semver_test.hew::test_matches_exact_version compile
+tests/hew/semver_test.hew::test_matches_gt_strictly_greater compile
+tests/hew/semver_test.hew::test_matches_gte_not_satisfied compile
+tests/hew/semver_test.hew::test_matches_gte_satisfied compile
+tests/hew/semver_test.hew::test_matches_lt_strictly_less compile
+tests/hew/semver_test.hew::test_matches_lte_satisfied compile
+tests/hew/semver_test.hew::test_numeric_pre_release_identifiers_compare_beyond_i64 compile
+tests/hew/semver_test.hew::test_parse_accepts_the_spec_examples compile
+tests/hew/semver_test.hew::test_parse_no_pre_release_returns_empty_string compile
+tests/hew/semver_test.hew::test_parse_rejects_a_leading_zero_at_the_public_boundary compile
+tests/hew/semver_test.hew::test_parse_rejects_a_leading_zero_in_a_numeric_pre_release_identifier compile
+tests/hew/semver_test.hew::test_parse_rejects_an_empty_build_metadata compile
+tests/hew/semver_test.hew::test_parse_rejects_an_empty_pre_release compile
+tests/hew/semver_test.hew::test_parse_rejects_an_empty_pre_release_identifier compile
+tests/hew/semver_test.hew::test_parse_rejects_an_illegal_character_in_a_pre_release_identifier compile
+tests/hew/semver_test.hew::test_parse_rejects_empty_numeric_components compile
+tests/hew/semver_test.hew::test_parse_rejects_extra_version_components compile
+tests/hew/semver_test.hew::test_parse_rejects_leading_zeros_in_numeric_components compile
+tests/hew/semver_test.hew::test_parse_rejects_missing_first_dot compile
+tests/hew/semver_test.hew::test_parse_rejects_missing_second_dot compile
+tests/hew/semver_test.hew::test_to_string_includes_pre_release compile
+tests/hew/semver_test.hew::test_to_string_round_trips_simple_version compile
+tests/hew/semver_test.hew::test_unbounded_core_components_round_trip_and_compare_by_magnitude compile
+tests/hew/semver_test.hew::test_unbounded_minor_and_patch_participate_in_precedence compile
+
+# E_SIR_UNSUPPORTED: `#[extern_symbol]` method externs (hew_string_ends_with) have no declared C signature to call through
+tests/hew/log_test.hew::test_field_bool_result_starts_with_key compile
+tests/hew/msgpack_test.hew::test_unicode_string_field_round_trip compile
+tests/hew/path_test.hew::test_basename_no_slash_with_heap_input compile
+tests/hew/path_test.hew::test_basename_returns_empty_string_for_root compile
+tests/hew/path_test.hew::test_basename_returns_entire_string_when_no_slash_exists compile
+tests/hew/path_test.hew::test_basename_returns_final_component_for_standard_path compile
+tests/hew/path_test.hew::test_basename_strips_trailing_slash compile
+tests/hew/path_test.hew::test_combine_absolute_right_hand_side_with_heap_inputs compile
+tests/hew/path_test.hew::test_combine_avoids_double_slash_when_left_has_trailing_slash compile
+tests/hew/path_test.hew::test_combine_empty_left_hand_with_heap_right compile
+tests/hew/path_test.hew::test_combine_inserts_separator_when_left_has_no_trailing_slash compile
+tests/hew/path_test.hew::test_combine_returns_absolute_right_hand_side_unchanged compile
+tests/hew/path_test.hew::test_combine_returns_empty_string_when_both_inputs_are_empty compile
+tests/hew/path_test.hew::test_dirname_no_trailing_slash_with_heap_input compile
+tests/hew/path_test.hew::test_dirname_returns_empty_string_when_no_slash_exists compile
+tests/hew/path_test.hew::test_dirname_returns_parent_for_simple_file_path compile
+tests/hew/path_test.hew::test_dirname_returns_root_for_root_file compile
+tests/hew/path_test.hew::test_dirname_strips_trailing_slash_before_split compile
+tests/hew/path_test.hew::test_extension_returns_empty_string_for_leading_dot_only compile
+tests/hew/path_test.hew::test_extension_returns_empty_string_when_no_dot_exists compile
+tests/hew/path_test.hew::test_extension_returns_standard_extension compile
+tests/hew/path_test.hew::test_extension_uses_basename_for_full_path compile
+tests/hew/path_test.hew::test_extension_uses_last_dot_for_multi_dot_names compile
+tests/hew/path_test.hew::test_extension_with_heap_input compile
+tests/hew/path_test.hew::test_normalize_absolute_with_escape_shape_stays_lexically_clean compile
+
+# E_SIR_UNSUPPORTED: a divergent block cannot produce a SIR value
+tests/hew/datetime_test.hew::test_add_days_and_add_hours_shift_fixed_timestamp compile
+tests/hew/datetime_test.hew::test_diff_secs_matches_fixed_interval compile
+tests/hew/datetime_test.hew::test_try_parse_full_timestamp_formats_back_to_date compile
+tests/hew/net_scalar_failclosed_test.hew::test_duration_above_abi_range_is_rejected_not_narrowed compile
+tests/hew/net_scalar_failclosed_test.hew::test_missing_port_is_rejected_not_defaulted_to_zero compile
+tests/hew/net_scalar_failclosed_test.hew::test_non_numeric_and_out_of_range_ports_are_rejected compile
+tests/hew/net_scalar_failclosed_test.hew::test_port_above_abi_range_is_rejected_not_narrowed compile
+tests/hew/net_scalar_failclosed_test.hew::test_size_above_abi_range_is_rejected compile
+tests/hew/net_scalar_failclosed_test.hew::test_unbracketed_ipv6_is_rejected_not_split_at_the_first_colon compile
+tests/hew/net_scalar_failclosed_test.hew::test_valid_endpoints_are_preserved_exactly compile
+tests/hew/option_test.hew::test_map_int_some compile
+tests/hew/option_test.hew::test_unwrap_int_none_panics compile
+tests/hew/option_test.hew::test_unwrap_int_some compile
+tests/hew/option_test.hew::test_unwrap_str_none_panics compile
+tests/hew/option_test.hew::test_unwrap_str_some compile
+tests/hew/resource_if_let_drop_test.hew::test_match_payload_binders_share_one_scrutinee_release compile
+tests/hew/result_test.hew::test_unwrap_err_int compile
+tests/hew/result_test.hew::test_unwrap_err_int_ok_panics compile
+tests/hew/result_test.hew::test_unwrap_err_str compile
+tests/hew/result_test.hew::test_unwrap_err_str_ok_panics compile
+tests/hew/result_test.hew::test_unwrap_int_err_panics compile
+tests/hew/result_test.hew::test_unwrap_int_ok compile
+tests/hew/result_test.hew::test_unwrap_str_err_panics compile
+tests/hew/result_test.hew::test_unwrap_str_ok compile
+tests/hew/semver_test.hew::test_parse_large_component_values compile
+tests/hew/semver_test.hew::test_parse_pre_release_label compile
+tests/hew/semver_test.hew::test_parse_simple_version_components compile
+tests/hew/semver_test.hew::test_parse_zero_version compile
+
+# E_SIR_UNSUPPORTED: actor-state aggregate places outside an owned local or aggregate projection
+tests/hew/actor_state_vec_into_iter_test.hew::test_push_into_drained_dyn_state_field_lands_in_valid_vec compile
+tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec compile
+tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_string_state_drain_terminates compile
+tests/hew/var_record_reassign_ownership_test.hew::_test_actor_record_state_field_swap_is_exact compile
+
+# E_SIR_UNSUPPORTED: ask has no exact receive protocol member
+tests/hew/imported_supervisor_child_layout_test.hew::imported_actor_is_a_supervised_child compile
+
+# E_SIR_UNSUPPORTED: extern returns `bytes` by value; the byte triple C-ABI aggregate return is not realized
+tests/hew/compress_test.hew::test_codec_failure_does_not_leak_into_the_next_call compile
+tests/hew/compress_test.hew::test_decompress_of_a_valid_empty_payload_is_an_empty_success compile
+tests/hew/compress_test.hew::test_decompress_rejects_a_negative_output_limit compile
+tests/hew/compress_test.hew::test_decompress_rejects_output_over_the_limit compile
+tests/hew/compress_test.hew::test_deflate_decompress_of_a_valid_empty_payload_is_an_empty_success compile
+tests/hew/compress_test.hew::test_deflate_round_trip compile
+tests/hew/compress_test.hew::test_deflate_round_trip_empty compile
+tests/hew/compress_test.hew::test_gzip_decompress_reports_a_malformed_stream_as_a_failure compile
+tests/hew/compress_test.hew::test_gzip_decompress_returns_err_for_a_malformed_stream compile
+tests/hew/compress_test.hew::test_gzip_round_trip compile
+tests/hew/compress_test.hew::test_gzip_round_trip_empty compile
+tests/hew/compress_test.hew::test_zlib_decompress_reports_a_malformed_stream_as_a_failure compile
+tests/hew/compress_test.hew::test_zlib_round_trip compile
+tests/hew/compress_test.hew::test_zlib_round_trip_empty compile
+tests/hew/crypto_test.hew::test_hmac_sha256_returns_32_byte_tag compile
+tests/hew/crypto_test.hew::test_random_bytes_accepts_the_documented_public_maximum compile
+tests/hew/crypto_test.hew::test_random_bytes_preserves_valid_lengths_including_zero compile
+tests/hew/crypto_test.hew::test_random_bytes_rejects_a_length_no_bytes_value_can_hold compile
+tests/hew/crypto_test.hew::test_random_bytes_rejects_a_negative_length compile
+tests/hew/crypto_test.hew::test_random_bytes_returns_err_for_a_negative_length compile
+tests/hew/crypto_test.hew::test_random_bytes_returns_requested_length compile
+tests/hew/crypto_test.hew::test_random_bytes_status_does_not_leak_into_the_next_draw compile
+tests/hew/crypto_test.hew::test_sha256_returns_32_byte_digest compile
+tests/hew/crypto_test.hew::test_sha384_returns_48_byte_digest compile
+tests/hew/crypto_test.hew::test_sha512_returns_64_byte_digest compile
+tests/hew/msgpack_test.hew::test_array_round_trip_elements compile
+tests/hew/msgpack_test.hew::test_array_round_trip_length compile
+tests/hew/msgpack_test.hew::test_codec_failure_does_not_leak_into_the_next_call compile
+tests/hew/msgpack_test.hew::test_encode_bytes_frames_a_bin_not_an_array_of_integers compile
+tests/hew/msgpack_test.hew::test_encode_bytes_frames_bin16_past_the_bin8_boundary compile
+tests/hew/msgpack_test.hew::test_encode_int_127_produces_nonempty_bytes compile
+tests/hew/msgpack_test.hew::test_encode_int_negative_one_produces_nonempty_bytes compile
+tests/hew/msgpack_test.hew::test_encode_int_produces_nonempty_bytes compile
+tests/hew/msgpack_test.hew::test_encode_int_zero_produces_nonempty_bytes compile
+tests/hew/msgpack_test.hew::test_encode_int_zero_round_trip compile
+tests/hew/msgpack_test.hew::test_encode_string_empty_produces_nonempty_bytes compile
+tests/hew/msgpack_test.hew::test_encode_string_produces_nonempty_bytes compile
+tests/hew/msgpack_test.hew::test_from_json_to_json_round_trip_int_field compile
+tests/hew/msgpack_test.hew::test_nested_object_round_trip compile
+tests/hew/msgpack_test.hew::test_string_root_round_trip compile
+tests/hew/msgpack_test.hew::test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure compile
+tests/hew/msgpack_test.hew::test_try_from_json_invalid_surfaces_reason compile
+tests/hew/msgpack_test.hew::test_try_from_json_valid_ok compile
+tests/hew/msgpack_test.hew::test_try_to_json_valid_ok compile
+tests/hew/owned_nested_aggregate_clone_drop_test.hew::test_vec_clone_drops_nested_bytes_leaf_cleanly compile
+tests/hew/sign_roundtrip_test.hew::test_generate_sign_verify_roundtrip compile
+tests/hew/sign_roundtrip_test.hew::test_verify_rejects_tampered_message compile
+tests/hew/sign_test.hew::test_keypair_private_key_is_83_bytes compile
+tests/hew/sign_test.hew::test_keypair_public_key_is_32_bytes compile
+tests/hew/sign_test.hew::test_sign_verify_roundtrip_succeeds compile
+tests/hew/sign_test.hew::test_signature_is_64_bytes compile
+tests/hew/sign_test.hew::test_verify_rejects_malformed_signature compile
+tests/hew/sign_test.hew::test_verify_rejects_tampered_message compile
+tests/hew/sign_test.hew::test_verify_rejects_wrong_public_key compile
+
+# E_SIR_UNSUPPORTED: f32 values have no semantic value contract
+tests/hew/numeric_try_to_test.hew::test_try_to_int_to_float_requires_exact_representation compile
+
+# E_SIR_UNSUPPORTED: generic direct call is missing checker-resolved type arguments
+tests/hew/generic_iterator_for_in_test.hew::test_generic_iterator_for_in_accumulates compile
+tests/hew/generic_iterator_for_in_test.hew::test_generic_iterator_for_in_display_dispatch compile
+
+# E_SIR_UNSUPPORTED: mailbox coalescing requires a checked key projection
+tests/hew/coalesce_int_key.hew::coalesce_int_key_latest_wins compile
+tests/hew/coalesce_msgtype_gate.hew::coalesce_same_key_different_message_types_do_not_merge compile
+tests/hew/coalesce_owned_payload_leak.hew::coalesce_owned_payload_superseded_values_drop_once compile
+tests/hew/coalesce_string_key.hew::coalesce_string_key_latest_wins_and_distinct_keys_survive compile
+
+# E_SIR_UNSUPPORTED: nested type `AsyncGenerator` has no semantic value contract
+tests/hew/generator_iterator_trait_test.hew::test_async_generator_bare_for_in_accumulates compile
+
+# E_SIR_UNSUPPORTED: nested type `Dq` has no semantic value contract
+tests/hew/actor_resource_opaque_state_test.hew::direct_resource_actor_field_compiles_and_runs compile
+tests/hew/actor_resource_opaque_state_test.hew::wrapped_resource_actor_field_still_compiles_and_runs compile
+
+# E_SIR_UNSUPPORTED: nested type `Duplex` has no semantic value contract
+tests/hew/duplex_split_test.hew::test_asymmetric_split_delivers_exact_value compile
+tests/hew/duplex_split_test.hew::test_empty_payload_is_valid_data_not_eof compile
+tests/hew/duplex_split_test.hew::test_half_close_signals_paired_eof compile
+tests/hew/duplex_split_test.hew::test_split_roundtrip_delivers_exact_value compile
+tests/hew/duplex_split_test.hew::test_try_send_try_recv_roundtrip compile
+tests/hew/duplex_split_test.hew::test_unified_recv_delivers_exact_value compile
+
+# E_SIR_UNSUPPORTED: nested type `Receiver` has no semantic value contract
+tests/hew/net_transport_failclosed_test.hew::test_negative_channel_capacity_is_rejected compile
+tests/hew/net_transport_failclosed_test.hew::test_negative_channel_capacity_panics_at_legacy_boundary compile
+
+# E_SIR_UNSUPPORTED: nested type `Ticket` has no semantic value contract
+tests/hew/actor_message_ownership_transfer_test.hew::copyable_argument_survives_repeated_sends compile
+tests/hew/actor_message_ownership_transfer_test.hew::cow_argument_survives_repeated_sends compile
+tests/hew/actor_message_ownership_transfer_test.hew::distinct_resources_across_select_arms_each_transfer_once compile
+tests/hew/actor_message_ownership_transfer_test.hew::linear_transferred_to_ask_handler_is_redeemed_there compile
+tests/hew/actor_message_ownership_transfer_test.hew::record_carrying_a_resource_transfers_it_to_the_handler compile
+tests/hew/actor_message_ownership_transfer_test.hew::resource_transferred_to_ask_handler_is_detached_there compile
+
+# E_SIR_UNSUPPORTED: nested type `f32` has no semantic value contract
+tests/hew/display_direct_call_coverage_test.hew::test_concrete_fstring_renders_through_same_shell compile
+tests/hew/display_direct_call_coverage_test.hew::test_direct_println_and_print_run_without_trap compile
+tests/hew/display_direct_call_coverage_test.hew::test_direct_to_string_char_and_narrow_primitives compile
+tests/hew/display_primitive_coverage_test.hew::test_generic_fstring_formats_canonical_numeric_primitives compile
+tests/hew/display_primitive_coverage_test.hew::test_generic_println_accepts_canonical_numeric_primitives compile
+tests/hew/display_primitive_coverage_test.hew::test_generic_to_string_formats_canonical_numeric_primitives compile
+tests/hew/generic_vec_f32_surface_test.hew::test_generic_vec_f32_push_get_pop compile
+tests/hew/numeric_try_to_test.hew::test_try_to_float_to_float_requires_exact_representation compile
+tests/hew/numeric_try_to_test.hew::test_try_to_int_to_float_rejects_type_max_boundary compile
+
+# E_SIR_UNSUPPORTED: nested type `instant` has no semantic value contract
+tests/hew/instant_methods_test.hew::test_typed_instant_to_string_is_consistent_across_surfaces compile
+
+# E_SIR_UNSUPPORTED: nested type `std.encoding.toml.Value` has no semantic value contract
+tests/hew/toml_test.hew::test_array_get_rejects_index_that_would_wrap_to_zero compile
+tests/hew/toml_test.hew::test_builder_push_consumes_element compile
+tests/hew/toml_test.hew::test_builder_with_consumes_child compile
+tests/hew/toml_test.hew::test_from_bool_get_bool_round_trip compile
+tests/hew/toml_test.hew::test_from_float_round_trip_via_table_field compile
+tests/hew/toml_test.hew::test_from_int_get_int_round_trip compile
+tests/hew/toml_test.hew::test_from_string_get_string_round_trip compile
+tests/hew/toml_test.hew::test_nested_builder_stringify_reparse compile
+tests/hew/toml_test.hew::test_stringify_failure_does_not_leak_into_the_next_call compile
+tests/hew/toml_test.hew::test_stringify_panics_at_legacy_boundary_on_an_unrepresentable_root compile
+tests/hew/toml_test.hew::test_stringify_produces_valid_toml compile
+tests/hew/toml_test.hew::test_table_builder_int_field compile
+tests/hew/toml_test.hew::test_table_builder_string_field compile
+tests/hew/toml_test.hew::test_try_stringify_of_an_empty_table_is_a_valid_empty_document compile
+tests/hew/toml_test.hew::test_try_stringify_preserves_a_populated_table compile
+tests/hew/toml_test.hew::test_try_stringify_rejects_a_bare_array_root compile
+tests/hew/toml_test.hew::test_try_stringify_rejects_a_bare_integer_root compile
+tests/hew/toml_test.hew::test_try_stringify_rejects_a_root_toml_cannot_represent compile
+
+# E_SIR_UNSUPPORTED: nested type `std.net.http.http_client.Response` has no semantic value contract
+tests/hew/http_dual_import_link_test.hew::test_response_accessors_linked_in_dual_import_unit compile
+
+# E_SIR_UNSUPPORTED: nested type `std.process.ProcessResultHandle` has no semantic value contract
+tests/hew/path_test.hew::test_try_glob_reports_an_unreadable_directory_as_a_failure compile
+tests/hew/process_test.hew::test_launch_classification_does_not_trust_attacker_controlled_command_text compile
+tests/hew/process_test.hew::test_run_args_rejects_mismatched_arg_count_with_guidance compile
+tests/hew/process_test.hew::test_run_argv_missing_command_preserves_real_error compile
+tests/hew/process_test.hew::test_run_argv_missing_command_returns_launch_failed compile
+tests/hew/process_test.hew::test_run_argv_preserves_spaced_and_empty_arguments compile
+tests/hew/process_test.hew::test_run_argv_replaces_legacy_run_args_usage compile
+
+# E_SIR_UNSUPPORTED: nested type `std.stream.StreamPair` has no semantic value contract
+tests/hew/net_transport_failclosed_test.hew::test_negative_stream_capacities_are_rejected compile
+
+# E_SIR_UNSUPPORTED: periodic receives need their scheduling contract
+tests/hew/actor_every_cancellable_loop_test.hew::stop_message_prevents_more_periodic_work compile
+tests/hew/actor_every_test.hew::periodic_handler_ticks_after_spawn compile
+tests/hew/actor_every_test.hew::two_instances_tick_independently compile
+
+# E_SIR_UNSUPPORTED: runtime family BytesAppend has no ownership-SIR semantic contract
+tests/hew/bytes_mutation_proving_test.hew::test_append_cow_leaves_slice_intact compile
+
+# E_SIR_UNSUPPORTED: runtime family BytesClear has no ownership-SIR semantic contract
+tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_alive compile
+
+# E_SIR_UNSUPPORTED: runtime family BytesGet has no ownership-SIR semantic contract
+tests/hew/bytes_get_option_proving_test.hew::test_bytes_get_does_not_consume_receiver compile
+tests/hew/bytes_get_option_proving_test.hew::test_bytes_get_empty_is_none compile
+tests/hew/bytes_get_option_proving_test.hew::test_bytes_get_some_and_oob_none compile
+
+# E_SIR_UNSUPPORTED: runtime family BytesPop has no ownership-SIR semantic contract
+tests/hew/bytes_mutation_proving_test.hew::test_pop_cow_leaves_slice_intact compile
+
+# E_SIR_UNSUPPORTED: runtime family BytesSet has no ownership-SIR semantic contract
+tests/hew/bytes_mutation_proving_test.hew::test_set_cow_leaves_slice_intact compile
+
+# E_SIR_UNSUPPORTED: runtime family MathIntrinsic has no ownership-SIR semantic contract
+tests/hew/math_test.hew::test_abs_dispatches_by_numeric_type compile
+tests/hew/math_test.hew::test_max_returns_the_larger_value compile
+tests/hew/math_test.hew::test_min_returns_the_smaller_value compile
+
+# E_SIR_UNSUPPORTED: runtime family SinkWrite has no ownership-SIR semantic contract
+tests/hew/fs_stream_test.hew::test_stream_try_to_file_send_close_and_try_from_file compile
+tests/hew/resource_if_let_drop_test.hew::test_if_let_resource_can_be_returned compile
+tests/hew/resource_if_let_drop_test.hew::test_if_let_resource_can_close_explicitly compile
+tests/hew/resource_if_let_drop_test.hew::test_match_resource_can_close_explicitly compile
+tests/hew/resource_if_let_drop_test.hew::test_while_let_resource_can_close_explicitly compile
+
+# E_SIR_UNSUPPORTED: runtime family StringCharAt has no ownership-SIR semantic contract
+tests/hew/net_transport_failclosed_test.hew::test_async_http_invalid_status_is_rejected compile
+tests/hew/string_sentinel_option_test.hew::test_char_at_in_range_returns_exact_byte compile
+tests/hew/string_sentinel_option_test.hew::test_char_at_index_zero_is_some compile
+tests/hew/string_sentinel_option_test.hew::test_char_at_out_of_bounds_returns_none_not_trap compile
+tests/hew/string_test.hew::test_is_ascii_accepts_del_127_and_below compile
+tests/hew/string_test.hew::test_is_ascii_rejects_128_and_above compile
+
+# E_SIR_UNSUPPORTED: runtime family StringCharAtUtf has no ownership-SIR semantic contract
+tests/hew/string_sentinel_option_test.hew::test_codepoint_at_utf8_in_range_returns_exact_codepoint compile
+tests/hew/string_sentinel_option_test.hew::test_codepoint_at_utf8_out_of_bounds_returns_none compile
+
+# E_SIR_UNSUPPORTED: runtime family StringGet has no ownership-SIR semantic contract
+tests/hew/string_get_option_proving_test.hew::test_string_get_does_not_consume_receiver compile
+tests/hew/string_get_option_proving_test.hew::test_string_get_empty_is_none compile
+tests/hew/string_get_option_proving_test.hew::test_string_get_multibyte_codepoint compile
+tests/hew/string_get_option_proving_test.hew::test_string_get_negative_index_is_none compile
+tests/hew/string_get_option_proving_test.hew::test_string_get_some_and_oob_none compile
+
+# E_SIR_UNSUPPORTED: runtime family TcpAttachLocal has no ownership-SIR semantic contract
+tests/hew/net_attach_result_test.hew::test_tcp_attach_returns_err_after_closing_refused_connection compile
+tests/hew/net_attach_result_test.hew::test_tcp_attach_returns_ok_and_transfers_close_authority compile
+
+# E_SIR_UNSUPPORTED: select arms over actor calls need a task or timer source
+tests/hew/actor_select_suspend_test.hew::many_coordinators_each_select_then_resume compile
+tests/hew/actor_select_suspend_test.hew::select_after_deadline_fires_timeout_branch_in_handler compile
+tests/hew/actor_select_suspend_test.hew::select_binds_first_ready_arm_in_handler compile
+
+# E_SIR_UNSUPPORTED: string ordering operators have no ownership-SIR runtime operation
+tests/hew/sort_test.hew::test_sort_strings_alphabetical_order compile
+tests/hew/sort_test.hew::test_sort_strings_comparison_bound_256_duplicate_reverse compile
+tests/hew/sort_test.hew::test_sort_strings_does_not_mutate_original compile
+tests/hew/sort_test.hew::test_sort_strings_duplicate_entries compile
+tests/hew/sort_test.hew::test_sort_strings_empty compile
+tests/hew/sort_test.hew::test_sort_strings_single_element compile
+
+# E_SIR_UNSUPPORTED: whole-scrutinee binding matches need an explicit SIR binding transfer
+tests/hew/encrypt_test.hew::test_open_roundtrip_succeeds compile
+tests/hew/encrypt_test.hew::test_open_tampered_ciphertext_returns_err_and_survives compile
+tests/hew/encrypt_test.hew::test_seal_of_empty_plaintext_is_not_an_empty_ciphertext compile
+tests/hew/encrypt_test.hew::test_seal_preserves_a_valid_roundtrip compile
+tests/hew/encrypt_test.hew::test_seal_rejects_a_short_key compile
+tests/hew/encrypt_test.hew::test_seal_rejects_an_empty_key compile
+tests/hew/encrypt_test.hew::test_seal_rejects_an_oversized_key compile
+tests/hew/encrypt_test.hew::test_seal_returns_err_for_a_short_key compile
+tests/hew/encrypt_test.hew::test_seal_status_does_not_leak_into_the_next_seal compile
+tests/hew/jwt_test.hew::test_decode_insecure_returns_payload_without_verification compile
+tests/hew/jwt_test.hew::test_hs384_try_encode_and_try_decode_round_trip_payload compile
+tests/hew/jwt_test.hew::test_hs384_validate_accepts_matching_secret compile
+tests/hew/jwt_test.hew::test_hs512_try_encode_and_try_decode_round_trip_payload compile
+tests/hew/jwt_test.hew::test_hs512_validate_accepts_matching_secret compile
+tests/hew/jwt_test.hew::test_last_error_is_token_malformed_after_malformed_decode compile
+tests/hew/jwt_test.hew::test_try_decode_malformed_token_surfaces_token_malformed compile
+tests/hew/jwt_test.hew::test_try_decode_rejects_token_signed_with_different_algorithm compile
+tests/hew/jwt_test.hew::test_try_encode_and_try_decode_round_trip_payload compile
+tests/hew/jwt_test.hew::test_validate_accepts_matching_secret compile
+tests/hew/jwt_test.hew::test_validate_rejects_token_signed_with_different_algorithm compile
+tests/hew/jwt_test.hew::test_validate_rejects_wrong_secret compile
+
+# E_HIR: `instant` arithmetic through an explicit return annotation reports ReturnTypeMismatch
+tests/hew/instant_annotated_arith_test.hew::annotated_instant_minus_annotated_instant_yields_duration compile
+tests/hew/instant_annotated_arith_test.hew::annotated_instant_minus_duration_compiles_and_runs compile
+tests/hew/instant_annotated_arith_test.hew::annotated_instant_plus_duration_compiles_and_runs compile
+tests/hew/instant_annotated_arith_test.hew::param_typed_instant_minus_duration_compiles_and_runs compile
+tests/hew/instant_annotated_arith_test.hew::param_typed_instant_plus_duration_compiles_and_runs compile
+
+# E_SIR_VERIFY: InvalidCallable, LocalPid parameter outside the owned-call SIR surface
+tests/hew/pipeline_i64_two_stage_test.hew::admission_reply_waits_for_downstream_post_send_barrier compile
+tests/hew/pipeline_i64_two_stage_test.hew::cancelled_admission_settles_and_pipeline_continues compile
+tests/hew/pipeline_i64_two_stage_test.hew::crash_mid_pipeline_settles_without_sink_delivery compile
+tests/hew/pipeline_i64_two_stage_test.hew::graceful_shutdown_drains_queued_owned_items compile
+tests/hew/pipeline_i64_two_stage_test.hew::shipped_surface_constructs_wires_and_delivers_owned_items_once compile
+
+# E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.encoding.toml.Value)
+tests/hew/toml_test.hew::test_array_of_tables_walk compile
+tests/hew/toml_test.hew::test_missing_field_handle_is_invalid compile
+tests/hew/toml_test.hew::test_nested_table_dotted_key compile
+tests/hew/toml_test.hew::test_parse_array_of_integers compile
+tests/hew/toml_test.hew::test_try_parse_duplicate_key_returns_err compile
+tests/hew/toml_test.hew::test_try_parse_empty_string_is_empty_table compile
+tests/hew/toml_test.hew::test_try_parse_invalid_returns_err compile
+tests/hew/toml_test.hew::test_try_parse_simple_key_value compile
+tests/hew/toml_test.hew::test_try_parse_valid_returns_ok compile
+
+# E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.net.http.Server)
+tests/hew/http_dual_import_link_test.hew::test_server_impl_linked_in_dual_import_unit compile
+tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_trips compile
+tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path compile
+tests/hew/net_constructor_failclosed_test.hew::test_http_listen_on_an_ephemeral_port_succeeds compile
+tests/hew/net_constructor_failclosed_test.hew::test_http_listen_reports_an_unparsable_address_as_a_failure compile
+
+# E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.net.smtp.Conn)
+tests/hew/smtp_test.hew::test_conn_connect_oversized_i64_port_rejects_before_relay_init compile
+tests/hew/smtp_test.hew::test_conn_connect_tls_oversized_i64_port_rejects_before_relay_init compile
+tests/hew/smtp_test.hew::test_connect_tls_to_a_closed_port_is_a_failure_not_a_live_conn compile
+tests/hew/smtp_test.hew::test_connect_to_a_closed_port_is_a_failure_not_a_live_conn compile
+
+# E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.net.websocket.Conn)
+tests/hew/net_constructor_failclosed_test.hew::test_websocket_connect_reports_a_refused_connection_as_a_failure compile
+tests/hew/net_constructor_failclosed_test.hew::test_websocket_connect_reports_an_unparsable_url_as_a_failure compile
+tests/hew/net_constructor_failclosed_test.hew::test_websocket_listen_clears_the_detail_slot_on_success compile
+
+# E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.net.websocket.Server)
+tests/hew/net_attach_failclosed_test.hew::test_websocket_typed_attach_dispatches_protocol_ids compile
+tests/hew/net_constructor_failclosed_test.hew::test_http_listen_clears_the_detail_slot_on_success compile
+tests/hew/net_constructor_failclosed_test.hew::test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server compile
+tests/hew/net_constructor_failclosed_test.hew::test_websocket_listen_on_an_ephemeral_port_succeeds compile
+tests/hew/net_constructor_failclosed_test.hew::test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server compile
+tests/hew/net_constructor_failclosed_test.hew::test_websocket_listen_reports_an_unparsable_address_as_invalid_argument compile
+
+# E_SIR_VERIFY: OwnershipLifetime, owned value remains live at exit
+tests/hew/bench_test.hew::test_imported_bench_suite_add_and_report compile
+tests/hew/generic_vec_composite_test.hew::test_generic_vec_option_element compile
+tests/hew/generic_vec_composite_test.hew::test_generic_vec_scalar_composite_reads_back compile
+tests/hew/generic_vec_index_surface_test.hew::test_generic_vec_index_i64_string_owned_record compile
+tests/hew/generic_vec_isize_surface_test.hew::test_generic_vec_isize_push_get_pop compile
+tests/hew/generic_vec_usize_surface_test.hew::test_generic_vec_usize_push_get_pop compile
+tests/hew/hashmap_generic_mono_test.hew::test_generic_hashmap_methods_honor_key_bounds compile
+tests/hew/iter_test.hew::test_fold_empty_vec_returns_init compile
+tests/hew/iter_test.hew::test_fold_str_concatenates compile
+tests/hew/iter_test.hew::test_vec_iter_find_method_returns_the_exact_item compile
+tests/hew/option_test.hew::test_map_str_none compile
+tests/hew/option_test.hew::test_map_str_some compile
+
+# E_SIR_VERIFY: PlaceLifetime, aggregate field not initialized on every incoming path
+tests/hew/path_test.hew::test_glob_try_get_rejects_a_wrapped_index compile
+
+# checker: a Display impl declared in another module is not visible to a generic `T: Display` bound
+tests/hew/closable_error_display_test.hew::test_close_error_display_delegates_to_the_wrapped_io_error compile
+tests/hew/closable_error_display_test.hew::test_close_error_display_names_already_closed compile
+
+# runtime: #[should_panic] fail-closed probe completes without panicking
+tests/hew/net_scalar_failclosed_test.hew::test_http_client_set_timeout_panics_at_legacy_boundary runtime
+tests/hew/net_transport_failclosed_test.hew::test_malformed_password_hash_panics_at_legacy_boundary runtime
+tests/hew/net_transport_failclosed_test.hew::test_password_cost_overflow_panics_at_legacy_boundary runtime
+
+# runtime: `bytes.push(f(x))` with a call-expression argument inside a function miscompiles (SIGSEGV or garbage length)
+tests/hew/base64_test.hew::test_decode_double_padding_round_trip runtime
+tests/hew/base64_test.hew::test_decode_known_value runtime
+tests/hew/base64_test.hew::test_decode_no_padding_round_trip runtime
+tests/hew/base64_test.hew::test_decode_rejects_trailing_single_base64_digit runtime
+tests/hew/base64_test.hew::test_decode_single_padding_round_trip runtime
+tests/hew/base64_test.hew::test_decode_url_safe_encoded_string runtime
+tests/hew/base64_test.hew::test_encode_1_byte_produces_double_padding runtime
+tests/hew/base64_test.hew::test_encode_2_bytes_produces_single_padding runtime
+tests/hew/base64_test.hew::test_encode_3_bytes_produces_no_padding runtime
+tests/hew/base64_test.hew::test_encode_known_value runtime
+tests/hew/base64_test.hew::test_encode_url_safe_differs_from_standard runtime
+tests/hew/base64_test.hew::test_encode_url_safe_index_62_is_dash runtime
+tests/hew/base64_test.hew::test_encode_url_safe_known_output runtime
+tests/hew/base64_test.hew::test_round_trip_all_0xff_length_1 runtime
+tests/hew/base64_test.hew::test_round_trip_all_0xff_length_16 runtime
+tests/hew/base64_test.hew::test_round_trip_all_0xff_length_2 runtime
+tests/hew/base64_test.hew::test_round_trip_all_0xff_length_3 runtime
+tests/hew/base64_test.hew::test_round_trip_all_zeros_length_1 runtime
+tests/hew/base64_test.hew::test_round_trip_all_zeros_length_16 runtime
+tests/hew/base64_test.hew::test_round_trip_all_zeros_length_2 runtime
+tests/hew/base64_test.hew::test_round_trip_all_zeros_length_3 runtime
+tests/hew/base64_test.hew::test_round_trip_empty runtime
+tests/hew/base64_test.hew::test_round_trip_multi_byte_64 runtime
+tests/hew/base64_test.hew::test_round_trip_nonempty runtime
+tests/hew/binary_test.hew::test_i16_be_min_value runtime
+tests/hew/binary_test.hew::test_i16_le_max_value runtime
+tests/hew/binary_test.hew::test_i16_le_min_value runtime
+tests/hew/binary_test.hew::test_put_i16_be_minus_one runtime
+tests/hew/binary_test.hew::test_put_i16_le_minus_one runtime
+tests/hew/binary_test.hew::test_put_i32_be_minus_one runtime
+tests/hew/binary_test.hew::test_put_i32_le_minus_one runtime
+tests/hew/binary_test.hew::test_put_i64_be_minus_one runtime
+tests/hew/binary_test.hew::test_put_i64_le_minus_one runtime
+tests/hew/binary_test.hew::test_put_u16_le_zero runtime
+tests/hew/binary_test.hew::test_put_u32_be_known_pattern runtime
+tests/hew/binary_test.hew::test_put_u32_le_known_pattern runtime
+tests/hew/binary_test.hew::test_put_u32_le_zero runtime
+tests/hew/binary_test.hew::test_put_u64_be_known_pattern runtime
+tests/hew/binary_test.hew::test_put_u64_le_known_pattern runtime
+tests/hew/binary_test.hew::test_put_u64_le_zero runtime
+tests/hew/hex_test.hew::test_decode_invalid_char_at_last_nibble_returns_empty runtime
+tests/hew/hex_test.hew::test_decode_known_value runtime
+tests/hew/hex_test.hew::test_decode_mixed_case_matches_lowercase runtime
+tests/hew/hex_test.hew::test_decode_odd_length_returns_empty runtime
+tests/hew/hex_test.hew::test_decode_uppercase_string runtime
+tests/hew/hex_test.hew::test_encode_known_value runtime
+tests/hew/hex_test.hew::test_encode_single_byte_0xff runtime
+tests/hew/hex_test.hew::test_encode_single_byte_zero runtime
+tests/hew/hex_test.hew::test_encode_upper_known_value runtime
+tests/hew/hex_test.hew::test_encode_upper_round_trip_via_decode runtime
+tests/hew/hex_test.hew::test_encode_upper_single_byte_0xff runtime
+tests/hew/hex_test.hew::test_round_trip_all_256_byte_values runtime
+tests/hew/hex_test.hew::test_round_trip_empty runtime
+tests/hew/hex_test.hew::test_round_trip_multi_byte_64 runtime
+tests/hew/hex_test.hew::test_round_trip_nonempty runtime
+tests/hew/url_test.hew::test_decode_query_decodes_form_pairs_in_order runtime
+tests/hew/url_test.hew::test_decode_query_preserves_nul_and_rejects_invalid_utf8 runtime
+tests/hew/url_test.hew::test_decode_query_skips_entries_without_equals runtime
+tests/hew/url_test.hew::test_port_returns_none_when_absent runtime
+tests/hew/url_test.hew::test_port_returns_some_when_explicit runtime
+
+# runtime: hew-runtime panics inside the metrics registry
+tests/hew/metrics_test.hew::test_counter_add_accumulates runtime
+tests/hew/metrics_test.hew::test_counter_exact_value_in_scrape runtime
+tests/hew/metrics_test.hew::test_counter_ok_for_valid_name runtime
+tests/hew/metrics_test.hew::test_counter_rejects_builtin_collision runtime
+tests/hew/metrics_test.hew::test_counter_rejects_negative_add runtime
+tests/hew/metrics_test.hew::test_counter_rejects_rendered_builtin_collision runtime
+tests/hew/metrics_test.hew::test_gauge_set_inc_dec_exact runtime
+tests/hew/metrics_test.hew::test_histogram_count_and_sum_exposition runtime
+
+# runtime: memory allocation failure (corrupt length reaching the allocator)
+tests/hew/enum_resource_heap_sibling_test.hew::scalar_sibling_control runtime
+tests/hew/protobuf_test.hew::test_set_get_string runtime
+tests/hew/xml_test.hew::test_close_no_panic runtime
+tests/hew/xml_test.hew::test_is_element_returns_positive_for_element runtime
+tests/hew/xml_test.hew::test_missing_attribute_returns_empty runtime
+tests/hew/xml_test.hew::test_parse_allows_xml_whitespace_around_the_root runtime
+tests/hew/xml_test.hew::test_parse_attribute runtime
+tests/hew/xml_test.hew::test_parse_child_tag runtime
+tests/hew/xml_test.hew::test_parse_children_count runtime
+tests/hew/xml_test.hew::test_parse_decodes_entities_in_attributes runtime
+tests/hew/xml_test.hew::test_parse_preserves_a_well_formed_document runtime
+tests/hew/xml_test.hew::test_parse_preserves_predefined_entities runtime
+tests/hew/xml_test.hew::test_parse_rejects_a_document_with_no_root_element runtime
+tests/hew/xml_test.hew::test_parse_rejects_a_malformed_attribute runtime
+tests/hew/xml_test.hew::test_parse_rejects_an_unknown_entity_reference runtime
+tests/hew/xml_test.hew::test_parse_rejects_multiple_root_elements runtime
+tests/hew/xml_test.hew::test_parse_root_tag runtime
+tests/hew/xml_test.hew::test_parse_text_content runtime
+
+# runtime: test binary exits non-zero without a typed failure line
+tests/hew/datetime_test.hew::test_try_parse_invalid_timestamp_returns_err runtime
+tests/hew/log_test.hew::test_field_empty_key_and_empty_value_produce_separator runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_is_unchanged_for_generated_markup runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_drops_author_written_raw_html runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_drops_custom_heading_attributes runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_drops_event_attributes_on_raw_html runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_keeps_a_relative_url runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_refuses_a_dangerous_image_url runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_refuses_a_dangerous_link_url runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_retains_an_ordinary_link runtime
+tests/hew/markdown_sanitize_test.hew::test_to_html_safe_retains_generated_structure runtime
+tests/hew/msgpack_test.hew::test_try_to_json_empty_surfaces_reason runtime
+tests/hew/msgpack_test.hew::test_try_to_json_rejects_a_truncated_buffer runtime
+tests/hew/smtp_test.hew::test_module_try_send_bad_port_surfaces_reason runtime
+tests/hew/smtp_test.hew::test_module_try_send_html_oversized_i64_port_does_not_wrap runtime
+tests/hew/smtp_test.hew::test_module_try_send_oversized_i64_port_does_not_wrap runtime
+tests/hew/uuid_test.hew::test_v4_produces_correct_length runtime
+tests/hew/uuid_test.hew::test_v7_produces_correct_length runtime
+tests/hew/xml_test.hew::test_parse_rejects_a_close_tag_that_does_not_match runtime
+tests/hew/xml_test.hew::test_parse_rejects_non_whitespace_outside_the_root runtime
+
+# runtime: wrong result from datetime_test
+tests/hew/datetime_test.hew::test_try_format_rejects_invalid_directive_with_error runtime
+
+# runtime: wrong result from enum_resource_heap_sibling_test
+tests/hew/enum_resource_heap_sibling_test.hew::result_resource_and_string_variants runtime
+tests/hew/enum_resource_heap_sibling_test.hew::user_enum_resource_and_heap_siblings runtime
+
+# runtime: wrong result from ipnet_test
+tests/hew/ipnet_test.hew::test_cidr_hosts_returns_exact_valid_host_count runtime
+
+# runtime: wrong result from log_test
+tests/hew/log_test.hew::test_field_produces_key_equals_value_string runtime
+tests/hew/log_test.hew::test_field_value_path_with_spaces_roundtrips runtime
+tests/hew/log_test.hew::test_field_value_with_embedded_quote_is_encoded runtime
+tests/hew/log_test.hew::test_field_value_with_equals_sign_passes_through runtime
+tests/hew/log_test.hew::test_field_value_with_space_is_quoted runtime
+tests/hew/log_test.hew::test_field_value_without_space_is_not_quoted runtime
+
+# runtime: wrong result from net_constructor_failclosed_test
+tests/hew/net_constructor_failclosed_test.hew::test_url_resolve_reports_an_unresolvable_path_as_a_failure runtime
+tests/hew/net_constructor_failclosed_test.hew::test_url_resolve_returns_the_joined_url runtime
+
+# runtime: wrong result from process_test
+tests/hew/process_test.hew::test_start_argv_reports_a_missing_executable_as_launch_failed runtime
+tests/hew/process_test.hew::test_start_argv_returns_a_live_child_for_a_real_executable runtime
+
+# runtime: wrong result from uuid_test
+tests/hew/uuid_test.hew::test_is_valid_accepts_canonical_nil_uuid runtime
+tests/hew/uuid_test.hew::test_is_valid_accepts_known_uuid_lowercase runtime
+tests/hew/uuid_test.hew::test_is_valid_accepts_known_uuid_uppercase runtime
+
+# runtime: wrong result from xml_test
+tests/hew/xml_test.hew::test_is_wellformed_rejects_multiple_roots runtime
+tests/hew/xml_test.hew::test_is_wellformed_true_for_valid_xml runtime
+
+# runtime: wrong result from xml_try_parse_test
+tests/hew/xml_try_parse_test.hew::try_parse_returns_node runtime
+tests/hew/xml_try_parse_test.hew::try_parse_returns_parser_error runtime

@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-get-borrowed"
+intent = "`get(i)` over a Vec of a clone-free `#[resource]` type reads `Some` as a loan of the slot the vector still owns and `None` past the end, the same slot reads twice without moving, and the owning drain releases each element exactly once."
+source = "cases/vector-get-borrowed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nshow t1\nt\nmissing\nlen=2\nclose t1\nclose t2\ndrained\n"
+exit = 0
+stderr = ""

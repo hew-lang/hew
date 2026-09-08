@@ -1,0 +1,24 @@
+// The loan a borrowed `get` takes on the vector is live for the match that
+// reads it, so pushing to the vector inside the arm is refused by name.
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    var v: Vec<Tok> = Vec.new();
+    v.push(Tok { id: 1 });
+    match v.get(0) {
+        Option.Some(e) => {
+            v.push(Tok { id: 2 });
+            println(e.id);
+        },
+        Option.None => println("none"),
+    }
+}

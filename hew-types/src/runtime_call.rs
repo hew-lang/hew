@@ -553,6 +553,10 @@ pub enum VecValueOp {
     /// `v[i]` where the element has no clone: a loan of the element the vector
     /// still owns, readable for the length of the receiver's loan.
     IndexBorrow,
+    /// `v.get(i)` where the element has no clone: `Some` carries a loan of the
+    /// slot the vector still owns, readable for the length of the receiver's
+    /// loan, and a past-end index still reads `None`.
+    GetBorrow,
     /// Remove the first element and hand its ownership to the caller. This is
     /// the consuming iterator's step for an element with no clone: the vector
     /// shrinks by one and ends empty when the drain runs to completion.
@@ -636,6 +640,11 @@ impl VecValueOp {
                 &[READ, INDEX],
                 RuntimeResultEffect::Borrowed(ELEMENT_TYPE),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::GetBorrow => runtime_semantic_contract(
+                &[READ, INDEX],
+                RuntimeResultEffect::Borrowed(Applied(BuiltinType::Option, &[ELEMENT_TYPE])),
+                &[],
             ),
             Self::Slice => runtime_semantic_contract(
                 &[READ, INDEX, INDEX],
@@ -2957,6 +2966,7 @@ impl RuntimeCallFamily {
                 VecValueOp::Pop => "vec.value.pop",
                 VecValueOp::Clear => "vec.value.clear",
                 VecValueOp::IndexBorrow => "vec.value.index_borrow",
+                VecValueOp::GetBorrow => "vec.value.get_borrow",
                 VecValueOp::TakeFirst => "vec.value.take_first",
                 VecValueOp::Slice => "vec.value.slice",
                 VecValueOp::SliceFrom => "vec.value.slice_from",
@@ -3406,6 +3416,7 @@ impl RuntimeCallFamily {
             "vec.value.pop" => Self::Vector(VecValueOp::Pop),
             "vec.value.clear" => Self::Vector(VecValueOp::Clear),
             "vec.value.index_borrow" => Self::Vector(VecValueOp::IndexBorrow),
+            "vec.value.get_borrow" => Self::Vector(VecValueOp::GetBorrow),
             "vec.value.take_first" => Self::Vector(VecValueOp::TakeFirst),
             "vec.value.slice" => Self::Vector(VecValueOp::Slice),
             "vec.value.slice_from" => Self::Vector(VecValueOp::SliceFrom),
@@ -5350,6 +5361,7 @@ mod tests {
                         VecValueOp::Index
                         | VecValueOp::IndexBorrow
                         | VecValueOp::Get
+                        | VecValueOp::GetBorrow
                         | VecValueOp::Set
                         | VecValueOp::SliceFrom,
                     ) if index == 1 => ConsumeVerdict::ProvenBorrow,

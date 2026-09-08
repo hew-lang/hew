@@ -1,0 +1,49 @@
+// `v.get(i)` over a Vec whose element has no clone is a borrowed read: `Some`
+// carries a loan of the slot the vector still owns, `None` is the past-end
+// answer, and the vector is whole afterwards. The element is released once,
+// by the owning drain.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+fn main() -> i64 {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "t", id: 1 });
+    tokens.push(Token { label: "t", id: 2 });
+
+    match tokens.get(0) {
+        Option.Some(token) => {
+            println(token.id);
+            token.show();
+        },
+        Option.None => println("missing"),
+    }
+    // The same slot reads again: the borrow moved nothing.
+    match tokens.get(0) {
+        Option.Some(token) => println(token.label),
+        Option.None => println("missing"),
+    }
+    match tokens.get(7) {
+        Option.Some(token) => println(token.id),
+        Option.None => println("missing"),
+    }
+    println(f"len={tokens.len()}");
+
+    for token in tokens.into_iter() {
+        token.close();
+    }
+    println("drained");
+    0
+}

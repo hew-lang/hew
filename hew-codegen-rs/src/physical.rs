@@ -4619,7 +4619,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
             }
-            PhysicalVectorOp::Index | PhysicalVectorOp::Get { .. } => {
+            PhysicalVectorOp::Index
+            | PhysicalVectorOp::Get { .. }
+            | PhysicalVectorOp::GetBorrow { .. } => {
                 let element_layout =
                     self.module.target.layout(&glue.element.ty).ok_or_else(|| {
                         CodegenError::FailClosed("vector element lacks its target layout".into())
@@ -4630,9 +4632,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 } else {
                     values.entry_scratch(element_ty, "vector.get.element")?
                 };
+                // A borrowed read aliases the slot the vector still owns; the
+                // owning read hands back a fresh owner.
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_vec_get_clone",
+                    if matches!(operation, PhysicalVectorOp::GetBorrow { .. }) {
+                        "hew_vec_borrow_owned"
+                    } else {
+                        "hew_vec_get_clone"
+                    },
                     self.ctx
                         .bool_type()
                         .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
@@ -4657,19 +4665,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.builder
                     .build_conditional_branch(found, present, absent)
                     .llvm_ctx("select vector read outcome")?;
+                let optional = match operation {
+                    PhysicalVectorOp::Get { result: option }
+                    | PhysicalVectorOp::GetBorrow { result: option } => Some(option),
+                    _ => None,
+                };
                 self.builder.position_at_end(absent);
-                if let PhysicalVectorOp::Get { result: option } = operation {
+                if let Some(option) = optional {
                     self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
                     self.emit_result_edge(Some(result), normal)?;
                 } else {
                     self.emit_edge(failure()?)?;
                 }
                 self.builder.position_at_end(present);
-                if let PhysicalVectorOp::Get { result: option } = operation {
+                if let Some(option) = optional {
                     let element = self
                         .builder
                         .build_load(element_ty, output, "vector.get.value")
-                        .llvm_ctx("load independent vector element")?;
+                        .llvm_ctx("load vector element")?;
                     self.write_variant_value(self.slots[result.0 as usize], 0, &[element], option)?;
                 }
             }

@@ -3588,10 +3588,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// A pattern binding names its probed payload until the arm is selected;
     /// an owning payload transfers exactly once, after every guard has passed.
     fn require_selected_binding(&self, binding: BindingId, value: ValueId) -> Result<(), String> {
-        if self.value_own_kind(value) == Some(OwnKind::Owned)
+        let borrowed = self.value_own_kind(value) == Some(OwnKind::Guaranteed);
+        if borrowed
+            || self.value_own_kind(value) == Some(OwnKind::Owned)
             || self.argument_receiver_loans.contains(&value)
         {
             let name = &self.source_bindings[self.binding_declarations[&binding]].name;
+            if borrowed {
+                // A loaned payload never becomes an owner, in a guard or in the
+                // arm body: the consume wall, not the guard rule, is what it
+                // meets.
+                if !self.argument_receiver_loans.contains(&value) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "E_OWN_CONSUME_BORROWED: `{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
+                ));
+            }
             return Err(format!(
                 "E_OWN_GUARD_CONSUME: match guard consumes pattern binding `{name}`; a guard can only read its bindings"
             ));
@@ -5216,6 +5229,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut branches = Vec::with_capacity(descriptor.variants.len());
         let mut inherited_live = self.owned_live.clone();
         inherited_live.remove(&scrutinee);
+        // A loaned scrutinee is not destructured: its payloads are loans of the
+        // same region, so they carry no release obligation and the switch
+        // transfers nothing.
+        let borrowed = self.value_own_kind(scrutinee) == Some(OwnKind::Guaranteed);
         for (variant_index, variant) in descriptor.variants.iter().enumerate() {
             let mut fields = Vec::with_capacity(variant.fields.len());
             let mut block_args = Vec::with_capacity(variant.fields.len());
@@ -5223,7 +5240,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let mut branch_live = inherited_live.clone();
             for field in &variant.fields {
                 self.service.require_type_facts(&field.ty)?;
-                let own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
+                let mut own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
+                if borrowed && own == OwnKind::Owned {
+                    own = OwnKind::Guaranteed;
+                }
                 let field_value = self.fresh_value();
                 fields.push(ValueDef {
                     id: field_value,
@@ -5846,6 +5866,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
 
         let result_ty = self.ty(&whole.ty);
+        // A scrutinee that is itself a borrowed read holds a loan on the
+        // collection it read. The match is what reads that loan, so it is the
+        // match that ends it - not the enclosing scope, which would keep the
+        // collection borrowed for the rest of the body.
+        let scrutinee_loan_floor = self.scope_loans.len();
         let scrutinee = lower_initial_value_transfer(
             self,
             scrutinee_expr,
@@ -5864,6 +5889,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
         let mut exits = Vec::new();
 
+        let borrowed_scrutinee = self.value_own_kind(scrutinee) == Some(OwnKind::Guaranteed);
         for branch in branches {
             self.restore_control_state(&inherited);
             self.current = branch.block;
@@ -5906,6 +5932,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
 
                 self.end_loans_since(outer_loans)?;
+                if borrowed_scrutinee {
+                    // The payloads name the scrutinee's region: they stay
+                    // readable for the arm body, and the candidate cleanup ends
+                    // them on every exit from it.
+                    self.argument_receiver_loans.extend(
+                        branch
+                            .fields
+                            .iter()
+                            .filter(|field| field.own == OwnKind::Guaranteed)
+                            .map(|field| field.value),
+                    );
+                }
                 self.transfer_selected_payloads(&branch.fields, &arm.payload_variant_predicates)?;
                 self.acquire_selected_match_bindings(&outer_bindings)?;
                 let result = self.lower_selected_match_body(arm, &result_ty)?;
@@ -5956,7 +5994,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
 
-        self.merge_match_exits(exits, &result_ty)
+        let result = self.merge_match_exits(exits, &result_ty)?;
+        if self.scope_loans.len() > scrutinee_loan_floor {
+            let loans = self.scope_loans.split_off(scrutinee_loan_floor);
+            self.end_call_loans(&loans)?;
+        }
+        Ok(result)
     }
 
     fn lower_match(

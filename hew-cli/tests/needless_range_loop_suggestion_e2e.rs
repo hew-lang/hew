@@ -1,15 +1,10 @@
 //! End-to-end truth check for the `needless_range_loop` suggestion.
 //!
 //! `needless_range_loop` tells a user to replace `for i in 0..xs.len()` with
-//! `for x in xs`. Direct Vec iteration goes through `VecIter::next`, which
-//! clones each element into an independent owner, so the rewrite only compiles
-//! when the element type has a semantic clone. Inside a generic template that
-//! is a question about the *bound*: `count_all<T>(values: Vec<T>)` compiles in
-//! its indexed form for a `#[resource]` instantiation, while the suggested
-//! direct form fails that same instantiation at MIR with
-//! `MIR lowering for VecIter<Handle> clone-out is not implemented yet`. An
-//! unbounded parameter therefore gets no suggestion; `T: Clone` proves the
-//! element clones and does.
+//! `for x in xs`. Both `for x in xs` and `xs[i]` borrow each element for
+//! every `T` (D444), so the rewrite compiles at every monomorphisation
+//! without needing a `Clone` bound; the lint fires for unbounded and
+//! `T: Clone` generic templates alike.
 
 mod support;
 
@@ -91,12 +86,12 @@ fn local_pid_range_loop_has_no_uncompilable_direct_iteration_suggestion() {
 }
 
 #[test]
-fn unbounded_generic_range_loop_has_no_direct_iteration_suggestion() {
+fn unbounded_generic_range_loop_suggests_direct_iteration() {
     let stderr = check_stderr("unbounded_generic_indexed.hew");
     assert!(
-        !stderr.contains(DIRECT_ITERATION_HELP),
-        "an unbounded `T` does not prove the element clones, so the rewrite is not \
-         guaranteed to compile at every monomorphisation:\n{stderr}"
+        stderr.contains(DIRECT_ITERATION_HELP),
+        "direct iteration borrows each element for every `T` (D444), so the \
+         rewrite compiles even without a `Clone` bound:\n{stderr}"
     );
 }
 

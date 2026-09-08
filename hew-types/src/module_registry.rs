@@ -1549,12 +1549,12 @@ mod tests {
         );
         let process_source = include_str!("../../std/process.hew");
         assert!(
-            process_source.contains("fn close(child: Child)"),
+            process_source.contains("fn close(consume self)"),
             "process.Child must retain its source-level resource close method"
         );
         assert_eq!(
             process_source
-                .matches("hew_process_drop(child.handle)")
+                .matches("hew_process_drop(self.handle)")
                 .count(),
             1,
             "process.Child::close must release its wrapped ChildHandle exactly once"

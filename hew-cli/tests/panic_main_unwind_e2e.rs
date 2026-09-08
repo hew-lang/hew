@@ -23,8 +23,8 @@ type Conn {
 }
 
 impl Conn {
-    fn close(c: Conn) {
-        print(c.fd);
+    fn close(consume self) {
+        print(self.fd);
         println("");
     }
 }
@@ -47,8 +47,8 @@ type Conn {
 }
 
 impl Conn {
-    fn close(c: Conn) {
-        print(c.fd);
+    fn close(consume self) {
+        print(self.fd);
         println("");
     }
 }
@@ -80,8 +80,8 @@ fn main_context_panic_runs_the_live_resource_close_and_keeps_the_panic_status() 
 
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "a main-context panic keeps its documented status; {}",
+        Some(1),
+        "every unrecovered fault exits 1 with the typed stderr line (D440); {}",
         describe_output(&output)
     );
 

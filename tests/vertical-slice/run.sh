@@ -6184,5 +6184,5 @@ if [[ "${fail_count}" -gt 0 ]]; then
     for i in "${!fail_names[@]}"; do
         echo "  - ${fail_names[$i]} (${fail_reasons[$i]})" >&2
     done
-    record_failure "row ${LINENO}" "see stderr above"
+    exit 1
 fi

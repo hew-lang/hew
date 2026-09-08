@@ -3148,18 +3148,7 @@ run_accept_expect_stdout "actor_multi_arg_ask"
 # the worker drains and closes it. Pins the recursive handle predicate: before
 # the fix the tuple arg was lowered as Read (not Consume), and a later
 # `rx.close()` in the caller compiled and double-closed the channel at runtime.
-run_accept_expect_status "actor_nested_handle_tuple_transfer" 0
-if diff -u "${ROOT}/tests/vertical-slice/accept/actor_nested_handle_tuple_transfer.expected" \
-    "${stdout_output}" >/dev/null; then
-    echo "actor_nested_handle_tuple_transfer: #3127 is fixed; remove this known-failure ratchet" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-if [[ "$(cat "${stdout_output}")" != $'worker got payload: \ndone' ]]; then
-    echo "actor_nested_handle_tuple_transfer: #3127 changed from the exact empty-payload failure" >&2
-    cat "${stdout_output}" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-mark_known "actor_nested_handle_tuple_transfer (#3127: actor message loses the nested string payload)"
+run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
 # Accept + run: the value a `match` over a channel `recv()` produces must
 # survive the match. A channel receive is lowered as an intercepted
@@ -3184,24 +3173,11 @@ if [[ "$(cat "${stdout_output}")" != $'direct: []\nvia local: [via local]\ntry: 
 fi
 mark_known "channel_recv_match_result_survives (#3127: match over recv() loses its own result)"
 
-# Accept + run: the ASan gate's recv-frame balance fixture (#3127) also has an
-# ordinary stdout oracle. The loop/early-return/forward/record shapes already
-# release correctly on the current lowerer; only the direct
-# `match rx.recv() { .Some(s) => s, ... }` result at the end hits the same
-# match-over-recv bug as channel_recv_match_result_survives, so `channel: 0`
-# replaces the expected running total.
-run_accept_expect_status "recv_frame_release_balance" 0
-if diff -u "${ROOT}/tests/vertical-slice/accept/recv_frame_release_balance.expected" \
-    "${stdout_output}" >/dev/null; then
-    echo "recv_frame_release_balance: #3127 is fixed; remove this known-failure ratchet" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-if [[ "$(cat "${stdout_output}")" != $'drain: 8390\nearly: 105\nforward: 8390\nrecords: 11780\nchannel: 0' ]]; then
-    echo "recv_frame_release_balance: #3127 changed from the exact empty-payload failure" >&2
-    cat "${stdout_output}" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-mark_known "recv_frame_release_balance (#3127: direct match rx.recv() result loses its payload)"
+# Accept + run: the ASan gate's recv-frame balance fixture also has an ordinary
+# stdout oracle. Every shape - the drain loop, the early return, the forwarded
+# frame, the record payload and the direct `match rx.recv()` result - releases
+# its frame exactly once, so the running totals are the whole check.
+run_accept_expect_stdout "recv_frame_release_balance"
 
 # Accept + run: user records named `Sender` and `Receiver` are not builtin
 # channel handles. They must keep ordinary actor-send treatment and emit CBOR

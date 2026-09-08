@@ -1,0 +1,11 @@
+[[case]]
+id = "loan-ends-at-last-use"
+intent = "A `let`-bound borrowed `get` holds its loan on the vector until the binding's last use: the match reads it, the owning drain that follows takes the vector back, and each element is released exactly once."
+source = "cases/loan-ends-at-last-use.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nshow t1\nmissing\nlen=2\nclose t1\nclose t2\ndrained\n"
+exit = 0
+stderr = ""

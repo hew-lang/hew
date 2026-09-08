@@ -720,6 +720,14 @@ expect_check_fail_contains \
     "borrowed by a live element loan" \
     "collection_get_borrow_mutate"
 
+# A `let`-bound borrowed `get` holds its loan until the binding's last use, so
+# a push before that use ends the loan and the later read is refused by name.
+# The accept-side twin is the `loan-ends-at-last-use` acceptance case.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/collection_get_borrow_let_mutate.hew" \
+    "the loan ended there and cannot be read again" \
+    "collection_get_borrow_let_mutate"
+
 # Imported std.bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.
 run_accept_expect_stdout_contains \

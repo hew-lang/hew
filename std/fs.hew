@@ -156,7 +156,8 @@ impl Display for IoError {
     }
 }
 
-impl Error for IoError {}
+impl Error for IoError {
+}
 
 /// Construct an `IoError.TimedOut(0)` value without a platform-specific
 /// errno. Useful for in-process deadline expiry where there is no OS error

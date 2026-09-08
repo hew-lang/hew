@@ -88,14 +88,18 @@ pub type Message<Target, Payload, Policy> {
 /// Internal owner of an unaccepted completion request.
 #[resource]
 #[opaque]
-pub type ActorRequestOwner {}
+pub type ActorRequestOwner {
+}
 
 #[opaque]
-pub type ActorRequestAdmission {}
+pub type ActorRequestAdmission {
+}
 
 impl ActorRequestOwner {
     fn close(consume self) {
-        unsafe { hew_msg_envelope_release(self) };
+        unsafe {
+            hew_msg_envelope_release(self)
+        };
     }
 }
 
@@ -792,7 +796,9 @@ pub trait Index<Idx> {
 impl<T> Index<i64> for Vec<T> {
     type Output = T;
     fn get(self, index: i64) -> Option<T> {}
-    fn at(self, index: i64) -> T { self[index] }
+    fn at(self, index: i64) -> T {
+        self[index]
+    }
 }
 
 impl<K, V> Index<K> for HashMap<K, V> {

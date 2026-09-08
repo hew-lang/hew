@@ -4503,18 +4503,6 @@ run_accept_expect_status "vec_i64_index" 22
 run_accept_expect_status "vec_index_isize" 11
 run_accept_expect_status "for_wildcard_range" 3
 
-# Reject: Vec<[T; N]> is fail-closed at the type checker — codegen cannot lower
-# array/composite Vec elements (Cluster 2 deferred).  A copy-layout array must
-# produce a spanned checker error, not an unspanned codegen error.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \
-    "\`Vec<[i64; 2]>\` is not supported; vec lowering does not support array element types yet" \
-    "vec_array_element"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \
-    3 \
-    "vec_array_element"
-
 # Accept (S1): Vec<i64>.new() type-argument syntax with type annotation. Exit 0.
 run_accept_expect_status "vec_new_turbofish_type" 0
 

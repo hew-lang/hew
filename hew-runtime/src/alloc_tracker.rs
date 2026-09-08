@@ -1,4 +1,4 @@
-// live on not(wasm32) — lambda_actor (native-only); dead on wasm32 (debug_assertions still gate items)
+// live on not(wasm32) — reply_channel (native-only); dead on wasm32 (debug_assertions still gate items)
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 //! Runtime-wide allocator-pairing tracker (debug builds only).
 //!
@@ -52,7 +52,7 @@ static LIBC_ALLOC_SET: std::sync::Mutex<Option<std::collections::HashSet<usize>>
 // entry into the set a test asserts over (issue #2353). This makes the test's
 // view structurally isolated under any runner (nextest process-per-test *or* a
 // plain in-process `cargo test`), rather than relying on a mutex that cannot
-// fence the lock-free production mutators in `lambda_actor`/`reply_channel`.
+// fence the lock-free production mutators in `reply_channel`.
 
 /// Register `ptr` as libc-allocated in `set`.
 #[cfg(debug_assertions)]

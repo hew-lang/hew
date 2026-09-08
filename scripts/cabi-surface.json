@@ -3852,6 +3852,51 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_select_add_channel( *mut HewCheckedTaskSelect, *mut HewChannelReceiver, )",
+        "wasm32-wasip1": "fn hew_checked_task_select_add_channel( *mut HewCheckedTaskSelect, *mut HewChannelReceiver, )"
+      },
+      "symbol": "hew_checked_task_select_add_channel"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_select_add_task( *mut HewCheckedTaskSelect, *mut HewTask, )",
+        "wasm32-wasip1": "fn hew_checked_task_select_add_task( *mut HewCheckedTaskSelect, *mut HewTask, )"
+      },
+      "symbol": "hew_checked_task_select_add_task"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_select_arm_timer( *mut HewCheckedTaskSelect, i64, )",
+        "wasm32-wasip1": "fn hew_checked_task_select_arm_timer( *mut HewCheckedTaskSelect, i64, )"
+      },
+      "symbol": "hew_checked_task_select_arm_timer"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "codegen-stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -3868,12 +3913,12 @@
         "wasm32-wasip1"
       ],
       "classification": "codegen-stable",
-      "extent": "length-or-count",
+      "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_task_select_new( *const *mut HewTask, usize, i32, i64, *const HewWaker, ) -> *mut HewCheckedTaskSelect",
-        "wasm32-wasip1": "fn hew_checked_task_select_new( *const *mut HewTask, usize, i32, i64, *const HewWaker, ) -> *mut HewCheckedTaskSelect"
+        "native": "fn hew_checked_task_select_new( *const HewWaker, ) -> *mut HewCheckedTaskSelect",
+        "wasm32-wasip1": "fn hew_checked_task_select_new( *const HewWaker, ) -> *mut HewCheckedTaskSelect"
       },
       "symbol": "hew_checked_task_select_new"
     },
@@ -3887,8 +3932,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_task_select_poll( *const HewCheckedTaskSelect, ) -> i64",
-        "wasm32-wasip1": "fn hew_checked_task_select_poll( *const HewCheckedTaskSelect, ) -> i64"
+        "native": "fn hew_checked_task_select_poll( *mut HewCheckedTaskSelect) -> i64",
+        "wasm32-wasip1": "fn hew_checked_task_select_poll( *mut HewCheckedTaskSelect) -> i64"
       },
       "symbol": "hew_checked_task_select_poll"
     },
@@ -3902,8 +3947,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_task_select_poll_first( *const HewCheckedTaskSelect, ) -> i64",
-        "wasm32-wasip1": "fn hew_checked_task_select_poll_first( *const HewCheckedTaskSelect, ) -> i64"
+        "native": "fn hew_checked_task_select_poll_first( *mut HewCheckedTaskSelect, ) -> i64",
+        "wasm32-wasip1": "fn hew_checked_task_select_poll_first( *mut HewCheckedTaskSelect, ) -> i64"
       },
       "symbol": "hew_checked_task_select_poll_first"
     },

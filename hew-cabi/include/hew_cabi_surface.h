@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1617u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1620u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1617] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -1452,6 +1452,26 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1617] = {
      "*mut HewFault, ) -> i32\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_select_add_channel",
+     "{\"native\": \"fn hew_checked_task_select_add_channel( *mut "
+     "HewCheckedTaskSelect, *mut HewChannelReceiver, )\", \"wasm32-wasip1\": "
+     "\"fn hew_checked_task_select_add_channel( *mut HewCheckedTaskSelect, "
+     "*mut HewChannelReceiver, )\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_select_add_task",
+     "{\"native\": \"fn hew_checked_task_select_add_task( *mut "
+     "HewCheckedTaskSelect, *mut HewTask, )\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_add_task( *mut HewCheckedTaskSelect, *mut "
+     "HewTask, )\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_select_arm_timer",
+     "{\"native\": \"fn hew_checked_task_select_arm_timer( *mut "
+     "HewCheckedTaskSelect, i64, )\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_arm_timer( *mut HewCheckedTaskSelect, i64, )\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_free",
      "{\"native\": \"fn hew_checked_task_select_free( *mut "
      "HewCheckedTaskSelect)\", \"wasm32-wasip1\": \"fn "
@@ -1459,23 +1479,22 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1617] = {
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_new",
-     "{\"native\": \"fn hew_checked_task_select_new( *const *mut HewTask, "
-     "usize, i32, i64, *const HewWaker, ) -> *mut HewCheckedTaskSelect\", "
-     "\"wasm32-wasip1\": \"fn hew_checked_task_select_new( *const *mut "
-     "HewTask, usize, i32, i64, *const HewWaker, ) -> *mut "
+     "{\"native\": \"fn hew_checked_task_select_new( *const HewWaker, ) -> "
+     "*mut HewCheckedTaskSelect\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_new( *const HewWaker, ) -> *mut "
      "HewCheckedTaskSelect\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
-     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_poll",
-     "{\"native\": \"fn hew_checked_task_select_poll( *const "
-     "HewCheckedTaskSelect, ) -> i64\", \"wasm32-wasip1\": \"fn "
-     "hew_checked_task_select_poll( *const HewCheckedTaskSelect, ) -> i64\"}",
+     "{\"native\": \"fn hew_checked_task_select_poll( *mut "
+     "HewCheckedTaskSelect) -> i64\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_poll( *mut HewCheckedTaskSelect) -> i64\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_poll_first",
-     "{\"native\": \"fn hew_checked_task_select_poll_first( *const "
+     "{\"native\": \"fn hew_checked_task_select_poll_first( *mut "
      "HewCheckedTaskSelect, ) -> i64\", \"wasm32-wasip1\": \"fn "
-     "hew_checked_task_select_poll_first( *const HewCheckedTaskSelect, ) -> "
+     "hew_checked_task_select_poll_first( *mut HewCheckedTaskSelect, ) -> "
      "i64\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},

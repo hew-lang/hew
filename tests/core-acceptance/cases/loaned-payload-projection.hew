@@ -1,0 +1,64 @@
+// A match over a borrowed `get` projects through its loaned payload: the
+// element is a record carrying a resource, and reading `item.token.id` is a
+// dependent borrow of the same region that ends with the arm. The record is
+// never destructured, so the drain afterwards releases each token once.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+type Meta {
+    token: Token,
+    tag: string,
+}
+
+type Crate {
+    meta: Meta,
+    name: string,
+}
+
+fn main() -> i64 {
+    var crates: Vec<Crate> = Vec.new();
+    crates.push(Crate {
+        meta: Meta { token: Token { label: "t", id: 1 }, tag: "first" },
+        name: "one",
+    });
+    crates.push(Crate {
+        meta: Meta { token: Token { label: "t", id: 2 }, tag: "second" },
+        name: "two",
+    });
+
+    match crates.get(0) {
+        Option.Some(item) => {
+            println(item.name);
+            println(item.meta.tag);
+            println(item.meta.token.id);
+            item.meta.token.show();
+        },
+        Option.None => println("missing"),
+    }
+
+    let second = crates.get(1);
+    match second {
+        Option.Some(item) => println(f"{item.name} {item.meta.token.label}{item.meta.token.id}"),
+        Option.None => println("missing"),
+    }
+    println(f"len={crates.len()}");
+
+    for item in crates.into_iter() {
+        item.meta.token.close();
+    }
+    println("drained");
+    0
+}

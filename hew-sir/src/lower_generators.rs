@@ -268,13 +268,16 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
-    /// A channel consumer parks on the queue. The element arrives decoded into
-    /// the resume value exactly as a stream item does; the message type comes
-    /// from the call's `Option<T>` result, never from the symbol.
+    /// A channel consumer takes the next element. `recv()` parks on an empty
+    /// queue with live senders; `try_recv()` (`park: false`) resumes with
+    /// `None` instead. The element arrives decoded into the resume value
+    /// exactly as a stream item does; the message type comes from the call's
+    /// `Option<T>` result, never from the symbol.
     pub(super) fn lower_channel_recv(
         &mut self,
         expression: &HirExpr,
         receiver: &HirExpr,
+        park: bool,
     ) -> Result<ValueId, String> {
         let mut loans = Vec::new();
         let channel = self.lower_borrowed_read(receiver, &mut loans)?;
@@ -293,7 +296,7 @@ impl Builder<'_, '_> {
         let unwind = self.new_block(Vec::new());
         let live = self.owned_live.clone();
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::ChannelRecv,
+            kind: SuspendKind::ChannelRecv { park },
             inputs: vec![BoundaryOperand {
                 operand: channel,
                 decision: BoundaryDecision::BorrowMut,

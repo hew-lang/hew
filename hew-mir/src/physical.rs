@@ -1018,9 +1018,12 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
-    /// Park until the exclusively borrowed channel yields an element or every
-    /// sender closes. The element carries its typed envelope recipe.
+    /// Take the next element from the exclusively borrowed channel. `park`
+    /// waits for an element or for every sender to close; without it an empty
+    /// channel produces `None` at once. The element carries its typed
+    /// envelope recipe.
     ChannelRecv {
+        park: bool,
         channel: ArgumentTransfer,
         element: PhysicalValueRecipe,
         result: StorageId,
@@ -3331,7 +3334,7 @@ impl FunctionLowerer<'_> {
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::ChannelRecv,
+                kind: hew_sir::SuspendKind::ChannelRecv { park },
                 inputs,
                 result: CallResult::Value(result),
                 resumes,
@@ -3351,6 +3354,7 @@ impl FunctionLowerer<'_> {
                     .map(|field| field.ty.clone())
                     .ok_or_else(|| PhysicalError::new("channel receive lacks its element type"))?;
                 Ok(PhysicalTerminator::ChannelRecv {
+                    park: *park,
                     channel: self.argument_transfers(inputs)?[0],
                     element: physical_value_recipe(self.module, self.glue_ids, &element)?,
                     result: self.value(result.id)?,

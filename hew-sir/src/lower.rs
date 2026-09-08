@@ -8035,11 +8035,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             };
             return self.lower_stream_next(expr, stream).map(Some);
         }
-        if family == hew_types::RuntimeCallFamily::ChannelRecvLayout {
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::ChannelRecvLayout
+                | hew_types::RuntimeCallFamily::ChannelTryRecvLayout
+        ) {
             let [channel] = args else {
                 return Err("channel receive takes exactly one receiver".into());
             };
-            return self.lower_channel_recv(expr, channel).map(Some);
+            let park = family == hew_types::RuntimeCallFamily::ChannelRecvLayout;
+            return self.lower_channel_recv(expr, channel, park).map(Some);
         }
         if family == hew_types::RuntimeCallFamily::ChannelSendLayout {
             let [channel, value] = args else {

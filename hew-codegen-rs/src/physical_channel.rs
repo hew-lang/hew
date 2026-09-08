@@ -68,6 +68,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     pub(super) fn emit_channel_recv(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         let PhysicalTerminator::ChannelRecv {
+            park,
             channel,
             element,
             result,
@@ -81,13 +82,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ));
         };
         let result = *result;
+        let park = *park;
         let block = block.id;
         let ArgumentTransfer::BorrowMut(channel) = channel else {
             return Err(CodegenError::FailClosed(
                 "channel receive requires an exclusive receiver".into(),
             ));
         };
-        let frame = self.channel_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let handle = self.load(*channel, "channel.receiver")?;
         let witness = self.channel_witness(block)?;
@@ -107,6 +108,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let slot = self
             .value_emitter()
             .entry_scratch(element_ty, "channel.element.slot")?;
+        if !park {
+            return self.emit_channel_try_recv(
+                handle, slot, element_ty, witness, result, option.id, normal,
+            );
+        }
+        let frame = self.channel_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let poll = self.ctx.append_basic_block(self.value, "channel.recv.poll");
         let inspect = self
@@ -186,6 +193,68 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(failed);
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
         self.emit_edge(unwind)
+    }
+
+    /// `try_recv()`: one non-parking take. The runtime entry reports 1 with the
+    /// element decoded into the slot and 0 for an empty or closed channel, so
+    /// there is no waker, no frame and no cancellation observation — an
+    /// immediate answer cannot be interrupted.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_channel_try_recv(
+        &self,
+        handle: BasicValueEnum<'ctx>,
+        slot: PointerValue<'ctx>,
+        element_ty: BasicTypeEnum<'ctx>,
+        witness: PointerValue<'ctx>,
+        result: StorageId,
+        option: PhysicalVariantId,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let take = coro::external(
+            self.llvm,
+            "hew_channel_try_recv_layout",
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+        )?;
+        let status = suspend::call_value(
+            &self.builder,
+            take,
+            &[handle.into(), slot.into(), witness.into()],
+            "channel.try_recv.status",
+        )?
+        .into_int_value();
+        let some = self
+            .ctx
+            .append_basic_block(self.value, "channel.try_recv.some");
+        let none = self
+            .ctx
+            .append_basic_block(self.value, "channel.try_recv.none");
+        let taken = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "channel.try_recv.taken",
+            )
+            .llvm_ctx("observe a non-parking channel take")?;
+        self.builder
+            .build_conditional_branch(taken, some, none)
+            .llvm_ctx("dispatch non-parking channel receive outcome")?;
+        self.builder.position_at_end(some);
+        let value = self
+            .builder
+            .build_load(element_ty, slot, "channel.element")
+            .llvm_ctx("load transferred element")?;
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option)?;
+        self.set_place_initialized(result, true)?;
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+        self.set_place_initialized(result, true)?;
+        self.emit_edge(normal)
     }
 
     pub(super) fn emit_channel_send(&self, block: &PhysicalBlock) -> CodegenResult<()> {

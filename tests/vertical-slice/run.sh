@@ -3162,28 +3162,12 @@ run_accept_expect_stdout "actor_multi_arg_ask"
 # `rx.close()` in the caller compiled and double-closed the channel at runtime.
 run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
-# Accept + run: the value a `match` over a channel `recv()` produces must
-# survive the match. A channel receive is lowered as an intercepted
-# layout-witness call that writes the `Option<T>` carrier straight into a temp
-# with no owner, so the arm binder becomes the sole owner of the payload; its
-# body-end release canonicalizes onto the match result place, nulling the
-# string the match just produced. #3127 is a documented v0.6.0 fail-closed
-# limit (D342): the fix belongs in hew-mir/src/lower/pattern.rs and
-# hew-codegen-rs/src/llvm.rs, out of proportion for this ratchet. The second
-# half binds the carrier to a local first — the shape that already works — as
-# the negative control.
-run_accept_expect_status "channel_recv_match_result_survives" 0
-if diff -u "${ROOT}/tests/vertical-slice/accept/channel_recv_match_result_survives.expected" \
-    "${stdout_output}" >/dev/null; then
-    echo "channel_recv_match_result_survives: #3127 is fixed; remove this known-failure ratchet" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-if [[ "$(cat "${stdout_output}")" != $'direct: []\nvia local: [via local]\ntry: []' ]]; then
-    echo "channel_recv_match_result_survives: #3127 changed from the exact empty-payload failure" >&2
-    cat "${stdout_output}" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-mark_known "channel_recv_match_result_survives (#3127: match over recv() loses its own result)"
+# Accept + run: the value a `match` over a channel receive produces must
+# survive the match. Both halves take the element through the typed envelope
+# into the match result: `recv()` parks, `try_recv()` takes without parking,
+# and binding the carrier to a local first is the negative control that always
+# worked.
+run_accept_expect_stdout "channel_recv_match_result_survives"
 
 # Accept + run: the ASan gate's recv-frame balance fixture also has an ordinary
 # stdout oracle. Every shape - the drain loop, the early return, the forwarded

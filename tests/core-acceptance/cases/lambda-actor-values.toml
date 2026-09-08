@@ -1,0 +1,10 @@
+[[case]]
+id = "lambda-actor-values"
+intent = "A lambda actor lowers to a real actor declaration: its captures are its state, its body is its one handler, and its `LambdaPid<M, R>` handle is an ordinary value that can be stored in a record, called for a completion reply, closed, and released once."
+source = "cases/lambda-actor-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "21\n41\ndoubler 42\nclosed\n"
+exit = 0

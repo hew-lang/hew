@@ -66,12 +66,39 @@ fn actor_overflow(source: &hew_hir::HirActorDecl) -> Result<crate::SemActorOverf
 impl InstanceService<'_> {
     /// The descriptor an actor handle or supervised role addresses.
     pub(super) fn require_actor(&mut self, ty: &ResolvedTy) -> Result<crate::ActorId, String> {
-        if let Some(actor) = self.actors.iter().find(|actor| actor.admits_target(ty)) {
+        self.require_actor_declaration(ty, None)
+    }
+
+    /// The descriptor for one actor, selected by an exact declaration when the
+    /// handle type alone cannot name it.
+    ///
+    /// Two lambda actors with the same signature share one `LambdaPid<M, R>`,
+    /// so a spawn — which must start the actor whose body it is — names its
+    /// declaration. A call site does not: it reaches whichever lambda the
+    /// handle addresses, and every actor answering to that handle carries the
+    /// same message and reply glue.
+    pub(super) fn require_actor_declaration(
+        &mut self,
+        ty: &ResolvedTy,
+        exact: Option<&str>,
+    ) -> Result<crate::ActorId, String> {
+        if let Some(actor) = self.actors.iter().find(|actor| {
+            exact.map_or_else(
+                || actor.admits_target(ty),
+                |name| actor.declaration.full_path() == name,
+            )
+        }) {
             return Ok(actor.id);
         }
-        let source = declaration(self.module, ty)
-            .ok_or("local actor handle lacks its exact declaration")?
-            .clone();
+        let source = match exact {
+            Some(name) => self.module.items.iter().find_map(|item| match item {
+                HirItem::Actor(actor) if actor.declaration.full_path() == name => Some(actor),
+                _ => None,
+            }),
+            None => declaration(self.module, ty),
+        }
+        .ok_or("local actor handle lacks its exact declaration")?
+        .clone();
         // A `ChildRef<A>` role and a `LocalPid<A>` handle address one actor, so
         // the descriptor is keyed by the pid spelling. A lambda actor's handle
         // is already its own spelling and has no separate role.
@@ -608,10 +635,31 @@ impl Builder<'_, '_> {
                     argument_order,
                 ))
             }
-            HirExprKind::Spawn { args, .. } => {
+            HirExprKind::Spawn { actor_name, args } => {
                 let ty = self.ty(&expression.ty);
-                let id = self.service.require_actor(&ty)?;
-                let source = declaration(self.service.module, &ty)
+                // A spawn starts one exact declaration's body, so it selects
+                // by the declaration it names rather than by handle type.
+                let exact = ty
+                    .is_builtin(hew_types::BuiltinType::LambdaPid)
+                    .then_some(actor_name.as_str());
+                let id = self.service.require_actor_declaration(&ty, exact)?;
+                let declaration_path = self.service.actors[id.0 as usize]
+                    .declaration
+                    .full_path()
+                    .to_string();
+                let source = self
+                    .service
+                    .module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        HirItem::Actor(actor)
+                            if actor.declaration.full_path() == declaration_path =>
+                        {
+                            Some(actor)
+                        }
+                        _ => None,
+                    })
                     .ok_or("spawn lost its actor declaration")?;
                 let mut values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
                 let mut argument_order = Vec::new();

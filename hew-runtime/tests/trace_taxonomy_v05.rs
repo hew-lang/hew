@@ -73,8 +73,6 @@ const KNOWN_EVENT_NAMES: &[&str] = &[
     "duplex_closed",
     "sink_closed",
     "stream_closed",
-    "lambda_spawned",
-    "lambda_released",
     "supervisor_restart",
     "supervisor_escalate",
     "supervisor_circuit_open",

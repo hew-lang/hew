@@ -204,7 +204,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "ask.admission",
         )?
         .into_pointer_value();
-        for source in &sources {
+        // The request arguments moved into the wrapper; the borrowed target
+        // keeps its owner, which releases it at the end of its scope.
+        for source in sources.iter().skip(1) {
             self.clear_owned(*source)?;
         }
         let admit_poll = self.ctx.append_basic_block(self.value, "ask.admit.poll");

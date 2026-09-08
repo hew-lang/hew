@@ -60,5 +60,16 @@ fn main() {
         .Ok(v) => println(v),
         .Err(_) => panic("the borrowed handle refused its call"),
     }
+
+    // A handle that is asked and never closed is released at the end of its
+    // scope: the call borrowed the target and left its owner alone, so the
+    // scope-exit release still has a live wrapper to free, exactly once.
+    let unclosed = actor |n: i64| -> i64 {
+        return n - 1;
+    };
+    match unclosed(1000) {
+        .Ok(v) => println(v),
+        .Err(_) => panic("the unclosed handle refused its call"),
+    }
     println("done");
 }

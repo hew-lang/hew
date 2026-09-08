@@ -6786,6 +6786,7 @@ mod tests {
             family,
             hew_types::RuntimeCallFamily::Map(
                 hew_types::runtime_call::MapValueOp::Get
+                    | hew_types::runtime_call::MapValueOp::GetBorrow
                     | hew_types::runtime_call::MapValueOp::Remove
             )
         ) {
@@ -6803,12 +6804,21 @@ mod tests {
         let mut copies = Vec::new();
         let mut operands = Vec::new();
         let count = u32::try_from(params.len()).unwrap();
+        // A borrowed result is a loan: the fixture ends it rather than
+        // handing an owner back to a caller.
+        let borrowed_result =
+            matches!(contract.result, hew_types::RuntimeResultEffect::Borrowed(_));
+        let return_ty = if borrowed_result {
+            ResolvedTy::Unit
+        } else {
+            result_ty.clone()
+        };
         let signature = &mut module.callables[0].signature;
         signature.params.clear();
-        signature.return_ty = result_ty.clone();
+        signature.return_ty = return_ty.clone();
         let function = &mut module.functions[0];
         function.params.clear();
-        function.return_ty = result_ty.clone();
+        function.return_ty = return_ty;
         for (index, (ty, contract)) in params.iter().zip(contract.arguments).enumerate() {
             let index = u32::try_from(index).unwrap();
             let own = OwnKind::of_class(facts.require(ty).unwrap().class);
@@ -6856,7 +6866,13 @@ mod tests {
                 decision,
             });
         }
-        let own = OwnKind::of_class(facts.require(&result_ty).unwrap().class);
+        // A borrowed result is a loan of argument zero: it carries no release
+        // obligation regardless of its type's class.
+        let own = if matches!(contract.result, hew_types::RuntimeResultEffect::Borrowed(_)) {
+            OwnKind::Guaranteed
+        } else {
+            OwnKind::of_class(facts.require(&result_ty).unwrap().class)
+        };
         let raw = ValueId(2 * count);
         let value = ValueId(2 * count + 1);
         let failed_inputs = operands
@@ -6911,12 +6927,27 @@ mod tests {
                     ty: result_ty,
                     own,
                 }],
-                ops: vec![],
-                terminator: SemTerminator::Return {
-                    value: Some(BoundaryOperand {
-                        operand: Operand { value },
-                        decision: BoundaryDecision::Move,
-                    }),
+                ops: if borrowed_result {
+                    vec![SemOp {
+                        id: hew_sir::OpId(2 * count + 2),
+                        results: vec![],
+                        kind: SemOpKind::EndBorrow {
+                            borrow: Operand { value },
+                        },
+                        provenance: Provenance::Synthesized,
+                    }]
+                } else {
+                    vec![]
+                },
+                terminator: if borrowed_result {
+                    SemTerminator::Return { value: None }
+                } else {
+                    SemTerminator::Return {
+                        value: Some(BoundaryOperand {
+                            operand: Operand { value },
+                            decision: BoundaryDecision::Move,
+                        }),
+                    }
                 },
             },
         ];
@@ -6946,6 +6977,7 @@ mod tests {
             Map::Len,
             Map::Index,
             Map::Get,
+            Map::GetBorrow,
             Map::Remove,
             Map::ContainsKey,
             Map::Insert,
@@ -7009,6 +7041,11 @@ mod tests {
             (
                 RuntimeCallFamily::Map(Map::Get),
                 "hew_hashmap_get_clone_layout",
+                None,
+            ),
+            (
+                RuntimeCallFamily::Map(Map::GetBorrow),
+                "hew_hashmap_get_borrow_layout",
                 None,
             ),
             (

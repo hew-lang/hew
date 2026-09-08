@@ -230,6 +230,7 @@ fn assert_balanced() {
 #[derive(Clone, Copy, Debug)]
 enum Lookup {
     Borrow,
+    BorrowValue,
     Clone,
     Contains,
     Remove,
@@ -241,6 +242,7 @@ fn map_lookup_and_removal_faults_leave_every_result_and_owner_untouched() {
     for failure in [Failure::Hash(1), Failure::Equal(1)] {
         for operation in [
             Lookup::Borrow,
+            Lookup::BorrowValue,
             Lookup::Clone,
             Lookup::Contains,
             Lookup::Remove,
@@ -264,6 +266,13 @@ fn map_lookup_and_removal_faults_leave_every_result_and_owner_untouched() {
                         map,
                         (&raw const key).cast(),
                         &raw mut borrowed,
+                        &raw mut fault,
+                    ),
+                    Lookup::BorrowValue => map::hew_hashmap_get_borrow_layout(
+                        map,
+                        (&raw const key).cast(),
+                        (&raw mut sentinel).cast(),
+                        &raw mut present,
                         &raw mut fault,
                     ),
                     Lookup::Clone => map::hew_hashmap_get_clone_layout(
@@ -356,6 +365,96 @@ unsafe fn map_insert_fault(len: i64, number: i64, copy_in: bool, failure: Failur
         drop_owned((&raw mut value).cast());
         map::hew_hashmap_free_layout(map);
     }
+}
+
+/// The clone-free ingress: the key is copied in and the value owner transfers.
+/// A callback failure transfers nothing, so the caller still holds its value
+/// and the staged key clone is released.
+unsafe fn map_insert_take_fault(len: i64, number: i64, failure: Failure) {
+    // SAFETY: map and two independent input owners stay live until explicit cleanup.
+    unsafe {
+        let map = fill_map(len);
+        let mut key = owned(number);
+        let mut value = owned(9000);
+        let geometry = ((*map).entries, (*map).cap, (*map).len);
+        let before = COUNTS.get();
+        let mut present = true;
+        let mut fault = ptr::null_mut();
+        configure(Some(failure));
+        let status = map::hew_hashmap_insert_take_layout(
+            map,
+            (&raw const key).cast(),
+            (&raw const value).cast(),
+            &raw mut present,
+            &raw mut fault,
+        );
+        take_fault(status, fault, failure);
+        assert!(present);
+        assert_eq!(((*map).entries, (*map).cap, (*map).len), geometry);
+        // One staged key clone, released; the value never left the caller.
+        assert_scratch_released(before, 1);
+        assert_eq!(*key.number, number);
+        assert_eq!(*value.number, 9000);
+        assert_map_values(map, len);
+        drop_owned((&raw mut key).cast());
+        drop_owned((&raw mut value).cast());
+        map::hew_hashmap_free_layout(map);
+    }
+}
+
+#[test]
+fn map_take_insertion_faults_leave_the_value_with_its_caller() {
+    for number in [0, 4] {
+        for failure in [Failure::Hash(1), Failure::Equal(1)] {
+            reset();
+            // SAFETY: the helper provides valid descriptors and retains all owners on error.
+            unsafe { map_insert_take_fault(2, number, failure) };
+            assert_balanced();
+        }
+    }
+}
+
+#[test]
+fn map_take_insertion_moves_the_value_in_and_releases_it_once() {
+    reset();
+    // SAFETY: the map owns the moved value after a zero status; the caller's
+    // slot is not released again.
+    unsafe {
+        let map = fill_map(1);
+        let key = owned(7);
+        let value = owned(9000);
+        let mut present = false;
+        let mut fault = ptr::null_mut();
+        configure(None);
+        let status = map::hew_hashmap_insert_take_layout(
+            map,
+            (&raw const key).cast(),
+            (&raw const value).cast(),
+            &raw mut present,
+            &raw mut fault,
+        );
+        assert_eq!(status, 0);
+        assert!(present, "a fresh key is a new entry");
+        assert_eq!(map::hew_hashmap_len_layout(map), 2);
+        let mut probe = owned(7);
+        let mut read = MaybeUninit::<Owned>::uninit();
+        assert!(map_status::success(|out, fault| {
+            map::hew_hashmap_get_borrow_layout(
+                map,
+                (&raw const probe).cast(),
+                read.as_mut_ptr().cast(),
+                out,
+                fault,
+            )
+        }));
+        // The borrowed read aliases the map's value: it carries no release.
+        assert_eq!(*read.assume_init().number, 9000);
+        drop_owned((&raw mut probe).cast());
+        let mut key = key;
+        drop_owned((&raw mut key).cast());
+        map::hew_hashmap_free_layout(map);
+    }
+    assert_balanced();
 }
 
 #[test]

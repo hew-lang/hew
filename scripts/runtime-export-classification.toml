@@ -474,6 +474,7 @@ stable = [
   "hew_node_api_set_transport",
   "hew_node_api_shutdown",
   "hew_node_api_start",
+  "hew_node_api_start_config",
   "hew_node_api_unregister",
   "hew_node_ask_take_last_error",
   "hew_node_connect",
@@ -1598,6 +1599,8 @@ non-declarable = [
   # code has no way to name it or the child table it reads.
   "hew_supervisor_native_await_restart",
   "hew_supervisor_native_child",
+  "hew_supervisor_native_role_owner",
+  "hew_supervisor_native_role_wait_new",
   "hew_supervisor_native_spawn",
   "hew_supervisor_role_await_send",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own

@@ -11353,6 +11353,19 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_api_start_config( *const HewNodeConfig) -> c_int"
+      },
+      "symbol": "hew_node_api_start_config"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
@@ -16954,7 +16967,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_native_await_restart( HewLocalPidId, u32, )"
+        "native": "fn hew_supervisor_native_await_restart( HewLocalPidId, u32, c_int, )"
       },
       "symbol": "hew_supervisor_native_await_restart"
     },
@@ -16970,6 +16983,32 @@
         "native": "fn hew_supervisor_native_child( HewLocalPidId, u32, *mut c_int, ) -> usize"
       },
       "symbol": "hew_supervisor_native_child"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_supervisor_native_role_owner( HewLocalPidId, u32, ) -> HewLocalPidId"
+      },
+      "symbol": "hew_supervisor_native_role_owner"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_supervisor_native_role_wait_new( HewLocalPidId, u32, *const HewWaker, c_int, ) -> *mut HewNativeActorWait"
+      },
+      "symbol": "hew_supervisor_native_role_wait_new"
     },
     {
       "availability": [

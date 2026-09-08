@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1646u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1649u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1646] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1649] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -4207,6 +4207,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1646] = {
      "{\"native\": \"fn hew_node_api_start( *const c_char) -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_api_start_config",
+     "{\"native\": \"fn hew_node_api_start_config( *const HewNodeConfig) -> "
+     "c_int\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_unregister",
      "{\"native\": \"fn hew_node_api_unregister( *const c_char) -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
@@ -6208,12 +6213,22 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1646] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_await_restart",
      "{\"native\": \"fn hew_supervisor_native_await_restart( HewLocalPidId, "
-     "u32, )\"}",
+     "u32, c_int, )\"}",
      "native", "non-declarable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_child",
      "{\"native\": \"fn hew_supervisor_native_child( HewLocalPidId, u32, *mut "
      "c_int, ) -> usize\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_role_owner",
+     "{\"native\": \"fn hew_supervisor_native_role_owner( HewLocalPidId, u32, "
+     ") -> HewLocalPidId\"}",
+     "native", "non-declarable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_role_wait_new",
+     "{\"native\": \"fn hew_supervisor_native_role_wait_new( HewLocalPidId, "
+     "u32, *const HewWaker, c_int, ) -> *mut HewNativeActorWait\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_spawn",

@@ -161,7 +161,7 @@ fn selecting_a_never_returning_child_propagates_its_fault() {
 fn main() {
     scope {
         let child = fork { panic("selected bottom child"); };
-        select { value = await child => println("incorrect arm") };
+        select { value from child => println("incorrect arm") };
     } handle failure { println("recovered selection"); };
 }
 "#,
@@ -328,8 +328,8 @@ fn main() {
     let first = fork { sleep(1ms); "first" };
     let second = fork { "second" };
     let result = select {
-        a = await first => { let b = await second; a + ":" + b },
-        b = await second => { let a = await first; a + ":" + b },
+        a from first => { let b = await second; a + ":" + b },
+        b from second => { let a = await first; a + ":" + b },
     };
     println(result);
 }
@@ -349,8 +349,8 @@ fn main() {
     let first = fork { sleep(100ms); 17 };
     let second = fork { sleep(100ms); 42 };
     let result = select {
-        a = await first => a + await second,
-        b = await second => b + await first,
+        a from first => a + await second,
+        b from second => b + await first,
         after duration() => { println("timeout"); await first + await second },
     };
     println(result);
@@ -371,7 +371,7 @@ fn main() {
     scope within 20ms {
         defer println("parent cleanup");
         let child = fork { sleep(1s); println("late"); 42 };
-        select { value = await child => println(value) };
+        select { value from child => println(value) };
     };
 }
 "#,
@@ -393,7 +393,7 @@ fn main() {
         sleep(1ms);
         fail()
     };
-    select { value = await child => println(value) };
+    select { value from child => println(value) };
 }
 "#,
         "child cleanup\nparent cleanup\n",
@@ -409,16 +409,16 @@ fn task_selection_handles_projected_temporary_and_unit_tasks() {
 fn main() {
     let pair = (fork { sleep(1ms); 17 }, fork { 42 });
     let sum = select {
-        a = await pair.0 => a + await pair.1,
-        b = await pair.1 => b + await pair.0,
+        a from pair.0 => a + await pair.1,
+        b from pair.1 => b + await pair.0,
     };
     println(sum);
     let result = select {
-        value = await fork { println("created"); 42 } => value,
+        value from fork { println("created"); 42 } => value,
     };
     println(result);
     let child = fork { sleep(1ms); println("child"); };
-    select { done = await child => println("selected") };
+    select { done from child => println("selected") };
 }
 "#,
         "59\ncreated\n42\nchild\nselected\n",
@@ -436,7 +436,7 @@ fn main() {
     defer println("parent cleanup");
     let child = fork { sleep(1s); 42 };
     select {
-        value = await child => println(value),
+        value from child => println(value),
         after duration() => println("timer"),
     };
 }

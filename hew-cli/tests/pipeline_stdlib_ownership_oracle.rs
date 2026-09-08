@@ -77,7 +77,7 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < __FRAMES__ {
         let outcome = select {
-            reply = await source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
+            reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
             after 1ms => 0,
         };
         if outcome != 0 {

@@ -438,7 +438,9 @@ fn scope_body_with_spawned_call_and_trailing_value_checks_cleanly() {
 #[test]
 fn empty_select_and_match_preserve_source_diagnostics() {
     for (source, expects_error) in [
-        ("fn main() { let _ = select {}; }", false),
+        // A select with no arms waits on nothing and is refused; an empty
+        // match keeps reporting its scrutinee's own diagnostic.
+        ("fn main() { let _ = select {}; }", true),
         ("fn main() { let _ = match missing() {}; }", true),
     ] {
         let parsed = hew_parser::parse(source);

@@ -5673,9 +5673,9 @@ fn ordinary_error_binding_expressions_take_priority_after_return() {
 }
 
 #[test]
-fn select_arm_binds_an_awaited_operation() {
+fn select_arm_binds_its_source_with_from() {
     let Expr::Select { arms, timeout } = parse_let_expr(
-        "select { first = await left => first, second = await right => second, after 1s => 0 }",
+        "select { first from left => first, second from right => second, after 1s => 0 }",
     ) else {
         panic!("expected select");
     };

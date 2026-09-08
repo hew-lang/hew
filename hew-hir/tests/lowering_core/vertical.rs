@@ -556,8 +556,8 @@ fn select_task_and_timer_preserve_typed_binding_and_result() {
             let first = fork { 41 };
             let second = fork { 42 };
             let result: i64 = select {
-                a = await first => a + 1,
-                b = await second => b,
+                a from first => a + 1,
+                b from second => b,
                 after 5ms => 0,
             };
         }
@@ -586,7 +586,7 @@ fn select_actor_await_uses_checked_dispatch() {
         fn main() {
             let worker = spawn Worker;
             let result: i64 = select {
-                reply = await worker.process(41) => match reply { .Ok(value) => value, .Err(_) => -1 },
+                reply from worker.process(41) => match reply { .Ok(value) => value, .Err(_) => -1 },
                 after 5ms => 0,
             };
         }
@@ -598,11 +598,14 @@ fn select_actor_await_uses_checked_dispatch() {
     );
 }
 
+/// A select arm source is a task, an actor call or a channel receive. A value
+/// that is none of those is refused, and so is `await` written on a source that
+/// would otherwise be valid.
 #[test]
-fn select_non_await_sources_are_rejected() {
+fn select_sources_outside_the_sealed_set_are_rejected() {
     for source in [
-        "fn main() { let task = fork { 42 }; let result = select { value = task => 1, }; }",
-        "fn main() { let result = select { value = 42 => 1, }; }",
+        "fn main() { let result = select { value from 42 => 1, }; }",
+        "fn main() { let task = fork { 42 }; let result = select { value from await task => 1, }; }",
     ] {
         let (_, checked) = support::checker_pipeline::typecheck_source(source);
         assert!(
@@ -610,18 +613,19 @@ fn select_non_await_sources_are_rejected() {
                 .errors
                 .iter()
                 .any(|error| { error.kind == hew_types::error::TypeErrorKind::InvalidOperation }),
-            "{:?}",
+            "{source}: {:?}",
             checked.errors
         );
     }
 }
 
+/// Counterfactual for the refusals above: a bare forked task IS a source.
 #[test]
-fn select_await_requires_an_awaitable_operand() {
+fn select_binds_a_bare_task_source() {
     let (_, checked) = support::checker_pipeline::typecheck_source(
-        "fn main() { let result = select { value = await 42 => 1, }; }",
+        "fn main() { let task = fork { 42 }; let result = select { value from task => value, }; }",
     );
-    assert!(!checked.errors.is_empty(), "literal must not be awaitable");
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
 }
 
 #[test]
@@ -650,7 +654,7 @@ fn select_timer_only_lowers_without_diagnostics() {
 
 #[test]
 fn select_arm_body_type_mismatch_rejected() {
-    let source = "fn main() { let first = fork { 1 }; let second = fork { 2 }; let result = select { a = await first => 1, b = await second => true, }; }";
+    let source = "fn main() { let first = fork { 1 }; let second = fork { 2 }; let result = select { a from first => 1, b from second => true, }; }";
     let (_, checked) = support::checker_pipeline::typecheck_source(source);
     assert!(
         checked

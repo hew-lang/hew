@@ -40,7 +40,7 @@
 //! A select winner binds its owned reply, and a *bound-but-unused* match/select
 //! arm binding of an owned payload is not yet scope-dropped — a PRE-EXISTING,
 //! reply-channel-INDEPENDENT consume-side drop gap (a plain `let s = e; s.len()`
-//! drops correctly; `select { reply = await a.m() => 0, ... }` leaks the winner's
+//! drops correctly; `select { reply from a.m() => 0, ... }` leaks the winner's
 //! `reply`). A per-`spawn` actor allocation leaks similarly. Both contaminate a
 //! consume/loop leak slope but neither aborts, so the never-consumed leg is
 //! pinned by the deterministic no-double-free guard here, and by the

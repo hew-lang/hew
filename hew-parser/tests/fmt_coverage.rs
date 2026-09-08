@@ -1816,7 +1816,7 @@ fn fmt_postfix_try_roundtrip() {
 #[test]
 fn fmt_select_roundtrip() {
     exact_roundtrip(
-        "fn main() {\n    let value = select {\n        msg = await inbox.recv() => msg,\n        after 100ms => -1,\n    };\n}\n",
+        "fn main() {\n    let value = select {\n        msg from inbox.recv() => msg,\n        after 100ms => -1,\n    };\n}\n",
     );
 }
 

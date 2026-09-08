@@ -1,0 +1,29 @@
+[[case]]
+id = "integer-literal-range"
+intent = "every integer type's extremes are writable as source literals and reach the running program exactly: u64::MAX in decimal, hex, octal and binary; i8/i16/i32/i64 minima through negated literals; extremes as match predicates and across a function boundary; arithmetic on a full-range u64."
+source = "cases/integer-literal-range.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = """
+18446744073709551615
+true
+true
+true
+18446744073709551615
+255 65535 4294967295
+-128 127 -32768
+-2147483648
+-9223372036854775808
+9223372036854775807
+u64 max
+zero
+other
+i32 min
+i32 max
+interior
+1
+true
+"""
+exit = 0

@@ -1001,6 +1001,95 @@ fn var_bound_literal_unifies_to_i32_when_added_to_i32_result() {
 }
 
 #[test]
+fn full_range_unsigned_literals_are_admitted() {
+    // D421: the literal carrier is exact, so every integer type's extremes are
+    // writable in source. `u64::MAX` used to be rejected as an invalid literal
+    // before the checker ever saw it.
+    let output = check_source(
+        r"
+        fn main() -> i64 {
+            let decimal: u64 = 18446744073709551615;
+            let hex: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+            let i64_min: i64 = -9223372036854775808;
+            let u32_max: u32 = 4294967295;
+            0
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "full-range literals must type check, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn integer_literal_beyond_its_type_is_a_range_error() {
+    // One past `u64::MAX` still parses into the carrier, so the diagnostic is
+    // the contextual range error, not a parser "invalid literal".
+    for (source, expected) in [
+        (
+            "fn main() -> i64 { let w: u64 = 18446744073709551616; 0 }",
+            "does not fit in `u64` (range 0..=18446744073709551615)",
+        ),
+        (
+            "fn main() -> i64 { let w: i64 = 18446744073709551615; 0 }",
+            "does not fit in `i64`",
+        ),
+        (
+            "fn main() -> i64 { let w: u8 = 256; 0 }",
+            "does not fit in `u8` (range 0..=255)",
+        ),
+        (
+            "fn main() -> i64 { let w: i32 = -2147483649; 0 }",
+            "does not fit in `i32`",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| err.message.contains(expected)),
+            "expected `{expected}` for `{source}`, got: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn negated_literal_on_an_unsigned_type_is_rejected() {
+    let output = check_source("fn main() -> i64 { let w: u64 = -1; 0 }");
+    assert!(
+        output.errors.iter().any(|err| err
+            .message
+            .contains("negative literal `-1` cannot be assigned to unsigned type `u64`")),
+        "expected the unsigned-negative diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn full_range_unsigned_match_predicate_is_admitted() {
+    // Match predicates run through a separate range check from bindings.
+    let output = check_source(
+        r"
+        fn classify(x: u64) -> i64 {
+            match x {
+                18446744073709551615 => 1,
+                _ => 0,
+            }
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a u64::MAX match predicate must type check, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn integer_literal_match_pattern_must_fit_scrutinee_width() {
     let output = check_source(
         r"

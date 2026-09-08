@@ -7795,6 +7795,22 @@ mod tests {
             },
         );
         target.insert_layout(
+            ResolvedTy::I8,
+            PhysicalLayout {
+                size: 1,
+                align: 1,
+                repr: PhysicalRepr::Integer { bits: 8 },
+            },
+        );
+        target.insert_layout(
+            ResolvedTy::U64,
+            PhysicalLayout {
+                size: 8,
+                align: 8,
+                repr: PhysicalRepr::Integer { bits: 64 },
+            },
+        );
+        target.insert_layout(
             ResolvedTy::String,
             PhysicalLayout {
                 size: 8,
@@ -9214,6 +9230,75 @@ mod tests {
         *constant = PhysicalConst::Bool(true);
         let error = verify_physical_module(&wrong_constant)
             .expect_err("constant payload must agree with its destination");
+        assert!(error.message.contains("constant payload"));
+    }
+
+    #[test]
+    fn full_range_u64_literal_lowers_to_its_exact_bit_pattern() {
+        let module = lower_source("fn main() { let value: u64 = 18446744073709551615; }");
+        let physical = lower_physical_module(&module, target())
+            .expect("full-range u64 literal")
+            .into_unverified();
+        let bits = physical.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(bits),
+                    ..
+                } => Some(*bits),
+                _ => None,
+            })
+            .expect("integer constant");
+        assert_eq!(bits, u64::MAX);
+    }
+
+    #[test]
+    fn negative_signed_literal_lowers_to_its_destination_width_twos_complement() {
+        let module = lower_source("fn main() { let value: i8 = -128; }");
+        let physical = lower_physical_module(&module, target())
+            .expect("i8 minimum literal")
+            .into_unverified();
+        let bits = physical.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(bits),
+                    ..
+                } => Some(*bits),
+                _ => None,
+            })
+            .expect("integer constant");
+        // The eight-bit two's-complement encoding of -128, with no stray high
+        // bits from the wider carrier.
+        assert_eq!(bits, 0x80);
+    }
+
+    #[test]
+    fn verifier_rejects_a_constant_with_bits_above_its_destination_width() {
+        let module = lower_source("fn main() { let value: u8 = 7; }");
+        let verified = lower_physical_module(&module, target()).expect("u8 literal");
+        let mut malformed = verified.into_unverified();
+        let constant = malformed.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::Const {
+                    value: value @ PhysicalConst::IntegerBits(_),
+                    ..
+                } => Some(value),
+                _ => None,
+            })
+            .expect("integer constant");
+        // Bit 8 cannot belong to an eight-bit destination: the backend would
+        // emit the pattern as written and produce a different value.
+        *constant = PhysicalConst::IntegerBits(0x107);
+        let error = verify_physical_module(&malformed)
+            .expect_err("a constant must be canonical for its destination width");
         assert!(error.message.contains("constant payload"));
     }
 

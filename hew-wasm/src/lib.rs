@@ -1105,6 +1105,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_source_encodes_every_integer_literal_as_a_decimal_string() {
+        // D421: JavaScript cannot read `u64::MAX` exactly as a JSON number, so
+        // the integer payload is a decimal string for every integer literal --
+        // one schema, no threshold for consumers to guess at.
+        let result = ok(parse_source(
+            "fn main() { let small = 42; let big: u64 = 18446744073709551615; }",
+        ));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let mut payloads = Vec::new();
+        collect_integer_payloads(&parsed["ast"], &mut payloads);
+        assert_eq!(
+            payloads,
+            vec!["42".to_string(), "18446744073709551615".to_string()],
+            "integer payloads must be exact decimal strings: {result}"
+        );
+    }
+
+    /// Every `{ "Integer": <payload> }` node in document order.
+    fn collect_integer_payloads(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, child) in fields {
+                    if key == "Integer" {
+                        out.push(
+                            child
+                                .as_str()
+                                .expect("integer literal payload must be a string")
+                                .to_string(),
+                        );
+                    } else {
+                        collect_integer_payloads(child, out);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_integer_payloads(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
     fn parse_source_returns_ast_and_parse_diagnostics() {
         let result = ok(parse_source("fn main() { let x = 1; }"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();

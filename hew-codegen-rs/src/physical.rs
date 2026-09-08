@@ -2277,6 +2277,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn store(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
+        let expected = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?;
+        if value.get_type() != expected {
+            return Err(CodegenError::FailClosed(format!(
+                "physical storage {} expects {}, received {}",
+                id.0,
+                expected.print_to_string(),
+                value.get_type().print_to_string()
+            )));
+        }
         self.builder
             .build_store(self.slots[id.0 as usize], value)
             .llvm_ctx("store physical storage")?;
@@ -4390,7 +4399,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     &[self.ctx.i32_type().const_zero().into()],
                     "bytes.new",
                 )?;
-                self.store(required_result()?, value)?;
+                let result = required_result()?;
+                // The allocator returns the data pointer, not the source bytes
+                // triple. Initialize its offset and length before publishing it.
+                let empty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?
+                    .into_struct_type()
+                    .const_zero();
+                let bytes = self
+                    .builder
+                    .build_insert_value(empty, value, 0, "bytes.new.value")
+                    .llvm_ctx("initialize empty bytes value")?
+                    .into_struct_value();
+                self.store(result, bytes.into())?;
             }
             PhysicalRuntimeAction::Print { kind, newline } => {
                 use hew_types::runtime_call::PrintKind;

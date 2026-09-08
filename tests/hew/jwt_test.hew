@@ -10,7 +10,7 @@ fn test_try_encode_and_try_decode_round_trip_payload() {
     let secret = "fixture-secret";
     match jwt.encode(payload, secret, "HS256") {
         .Ok(token) => {
-            testing.assert_true(token.len() > 0);
+            testing.assert_true(!token.is_empty());
             match jwt.decode(token, secret, "HS256") {
                 .Ok(decoded) => testing.assert_eq_str(decoded, payload),
                 .Err(err) => panic(f"{err}"),
@@ -22,20 +22,29 @@ fn test_try_encode_and_try_decode_round_trip_payload() {
 
 #[test]
 fn test_validate_accepts_matching_secret() {
-    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS256");
+    let token = match jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS256") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     testing.assert_true(jwt.validate(token, "fixture-secret", "HS256"));
 }
 
 #[test]
 fn test_validate_rejects_wrong_secret() {
-    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS256");
+    let token = match jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS256") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     testing.assert_false(jwt.validate(token, "wrong-secret", "HS256"));
 }
 
 #[test]
 fn test_decode_insecure_returns_payload_without_verification() {
     let payload = "{\"sub\":\"user42\"}";
-    let token = jwt.encode(payload, "fixture-secret", "HS256");
+    let token = match jwt.encode(payload, "fixture-secret", "HS256") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     testing.assert_eq_str(jwt.decode_insecure(token), payload);
 }
 
@@ -48,7 +57,7 @@ fn test_hs384_try_encode_and_try_decode_round_trip_payload() {
     let secret = "fixture-secret";
     match jwt.encode(payload, secret, "HS384") {
         .Ok(token) => {
-            testing.assert_true(token.len() > 0);
+            testing.assert_true(!token.is_empty());
             match jwt.decode(token, secret, "HS384") {
                 .Ok(decoded) => testing.assert_eq_str(decoded, payload),
                 .Err(err) => panic(f"{err}"),
@@ -60,7 +69,10 @@ fn test_hs384_try_encode_and_try_decode_round_trip_payload() {
 
 #[test]
 fn test_hs384_validate_accepts_matching_secret() {
-    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS384");
+    let token = match jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS384") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     testing.assert_true(jwt.validate(token, "fixture-secret", "HS384"));
 }
 
@@ -70,7 +82,7 @@ fn test_hs512_try_encode_and_try_decode_round_trip_payload() {
     let secret = "fixture-secret";
     match jwt.encode(payload, secret, "HS512") {
         .Ok(token) => {
-            testing.assert_true(token.len() > 0);
+            testing.assert_true(!token.is_empty());
             match jwt.decode(token, secret, "HS512") {
                 .Ok(decoded) => testing.assert_eq_str(decoded, payload),
                 .Err(err) => panic(f"{err}"),
@@ -82,7 +94,10 @@ fn test_hs512_try_encode_and_try_decode_round_trip_payload() {
 
 #[test]
 fn test_hs512_validate_accepts_matching_secret() {
-    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS512");
+    let token = match jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS512") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     testing.assert_true(jwt.validate(token, "fixture-secret", "HS512"));
 }
 
@@ -93,7 +108,10 @@ fn test_hs512_validate_accepts_matching_secret() {
 fn test_try_decode_rejects_token_signed_with_different_algorithm() {
     let payload = "{\"sub\":\"user42\"}";
     let secret = "fixture-secret";
-    let token = jwt.encode(payload, secret, "HS384");
+    let token = match jwt.encode(payload, secret, "HS384") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     match jwt.decode(token, secret, "HS256") {
         .Ok(_) => panic("cross-algorithm decode must not silently succeed"),
         .Err(err) => match err {
@@ -107,7 +125,10 @@ fn test_try_decode_rejects_token_signed_with_different_algorithm() {
 fn test_validate_rejects_token_signed_with_different_algorithm() {
     let payload = "{\"sub\":\"user42\"}";
     let secret = "fixture-secret";
-    let token = jwt.encode(payload, secret, "HS512");
+    let token = match jwt.encode(payload, secret, "HS512") {
+        .Ok(t) => t,
+        .Err(err) => panic(f"{err}"),
+    };
     testing.assert_false(jwt.validate(token, secret, "HS256"));
 }
 

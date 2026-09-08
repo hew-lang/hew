@@ -30,6 +30,8 @@ machine Latch {
     on Try: Open => Open reenter {
         Latch.Open
     }
+
+    default { state }
 }
 
 fn main() {

@@ -62,7 +62,10 @@ actor HealthMonitor {
             // Use select with a 500ms timeout — an explicit unhealthy
             // response or a missing response both mark it unhealthy.
             let result = select {
-                r from svc.health_check() => r,
+                r from svc.health_check() => match r {
+                    .Ok(value) => value,
+                    .Err(_) => -1,
+                },
                 after 500ms => -1,
             };
             let svc_name = match svc_names.get(i) {

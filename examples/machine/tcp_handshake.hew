@@ -24,26 +24,27 @@ machine TcpHandshake {
 
     emits {
         AckReceive,
+        Log { message: string },
     }
 
     state Closed,
     state SynReceived {
         remote_port: u16,
         entry {
-            println("SYN received — sent SYN-ACK");
+            emit Log { message: "SYN received — sent SYN-ACK" };
         }
     },
     state Established {
         remote_port: u16,
         entry {
-            println("connection established");
+            emit Log { message: "connection established" };
         }
     },
     state CloseWait {
         entry {
 
             // Passive close: we received a FIN from the peer.
-            println("received FIN — entering close-wait");
+            emit Log { message: "received FIN — entering close-wait" };
         }
     },
 

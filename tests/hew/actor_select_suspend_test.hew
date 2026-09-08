@@ -39,15 +39,24 @@ actor Coordinator {
     let slow: LocalPid<Slow>,
     receive fn race_two(n: i64) -> i64 {
         let winner = select {
-            reply from fast.compute(n) => reply,
-            reply from slow.compute(99) => reply,
+            reply from fast.compute(n) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
+            reply from slow.compute(99) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
             after 500ms => -7,
         };
         return winner;
     }
     receive fn race_deadline(n: i64) -> i64 {
         let result = select {
-            reply from slow.compute(n) => reply,
+            reply from slow.compute(n) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
             after 20ms => -7,
         };
         return result;

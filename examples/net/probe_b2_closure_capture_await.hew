@@ -15,15 +15,16 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let read_once = || {
-            utf8.decode(conn.read())
+        let read_once = move || {
+            let decoded = utf8.decode(conn.read());
+            let _ = conn.close();
+            decoded
         };
         let body = read_once() handle error {
             println(f"invalid UTF-8: {error}");
             return;
         };
         println(f"reader-received: {body}");
-        let _ = conn.close();
     }
 }
 

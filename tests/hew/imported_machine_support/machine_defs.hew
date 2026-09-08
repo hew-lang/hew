@@ -1,4 +1,4 @@
-machine RunLifecycle {
+pub machine RunLifecycle {
     events {
         StageFailed,
         GateCompleted,

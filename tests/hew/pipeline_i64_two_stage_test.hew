@@ -242,10 +242,10 @@ fn cancelled_admission_settles_and_pipeline_continues() {
         .Err(_) => testing.assert_true(false),
     }
     let outcome = select {
-        reply from source.push(item(3, "cancel-three", false)) => if reply {
-            1
-        } else {
-            -1
+        reply from source.push(item(3, "cancel-three", false)) => match reply {
+            .Ok(true) => 1,
+            .Ok(false) => -1,
+            .Err(_) => -1,
         },
         after 5ms => 0,
     };

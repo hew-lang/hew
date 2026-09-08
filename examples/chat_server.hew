@@ -72,8 +72,7 @@ actor ClientHandler {
                     } else {
                         let line = f"{name}: {data}";
                         println(line);
-                        // ChatRoom uses the default unbounded mailbox, so this unit
-                        // send has no SendError result to discard or handle.
+                        // The void handler call waits for completion and returns a Result.
                         let _ = room.broadcast(name, line);
                     }
                 },

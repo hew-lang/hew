@@ -13,7 +13,7 @@
 // Fan-out is just a loop calling receive handlers. No locks, no
 // channel management, no select{} boilerplate.
 //
-// Pattern: fire-and-forget publish + actor-to-actor routing.
+// Pattern: completion-call publish + actor-to-actor routing.
 
 // Subscriber actor — receives messages on topics it cares about.
 actor Subscriber {

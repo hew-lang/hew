@@ -1,6 +1,6 @@
-# std::encoding::msgpack
+# std.encoding.msgpack
 
-std::encoding::msgpack — MessagePack encoding and decoding
+std.encoding.msgpack — MessagePack encoding and decoding
 
 Part of the [Hew](https://hew.sh) standard library. See the [std overview](../../README.md) for all modules.
 

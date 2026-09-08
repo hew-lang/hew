@@ -494,7 +494,7 @@ pub fn last_error() -> string {
 ///
 /// Reads the local address, cumulative accepted-connection count, and last
 /// error string from the endpoint without closing or mutating it. The
-/// returned `QUICEndpointObservation` is a plain value struct and does not
+/// returned `QUICEndpointObservation` is a plain value record and does not
 /// need to be freed. Call this at any time to poll endpoint health or
 /// inspect which address the runtime bound.
 pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
@@ -511,7 +511,7 @@ pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
 ///
 /// Reads both endpoint addresses, stream counts, round-trip time,
 /// byte counters, closed flag, and last error string in a single call.
-/// The returned `QUICConnectionObservation` is a plain value struct.
+/// The returned `QUICConnectionObservation` is a plain value record.
 /// `rtt_ms` is the smoothed RTT in milliseconds as reported by the
 /// QUIC stack; it is 0 until the handshake completes. `last_error` is
 /// empty when the connection is healthy.
@@ -561,7 +561,7 @@ pub fn connection_disconnect(consume conn: QUICConnection) -> Result<(), net.Net
 ///
 /// Reads cumulative byte counts, send/receive close flags, and the
 /// last error string. The returned `QUICStreamObservation` is a plain
-/// value struct. `send_closed` is true after `stream_finish` or
+/// value record. `send_closed` is true after `stream_finish` or
 /// `stream_stop` completes; `recv_closed` is true when the peer has
 /// finished sending. `last_error` is empty while the stream is healthy.
 pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {

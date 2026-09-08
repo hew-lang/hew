@@ -91,7 +91,7 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
 /// import std.net.tls;
 ///
 /// actor TlsEcho {
-///     let stream: tls.TlsStream;
+///     let stream: tls.TlsStream,
 ///     receive fn on_data(data: bytes) {
 ///         stream.write(data);
 ///     }

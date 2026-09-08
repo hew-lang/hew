@@ -16,7 +16,7 @@ Examples:
 
 - `feat(parser): add entry/exit blocks for machine declarations`
 - `fix(types): reject Int alias with i64 migration hint`
-- `docs(spec): document scope blocks as Unit-typed`
+- `docs(spec): document value-producing scope blocks`
 
 Rules:
 
@@ -47,8 +47,8 @@ Avoid noun-led or label-led summaries when an imperative form is clearer:
 
 - Prefer `feat(mir): add Place variants for Duplex handles`
   over `feat(mir): Place variants for Duplex handles`
-- Prefer `docs(spec): document scope blocks as Unit-typed`
-  over `docs(spec): scope blocks evaluate to Unit`
+- Prefer `docs(spec): document scope result cleanup`
+  over `docs(spec): scope result cleanup semantics`
 
 Also avoid vague summaries such as `update`, `misc cleanup`, or
 `address review comments` unless the commit is genuinely that broad.
@@ -80,9 +80,9 @@ Less consistent patterns to avoid mixing arbitrarily across the branch:
 
 ## Merge Commits
 
-For final branch history, prefer rebased or squashed commits over raw
-`merge ...` subjects. If a merge commit must remain, keep it rare and make
-its subject intentional.
+Use the merge strategy agreed for the change. The native core cutover preserves
+its implementation history with a merge commit. Keep merge subjects intentional
+and do not rewrite shared history merely to change its presentation.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the surrounding contribution
 workflow and review expectations.

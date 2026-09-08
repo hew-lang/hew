@@ -36,7 +36,7 @@ fn main() {
     println("=== Stress: Bounded Mailbox ===");
     let c = spawn Counter(count: 0);
     // Fill the bounded mailbox in deterministic batches without spelling out
-    // ten separate awaits in the main loop.
+    // ten separate completion calls in the main loop.
     for batch in 0 .. 100 {
         let batch_index: i64 = batch;
         send_batch(c, 10);

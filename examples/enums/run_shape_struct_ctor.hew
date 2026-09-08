@@ -1,4 +1,4 @@
-// Exercises monomorphic struct-payload variant construction and match
+// Exercises monomorphic record-payload variant construction and match
 // destructuring end-to-end.
 //
 // This fixture verifies:

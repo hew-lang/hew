@@ -20,6 +20,12 @@
 ///   task it yields waits for the same point.
 /// - `closed(actor)` waits for an actor another party is stopping, and requests
 ///   nothing itself.
+///
+/// Calls to receive handlers wait for completion, including void handlers.
+/// Use `mailbox(target, on_full: ...)` for submission and
+/// `policy(target, on_full: ...)` to choose completion-call admission.
+/// Supervisor `close`/`closed` forms are decided but pending implementation;
+/// they must wait for child terminal cleanup as well.
 pub type LocalPid<T> {
 }
 
@@ -44,20 +50,18 @@ pub type Location {
 /// Produced by authenticated peer discovery.
 /// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
 ///
-/// On the native target `.send` and `.ask` are real cross-node operations:
-/// codegen rewrites each call on a `RemotePid<T>` receiver to the runtime
-/// transport ABI, sending the message over the mesh to the peer (proven by the
-/// two-process distributed harness). A remote `.ask` returns its peer's reply,
-/// or a typed `ActorError` — including `Partition` when the route to the peer
-/// is declared dead — never a hang. The Hew bodies in the `RemotePid<T>` impl below
-/// are the WASM/uninterpreted fail-closed fallback only.
+/// The intended remote call contract uses the same completion calls and
+/// mailbox submission views as local actors, with typed transport failures.
+/// Native transport lowering exists, but final-compiler distributed lifecycle
+/// acceptance remains incomplete. These declarations alone do not establish
+/// end-to-end native or sandbox support.
 pub type RemotePid<T> {
 }
 
-/// An immutable one-way view. Construct one with `mailbox(target, on_full: ...)`.
+/// An immutable one-way view for void receive handlers. Construct one with `mailbox(target, on_full: ...)`.
 /// A receive call through the view submits under that policy and returns as
-/// soon as the message is accepted, and the policy type records whether that
-/// submission can suspend. A call on the actor handle itself waits for the
+/// soon as admission or a policy-selected discard is resolved. The policy
+/// type records whether submission can suspend. A call on the actor handle itself waits for the
 /// handler to finish instead.
 pub type ActorMailbox<Target, Policy> {
     target: Target,
@@ -67,16 +71,16 @@ pub type ActorMailbox<Target, Policy> {
 /// Construct one with `policy(target, on_full: ...)`. A call through the view
 /// waits for the handler exactly as a call on the actor handle does; the
 /// policy decides only what happens when the destination mailbox is full.
-/// `.Wait` is the bare-handle behaviour; `.Reject` yields
-/// `ActorError.Rejected(reason)` instead of parking the caller.
+/// `.Wait` is the bare-handle behaviour; `.Reject` reports rejection instead
+/// of parking the caller. See `ActorError` for the pending typed-request change.
 pub type ActorPolicy<Target, Policy> {
     target: Target,
 }
 
-/// An owned, addressed message description. Only the runtime rejection path
-/// hands one back, inside `SendFailure`. `message.retry()` resubmits it to the
-/// same target; `message.to(target)` readdresses it to a compatible actor and
-/// resubmits, neither opening its payload.
+/// Intended owned, sealed request description for rejection recovery.
+/// The decided `retry()` and `to(target)` operations retain request typing
+/// without exposing the payload. Full sealed-message recovery remains pending;
+/// see the implementation gap documented on `ActorError`.
 pub type Message<Target, Payload, Policy> {
     target: Target,
     message_id: u32,
@@ -235,12 +239,17 @@ impl Display for Never {
 /// `E` is the handler's declared `fails` type — `Never` when the handler
 /// cannot fail. Written bare, `ActorError` means `ActorError<Never>`.
 ///
-/// Only `Rejected` is safely retryable: nothing was accepted, so the caller
-/// may make the same call again. Every other variant means the request was
-/// accepted or its fate is unknown, so repeating it would duplicate work.
+/// `Rejected` means nothing was accepted. Other outcomes do not provide a
+/// safe retry guarantee: repeating the call may duplicate work.
+///
+/// Implementation gap: the decided contract is
+/// `ActorError<E = Never, Req = Never>` with `Rejected(SendFailure<Req>)`.
+/// The rejected failure retains the typed request for `retry()` or `to(target)`.
+/// This declaration still carries only `SendError`; typed request recovery
+/// is pending. Do not rely on reason-only rejection matching as the final API.
 pub enum ActorError<E> {
-    /// Nothing was accepted, for the reason it carries. The same call can be
-    /// made again.
+    /// Nothing was accepted. Currently carries only the reason; typed
+    /// request recovery is pending as described above.
     Rejected(SendError),
     /// The handler ran and returned its declared error.
     Failed(E),
@@ -523,10 +532,11 @@ pub trait Iterator {
 // ---------------------------------------------------------------------------
 /// Convert a value into an `Iterator`.
 ///
-/// `for x in expr { ... }` desugars to `let mut it = expr.into_iter(); loop {
-/// match it.next() { .Some(x) => ..., .None => break } }` — the iterable on the
-/// right of `in` must implement `IntoIterator`, and the loop binding is typed
-/// as `<Self.IntoIter as Iterator>.Item`.
+/// For trait-based iteration, a `for` loop creates a mutable iterator and
+/// calls `next()` until it returns `None`. The item type is
+/// `<Self.IntoIter as Iterator>.Item`. Built-in collections also support
+/// borrowed iteration; a loop over an unbounded generic `Vec<T>` borrows its
+/// elements rather than taking ownership of them.
 ///
 /// `IntoIter` carries the `Iterator<Item = Self.Item>` bound so that callers
 /// projecting `<T as IntoIterator>.IntoIter.Item` always agree with
@@ -591,11 +601,12 @@ impl<T> Vec<T> {
 /// `Vec` is a refcounted heap handle, so the cursor carries the underlying
 /// vector storage by handle (no per-step copy).
 ///
-/// The cursor copies each element out, so it serves `Vec<T>` whose element
-/// type has a clone. A `for` loop over a clone-free element type — a
-/// `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
-/// generator — does not build a cursor at all: it walks the vector by index
-/// and binds each element as a borrow of the slot the vector still owns.
+/// In a generic body with unbounded `T`, indexing and ordinary `for` loops
+/// borrow elements consistently across instantiations. Use `into_iter()` to
+/// consume the vector and obtain owned items, or explicitly clone an item
+/// under a `T: Clone` bound. The current owned cursor may still clone elements
+/// when their type supports cloning; consuming the vector does not promise
+/// clone-free iteration.
 ///
 /// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
 /// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
@@ -699,8 +710,8 @@ impl<K, V> Iterator for HashMapIter<K, V> {
 // ---------------------------------------------------------------------------
 //
 // `Generator<Y, R>` and `AsyncGenerator<Y>` formally implement `Iterator` so
-// `for x in gen { ... }` and `std::iter` adapters (`iter::map`,
-// `iter::filter`, ...) compose over generator values through the same trait
+// `for x in gen { ... }` and `std.iter` adapters (`iter.map`,
+// `iter.filter`, ...) compose over generator values through the same trait
 // surface as `Vec`/`HashMap`, instead of a checker-level special case.
 // `Generator` carries two type arguments (yield, return); `AsyncGenerator`
 // carries one (yield only) — see `Ty::as_generator` / `Ty::as_async_generator`.
@@ -974,7 +985,7 @@ impl instant {
 
 // Render a duration as its exact nanosecond count with an `ns` suffix
 // (e.g. `10ms` prints as `10000000ns`). Integer-only and round-trippable
-// through `duration::from_nanos`, so the rendering is exact and lossless; a
+// through `duration.from_nanos`, so the rendering is exact and lossless; a
 // human-unit format would need float division and lose that property. `instant`
 // has no Display body — it canonicalises to i64 and renders as raw nanos
 // through HIR's i64 dispatch arm (see `require_display_impl`).
@@ -1280,12 +1291,14 @@ pub fn sleep(d: duration) {}
 /// ```
 pub fn sleep_until(target: instant) {}
 
-/// Stop an actor gracefully.
+/// Legacy declaration; use the built-in `close(actor)` lifecycle operation.
 pub fn stop(target: dyn Display) {}
 
-/// Terminate the program with the given exit code.
+/// Terminate the program immediately with the given exit code.
 ///
-/// This function never returns.
+/// This function never returns and does not run scope cleanup. Return from
+/// `main` for orderly cleanup. An unrecovered fault instead reports its
+/// diagnostic and exits with status 1 on the native path.
 pub fn exit(code: i32) {}
 
 /// Terminate the program with an error message.

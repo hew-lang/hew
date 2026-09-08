@@ -41,7 +41,7 @@ trait TableMethods {
     /// Return the cell value at the given row for the named column.
     fn get_by_name(self, row: i64, col_name: string) -> string;
 
-    /// No-op for compatibility (struct tables don't need manual freeing).
+    /// No-op for compatibility (record tables don't need manual freeing).
     fn free(self);
 }
 
@@ -80,9 +80,9 @@ impl TableMethods for Table {
         }
         tbl.get(row, col as i64)
     }
-    /// No-op for compatibility (struct tables don't need manual freeing).
+    /// No-op for compatibility (record tables don't need manual freeing).
     fn free(tbl: Table) {
-        // No-op: struct tables are value types, no manual freeing needed.
+        // No-op: record tables are value types, no manual freeing needed.
     }
 }
 

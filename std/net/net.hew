@@ -6,11 +6,10 @@
 //!
 //! # Error Handling
 //!
-//! `net.NetError` is the stable user-facing error enum for all network
-//! failures — TCP, TLS, QUIC, HTTP, WebSocket, and DNS.  Use the `try_*`
-//! wrappers with `Result<T, net.NetError>` and the `?` operator for
-//! structured error propagation. Text reads additionally report UTF-8 validation
-//! through `ReadStringError`:
+//! `listen` and `connect` return `Result` with `net.NetError`. Connection
+//! writes return `Result<(), WriteError>`, while `read_string()` reports UTF-8
+//! validation through `utf8.Utf8Error`. Other protocol modules have their own
+//! result types; check their signatures when handling errors:
 //!
 //! ```
 //! import std.net;

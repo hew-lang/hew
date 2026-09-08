@@ -114,7 +114,7 @@ hew eval --timeout 10       # Per-evaluation timeout of 10 seconds (default: 30)
 
 ### Session model
 
-In REPL mode (interactive or piped) top-level items (`fn`, `struct`, `enum`,
+In REPL mode (interactive or piped) top-level items (`fn`, `type`, `enum`,
 `actor`, `trait`, `impl`) and bindings (`let`, `var`) accumulate across
 evaluations and are re-emitted into each subsequent compile. Bare expressions
 are wrapped in `println()` and auto-printed.
@@ -125,16 +125,16 @@ accepted value is 1 second.
 
 ### REPL commands
 
-| Command | Description |
-|---|---|
-| `:help`, `:h` | Show available commands |
-| `:session`, `:show` | Summarize remembered session state |
-| `:items` | List remembered top-level items |
-| `:bindings` | List persistent `let`/`var` bindings |
-| `:quit`, `:q` | Exit the REPL |
-| `:clear`, `:reset` | Reset the session — drops all accumulated definitions and bindings |
-| `:type <expr>` | Show the inferred type of an expression without running it |
-| `:load <file>` | Load a `.hew` file's top-level items into the session |
+| Command             | Description                                                        |
+| ------------------- | ------------------------------------------------------------------ |
+| `:help`, `:h`       | Show available commands                                            |
+| `:session`, `:show` | Summarize remembered session state                                 |
+| `:items`            | List remembered top-level items                                    |
+| `:bindings`         | List persistent `let`/`var` bindings                               |
+| `:quit`, `:q`       | Exit the REPL                                                      |
+| `:clear`, `:reset`  | Reset the session — drops all accumulated definitions and bindings |
+| `:type <expr>`      | Show the inferred type of an expression without running it         |
+| `:load <file>`      | Load a `.hew` file's top-level items into the session              |
 
 `:clear` / `:reset` is a hard session reset: every item and binding
 accumulated since the REPL started (or since the last `:clear` / `:reset`) is
@@ -155,13 +155,13 @@ hew eval --json -f script.hew    # file
 
 The JSON object always contains these fields:
 
-| Field | Type | Description |
-|---|---|---|
-| `status` | string | `"ok"`, `"compile_error"`, or `"runtime_failure"` |
-| `stdout` | string | Output the program wrote to stdout (may be empty) |
-| `stderr` | string | Runtime stderr captured from the program (empty unless `status == "runtime_failure"`) |
-| `exit_code` | integer | Child process exit code; `0` on success or compile error |
-| `diagnostics` | string | Compiler diagnostic text; non-empty only when `status == "compile_error"` |
+| Field         | Type    | Description                                                                           |
+| ------------- | ------- | ------------------------------------------------------------------------------------- |
+| `status`      | string  | `"ok"`, `"compile_error"`, or `"runtime_failure"`                                     |
+| `stdout`      | string  | Output the program wrote to stdout (may be empty)                                     |
+| `stderr`      | string  | Runtime stderr captured from the program (empty unless `status == "runtime_failure"`) |
+| `exit_code`   | integer | Child process exit code; `0` on success or compile error                              |
+| `diagnostics` | string  | Compiler diagnostic text; non-empty only when `status == "compile_error"`             |
 
 **Examples:**
 
@@ -174,6 +174,7 @@ The JSON object always contains these fields:
 ```
 
 Key properties:
+
 - The process exits 0 only when `status == "ok"`; compile errors and runtime
   failures still emit the full JSON object before exiting non-zero.
 - `stdout` is preserved even on `runtime_failure` (matches the non-JSON
@@ -184,8 +185,6 @@ Key properties:
   including source underlines.
 - `--json` requires `-f <file>` or an inline expression; it is rejected for
   interactive REPL mode.
-
-
 
 `hew watch` continuously monitors a `.hew` file (or directory) for changes
 and re-runs type-checking automatically. It is the fastest inner-loop
@@ -198,12 +197,12 @@ hew watch --clear myapp.hew       # Clear terminal before each check
 hew watch --debounce 500 myapp.hew  # Wait 500 ms after last event before re-checking
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| _(none)_ | — | File or directory to watch (required) |
-| `--run` | off | Build and run the program after each successful check |
-| `--clear` | off | Clear the terminal before each re-check pass |
-| `--debounce <ms>` | `300` | Milliseconds to wait after the last file-system event before re-checking; increase on slow disks or large trees |
+| Flag              | Default | Description                                                                                                     |
+| ----------------- | ------- | --------------------------------------------------------------------------------------------------------------- |
+| _(none)_          | —       | File or directory to watch (required)                                                                           |
+| `--run`           | off     | Build and run the program after each successful check                                                           |
+| `--clear`         | off     | Clear the terminal before each re-check pass                                                                    |
+| `--debounce <ms>` | `300`   | Milliseconds to wait after the last file-system event before re-checking; increase on slow disks or large trees |
 
 When watching a **directory**, `hew watch` re-checks the directory's entry
 file (the `.hew` file whose stem matches the directory name) whenever any
@@ -229,7 +228,7 @@ hew doc src/ --open                         # open index.html in the browser aft
 
 **File input** generates docs for that single module. **Directory input**
 recursively collects every `.hew` file under the tree, derives fully-qualified
-module names (e.g. `std::encoding::json`), and writes one page per module plus
+module names (e.g. `std.encoding.json`), and writes one page per module plus
 an index.
 
 **Output directory** defaults to `./doc` and is created automatically if it
@@ -358,15 +357,15 @@ hew test tests/ --include-ignored        # also run #[ignore]-annotated tests
 hew test tests/ --no-color               # disable coloured output
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `--filter <pattern>` | — | Run only tests whose name contains `pattern` |
-| `--list` | off | List discovered `file::test` identities without compiling them |
-| `--partition hash:<shard>/<total>` | — | Run one stable, one-based hash partition |
-| `--format text\|junit` | `text` | Human-readable output or JUnit XML |
-| `--timeout <seconds>` | `30` | Wall-clock limit for test execution (run phase only, not compile) |
-| `--include-ignored` | off | Also execute tests annotated with `#[ignore]` |
-| `--no-color` | off | Suppress ANSI colour codes |
+| Flag                               | Default | Description                                                       |
+| ---------------------------------- | ------- | ----------------------------------------------------------------- |
+| `--filter <pattern>`               | —       | Run only tests whose name contains `pattern`                      |
+| `--list`                           | off     | List discovered `file::test` identities without compiling them    |
+| `--partition hash:<shard>/<total>` | —       | Run one stable, one-based hash partition                          |
+| `--format text\|junit`             | `text`  | Human-readable output or JUnit XML                                |
+| `--timeout <seconds>`              | `30`    | Wall-clock limit for test execution (run phase only, not compile) |
+| `--include-ignored`                | off     | Also execute tests annotated with `#[ignore]`                     |
+| `--no-color`                       | off     | Suppress ANSI colour codes                                        |
 
 Exit code is **0** when all executed tests pass, **1** when any test fails or
 times out. Discovery parse errors are reported as failures (the runner is
@@ -389,10 +388,10 @@ hew debug myapp.hew -- arg1 arg2   # debug myapp, passing args to the program
 `hew run --profile` enables the built-in runtime profiler on the compiled
 program. The value injected into `HEW_PPROF` is platform-dependent:
 
-| Platform | `HEW_PPROF` value set | How to attach |
-|---|---|---|
-| Unix (Linux, macOS) | `auto` | `hew-observe` (auto-discovers unix socket) |
-| Other (Windows, …) | `:6060` | `hew-observe --addr localhost:6060` |
+| Platform            | `HEW_PPROF` value set | How to attach                              |
+| ------------------- | --------------------- | ------------------------------------------ |
+| Unix (Linux, macOS) | `auto`                | `hew-observe` (auto-discovers unix socket) |
+| Other (Windows, …)  | `:6060`               | `hew-observe --addr localhost:6060`        |
 
 If `HEW_PPROF` is already set in your environment, `--profile` is a no-op and
 your value is used as-is.

@@ -23,7 +23,7 @@
 //!         .None => println("request failed"),
 //!     }
 //!
-//!     let headers: Vec<(string, string)> = Vec.new();
+//!     var headers: Vec<(string, string)> = Vec.new();
 //!     headers.push(("Accept", "application/json"));
 //!     let resp = http_client.request("GET", "https://api.example.com/data", "", headers);
 //!     println(resp.status());
@@ -32,7 +32,7 @@
 //! ```
 
 //
-// WASM-TODO(http-client): outbound std::net::http client wrappers remain native-only until
+// WASM-TODO(http-client): outbound std.net.http client wrappers remain native-only until
 // a browser/WASM networking bridge exists.
 import std.net;
 
@@ -142,7 +142,7 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 /// import std.net.http.http_client;
 ///
 /// fn main() {
-///     let headers: Vec<(string, string)> = Vec.new();
+///     var headers: Vec<(string, string)> = Vec.new();
 ///     headers.push(("Accept", "application/json"));
 ///     let resp = http_client.request("GET", "https://example.com", "", headers);
 ///     println(resp.status());
@@ -168,7 +168,7 @@ pub fn request(method: string, url: string, body: string, headers: Vec<(string, 
 /// import std.net.http.http_client;
 ///
 /// fn main() {
-///     let headers: Vec<(string, string)> = Vec.new();
+///     var headers: Vec<(string, string)> = Vec.new();
 ///     match http_client.request_string("GET", "https://example.com", "", headers) {
 ///         .Some(body) => println(body),
 ///         .None => println("request failed"),

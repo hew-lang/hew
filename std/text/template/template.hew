@@ -60,7 +60,7 @@
 //!     let ctx = template.new_ctx();
 //!     template.ctx_set_str(ctx, "name", "Alice");
 //!     template.ctx_set_int(ctx, "age", 30);
-//!     let items: Vec<string> = Vec.new();
+//!     var items: Vec<string> = Vec.new();
 //!     items.push("red");
 //!     items.push("green");
 //!     template.ctx_set_list(ctx, "colours", items);
@@ -625,7 +625,7 @@ pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
 ///
 /// fn main() {
 ///     let ctx = template.new_ctx();
-///     let colours: Vec<string> = Vec.new();
+///     var colours: Vec<string> = Vec.new();
 ///     colours.push("red");
 ///     colours.push("blue");
 ///     template.ctx_set_list(ctx, "colours", colours);

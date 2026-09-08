@@ -1,4 +1,4 @@
-// Stage-0 pattern-discharge pin: let-else over an enum struct variant with one
+// Stage-0 pattern-discharge pin: let-else over an enum record variant with one
 // bound owned field and one wildcarded owned sibling.
 //
 // The local `Packet` scrutinee retains its EnumInPlace release on the success

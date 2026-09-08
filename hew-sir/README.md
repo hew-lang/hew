@@ -1,20 +1,14 @@
 # Hew Semantic IR
 
-`hew-sir` is Hew's value-oriented semantic SSA intermediate representation.
-It sits between resolved HIR and the ownership/layout MIR ladder.
-
-SIR owns semantic values, typed CFG, block arguments, direct-call identity,
-effect classification, and Hew-aware optimization. It deliberately does not
-own storage places, layout, ABI carriers, byte offsets, or LLVM operations.
-
-Closed language domains selected with `--sir-lower` already produce Raw,
-Checked, and Elaborated MIR without legacy function-body lowering. The end
-state is one convergent body path:
+`hew-sir` sits between resolved HIR and physical MIR. It owns semantic values,
+typed control flow, ownership and lifetime decisions, and explicit call and
+cleanup boundaries. Physical MIR carries the resulting storage, layout and ABI
+facts to LLVM emission.
 
 ```text
-resolved + normalized HIR → SIR → Raw MIR → Checked MIR → Elaborated MIR → LLVM
+source → parser → type checker → HIR → SIR → physical MIR → LLVM → object
 ```
 
-Every SIR transformation verifies its input and output. Unsupported semantic
-surface is a compiler implementation gap, never permission to silently route a
-selected SIR body back through legacy lowering.
+This is the native compiler body path. Unsupported language behaviour is an
+implementation gap; it does not select a legacy lowering fallback. Sandbox
+execution remains a parity goal using the same language semantics.

@@ -23,4 +23,4 @@ let checked = check(&ast)?;
 
 ## Part of the Hew compiler
 
-This crate is an internal component of the [Hew](https://github.com/hew-lang/hew) compiler toolchain. The type-checked AST is serialized to MessagePack and passed to the Rust hew-codegen-rs / LLVM backend.
+This crate is an internal component of the [Hew](https://github.com/hew-lang/hew) compiler toolchain. Type-checked source feeds HIR, then ownership SIR and physical MIR. `hew-codegen-rs` emits LLVM from verified physical MIR.

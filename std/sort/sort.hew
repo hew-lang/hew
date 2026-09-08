@@ -10,7 +10,7 @@
 //! import std.sort;
 //!
 //! fn main() {
-//!     let nums: Vec<i64> = Vec.new();
+//!     var nums: Vec<i64> = Vec.new();
 //!     nums.push(3);
 //!     nums.push(1);
 //!     nums.push(2);

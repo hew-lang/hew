@@ -1,4 +1,4 @@
-# std::time::datetime
+# std.time.datetime
 
 The date and time operations module within Hew's `hew-std` crate
 

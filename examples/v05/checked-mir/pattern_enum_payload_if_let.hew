@@ -1,4 +1,4 @@
-// Stage-0 pattern-discharge pin: if-let over an enum struct variant with one
+// Stage-0 pattern-discharge pin: if-let over an enum record variant with one
 // bound owned field and one wildcarded owned sibling.
 //
 // The payload alias does not own a release. The `Packet` local remains the

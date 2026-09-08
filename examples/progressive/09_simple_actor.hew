@@ -14,7 +14,7 @@ fn main() {
     let counter = spawn Counter(count: 0);
     let _ = counter.increment(5);
     let _ = counter.increment(10);
-    // Actor asks return Result<T, string> — use `match await` to extract the value.
+    // Actor completion calls return Result<T, ActorError>; match the result to extract the value.
     match counter.get_count() {
         .Ok(count) => println(count),
         .Err(_) => println("ask failed"),

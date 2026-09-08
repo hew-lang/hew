@@ -8,12 +8,17 @@
 //!
 //! ```
 //! import std.encoding.msgpack;
-//! import std.encoding.hex;
 //!
 //! fn main() {
-//!     let packed = msgpack.from_json("{\"x\": 1}");
+//!     let packed = msgpack.from_json("{\"x\": 1}") handle error {
+//!         println(f"operation failed: {error}");
+//!         return;
+//!     };
 //!     println(packed.len());
-//!     let json = msgpack.to_json(packed);
+//!     let json = msgpack.to_json(packed) handle error {
+//!         println(f"operation failed: {error}");
+//!         return;
+//!     };
 //!     println(json);
 //! }
 //! ```

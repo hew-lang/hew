@@ -2,12 +2,25 @@
 
 ## [Unreleased]
 
+The native core and current source surface target v0.6.0. Refer to the
+[language specification](docs/specs/HEW-SPEC-2026.md) and
+[guide](docs/hew-language-guide.md) for current spellings; release entries
+below describe the source and interfaces of their own releases.
+
 ### Changed
 
 - **`panic()` in main context unwinds with cleanup.** A panic outside an actor
   now runs the same drop obligations and `#[resource]` closes as a panic inside
-  one, instead of ending the process with them skipped. The panic status and the
-  message on stderr are unchanged.
+  one, instead of ending the process with them skipped. An unrecovered native
+  fault reports a typed failure on stderr and exits 1; an explicit non-zero
+  main result is preserved. Explicit `exit(code)` terminates without scope
+  cleanup.
+
+- **Calls wait; `fork` starts concurrent work.** An ordinary actor call waits
+  for handler completion, including a handler with no return value. Use a
+  `mailbox(...)` view for one-way submission and `policy(...)` to choose
+  admission behaviour for completion calls. `await` joins a task or a vector
+  of tasks. Actor streams use ordinary `for`, and task scopes may produce values.
 
 ### Changed (breaking)
 

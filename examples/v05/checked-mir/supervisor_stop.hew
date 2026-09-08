@@ -1,9 +1,7 @@
-// MIR-corpus fixture: supervisor bootstrap, child access, graceful stop.
-//
-// Pins the synthesised supervisor bootstrap body, the typed child
-// accessor (`hew_supervisor_child_get`), and the `supervisor_stop(sup)`
-// user-name bridge to `hew_supervisor_stop` (CallRuntimeAbi with
-// dest=None).
+// Historical supervisor-stop fixture; its executable spelling needs migration.
+// The decided public lifecycle forms are close(sup) and closed(sup), including
+// waiting for child cleanup. Their implementation is still pending.
+
 actor Worker {
     receive fn ping(_n: i64) {
         _n;

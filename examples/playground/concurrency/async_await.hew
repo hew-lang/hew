@@ -1,5 +1,5 @@
 //! @name Async/Await
-//! @description Actor call-and-await
+//! @description Actor completion-call
 
 actor FibPrinter {
     receive fn print_fib(n: i64) -> i64 {

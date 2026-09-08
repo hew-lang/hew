@@ -1,5 +1,5 @@
 // Exercises a single match expression dispatching over a mixed-shape enum
-// with unit, tuple-payload, and struct-payload variants in a single
+// with unit, tuple-payload, and record-payload variants in a single
 // declaration.
 //
 // This fixture verifies:

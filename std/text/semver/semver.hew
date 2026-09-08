@@ -54,7 +54,7 @@ trait VersionMethods {
     /// Return the version as a string.
     fn to_string(self) -> string;
 
-    /// No-op for compatibility (struct versions don't need manual freeing).
+    /// No-op for compatibility (record versions don't need manual freeing).
     fn free(self);
 }
 
@@ -92,9 +92,9 @@ impl VersionMethods for Version {
         let result = version_to_string(ver);
         result
     }
-    /// No-op for compatibility (struct versions don't need manual freeing).
+    /// No-op for compatibility (record versions don't need manual freeing).
     fn free(ver: Version) {
-        // No-op: struct versions are value types, no manual freeing needed.
+        // No-op: record versions are value types, no manual freeing needed.
     }
 }
 

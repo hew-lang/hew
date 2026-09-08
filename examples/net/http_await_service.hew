@@ -1,18 +1,6 @@
-//! Status: runnable (v0.5 NEW-2 async HTTP/1.1 client + server over await)
-//! Description: HTTP flagship — an await-suspended HTTP/1.1 server with two routes and a client.
-//!
-//! The `Server` actor opens a listener and serves a fixed number of requests:
-//! for each it `await`s a connection, drives an `await conn.read_string()` loop
-//! until the request is fully buffered, parses it with the
-//! `std.net.http.http_async_server` codec, and dispatches on the path —
-//! `/hello` returns plain text, `/health` returns JSON, anything else 404s.
-//! The `Client` actor issues two sequential requests with the
-//! `std.net.http.http_async_client` codec, `await`ing each response to close.
-//!
-//! Every `await` suspends the handler rather than blocking the worker, so a
-//! single worker (`HEW_WORKERS=1`) can both serve and fetch on the same thread.
-//! The `Listener` / `Connection` handles are handler LOCALS — an opaque handle
-//! in actor state is rejected by the supervisor-restart clone gate.
+//! HTTP/1.1 service with two routes and a client using ordinary calls.
+//! Client and server must run concurrently; completion-call launch ordering
+//! still needs review before this example is treated as runnable.
 
 import std.encoding.utf8;
 

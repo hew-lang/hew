@@ -9492,8 +9492,8 @@ impl Checker {
         }
     }
 
-    /// Resolve an extern callable's nominal types through the same owner
-    /// authority as its ABI contract, preserving builtin discriminators.
+    /// Resolve an extern callable's nominal types to the registered source
+    /// declaration used by field annotations and ordinary callable signatures.
     fn resolve_extern_signature_nominals(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::Named {
@@ -9501,10 +9501,15 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                // The callable signature and its ABI contract must name the
-                // same declaration, including a sibling type owned by this
-                // module. Preserve the checker's builtin discriminator.
-                let resolved = self.extern_signature_nominal_owner(name);
+                // The callable consumes source values, including fields from
+                // peer files assembled into this module. Resolve their registered
+                // declaration rather than substituting the ABI contract's file
+                // provenance. Already-qualified source identities stay intact.
+                let resolved = self.canonical_nominal_name(name).or_else(|| {
+                    (!name.contains('.') && self.extern_nominal_file_owner(name).is_none())
+                        .then(|| self.extern_nominal_imported_owner(name))
+                        .flatten()
+                });
                 Ty::Named {
                     name: resolved.unwrap_or_else(|| name.clone()),
                     args: args
@@ -9944,12 +9949,11 @@ impl Checker {
                 .as_ref()
                 .filter(|spec| !spec.template.is_monomorphic())
                 .map(|spec| spec.template.clone());
-            // The STORED signature is what call sites type against; give it
-            // the same import-lexical nominal resolution the contract
-            // receives, so an imported bare nominal (`Sink` under
-            // `import std::stream`) means one identity at the ABI boundary
-            // and in bodies. Template declarations carry signature type
-            // holes, not concrete nominals — leave them untouched.
+            // Call sites type against the registered source declaration, just
+            // as field annotations do. The ABI contract separately checks the
+            // declaring file's provenance when comparing repeated symbols.
+            // Template declarations carry signature type holes, not concrete
+            // nominals — leave them untouched.
             if !source_symbol.is_empty() {
                 sig.params = sig
                     .params

@@ -53,6 +53,21 @@ fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {
 }
 
 #[test]
+fn check_http_peer_fields_match_extern_signatures_through_both_import_routes() {
+    // Import checking visits the peer's Response methods even when the entry
+    // does not call HTTP. Both routes must agree on the handle's source type.
+    for module in ["std.net.http", "std.net.http.http_client"] {
+        let (_dir, path) = write_fixture(&format!("import {module}; fn main() {{}}"));
+        let output = run_check(&["check", path.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "HTTP module {module} must check its peer record fields against extern parameters\n{}",
+            describe_output(&output),
+        );
+    }
+}
+
+#[test]
 fn check_fails_on_hir_gate_before_ok() {
     // `Some(0) | None` in an or-pattern is a HIR-rejected shape (constructor
     // with literal payload in an or-branch is not yet classified). This is a

@@ -4492,6 +4492,29 @@ trait Fluent {
     }
 
     #[test]
+    fn full_range_and_negative_literals_round_trip_in_every_radix() {
+        // The `i128` carrier renders negatives as their two's-complement form
+        // under `{:X}`, so radix output prints an explicit sign and magnitude.
+        // Each spelling must survive format-and-reparse unchanged.
+        for source in [
+            "fn main() {\n    let a: u64 = 18446744073709551615;\n}\n",
+            "fn main() {\n    let a: u64 = 0xFFFFFFFFFFFFFFFF;\n}\n",
+            "fn main() {\n    let a: u64 = 0o1777777777777777777777;\n}\n",
+            "fn main() {\n    let a: u8 = 0b11111111;\n}\n",
+            "fn main() {\n    let a: i64 = -9223372036854775808;\n}\n",
+            "fn main() {\n    match x {\n        -0x10 => 0,\n        _ => 1,\n    }\n}\n",
+        ] {
+            let once = roundtrip_source(source);
+            assert_eq!(once, source, "first format changed the source");
+            assert_eq!(
+                roundtrip_source(&once),
+                once,
+                "format is not idempotent for {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn preserves_leading_comment() {
         let src = "\
 // A greeting function

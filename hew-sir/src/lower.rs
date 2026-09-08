@@ -8267,10 +8267,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let contract = family.semantic_contract().ok_or_else(|| {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
         })?;
-        let parameter_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
+        let source_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
         let instantiated = contract
-            .instantiate(&parameter_types, &self.ty(&expr.ty))
+            .resolve_types(&source_types, &self.ty(&expr.ty))
             .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
+        let parameter_types = &instantiated.arguments;
+        for (index, (source, target)) in source_types.iter().zip(parameter_types).enumerate() {
+            self.service.require_type_facts(source)?;
+            self.service.require_type_facts(target)?;
+            if source != target {
+                if contract.arguments[index].effect != RuntimeArgumentEffect::Value {
+                    return Err(format!(
+                        "runtime argument {index} cannot coerce a non-value operand"
+                    ));
+                }
+                crate::verify_callable_coercion(source, target, self.service.checked_facts.rows())?;
+            }
+        }
         if matches!(
             family,
             hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::New)
@@ -8281,9 +8294,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let (_, arguments) = collection_type_arguments(collection_ty)
                 .ok_or_else(|| "collection operation has no canonical receiver type".to_string())?;
             self.service.require_key_capabilities(&arguments[0])?;
-        }
-        for ty in &instantiated.arguments {
-            self.service.require_type_facts(ty)?;
         }
         if matches!(contract.result, RuntimeResultEffect::IndependentValue(_)) {
             self.service.require_type_facts(&instantiated.result_ty)?;
@@ -8304,7 +8314,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let effects = contract
             .arguments
             .iter()
-            .zip(&parameter_types)
+            .zip(parameter_types)
             .map(|(argument, ty)| {
                 argument
                     .effect
@@ -8317,49 +8327,81 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let argument_loan_depth = self.argument_receiver_loans.len();
         for (index, (&arg, effect)) in args.iter().zip(effects).enumerate() {
             let loan_floor = loans.len();
-            let (value, decision) = match effect {
-                RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
-                RuntimeArgumentEffect::Borrow => {
-                    let stable_tail = args[index + 1..]
-                        .iter()
-                        .all(|arg| Self::stable_argument_read(arg));
-                    let operand = self.lower_call_read(arg, &mut loans, stable_tail, read_only)?;
-                    (operand.value, crate::BoundaryDecision::Borrow)
-                }
-                RuntimeArgumentEffect::Copy => {
-                    let no_owner =
-                        OwnKind::of_ty(&parameter_types[index], self.service.checked_facts.rows())?
-                            == OwnKind::None;
-                    let stable_tail = args[index + 1..]
-                        .iter()
-                        .all(|arg| Self::stable_argument_read(arg));
-                    let operand =
-                        self.lower_call_read(arg, &mut loans, stable_tail, read_only && no_owner)?;
-                    (operand.value, crate::BoundaryDecision::Copy)
-                }
-                RuntimeArgumentEffect::Move
-                    if index == 0
-                        && matches!(
-                            contract.result,
-                            RuntimeResultEffect::UpdatedReceiver(_)
-                                | RuntimeResultEffect::UpdatedReceiverAndValue(_)
-                        ) =>
-                {
-                    let place = self.resolve_mutable_place(arg)?;
-                    if OwnKind::of_ty(&place.leaf_ty, self.service.checked_facts.rows())?
-                        != OwnKind::Owned
-                    {
-                        return Err("runtime transform receiver must be an owned value".into());
+            let (value, decision) = if source_types[index] == parameter_types[index] {
+                match effect {
+                    RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
+                    RuntimeArgumentEffect::Borrow => {
+                        let stable_tail = args[index + 1..]
+                            .iter()
+                            .all(|arg| Self::stable_argument_read(arg));
+                        let operand =
+                            self.lower_call_read(arg, &mut loans, stable_tail, read_only)?;
+                        (operand.value, crate::BoundaryDecision::Borrow)
                     }
-                    transformed_place = Some(place);
-                    // The receiver is retaken after later arguments finish;
-                    // no operand or snapshot is emitted for it here.
-                    continue;
+                    RuntimeArgumentEffect::Copy => {
+                        let no_owner = OwnKind::of_ty(
+                            &parameter_types[index],
+                            self.service.checked_facts.rows(),
+                        )? == OwnKind::None;
+                        let stable_tail = args[index + 1..]
+                            .iter()
+                            .all(|arg| Self::stable_argument_read(arg));
+                        let operand = self.lower_call_read(
+                            arg,
+                            &mut loans,
+                            stable_tail,
+                            read_only && no_owner,
+                        )?;
+                        (operand.value, crate::BoundaryDecision::Copy)
+                    }
+                    RuntimeArgumentEffect::Move
+                        if index == 0
+                            && matches!(
+                                contract.result,
+                                RuntimeResultEffect::UpdatedReceiver(_)
+                                    | RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                            ) =>
+                    {
+                        let place = self.resolve_mutable_place(arg)?;
+                        if OwnKind::of_ty(&place.leaf_ty, self.service.checked_facts.rows())?
+                            != OwnKind::Owned
+                        {
+                            return Err("runtime transform receiver must be an owned value".into());
+                        }
+                        transformed_place = Some(place);
+                        // The receiver is retaken after later arguments finish;
+                        // no operand or snapshot is emitted for it here.
+                        continue;
+                    }
+                    RuntimeArgumentEffect::Move => (
+                        self.lower_consuming_value(arg)?,
+                        crate::BoundaryDecision::Move,
+                    ),
                 }
-                RuntimeArgumentEffect::Move => (
-                    self.lower_consuming_value(arg)?,
-                    crate::BoundaryDecision::Move,
-                ),
+            } else {
+                // Weakening a callable's capabilities must not consume a
+                // copyable source binding. Convert an independent owner first.
+                let source_clone = self.service.checked_facts.rows()
+                    [&TypeInstanceKey(source_types[index].clone())]
+                    .clone;
+                let value = if source_clone == hew_types::CloneKind::None {
+                    self.lower_consuming_value(arg)?
+                } else {
+                    lower_initial_value_transfer(
+                        self,
+                        arg,
+                        "runtime value coercion",
+                        OwnedBindingUse::Copy,
+                    )?
+                };
+                let value =
+                    self.coerce_value(value, &parameter_types[index], Provenance::Site(arg.site))?;
+                let decision = match effect {
+                    RuntimeArgumentEffect::Copy => crate::BoundaryDecision::Copy,
+                    RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
+                    _ => unreachable!("value ingress resolves to copy or move"),
+                };
+                (value, decision)
             };
             lowered_args.push(crate::BoundaryOperand {
                 operand: Operand { value },

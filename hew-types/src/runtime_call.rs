@@ -445,6 +445,30 @@ impl RuntimeSemanticContract {
         params: &[ResolvedTy],
         result_hint: &ResolvedTy,
     ) -> Result<RuntimeInstantiatedContract, String> {
+        let resolved = self.resolve_types(params, result_hint)?;
+        for (index, (actual, expected)) in params.iter().zip(&resolved.arguments).enumerate() {
+            if actual != expected {
+                return Err(format!(
+                    "runtime argument {index} has `{}`, expected `{}`",
+                    actual.user_facing(),
+                    expected.user_facing()
+                ));
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// Resolve the operation's expected types before lowering argument coercions.
+    /// This does not admit operands: `instantiate` checks their exact types after
+    /// the producer has applied any checked source-language conversion.
+    ///
+    /// # Errors
+    /// Rejects wrong arity or a missing canonical receiver/result binding.
+    pub fn resolve_types(
+        self,
+        params: &[ResolvedTy],
+        result_hint: &ResolvedTy,
+    ) -> Result<RuntimeInstantiatedContract, String> {
         if params.len() != self.arguments.len() {
             return Err(format!(
                 "runtime signature has {} arguments, expected {}",
@@ -475,20 +499,10 @@ impl RuntimeSemanticContract {
         let arguments = self
             .arguments
             .iter()
-            .zip(params)
-            .enumerate()
-            .map(|(index, (expected, actual))| {
-                let ty = expected.ty.resolve(receiver).ok_or_else(|| {
+            .map(|expected| {
+                expected.ty.resolve(receiver).ok_or_else(|| {
                     "runtime signature has no matching canonical receiver binding".to_string()
-                })?;
-                if ty != *actual {
-                    return Err(format!(
-                        "runtime argument {index} has `{}`, expected `{}`",
-                        actual.user_facing(),
-                        ty.user_facing()
-                    ));
-                }
-                Ok(ty)
+                })
             })
             .collect::<Result<Vec<_>, String>>()?;
         let result_ty = match self.result {

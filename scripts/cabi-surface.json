@@ -195,6 +195,71 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_call_free( *mut HewActorCall)"
+      },
+      "symbol": "hew_actor_call_free"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, ) -> *mut HewActorCall"
+      },
+      "symbol": "hew_actor_call_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_call_poll( *mut HewActorCall) -> i32"
+      },
+      "symbol": "hew_actor_call_poll"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, ) -> *mut HewActorCall"
+      },
+      "symbol": "hew_actor_call_resume"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_call_take( *mut HewActorCall, *mut c_void, *mut *mut HewMsgEnvelope, ) -> i32"
+      },
+      "symbol": "hew_actor_call_take"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -3932,6 +3997,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_checked_task_select_add_actor( *mut HewCheckedTaskSelect, *mut HewActorCall, )",
+        "wasm32-wasip1": "fn hew_checked_task_select_add_actor( *mut HewCheckedTaskSelect, *mut HewActorCall, )"
+      },
+      "symbol": "hew_checked_task_select_add_actor"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_checked_task_select_add_channel( *mut HewCheckedTaskSelect, *mut HewChannelReceiver, )",
         "wasm32-wasip1": "fn hew_checked_task_select_add_channel( *mut HewCheckedTaskSelect, *mut HewChannelReceiver, )"
       },
@@ -3966,6 +4046,21 @@
         "wasm32-wasip1": "fn hew_checked_task_select_arm_timer( *mut HewCheckedTaskSelect, i64, )"
       },
       "symbol": "hew_checked_task_select_arm_timer"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_select_fault( *mut HewCheckedTaskSelect, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_checked_task_select_fault( *mut HewCheckedTaskSelect, ) -> *mut HewFault"
+      },
+      "symbol": "hew_checked_task_select_fault"
     },
     {
       "availability": [
@@ -4026,6 +4121,21 @@
         "wasm32-wasip1": "fn hew_checked_task_select_poll_first( *mut HewCheckedTaskSelect, ) -> i64"
       },
       "symbol": "hew_checked_task_select_poll_first"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_select_set_context( *mut HewCheckedTaskSelect, *const HewCoroState, )",
+        "wasm32-wasip1": "fn hew_checked_task_select_set_context( *mut HewCheckedTaskSelect, *const HewCoroState, )"
+      },
+      "symbol": "hew_checked_task_select_set_context"
     },
     {
       "availability": [
@@ -13956,6 +14066,21 @@
         "wasm32-wasip1": "fn hew_reply_channel_signal_ready( *mut c_void)"
       },
       "symbol": "hew_reply_channel_signal_ready"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_reply_channel_status_native( *mut HewReplyChannel, usize, ) -> i32",
+        "wasm32-wasip1": "fn hew_reply_channel_status_native( *mut HewReplyChannel, usize, ) -> i32"
+      },
+      "symbol": "hew_reply_channel_status_native"
     },
     {
       "availability": [

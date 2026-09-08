@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1627u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1636u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1627] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -102,6 +102,31 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1627] = {
      "{\"native\": \"fn hew_actor_await_send_by_id( u64, i32, *mut c_void, "
      "usize, *mut HewActor, *mut HewReadSlot, *mut u64, ) -> c_int\"}",
      "native", "codegen-stable", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_call_free",
+     "{\"native\": \"fn hew_actor_call_free( *mut HewActorCall)\"}", "native",
+     "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_call_new",
+     "{\"native\": \"fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, "
+     "usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const "
+     "HewWaker, i64, i32, i32, ) -> *mut HewActorCall\"}",
+     "native", "codegen-stable", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_call_poll",
+     "{\"native\": \"fn hew_actor_call_poll( *mut HewActorCall) -> i32\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_call_resume",
+     "{\"native\": \"fn hew_actor_call_resume( HewLocalPidId, i32, *mut "
+     "HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, "
+     "i32, i32, ) -> *mut HewActorCall\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_call_take",
+     "{\"native\": \"fn hew_actor_call_take( *mut HewActorCall, *mut c_void, "
+     "*mut *mut HewMsgEnvelope, ) -> i32\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_cancel_periodic",
      "{\"native\": \"fn hew_actor_cancel_periodic( *mut c_void)\", "
@@ -1484,6 +1509,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1627] = {
      "*mut HewFault, ) -> i32\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_select_add_actor",
+     "{\"native\": \"fn hew_checked_task_select_add_actor( *mut "
+     "HewCheckedTaskSelect, *mut HewActorCall, )\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_add_actor( *mut HewCheckedTaskSelect, *mut "
+     "HewActorCall, )\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_add_channel",
      "{\"native\": \"fn hew_checked_task_select_add_channel( *mut "
      "HewCheckedTaskSelect, *mut HewChannelReceiver, )\", \"wasm32-wasip1\": "
@@ -1502,6 +1534,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1627] = {
      "{\"native\": \"fn hew_checked_task_select_arm_timer( *mut "
      "HewCheckedTaskSelect, i64, )\", \"wasm32-wasip1\": \"fn "
      "hew_checked_task_select_arm_timer( *mut HewCheckedTaskSelect, i64, )\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_select_fault",
+     "{\"native\": \"fn hew_checked_task_select_fault( *mut "
+     "HewCheckedTaskSelect, ) -> *mut HewFault\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_fault( *mut HewCheckedTaskSelect, ) -> *mut "
+     "HewFault\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_free",
@@ -1528,6 +1567,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1627] = {
      "HewCheckedTaskSelect, ) -> i64\", \"wasm32-wasip1\": \"fn "
      "hew_checked_task_select_poll_first( *mut HewCheckedTaskSelect, ) -> "
      "i64\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_select_set_context",
+     "{\"native\": \"fn hew_checked_task_select_set_context( *mut "
+     "HewCheckedTaskSelect, *const HewCoroState, )\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_task_select_set_context( *mut HewCheckedTaskSelect, *const "
+     "HewCoroState, )\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_spawn",
@@ -5113,6 +5159,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1627] = {
      "{\"native\": \"fn hew_reply_channel_signal_ready( *mut c_void)\", "
      "\"wasm32-wasip1\": \"fn hew_reply_channel_signal_ready( *mut c_void)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_reply_channel_status_native",
+     "{\"native\": \"fn hew_reply_channel_status_native( *mut HewReplyChannel, "
+     "usize, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_reply_channel_status_native( *mut HewReplyChannel, usize, ) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_reply_payload_free",
      "{\"native\": \"fn hew_reply_payload_free( *mut u8, usize)\"}", "native",

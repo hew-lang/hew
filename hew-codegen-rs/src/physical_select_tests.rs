@@ -81,13 +81,22 @@ fn task_select_native_timer_abi() {
             .set_linkage(Linkage::External);
         let engine = engine(&llvm, optimized);
         use hew_runtime::task_scope::checked::{
-            hew_checked_task_select_arm_timer, hew_checked_task_select_free,
-            hew_checked_task_select_new, hew_checked_task_select_poll,
+            hew_checked_task_select_arm_timer, hew_checked_task_select_fault,
+            hew_checked_task_select_free, hew_checked_task_select_new,
+            hew_checked_task_select_poll, hew_checked_task_select_set_context,
         };
         for (symbol, address) in [
             (
                 "hew_checked_task_select_new",
                 hew_checked_task_select_new as *const () as usize,
+            ),
+            (
+                "hew_checked_task_select_set_context",
+                hew_checked_task_select_set_context as *const () as usize,
+            ),
+            (
+                "hew_checked_task_select_fault",
+                hew_checked_task_select_fault as *const () as usize,
             ),
             (
                 "hew_checked_task_select_arm_timer",

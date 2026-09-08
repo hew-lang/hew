@@ -110,6 +110,36 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_ask_wait_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, *mut c_void, *const HewWaker, ) -> *mut HewNativeAsk",
+        "wasm32-wasip1": "fn hew_actor_ask_wait_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, *mut c_void, *const HewWaker, ) -> *mut HewNativeAsk"
+      },
+      "symbol": "hew_actor_ask_wait_resume"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_ask_wait_take_request( *mut HewNativeAsk, ) -> *mut HewMsgEnvelope",
+        "wasm32-wasip1": "fn hew_actor_ask_wait_take_request( *mut HewNativeAsk, ) -> *mut HewMsgEnvelope"
+      },
+      "symbol": "hew_actor_ask_wait_take_request"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
@@ -1677,6 +1707,51 @@
         "native": "fn hew_args_get( i32) -> *mut HewString"
       },
       "symbol": "hew_args_get"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_array_clone( *const HewVec) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_array_clone( *const HewVec) -> *mut HewVec"
+      },
+      "symbol": "hew_array_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_array_free( *mut HewVec)",
+        "wasm32-wasip1": "fn hew_array_free( *mut HewVec)"
+      },
+      "symbol": "hew_array_free"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_array_visit_close( *mut HewVec, *mut c_void)",
+        "wasm32-wasip1": "fn hew_array_visit_close( *mut HewVec, *mut c_void)"
+      },
+      "symbol": "hew_array_visit_close"
     },
     {
       "availability": [
@@ -4435,6 +4510,19 @@
         "native": "fn hew_compress_last_error() -> *mut c_char"
       },
       "symbol": "hew_compress_last_error"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_compress_last_error_hew() -> *mut HewString"
+      },
+      "symbol": "hew_compress_last_error_hew"
     },
     {
       "availability": [
@@ -19969,6 +20057,21 @@
         "wasm32-wasip1": "fn hew_vec_new_with_elem_layout( *const HewValueLayout, ) -> *mut HewVec"
       },
       "symbol": "hew_vec_new_with_elem_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_new_with_elem_layout_capacity( *const HewValueLayout, i64, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_vec_new_with_elem_layout_capacity( *const HewValueLayout, i64, ) -> *mut HewVec"
+      },
+      "symbol": "hew_vec_new_with_elem_layout_capacity"
     },
     {
       "availability": [

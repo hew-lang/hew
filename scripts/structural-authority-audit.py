@@ -1660,6 +1660,14 @@ def discover_opaque_resource_facts(
     """
     declarations = run_hew_query(ast_grep, root, pattern="type $NAME { }")
     attributes = run_hew_query(ast_grep, root, kind="attribute")
+    prefixes = attributes.copy()
+    for kind in ("visibility", "line_comment", "block_comment"):
+        prefixes.extend(run_hew_query(ast_grep, root, kind=kind))
+    prefixes.sort(key=lambda node: _match_offsets(node)[1], reverse=True)
+    source_bytes = {
+        path: (root / path).read_bytes()
+        for path in {_match_path(node) for node in declarations}
+    }
     impls = run_hew_query(ast_grep, root, pattern="impl $TYPE { $$$BODY }")
     closes = run_hew_query(ast_grep, root, pattern="fn close(consume self) { $$$BODY }")
     calls = run_hew_query(ast_grep, root, pattern="$F($$$ARGS)")
@@ -1684,16 +1692,19 @@ def discover_opaque_resource_facts(
     for declaration in declarations:
         path = _match_path(declaration)
         start, _ = _match_offsets(declaration)
-        # Attribute nodes are siblings of the declaration in the program item;
-        # constrain their adjacency with byte ranges so a distant marker cannot
-        # authorize a different type.
-        sibling_attrs = [
-            attr
-            for attr in attributes
-            if _match_path(attr) == path
-            and start - _match_offsets(attr)[1] < 96
-            and _match_offsets(attr)[1] <= start
-        ]
+        # Walk the declaration's parsed prefix siblings through whitespace.
+        # An intervening item stops the walk, however close its attributes are.
+        # Comments and visibility do not detach a declaration's own attributes.
+        sibling_attrs = []
+        cursor = start
+        for prefix in prefixes:
+            prefix_start, prefix_end = _match_offsets(prefix)
+            if _match_path(prefix) != path or prefix_end > cursor:
+                continue
+            if source_bytes[path][prefix_end:cursor].strip():
+                break
+            sibling_attrs.append(prefix)
+            cursor = prefix_start
         marker_texts = {str(attr["text"]).strip() for attr in sibling_attrs}
         if marker_texts.isdisjoint({"#[resource]"}) or marker_texts.isdisjoint(
             {"#[opaque]"}

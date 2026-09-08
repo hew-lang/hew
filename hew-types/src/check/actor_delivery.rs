@@ -619,7 +619,7 @@ impl Checker {
                     return Ty::Error;
                 };
                 let handler = method_id.rsplit("::").next().unwrap_or(method_id);
-                destination_method = format!("{name}::{handler}");
+                destination_method = crate::actor_protocol::qualified_handler_name(name, handler);
                 let signature = self.request_signature(&destination_method, &destination);
                 let compatible = signature.is_some_and(|(parameters, reply)| {
                     Ty::Tuple(parameters) == *params

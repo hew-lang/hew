@@ -250,15 +250,17 @@ fn map_iteration_uses_the_same_recursive_snapshot_admission() {
 
 #[test]
 fn map_snapshots_preserve_resource_and_function_value_refusals() {
-    for (declarations, value, reason) in [
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Token", "resource/linear"),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} } type Holder { token: Token }", "Holder", "resource/linear"),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Vec<Token>", "resource/linear"),
-        ("", "fn(i64) -> i64", "closure value"),
-        ("type Holder { callback: fn(i64) -> i64 }", "Holder", "closure value"),
-        ("", "Vec<fn(i64) -> i64>", "closure value"),
+    // A bare callable value has no map ingress at all, so its refusal is the
+    // shape's, not a projection's. Every other clone-free value is stored and
+    // refused only where an operation copies it out.
+    for (declarations, value, reason, keys_ok) in [
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Token", "resource/linear", true),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} } type Holder { token: Token }", "Holder", "resource/linear", true),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Vec<Token>", "resource/linear", true),
+        ("", "fn(i64) -> i64", "no map ingress", false),
+        ("type Holder { callback: fn(i64) -> i64 }", "Holder", "closure value", true),
+        ("", "Vec<fn(i64) -> i64>", "closure value", true),
     ] {
-        // `keys()` projects only the keys, so it copies no value.
         for projection in ["values", "entries", "into_iter"] {
             let source = format!(
                 "{declarations} fn main() {{ let values: HashMap<string, {value}> = HashMap.new(); values.{projection}(); }}"
@@ -271,10 +273,12 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
                 output.errors
             );
         }
-        let keys = format!(
-            "{declarations} fn main() {{ let values: HashMap<string, {value}> = HashMap.new(); values.keys(); }}"
-        );
-        check_ok(&keys);
+        // `keys()` projects only the keys, so it copies no value.
+        if keys_ok {
+            check_ok(&format!(
+                "{declarations} fn main() {{ let values: HashMap<string, {value}> = HashMap.new(); values.keys(); }}"
+            ));
+        }
     }
 }
 

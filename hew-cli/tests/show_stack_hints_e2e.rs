@@ -128,12 +128,11 @@ fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
 /// `failure.message`, so the user never saw which line caused the error.
 #[test]
 fn show_stack_hints_check_failure_renders_span_diagnostics() {
-    // A program with a deliberate type error: the Vec<[i64; 2]> element type
-    // is unsupported, producing a type error with a source span. The span
-    // underline (`^^^`) must appear in stderr when --show-stack-hints is set.
+    // Use a type mismatch rather than a temporary compiler limitation. The
+    // span underline must appear when --show-stack-hints is set.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<[i64; 2]> = Vec.new();\n\
-        \x20\x20\x20\x20println(v.len());\n\
+        \x20\x20\x20\x20let v: i64 = true;\n\
+        \x20\x20\x20\x20println(v);\n\
         }\n";
 
     let (_fixture, scaffold_path) = write_fixture(source);

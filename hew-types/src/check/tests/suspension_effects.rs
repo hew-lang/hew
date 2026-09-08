@@ -158,7 +158,7 @@ fn main() {
     let batch_joined = await batch;
     let values = fork [worker.value(), worker.value()];
     let values_joined = await values;
-    let selected = select { value = await worker.value() => value };
+    let selected = select { value from worker.value() => value };
     let callback = actor |n: i64| -> i64 { n };
     let callback_direct = callback(1);
     let callback_child = fork callback(2);
@@ -188,7 +188,7 @@ fn main() {
         ("await child", reply.clone()),
         ("await checked", checked_reply.clone()),
         (
-            "select { value = await worker.value() => value }",
+            "select { value from worker.value() => value }",
             reply.clone(),
         ),
         ("callback(1)", reply.clone()),
@@ -324,13 +324,13 @@ fn main() {
 
 #[test]
 fn select_join_ignores_a_diverging_winner() {
-    let output = check_source("fn choose() -> i64 { let first = fork { 41 }; let second = fork { 0 }; select { a = await first => return a, b = await second => b }; await first } fn main() {} ");
+    let output = check_source("fn choose() -> i64 { let first = fork { 41 }; let second = fork { 0 }; select { a from first => return a, b from second => b }; await first } fn main() {} ");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
-fn select_classifies_an_awaited_actor_ask_by_checked_dispatch() {
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let result = select { value = await worker.value() => value }; }");
+fn select_classifies_an_actor_call_source_by_checked_dispatch() {
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let result = select { value from worker.value() => value }; }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(matches!(
         output
@@ -344,7 +344,7 @@ fn select_classifies_an_awaited_actor_ask_by_checked_dispatch() {
 
 #[test]
 fn select_prepares_task_handles_and_consumes_only_the_winner() {
-    let source = "fn main() { let first = fork { 41 }; let second = fork { 0 }; let value = select { a = await first => a + await second, b = await second => b + await first }; }";
+    let source = "fn main() { let first = fork { 41 }; let second = fork { 0 }; let value = select { a from first => a + await second, b from second => b + await first }; }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let sources = output
@@ -364,8 +364,8 @@ fn select_prepares_task_handles_and_consumes_only_the_winner() {
 #[test]
 fn select_winner_is_unavailable_in_its_arm_and_after_a_join() {
     for tail in [
-        "select { a = await first => await first, b = await second => b };",
-        "select { a = await first => a, b = await second => b }; let again = await first;",
+        "select { a from first => await first, b from second => b };",
+        "select { a from first => a, b from second => b }; let again = await first;",
     ] {
         let output = check_source(&format!(
             "fn main() {{ let first = fork {{ 41 }}; let second = fork {{ 0 }}; {tail} }}"
@@ -383,7 +383,7 @@ fn select_winner_is_unavailable_in_its_arm_and_after_a_join() {
 
 #[test]
 fn select_timeout_retains_every_task() {
-    let output = check_source("fn main() { let first = fork { 41 }; let second = fork { 0 }; let value = select { a = await first => a, b = await second => b, after 1ms => await first + await second }; }");
+    let output = check_source("fn main() { let first = fork { 41 }; let second = fork { 0 }; let value = select { a from first => a, b from second => b, after 1ms => await first + await second }; }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
@@ -400,7 +400,7 @@ fn select_preparation_rejects_changing_an_already_borrowed_task() {
         ),
     ] {
         let output = check_source(&format!(
-            "fn main() {{ var task = fork {{ 17 }}; select {{ value = await task => value, after {{ {prepare} 0ms }} => 0 }}; }}"
+            "fn main() {{ var task = fork {{ 17 }}; select {{ value from task => value, after {{ {prepare} 0ms }} => 0 }}; }}"
         ));
         let diagnostic = output
             .errors
@@ -418,9 +418,9 @@ fn select_preparation_rejects_changing_an_already_borrowed_task() {
 #[test]
 fn select_preparation_tracks_binding_identity_and_disjoint_fields() {
     for source in [
-        "fn main() { let task = fork { 17 }; select { value = await task => value, after { let task = fork { 42 }; let value = await task; 0ms } => await task }; }",
-        "fn main() { var pair = (fork { 17 }, fork { 42 }); select { value = await pair.0 => value, after { pair.1 = fork { 0 }; 0ms } => await pair.0 }; }",
-        "fn main() { var task = fork { 17 }; select { value = await task => value, after 0ms => { task = fork { 42 }; await task } }; }",
+        "fn main() { let task = fork { 17 }; select { value from task => value, after { let task = fork { 42 }; let value = await task; 0ms } => await task }; }",
+        "fn main() { var pair = (fork { 17 }, fork { 42 }); select { value from pair.0 => value, after { pair.1 = fork { 0 }; 0ms } => await pair.0 }; }",
+        "fn main() { var task = fork { 17 }; select { value from task => value, after 0ms => { task = fork { 42 }; await task } }; }",
     ] {
         let output = check_source(source);
         assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
@@ -429,7 +429,7 @@ fn select_preparation_tracks_binding_identity_and_disjoint_fields() {
 
 #[test]
 fn nested_select_keeps_the_outer_preparation_borrow() {
-    let output = check_source("fn main() { var task = fork { 17 }; let second = fork { 42 }; select { value = await task => value, after { select { value = await second => { task = fork { 0 }; 0ms } }; 0ms } => 0 }; }");
+    let output = check_source("fn main() { var task = fork { 17 }; let second = fork { 42 }; select { value from task => value, after { select { value from second => { task = fork { 0 }; 0ms } }; 0ms } => 0 }; }");
     assert!(
         output
             .errors

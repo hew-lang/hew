@@ -36307,8 +36307,8 @@ impl Widget {
             let p = spawn Pinger;
             let c = spawn Pinger;
             let result = select {
-                reply = await p.ping() => reply,
-                verdict = await c.ping() => verdict,
+                reply from p.ping() => reply,
+                verdict from c.ping() => verdict,
             };
         }
     ";
@@ -36403,8 +36403,8 @@ impl Widget {
                 let p = spawn Pinger;
                 let c = spawn Checker;
                 let result = select {
-                    reply = await p.ping() => reply,
-                    _verdict = await c.check() => reply,
+                    reply from p.ping() => reply,
+                    _verdict from c.check() => reply,
                 };
             }
         ";
@@ -36450,7 +36450,7 @@ impl Widget {
             fn main() {
                 let p = spawn Pinger;
                 let result = select {
-                    reply = await p.ping() => reply,
+                    reply from p.ping() => reply,
                 };
                 let late = reply;
             }

@@ -3161,7 +3161,7 @@ fn run_hew_source(file_name: &str, src: &str) -> Output {
         .unwrap()
 }
 
-/// Actor-ask reply seam: a `select { reply = await w.twice(..) => reply }` ask
+/// Actor-ask reply seam: a `select { reply from w.twice(..) => reply }` ask
 /// returns a concrete `i64` reply, surfaced as the process exit code. This is
 /// the codegen-supported ask form (cf. `examples/v05/actor_ask_race.hew`); the
 /// ask-reply totality assert runs during lowering of the reply binding.

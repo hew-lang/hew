@@ -266,7 +266,7 @@ fn comma_less_block_opening_arms_parse() {
     // Expr::UnsafeBlock
     parse_ok("fn f() { match 1 { 1 => unsafe { 1 } _ => 0 } }");
     // Expr::Select
-    parse_ok("fn f() { match 1 { 1 => select { m = await ch => m, } _ => 0 } }");
+    parse_ok("fn f() { match 1 { 1 => select { m from ch => m, } _ => 0 } }");
     // Expr::ForkBlock — a brace must follow `fork`, and `fork`/`after` blocks
     // are only legal inside a `scope`.
     parse_ok("fn f() { scope { let v = match 1 { 1 => fork { 1 } _ => 0 }; } }");

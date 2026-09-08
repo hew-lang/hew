@@ -23,7 +23,7 @@
 //!    owned loser + `after` net) under the poisoned allocator: the scope-exit
 //!    drop fires only on the winning arm's body path; stacking on the channel
 //!    destructor's loser-leg release aborts here.
-//! 4. **Selected-value escape.** `let x = select { r = await a.m() => r }` with
+//! 4. **Selected-value escape.** `let x = select { r from a.m() => r }` with
 //!    `x` read back verbatim — the arm body's move into the select result must
 //!    suppress the scope-exit drop (no double-free, poisoned-allocator clean)
 //!    while the non-escaping siblings above still drop (no leak).

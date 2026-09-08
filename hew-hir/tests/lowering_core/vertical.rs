@@ -873,11 +873,11 @@ fn self_capture_refusals(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirDiag
     output
         .diagnostics
         .iter()
-        .filter(|d| match &d.kind {
-            HirDiagnosticKind::CheckerBoundaryViolation { reason, .. } => {
-                reason.contains("captures its own handle")
-            }
-            _ => false,
+        .filter(|d| {
+            matches!(
+                &d.kind,
+                HirDiagnosticKind::RecursiveLambdaActorHandle { .. }
+            )
         })
         .collect()
 }

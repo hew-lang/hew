@@ -73,6 +73,7 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
         | hew_hir::HirDiagnosticKind::EnumVariantConstructorArityMismatch { .. } => {
             "E_ENUM_VARIANT_CONSTRUCTOR"
         }
+        hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { .. } => "E_RECURSIVE_LAMBDA_ACTOR",
         _ => "E_HIR",
     }
 }
@@ -96,6 +97,14 @@ pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -
         return message;
     }
 
+    if let hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { name } = &diagnostic.kind {
+        return format!(
+            "{}: this lambda actor names `{name}`, its own handle, so its state would own the \
+             way to reach it: {}",
+            hir_diagnostic_prefix(&diagnostic.kind),
+            diagnostic.note
+        );
+    }
     let prefix = hir_diagnostic_prefix(&diagnostic.kind);
     if diagnostic.note.is_empty() {
         prefix.to_string()
@@ -577,6 +586,14 @@ fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
             "{}: {}",
             hir_diagnostic_prefix(&diagnostic.kind),
             hir_diagnostic_user_message(diagnostic)
+        );
+    }
+    if let hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { name } = &diagnostic.kind {
+        return format!(
+            "{}: this lambda actor names `{name}`, its own handle, so its state would own the \
+             way to reach it: {}",
+            hir_diagnostic_prefix(&diagnostic.kind),
+            diagnostic.note
         );
     }
     let prefix = hir_diagnostic_prefix(&diagnostic.kind);

@@ -20860,12 +20860,8 @@ impl LowerCtx {
             // equivalent, so refuse it rather than synthesize a declaration
             // whose state owns its own handle.
             self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "lambda actor".to_string(),
-                    reason: format!(
-                        "the lambda captures its own handle (`{}`), so its state would own the handle that addresses it",
-                        weak.name
-                    ),
+                HirDiagnosticKind::RecursiveLambdaActorHandle {
+                    name: weak.name.clone(),
                 },
                 span.clone(),
                 "give the recursive actor a name and spawn it, so the handle and the state it reaches are separate declarations",

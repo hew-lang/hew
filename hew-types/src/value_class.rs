@@ -588,6 +588,45 @@ pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]
             builtin: *builtin,
             is_opaque: *is_opaque,
         },
+        ResolvedTy::Function {
+            capabilities,
+            params: callable_params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities: *capabilities,
+            params: callable_params
+                .iter()
+                .map(|param| substitute(param, params, args))
+                .collect(),
+            ret: Box::new(substitute(ret, params, args)),
+        },
+        ResolvedTy::Closure {
+            capabilities,
+            params: callable_params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            capabilities: *capabilities,
+            params: callable_params
+                .iter()
+                .map(|param| substitute(param, params, args))
+                .collect(),
+            ret: Box::new(substitute(ret, params, args)),
+            captures: captures
+                .iter()
+                .map(|capture| substitute(capture, params, args))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(substitute(pointee, params, args)),
+        },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: Box::new(substitute(pointee, params, args)),
+        },
         ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(substitute(inner, params, args))),
         other => other.clone(),
     }

@@ -4585,9 +4585,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::RecordCloneCall { src, .. } => {
                 let mut loans = Vec::new();
                 let source = self.lower_borrowed_read(src, &mut loans)?;
-                let copy = self.emit(expr, SemOpKind::CopyValue { source })?;
+                // A record whose fields all copy by value carries no ownership,
+                // so the borrowed read is already the independent copy. Only an
+                // owned record needs the ownership operation.
+                let ty = self.ty(&expr.ty);
+                let result =
+                    if OwnKind::of_ty(&ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                        self.emit(expr, SemOpKind::CopyValue { source })?
+                    } else {
+                        source.value
+                    };
                 self.end_call_loans(&loans)?;
-                Ok(copy)
+                Ok(result)
             }
             HirExprKind::Spawn { .. } => self
                 .lower_actor_boundary(expr)?

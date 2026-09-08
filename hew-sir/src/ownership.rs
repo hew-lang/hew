@@ -477,7 +477,13 @@ pub enum SuspendKind {
     RemoteAsk,
     Read,
     Accept,
-    ChannelRecv,
+    /// A channel consumer takes the next element. `park` is the `recv()`
+    /// contract: an empty channel with live senders parks the coroutine.
+    /// `try_recv()` is the same take with `park: false` — an empty channel
+    /// resumes immediately with `None`.
+    ChannelRecv {
+        park: bool,
+    },
     /// A channel producer parks on a bounded channel's capacity. The element
     /// is deep-copied into the queue, so the producer keeps its value.
     ChannelSend,

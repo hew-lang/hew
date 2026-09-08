@@ -4987,7 +4987,7 @@ fn verify_terminator_shape(
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![element.clone()])
                                     && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))))
                 }
-                crate::SuspendKind::ChannelRecv => {
+                crate::SuspendKind::ChannelRecv { .. } => {
                     // The receiver may be spelled bare inside `std.channel`,
                     // in which case it imposes no element; the result's
                     // `Option<T>` is the message-type authority either way.

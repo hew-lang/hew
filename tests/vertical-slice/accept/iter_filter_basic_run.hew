@@ -67,7 +67,7 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
 }
 
 /// Construct a lazy `Filter` adapter (mirrors `std::iter::filter`).
-fn mk_filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
+fn mk_filter<I, A>(consume it: I, consume pred: fn(A) -> bool) -> Filter<I, A>
 where
     I: Iterator<Item = A>,
 {
@@ -75,7 +75,7 @@ where
 }
 
 /// Left-fold a fixed-`i64` iterator (mirrors `std::iter::fold`).
-fn fold_i64<I>(it: I, init: i64, f: fn(i64, i64) -> i64) -> i64
+fn fold_i64<I>(consume it: I, init: i64, consume f: fn(i64, i64) -> i64) -> i64
 where
     I: Iterator<Item = i64>,
 {

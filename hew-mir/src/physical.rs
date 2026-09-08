@@ -574,6 +574,11 @@ pub enum PhysicalMapOp {
     Get {
         result: PhysicalVariantId,
     },
+    /// `Some` carries a loan of the value the map still owns; the result
+    /// carries no release obligation.
+    GetBorrow {
+        result: PhysicalVariantId,
+    },
     ContainsKey,
     Insert,
     Remove {
@@ -595,6 +600,7 @@ impl PhysicalMapOp {
             Self::Len => MapValueOp::Len,
             Self::Index => MapValueOp::Index,
             Self::Get { .. } => MapValueOp::Get,
+            Self::GetBorrow { .. } => MapValueOp::GetBorrow,
             Self::ContainsKey => MapValueOp::ContainsKey,
             Self::Insert => MapValueOp::Insert,
             Self::Remove { .. } => MapValueOp::Remove,
@@ -3537,6 +3543,9 @@ impl FunctionLowerer<'_> {
             MapValueOp::Get => PhysicalMapOp::Get {
                 result: self.variant_id(&value.ty)?,
             },
+            MapValueOp::GetBorrow => PhysicalMapOp::GetBorrow {
+                result: self.variant_id(&value.ty)?,
+            },
             MapValueOp::ContainsKey => PhysicalMapOp::ContainsKey,
             MapValueOp::Insert => PhysicalMapOp::Insert,
             MapValueOp::Remove => {
@@ -4067,8 +4076,11 @@ fn verify_collection_value_glue(
         ));
     }
     let facts = semantic_type_facts(module, ty)?;
+    // A map whose value has no clone has none itself; its own clone action is
+    // required only where the semantics keep one.
+    let clonable = matches!(facts.clone, CloneKind::DeepCopy | CloneKind::FieldWise);
     if OwnKind::of_class(facts.class) != OwnKind::Owned
-        || !matches!(facts.clone, CloneKind::DeepCopy | CloneKind::FieldWise)
+        || (!clonable && facts.clone != CloneKind::None)
         || required_layout(&module.target, ty)?.repr != PhysicalRepr::Pointer
     {
         return Err(PhysicalError::new(
@@ -4083,7 +4095,7 @@ fn verify_collection_value_glue(
             ));
         }
         verify_value_recipe(module, recipe)?;
-        if recipe.clone.is_none() {
+        if clonable && recipe.clone.is_none() {
             return Err(PhysicalError::new(
                 "physical collection element has no clone action",
             ));
@@ -7541,7 +7553,7 @@ fn verify_map_call(
         ));
     }
     match operation {
-        PhysicalMapOp::Get { result: option } => {
+        PhysicalMapOp::Get { result: option } | PhysicalMapOp::GetBorrow { result: option } => {
             verify_optional_value(module, option, result, &glue.value)?;
         }
         PhysicalMapOp::Remove {

@@ -4452,15 +4452,9 @@ run_accept_expect_status "vec_index_assign_round_trip" 24
 run_accept_expect_trap "vec_index_assign_oob_traps" "IndexOutOfBounds"
 run_accept_expect_stdout "slice_annotation_alias"
 
-# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/hashmap_values_managed_record.hew" \
-    'HashMap<i64, User>.values()` is not yet supported: projecting from a map with value type `User` into an owned `Vec` is not lowered' \
-    "hashmap_values_managed_record"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/hashmap_values_managed_record.hew" \
-    1 \
-    "hashmap_values_managed_record"
+# `values()` projects a clonable record value into an owned Vec: the copy is
+# what the projection is for, and only a value with no clone is refused.
+run_accept_expect_stdout "hashmap_values_managed_record"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 expect_check_fail_contains \
@@ -5127,19 +5121,25 @@ fi
 grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
-# G1: HashMap.get returns an owned Option<V>, so heap values must clone out of
-# the slot and V with no clone_fn must fail closed at check time.
+# G1: HashMap.get over a clonable value returns an owned Option<V> that clones
+# out of the slot. A value with no clone is read by borrow instead, so
+# consuming that payload meets the consume wall; the accept-side twin is the
+# `hashmap-get-borrowed` acceptance case.
 run_accept_expect_status "hashmap_get_clone_string_value" 0
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/hashmap_get_unclonable_opaque_value.hew" \
-    "no map value clone_fn" \
+    "is borrowed here" \
     "hashmap_get_unclonable_opaque_value"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/hashmap_get_borrow_mutate.hew" \
+    "borrowed by a live element loan" \
+    "hashmap_get_borrow_mutate"
 
-# `m.clone()` deep-clones every value blob, so a value with no map value
-# clone_fn must fail closed at the same admission seam as `get`.
+# `m.clone()` deep-clones every value blob, so a value with no clone must fail
+# closed at the operation that copies it.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/hashmap_clone_unclonable_opaque_value.hew" \
-    "no map value clone_fn" \
+    "copies each value out of the map" \
     "hashmap_clone_unclonable_opaque_value"
 
 # The selected arm destructures the record once, so an unbound closure-typed

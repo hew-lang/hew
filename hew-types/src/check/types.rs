@@ -2229,6 +2229,18 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) type_params: HashSet<String>,
 }
 
+/// A `HashMap` value-copy obligation deferred until inference has settled.
+/// Recorded when a copying operation (`m[k]`, `values()`, `entries()`,
+/// `clone()`, `into_iter()`, `for (k, v) in m`) sees a value type that is still
+/// in flight; drained by `finalize_hashmap_admission`.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredHashMapValueCopy {
+    pub(super) span: Span,
+    pub(super) val_ty: Ty,
+    pub(super) operation: String,
+    pub(super) source_module: Option<String>,
+}
+
 /// A `HashSet` element admission check deferred until after all inference has
 /// settled.  Recorded when `validate_hashset_element_type` encounters a
 /// `Ty::Var` element (type still in-flight); drained by
@@ -2814,6 +2826,8 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same map).
     pub(super) deferred_hashmap_admission: HashMap<SpanKey, DeferredHashMapAdmission>,
+    /// See [`DeferredHashMapValueCopy`].
+    pub(super) deferred_hashmap_value_copy: HashMap<SpanKey, DeferredHashMapValueCopy>,
     /// `HashSet` element admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
@@ -3901,6 +3915,7 @@ impl Checker {
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
+            deferred_hashmap_value_copy: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),

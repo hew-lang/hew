@@ -1,24 +1,23 @@
-// Reject fixture: HashMap::get must fail closed when V contains no clone_fn.
-//
-// `HashMap::get()` returns an owned `Option<V>`. A value containing an
-// `#[opaque]` runtime handle cannot be semantically cloned, so admitting this
-// map would require a shallow pointer copy into Some(V).
-
-#[opaque]
-type Handle {}
-
-type WrappedHandle {
-    h: Handle,
+// Reject fixture: `m.get(k)` over a value with no clone hands `Some` a loan of
+// the slot the map still owns. Consuming that payload would release a value
+// the map still holds, so it meets the consume wall; `remove(k)` is the way to
+// move a value out.
+#[resource]
+type Tok {
+    id: i64,
 }
 
-extern "C" {
-    fn hew_handle_create() -> Handle;
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
 }
 
-fn main() -> i64 {
-    let m: HashMap<string, WrappedHandle> = HashMap.new();
-    let h = unsafe { hew_handle_create() };
-    m.insert("h", WrappedHandle { h: h });
-    let _ = m.get("h");
-    0
+fn main() {
+    var m: HashMap<string, Tok> = HashMap.new();
+    m.insert("a", Tok { id: 1 });
+    match m.get("a") {
+        Option.Some(t) => t.close(),
+        Option.None => println("none"),
+    }
 }

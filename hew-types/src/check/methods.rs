@@ -475,9 +475,24 @@ impl Checker {
                 if !check.is_abstract_key_param {
                     self.validate_collection_key_capabilities(&key, "Map", &check.span);
                 }
-                self.validate_hashmap_value_clone_type(&value, &check.span);
                 self.current_type_param_bounds.pop();
             }
+            for error in &mut self.errors[before..] {
+                error.source_module.clone_from(&check.source_module);
+            }
+        }
+        // The value-copy obligations a copying operation left behind: the value
+        // type has settled by now.
+        for (_span_key, check) in std::mem::take(&mut self.deferred_hashmap_value_copy) {
+            let value = self
+                .subst
+                .resolve(&check.val_ty)
+                .materialize_literal_defaults();
+            if matches!(value, Ty::Error) || value.has_inference_var() {
+                continue;
+            }
+            let before = self.errors.len();
+            self.validate_hashmap_value_clone_type(&value, &check.operation, &check.span);
             for error in &mut self.errors[before..] {
                 error.source_module.clone_from(&check.source_module);
             }
@@ -5407,6 +5422,17 @@ impl Checker {
                 if !validated {
                     return false;
                 }
+                // Only the operations that copy a value out of the map need a
+                // value clone; `get` borrows and `remove` moves.
+                if matches!(method, "values" | "entries" | "clone")
+                    && !self.validate_hashmap_value_clone_type(
+                        &cx.val,
+                        &format!("HashMap.{method}()"),
+                        span,
+                    )
+                {
+                    return false;
+                }
                 if matches!(
                     method,
                     "insert"
@@ -5575,9 +5601,26 @@ impl Checker {
                     canonical_receiver: "HashMap".to_string(),
                 },
             );
+            // D432: a value with no clone is read as a loan of the slot the
+            // map still owns, so `Some` carries the loan and the owning
+            // removal stays the way to move a value out.
+            let resolved_val = self.subst.resolve(&val_ty);
+            let Some(mode) = self.vec_iteration_element_mode(&resolved_val, span) else {
+                return Ty::Error;
+            };
             // Records the `Map::get` resolved call. `<HashMap<K, V> as
             // Index>::Output` is `V`, so the projected return is `Option<V>`.
             self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
+            if mode == super::types::VecIterationMode::Borrow {
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.borrowed_element_option_reads.insert(key.clone());
+                if let Some(call) = self.resolved_calls.get_mut(&key) {
+                    call.method_target.symbol_name =
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::GetBorrow)
+                            .c_symbol()
+                            .to_string();
+                }
+            }
             return Ty::option(val_ty);
         }
         // `HashMap::remove(k) -> Option<V>` (A233): the removing twin of `get`.
@@ -5613,6 +5656,9 @@ impl Checker {
         // abstract receiver the checker cannot admit (see std/builtins.hew).
         if method == "into_iter" {
             self.check_arity(args, 0, "`HashMap.into_iter`", span);
+            if !self.validate_hashmap_value_clone_type(&val_ty, "HashMap.into_iter()", span) {
+                return Ty::Error;
+            }
             let keys_span = span.start..span.start;
             let values_span = span.end..span.end;
             let mut iter_ty = Ty::Error;

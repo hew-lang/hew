@@ -1,0 +1,11 @@
+[[case]]
+id = "hashmap-get-borrowed"
+intent = "`get(k)` over a HashMap of a clone-free `#[resource]` value reads `Some` as a loan of the slot the map still owns and `None` for an absent key, the same slot reads twice without moving, and the owning removal releases each value exactly once."
+source = "cases/hashmap-get-borrowed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nshow t1\nt\nmissing\nlen=2\nclose t1\nclose t2\nlen=0\n"
+exit = 0
+stderr = ""

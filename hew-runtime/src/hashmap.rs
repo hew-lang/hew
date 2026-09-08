@@ -1173,6 +1173,89 @@ pub unsafe extern "C" fn hew_hashmap_insert_clone_layout(
     unsafe { complete(present_out, inserted, fault_out) }
 }
 
+/// Insert an independent copy of a borrowed key and take the caller's value.
+///
+/// This is the ingress for a value with no semantic clone: the caller's owner
+/// moves into the slot the map keeps, while the key is cloned exactly as
+/// [`hew_hashmap_insert_clone_layout`] does. On success, writes true for a new
+/// key and false for replacement, and a replacement releases the value the map
+/// held. A callback failure transfers nothing: the caller keeps its value.
+///
+/// Status zero initializes the scalar output and clears `fault_out`. A callback
+/// failure returns its exact nonzero status and fault owner, leaving all result
+/// outputs untouched and retaining the receiver with the caller.
+///
+/// # Safety
+///
+/// Scalar and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
+///
+/// `m` must be a live map. `key` must borrow an initialized slot matching its
+/// descriptor. `val` must be an independent owner of a value blob matching the
+/// value descriptor; the caller must not release it after a zero status.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_insert_take_layout(
+    m: *mut HewLayoutHashMap,
+    key: *const c_void,
+    val: *const c_void,
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the caller supplies a live map and initialized inputs.
+    unsafe { validate_op_inputs(m, key, Some(val)) };
+    // SAFETY: copy the descriptor and geometry before any mutation or resize.
+    let (key_layout, val_layout, stride, key_offset, val_offset) = unsafe {
+        (
+            (*m).key_layout.value,
+            (*m).val_layout,
+            (*m).stride,
+            (*m).key_offset,
+            (*m).val_offset,
+        )
+    };
+    require_clone(&key_layout, "map insert key");
+    let alignment = key_layout.align.max(val_layout.align);
+    // SAFETY: the map constructor validated this geometry. One slot is enough
+    // for the two staged values, including padding and zero-sized fields.
+    let scratch = unsafe { alloc_layout_entries(1, stride, alignment) };
+    // SAFETY: the stored field offsets are within this fresh aligned slot.
+    let (staged_key, staged_value) = unsafe { (scratch.add(key_offset), scratch.add(val_offset)) };
+    let mut inserted = false;
+    // SAFETY: the key clone finishes while its input map slot is still live,
+    // and the value bytes are the caller's owner relocated into the staging
+    // slot. Insert then moves both on and adopts or preserves the key.
+    let status = unsafe {
+        clone_layout_blob(key_layout, key.cast(), staged_key, "map insert key");
+        if val_layout.size > 0 {
+            ptr::copy_nonoverlapping(val.cast::<u8>(), staged_value, val_layout.size);
+        }
+        hew_hashmap_insert_layout(
+            m,
+            staged_key.cast(),
+            staged_value.cast(),
+            &raw mut inserted,
+            fault_out,
+        )
+    };
+    if status != 0 || !inserted {
+        if let Some(drop_key) = key_layout.drop_fn {
+            // SAFETY: replacement or failure left this staged key clone ours.
+            unsafe { drop_key(staged_key.cast()) };
+        }
+    }
+    // A failed transfer-in never took the value: the staged bytes still alias
+    // the caller's owner, which the caller releases, so they are not dropped
+    // here.
+    // SAFETY: all owners have moved or been released; only temporary slot
+    // storage remains.
+    unsafe { dealloc_layout_entries(scratch, 1, stride, alignment) };
+    if status != 0 {
+        return status;
+    }
+    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
+    unsafe { complete(present_out, inserted, fault_out) }
+}
+
 /// Insert or overwrite `key -> val`. On success, `present_out` is true for a
 /// new entry and false for replacement.
 ///
@@ -1509,6 +1592,87 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
             out.cast::<u8>(),
             "hew_hashmap_get_clone_layout value",
         );
+    }
+    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
+    unsafe { complete(present_out, true, fault_out) }
+}
+
+/// Look up a key and copy the stored value's bytes into caller-provided
+/// storage without cloning them. On success, writes whether the key was found
+/// to `present_out`. An absent lookup leaves the value output untouched.
+///
+/// This is the borrowed-return counterpart to
+/// [`hew_hashmap_get_clone_layout`]: the map keeps the only owner of the value
+/// and the caller reads the copy for the length of its loan on the map. The
+/// caller must not release it, and the copy is dangling after the next
+/// mutation of `m`.
+///
+/// Status zero initializes the scalar output and clears `fault_out`. A callback
+/// failure returns its exact nonzero status and fault owner, leaving all result
+/// outputs untouched and retaining the receiver with the caller.
+///
+/// # Safety
+///
+/// Scalar and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
+///
+/// `m` must be a valid `HewLayoutHashMap`. `key` must point to a valid key
+/// blob. When the map's value size is non-zero, `out` must point to writable
+/// storage for exactly `val_layout.size` bytes at `val_layout.align`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_get_borrow_layout(
+    m: *const HewLayoutHashMap,
+    key: *const c_void,
+    out: *mut c_void,
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: shared fail-closed gate; no value pointer participates in lookup.
+    unsafe { validate_op_inputs(m, key, None) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &*m };
+    if map.val_layout.size > 0 && out.is_null() {
+        crate::set_last_error("hew_hashmap_get_borrow_layout: out must hold the borrowed value");
+        std::process::abort();
+    }
+    if map.cap == 0 || map.len == 0 {
+        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
+        return unsafe { complete(present_out, false, fault_out) };
+    }
+    let kl = &map.key_layout;
+    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
+        crate::set_last_error(
+            "hew_hashmap_get_borrow_layout: hash_fn/eq_fn None (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+    // SAFETY: layout fields valid.
+    let (idx, found) = match unsafe {
+        layout_probe(
+            map.entries,
+            map.cap,
+            map.stride,
+            map.key_offset,
+            key,
+            hash_fn,
+            eq_fn,
+            fault_out,
+        )
+    } {
+        Ok(result) => result,
+        Err(status) => return status,
+    };
+    if !found {
+        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
+        return unsafe { complete(present_out, false, fault_out) };
+    }
+    // SAFETY: idx < cap; val_offset valid.
+    let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+    if map.val_layout.size > 0 {
+        // SAFETY: val_ptr addresses the occupied slot's value blob and `out`
+        // was validated for this value layout above. The bytes are copied, not
+        // cloned: the map keeps the only owner.
+        unsafe { ptr::copy_nonoverlapping(val_ptr, out.cast::<u8>(), map.val_layout.size) };
     }
     // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
     unsafe { complete(present_out, true, fault_out) }

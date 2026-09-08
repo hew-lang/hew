@@ -946,7 +946,14 @@ pub fn collection_value_dependencies(
                     ty.user_facing()
                 )
             })?;
-        if kind != hew_types::BuiltinType::Vec && row.clone == hew_types::CloneKind::None {
+        // A Vec element and a HashMap value may have no clone: they are read
+        // by borrow and moved out by an owning removal. A key still needs one,
+        // which the checker's key capabilities already prove.
+        if !matches!(
+            kind,
+            hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap
+        ) && row.clone == hew_types::CloneKind::None
+        {
             return Err(format!(
                 "collection component `{}` has no semantic copy",
                 ty.user_facing()

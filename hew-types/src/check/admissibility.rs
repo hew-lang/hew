@@ -1372,18 +1372,43 @@ impl Checker {
         false
     }
 
-    pub(super) fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+    /// Checker boundary for a `HashMap` operation that copies its values out:
+    /// `m[k]`, `values()`, `entries()`, `clone()`, `into_iter()` and the
+    /// `for (k, v) in m` desugar. A value with no clone stays in the map; the
+    /// borrowed `get` reads it and the owning `remove` moves it out.
+    pub(super) fn validate_hashmap_value_clone_type(
+        &mut self,
+        ty: &Ty,
+        operation: &str,
+        span: &Span,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if matches!(resolved, Ty::Error) {
+            return false;
+        }
+        // Inference is still in flight here; the obligation is checked once the
+        // value type has settled.
+        if resolved.has_inference_var() {
+            self.deferred_hashmap_value_copy
+                .entry(SpanKey::in_module(span, self.current_module_idx))
+                .or_insert_with(|| super::types::DeferredHashMapValueCopy {
+                    span: span.clone(),
+                    val_ty: ty.clone(),
+                    operation: operation.to_string(),
+                    source_module: self.current_module.clone(),
+                });
+            return true;
+        }
         let mut visiting = CollectionClonePath::default();
         if let Some(blocker) = self.vec_iter_clone_blocker(ty, &mut visiting) {
-            let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+            let resolved = resolved.materialize_literal_defaults();
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`HashMap<_, {}>` is not supported: `HashMap.get()` returns an owned \
-                     `Option<V>`, but value type `{}` contains {blocker} which has no \
-                     semantic clone/retain operation; use a cloneable value type",
-                    resolved.user_facing(),
+                    "`{operation}` copies each value out of the map, but value type `{}` \
+                     contains {blocker} which has no semantic clone/retain operation; read it \
+                     with `get(k)`, which borrows, or move it out with `remove(k)`",
                     resolved.user_facing(),
                 ),
             );
@@ -1455,10 +1480,32 @@ impl Checker {
         }
         // Named keys wait until all impls are registered. Concrete operation
         // sites additionally prove the same capabilities through the resolver.
-        let key_ok = matches!(&resolved_key, Ty::Named { .. })
-            || self.validate_collection_key_capabilities(&resolved_key, "Map", span);
-        let value_ok = self.validate_hashmap_value_clone_type(&resolved_val, span);
-        key_ok && value_ok
+        if !self.validate_hashmap_value_shape(&resolved_val, span) {
+            return false;
+        }
+        matches!(&resolved_key, Ty::Named { .. })
+            || self.validate_collection_key_capabilities(&resolved_key, "Map", span)
+    }
+
+    /// A callable map value has no working ingress: its checked type carries a
+    /// copy capability the map's value descriptor cannot name, so the runtime
+    /// boundary would disagree with the declared value type. Refuse the shape
+    /// here rather than at that boundary.
+    fn validate_hashmap_value_shape(&mut self, val_ty: &Ty, span: &Span) -> bool {
+        if !matches!(val_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+            return true;
+        }
+        let message = format!(
+            "`HashMap<_, {}>` is not supported: a callable value has no map ingress; \
+             store it in a record field or a `Vec` instead",
+            val_ty.user_facing()
+        );
+        // The same annotation is admitted from both the declaration and the
+        // operation that reads it; one diagnostic answers both.
+        if !self.errors.iter().any(|error| error.message == message) {
+            self.report_error(TypeErrorKind::InvalidOperation, span, message);
+        }
+        false
     }
 
     pub(super) fn validate_hashmap_owned_element_types(

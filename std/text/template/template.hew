@@ -35,7 +35,7 @@
 //! with two independent parallel-vector maps:
 //!
 //! - **scalar map** — `string` keys to `string` values (integers and bools
-//!   are stored pre-rendered via `ctx_set_int` / `ctx_set_bool`).
+//!   are stored pre-rendered via `Ctx.set_int` / `Ctx.set_bool`).
 //! - **list map** — `string` keys to flat-stored lists of `string` items,
 //!   indexed by per-entry start/length metadata.
 //!
@@ -57,13 +57,13 @@
 //! import std.text.template;
 //!
 //! fn main() {
-//!     let ctx = template.new_ctx();
-//!     template.ctx_set_str(ctx, "name", "Alice");
-//!     template.ctx_set_int(ctx, "age", 30);
-//!     let items: Vec<string> = Vec.new();
+//!     var ctx = template.new_ctx();
+//!     ctx.set_str("name", "Alice");
+//!     ctx.set_int("age", 30);
+//!     var items: Vec<string> = Vec.new();
 //!     items.push("red");
 //!     items.push("green");
-//!     template.ctx_set_list(ctx, "colours", items);
+//!     ctx.set_list("colours", items);
 //!
 //!     let t = match template.parse("Hello {{.name}}, age {{.age}}!") {
 //!         .Ok(template) => template,
@@ -87,8 +87,8 @@
 // WHAT: the real shape is a single generic map from string to a recursive Value.
 /// Template rendering context.
 ///
-/// Construct with `new_ctx()`, then populate with `ctx_set_str`,
-/// `ctx_set_int`, `ctx_set_bool`, and `ctx_set_list`.
+/// Construct with `new_ctx()`, then populate through the `var self` methods
+/// `set_str`, `set_int`, `set_bool`, and `set_list`; the binding must be `var`.
 pub type Ctx {
     /// Keys for scalar (string-valued) entries.
     skeys: Vec<string>,
@@ -551,94 +551,96 @@ pub fn render_template(t: Template, ctx: Ctx) -> string {
 /// import std.text.template;
 ///
 /// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_str(ctx, "greeting", "hello");
+///     var ctx = template.new_ctx();
+///     ctx.set_str("greeting", "hello");
 /// }
 /// ```
 pub fn new_ctx() -> Ctx {
     Ctx { skeys: Vec.new(), svals: Vec.new(), lkeys: Vec.new(), litems: Vec.new(), lstart: Vec.new(), llen: Vec.new() }
 }
 
-/// Bind `key` to the string `val` in the context.
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_str(ctx, "name", "Alice");
-/// }
-/// ```
-pub fn ctx_set_str(var ctx: Ctx, key: string, val: string) {
-    ctx.skeys.push(key);
-    ctx.svals.push(val);
-}
+impl Ctx {
+    /// Bind `key` to the string `val` in the context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     ctx.set_str("name", "Alice");
+    /// }
+    /// ```
+    pub fn set_str(var self, key: string, val: string) {
+        self.skeys.push(key);
+        self.svals.push(val);
+    }
 
-/// Bind `key` to the integer `val` (stored as its decimal representation).
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_int(ctx, "count", 42);
-/// }
-/// ```
-pub fn ctx_set_int(var ctx: Ctx, key: string, val: i64) {
-    ctx.skeys.push(key);
-    ctx.svals.push(f"{val}");
-}
+    /// Bind `key` to the integer `val` (stored as its decimal representation).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     ctx.set_int("count", 42);
+    /// }
+    /// ```
+    pub fn set_int(var self, key: string, val: i64) {
+        self.skeys.push(key);
+        self.svals.push(f"{val}");
+    }
 
-/// Bind `key` to the boolean `val` (`"true"` or `"false"`).
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_bool(ctx, "active", true);
-/// }
-/// ```
-pub fn ctx_set_bool(var ctx: Ctx, key: string, val: bool) {
-    ctx.skeys.push(key);
-    ctx.svals.push(if val {
-        "true"
-    } else {
-        "false"
-    });
-}
+    /// Bind `key` to the boolean `val` (`"true"` or `"false"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     ctx.set_bool("active", true);
+    /// }
+    /// ```
+    pub fn set_bool(var self, key: string, val: bool) {
+        self.skeys.push(key);
+        self.svals.push(if val {
+            "true"
+        } else {
+            "false"
+        });
+    }
 
-/// Bind `key` to the list of strings `items`.
-///
-/// Inside a `{{range .key}}...{{end}}` block, each element is bound to `{{.}}`.
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     let colours: Vec<string> = Vec.new();
-///     colours.push("red");
-///     colours.push("blue");
-///     template.ctx_set_list(ctx, "colours", colours);
-/// }
-/// ```
-pub fn ctx_set_list(var ctx: Ctx, key: string, items: Vec<string>) {
-    let n = items.len();
-    let start = ctx.litems.len();
-    ctx.lkeys.push(key);
-    ctx.lstart.push(start);
-    ctx.llen.push(n);
-    for i in 0 .. n {
-        ctx.litems.push(items[i]);
+    /// Bind `key` to the list of strings `items`.
+    ///
+    /// Inside a `{{range .key}}...{{end}}` block, each element is bound to `{{.}}`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     var colours: Vec<string> = Vec.new();
+    ///     colours.push("red");
+    ///     colours.push("blue");
+    ///     ctx.set_list("colours", colours);
+    /// }
+    /// ```
+    pub fn set_list(var self, key: string, items: Vec<string>) {
+        let n = items.len();
+        let start = self.litems.len();
+        self.lkeys.push(key);
+        self.lstart.push(start);
+        self.llen.push(n);
+        for i in 0 .. n {
+            self.litems.push(items[i]);
+        }
     }
 }
 
@@ -654,8 +656,8 @@ pub fn ctx_set_list(var ctx: Ctx, key: string, items: Vec<string>) {
 /// import std.text.template;
 ///
 /// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_str(ctx, "who", "world");
+///     var ctx = template.new_ctx();
+///     ctx.set_str("who", "world");
 ///     let t = match template.parse("hello {{.who}}!") {
 ///         .Ok(template) => template,
 ///         .Err(_) => panic("template parse failed"),

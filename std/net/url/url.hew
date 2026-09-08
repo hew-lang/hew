@@ -215,7 +215,7 @@ pub fn decode(s: string) -> string {
 
 fn decode_impl(s: string) -> string {
     let data = s.to_bytes();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];
@@ -281,7 +281,7 @@ fn decode_query_impl(params: string) -> Vec<(string, string)> {
 
 fn decode_form_component(s: string) -> string {
     let data = s.to_bytes();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];

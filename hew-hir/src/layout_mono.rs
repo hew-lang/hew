@@ -1256,10 +1256,17 @@ fn first_residual(args: &[ResolvedTy], residual_domain: &HashSet<String>) -> Opt
 /// site. Mirrors `lower::contains_abstract_symbol` (a structural `TypeParam`
 /// is abstract by construction).
 fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<String>) -> bool {
-    match ty {
-        ResolvedTy::TypeParam { .. } => true,
-        _ => residual_in_ty(ty, all_type_params).is_some(),
+    let mut worklist = vec![ty.clone()];
+    while let Some(ty) = worklist.pop() {
+        if matches!(ty, ResolvedTy::TypeParam { .. })
+            || matches!(&ty, ResolvedTy::Named { name, args, .. }
+                if args.is_empty() && all_type_params.contains(name))
+        {
+            return true;
+        }
+        collect_named_children(&ty, &mut worklist);
     }
+    false
 }
 
 fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<String> {
@@ -1318,6 +1325,19 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_structural_parameters_remain_abstract_without_name_membership() {
+        let names = HashSet::new();
+        let nested = ResolvedTy::Tuple(vec![ResolvedTy::Task(Box::new(ResolvedTy::TypeParam {
+            name: "Payload".into(),
+        }))]);
+        assert!(abstract_in_ty(&nested, &names));
+        assert!(!abstract_in_ty(
+            &ResolvedTy::named_user("Payload", vec![]),
+            &names,
+        ));
+    }
 
     /// A fresh `Discovery` with empty seed sets and a generous cap — enough to
     /// exercise `register_record` / `register_enum` in isolation.

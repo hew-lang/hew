@@ -606,6 +606,23 @@ struct InstanceService<'a> {
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
 }
 
+/// The declared type parameter a receiver-pattern position names, if any.
+///
+/// Both encodings of a bare parameter reference are accepted: the structural
+/// `TypeParam` and the argument-less `Named` spelling some producers still
+/// emit.
+fn declared_type_param_name<'a>(ty: &'a ResolvedTy, declared: &[String]) -> Option<&'a str> {
+    match ty {
+        ResolvedTy::TypeParam { name } => Some(name.as_str()),
+        ResolvedTy::Named { name, args, .. }
+            if args.is_empty() && declared.iter().any(|param| param == name) =>
+        {
+            Some(name.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// Resolve one concrete record through the canonical checker type service.
 fn concrete_record_fields(
     module: &HirModule,
@@ -1890,25 +1907,90 @@ impl<'a> InstanceService<'a> {
                 format!("SIR callable {id:?} is absent from its deterministic table")
             });
         }
-        // A generic implementation declares its type parameters in the order
-        // its self type spells them, so the receiver instance's arguments are
-        // the instance arguments. A length disagreement is a boundary failure.
-        if self_type.args.len() != entry.impl_type_params.len() {
-            return Err(format!(
-                "generic implementation `{}` declares {} type parameter(s), receiver `{}` carries {}",
-                entry.method.full_path(),
-                entry.impl_type_params.len(),
-                receiver_ty.user_facing(),
-                self_type.args.len()
-            ));
-        }
-        let id = self.request_instance(&entry.method, self_type.args.clone())?;
+        let type_args = self.static_trait_instance_args(&entry.method, &self_type)?;
+        let id = self.request_instance(&entry.method, type_args)?;
         self.callable(id).cloned().ok_or_else(|| {
             format!(
                 "requested SIR generic callable {} disappeared from its table",
                 id.0
             )
         })
+    }
+
+    /// Bind a generic implementation's type parameters from the concrete
+    /// receiver, in the order the implementation declares them.
+    ///
+    /// `impl<A, B> Trait for Pair<B, A>` spells its self-type arguments in the
+    /// opposite order to its parameter list, so the receiver's arguments are
+    /// matched against the implementation's own receiver pattern rather than
+    /// handed to the instance positionally.
+    fn static_trait_instance_args(
+        &self,
+        method: &DefId,
+        self_type: &hew_types::NominalInstance,
+    ) -> Result<Vec<ResolvedTy>, String> {
+        let function = self
+            .table
+            .templates
+            .get(method)
+            .ok_or_else(|| {
+                format!(
+                    "generic implementation `{}` has no SIR template admission record",
+                    method.full_path()
+                )
+            })?
+            .function;
+        let Some(ResolvedTy::Named {
+            args: pattern_args, ..
+        }) = function.params.first().map(|param| &param.ty)
+        else {
+            return Err(format!(
+                "generic implementation `{}` has no nominal receiver pattern",
+                method.full_path()
+            ));
+        };
+        if pattern_args.len() != self_type.args.len() {
+            return Err(format!(
+                "generic implementation `{}` declares {} receiver argument(s), the concrete receiver carries {}",
+                method.full_path(),
+                pattern_args.len(),
+                self_type.args.len()
+            ));
+        }
+        let mut bindings: HashMap<&str, &ResolvedTy> = HashMap::new();
+        for (pattern, concrete) in pattern_args.iter().zip(&self_type.args) {
+            let name = declared_type_param_name(pattern, &function.type_params).ok_or_else(|| {
+                format!(
+                    "generic implementation `{}` receives `{}` in a position SIR cannot bind to a type parameter",
+                    method.full_path(),
+                    pattern.user_facing()
+                )
+            })?;
+            if bindings
+                .insert(name, concrete)
+                .is_some_and(|prior| prior != concrete)
+            {
+                return Err(format!(
+                    "generic implementation `{}` binds type parameter `{name}` to two different types",
+                    method.full_path()
+                ));
+            }
+        }
+        function
+            .type_params
+            .iter()
+            .map(|param| {
+                bindings.get(param.as_str()).map_or_else(
+                    || {
+                        Err(format!(
+                            "generic implementation `{}` leaves type parameter `{param}` unbound by its receiver",
+                            method.full_path()
+                        ))
+                    },
+                    |ty| Ok((*ty).clone()),
+                )
+            })
+            .collect()
     }
 
     fn request_closure(

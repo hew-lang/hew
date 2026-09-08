@@ -1723,7 +1723,11 @@ fn literal_coercion_integer_fits_u32() {
 #[test]
 fn literal_coercion_integer_fits_u64() {
     // i64 max fits in u64
-    assert!(integer_fits_type(i64::MAX, &Ty::U64, PTR_WIDTH_64));
+    assert!(integer_fits_type(
+        i128::from(i64::MAX),
+        &Ty::U64,
+        PTR_WIDTH_64
+    ));
     // 0 fits
     assert!(integer_fits_type(0, &Ty::U64, PTR_WIDTH_64));
     // Negative doesn't fit
@@ -1818,35 +1822,47 @@ fn common_integer_type_fixed_width_unchanged_by_isize_arms() {
 #[test]
 fn integer_fits_type_isize_usize_boundary() {
     // 64-bit isize: any i64 fits; usize: non-negative fits (u64 range).
-    assert!(integer_fits_type(i64::MAX, &Ty::Isize, PTR_WIDTH_64));
-    assert!(integer_fits_type(i64::MIN, &Ty::Isize, PTR_WIDTH_64));
+    assert!(integer_fits_type(
+        i128::from(i64::MAX),
+        &Ty::Isize,
+        PTR_WIDTH_64
+    ));
+    assert!(integer_fits_type(
+        i128::from(i64::MIN),
+        &Ty::Isize,
+        PTR_WIDTH_64
+    ));
     assert!(integer_fits_type(0, &Ty::Usize, PTR_WIDTH_64));
-    assert!(integer_fits_type(i64::MAX, &Ty::Usize, PTR_WIDTH_64));
+    assert!(integer_fits_type(
+        i128::from(i64::MAX),
+        &Ty::Usize,
+        PTR_WIDTH_64
+    ));
     assert!(!integer_fits_type(-1, &Ty::Usize, PTR_WIDTH_64));
 
     // 32-bit isize: bounds shrink to i32; usize to u32.
     assert!(integer_fits_type(
-        i64::from(i32::MAX),
+        i128::from(i32::MAX),
         &Ty::Isize,
         PTR_WIDTH_32
     ));
     assert!(integer_fits_type(
-        i64::from(i32::MIN),
+        i128::from(i32::MIN),
         &Ty::Isize,
         PTR_WIDTH_32
     ));
     assert!(!integer_fits_type(
-        i64::from(i32::MAX) + 1,
+        i128::from(i32::MAX) + 1,
         &Ty::Isize,
         PTR_WIDTH_32
     ));
     assert!(integer_fits_type(
-        i64::from(u32::MAX),
+        i128::from(u32::MAX),
         &Ty::Usize,
         PTR_WIDTH_32
     ));
     assert!(!integer_fits_type(
-        i64::from(u32::MAX) + 1,
+        i128::from(u32::MAX) + 1,
         &Ty::Usize,
         PTR_WIDTH_32
     ));

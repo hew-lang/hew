@@ -1262,9 +1262,8 @@ fn parse_negative_literal_pattern() {
 
 #[test]
 fn parse_negative_i64_min_literal_pattern() {
-    // #2372 companion: the pattern-position fold has the same i64::MIN
-    // magnitude gap as the expression-position fold, fixed by the same
-    // `parse_negated_int_literal` helper.
+    // A pattern has no operator position, so `-<digits>` folds into a single
+    // signed literal here. The `i128` carrier holds i64::MIN exactly.
     let source = "fn main() { match x { -9223372036854775808 => 0, _ => 1, } }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -1278,7 +1277,7 @@ fn parse_negative_i64_min_literal_pattern() {
     let (Pattern::Literal(Literal::Integer { value, radix }), _) = &arms[0].pattern else {
         panic!("expected literal integer pattern");
     };
-    assert_eq!(*value, i64::MIN);
+    assert_eq!(*value, i128::from(i64::MIN));
     assert_eq!(*radix, IntRadix::Decimal);
 }
 
@@ -1832,7 +1831,7 @@ fn parse_large_integer_literal() {
     if let Item::Function(f) = &result.program.items[0].0 {
         if let Some(boxed) = &f.body.trailing_expr {
             if let (Expr::Literal(Literal::Integer { value: n, .. }), _) = boxed.as_ref() {
-                assert_eq!(*n, i64::MAX);
+                assert_eq!(*n, i128::from(i64::MAX));
             } else {
                 panic!("expected integer literal");
             }
@@ -1893,26 +1892,33 @@ fn parse_octal_integer_literal() {
 
 #[test]
 fn parse_negative_i64_min_literal_folds_to_bare_literal() {
-    // #2372: i64::MIN's magnitude (9223372036854775808) overflows a
-    // positive i64, so the `-<digits>` fold at parse time is the only way
-    // to produce this value as a literal at all -- it must land as a bare
-    // `Expr::Literal`, never an `Expr::Unary{Negate, ..}` wrapper.
+    // `-9223372036854775808` in expression position stays a unary negation
+    // over the exact magnitude: the `i128` carrier represents it, so the
+    // parser has no reason to fold early. HIR folds it once the checker has
+    // supplied the concrete width.
     let source = "fn main() -> i64 { -9223372036854775808 }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        if let Some(boxed) = &f.body.trailing_expr {
-            if let (Expr::Literal(Literal::Integer { value, .. }), _) = boxed.as_ref() {
-                assert_eq!(*value, i64::MIN);
-            } else {
-                panic!("expected bare integer literal, got {boxed:?}");
-            }
-        } else {
-            panic!("expected trailing expr");
-        }
-    } else {
+    let Item::Function(f) = &result.program.items[0].0 else {
         panic!("expected function item");
-    }
+    };
+    let Some(boxed) = &f.body.trailing_expr else {
+        panic!("expected trailing expr");
+    };
+    let (
+        Expr::Unary {
+            op: crate::ast::UnaryOp::Negate,
+            operand,
+        },
+        _,
+    ) = boxed.as_ref()
+    else {
+        panic!("expected unary negation, got {boxed:?}");
+    };
+    let (Expr::Literal(Literal::Integer { value, .. }), _) = operand.as_ref() else {
+        panic!("expected integer literal operand, got {operand:?}");
+    };
+    assert_eq!(*value, 9_223_372_036_854_775_808_i128);
 }
 
 #[test]

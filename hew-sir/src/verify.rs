@@ -2619,6 +2619,26 @@ fn verify_destructure_shape(
     }
 }
 
+/// Inclusive value range a SIR integer type admits.
+///
+/// SIR is target-independent: `isize`/`usize` are bounded by their widest
+/// (64-bit) domain here, and physical lowering applies the actual target
+/// layout. Returns `None` for a non-integer type, whose separate arm already
+/// rejects the operation.
+fn sir_integer_range(ty: &ResolvedTy) -> Option<(i128, i128)> {
+    match ty {
+        ResolvedTy::I8 => Some((i128::from(i8::MIN), i128::from(i8::MAX))),
+        ResolvedTy::I16 => Some((i128::from(i16::MIN), i128::from(i16::MAX))),
+        ResolvedTy::I32 => Some((i128::from(i32::MIN), i128::from(i32::MAX))),
+        ResolvedTy::I64 | ResolvedTy::Isize => Some((i128::from(i64::MIN), i128::from(i64::MAX))),
+        ResolvedTy::U8 => Some((0, i128::from(u8::MAX))),
+        ResolvedTy::U16 => Some((0, i128::from(u16::MAX))),
+        ResolvedTy::U32 => Some((0, i128::from(u32::MAX))),
+        ResolvedTy::U64 | ResolvedTy::Usize => Some((0, i128::from(u64::MAX))),
+        _ => None,
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the closed first-slice operation relation table is deliberately central so additions must make their verifier rule explicit"
@@ -2766,7 +2786,7 @@ fn verify_operation_shape(
                 );
             }
         }
-        SemOpKind::ConstI64(_) if !result.ty.is_integer() => diagnostics.push(diag(
+        SemOpKind::ConstInteger(_) if !result.ty.is_integer() => diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidConstType {
                 op: operation.id,
@@ -2774,6 +2794,22 @@ fn verify_operation_shape(
                 actual: result.ty.user_facing().to_string(),
             },
         )),
+        // The exact mathematical value must be admitted by the result type.
+        // SIR is target-independent, so `isize`/`usize` are checked against
+        // their widest (64-bit) domain here; physical lowering applies the
+        // actual target layout.
+        SemOpKind::ConstInteger(value)
+            if !sir_integer_range(&result.ty).is_some_and(|(lo, hi)| (lo..=hi).contains(value)) =>
+        {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidConstType {
+                    op: operation.id,
+                    expected: "integer value in the result type's range",
+                    actual: format!("{value} typed {}", result.ty.user_facing()),
+                },
+            ));
+        }
         SemOpKind::ConstBool(_) if result.ty != ResolvedTy::Bool => diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidConstType {
@@ -3411,7 +3447,7 @@ fn verify_operation_shape(
                 );
             }
         }
-        SemOpKind::ConstI64(_)
+        SemOpKind::ConstInteger(_)
         | SemOpKind::ConstBool(_)
         | SemOpKind::ConstF64(_)
         | SemOpKind::ConstChar(_)
@@ -5358,7 +5394,7 @@ mod cfg_discard_safety_tests {
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
                         }],
-                        kind: SemOpKind::ConstI64(7),
+                        kind: SemOpKind::ConstInteger(7),
                         provenance: Provenance::Synthesized,
                     }],
                     terminator: SemTerminator::Return {

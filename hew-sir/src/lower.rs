@@ -4709,7 +4709,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let value = self.lower_read_operand(operand, "unary operand")?;
                 if *op == hew_parser::ast::UnaryOp::Negate && self.ty(&expr.ty).is_signed_integer()
                 {
-                    let zero = self.emit(expr, SemOpKind::ConstI64(0))?;
+                    let zero = self.emit(expr, SemOpKind::ConstInteger(0))?;
                     self.lower_checked_binary(
                         expr,
                         hew_parser::ast::BinaryOp::Subtract,
@@ -4987,7 +4987,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self.ty(&expr.ty).user_facing()
                     ));
                 }
-                self.emit(expr, SemOpKind::ConstI64(*value))
+                self.emit(expr, SemOpKind::ConstInteger(*value))
             }
             HirLiteral::Bool(value) => {
                 if self.ty(&expr.ty) != ResolvedTy::Bool {
@@ -5348,9 +5348,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ));
         }
         let literal = match &predicate.literal {
-            HirLiteral::Integer(value) if ty.is_integer() => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstI64(*value))?
-            }
+            HirLiteral::Integer(value) if ty.is_integer() => self.emit_typed(
+                Provenance::Synthesized,
+                &ty,
+                SemOpKind::ConstInteger(*value),
+            )?,
             HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
                 self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
             }
@@ -8728,7 +8730,7 @@ mod tests {
             .append_op(SemOp {
                 id: OpId(0),
                 results: Vec::new(),
-                kind: SemOpKind::ConstI64(0),
+                kind: SemOpKind::ConstInteger(0),
                 provenance: Provenance::Synthesized,
             })
             .expect_err("semantic unreachable must close the builder block");
@@ -8750,7 +8752,7 @@ mod tests {
             .append_op(SemOp {
                 id: OpId(0),
                 results: Vec::new(),
-                kind: SemOpKind::ConstI64(0),
+                kind: SemOpKind::ConstInteger(0),
                 provenance: Provenance::Synthesized,
             })
             .expect_err("completed blocks must reject late operations");

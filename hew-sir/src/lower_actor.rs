@@ -922,7 +922,7 @@ impl Builder<'_, '_> {
         let message = self.emit_typed(
             crate::Provenance::Site(expression.site),
             &ResolvedTy::U32,
-            crate::SemOpKind::ConstI64(i64::from(handler.message_id)),
+            crate::SemOpKind::ConstInteger(i128::from(handler.message_id)),
         )?;
         self.make_delivery_record(expression, vec![target, message, payload])
     }

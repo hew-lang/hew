@@ -355,7 +355,11 @@ pub struct PhysicalCallable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalConst {
-    I64(i64),
+    /// Exact destination-width two's-complement bit pattern for an integer
+    /// constant, derived once here from the SIR value and the destination's
+    /// realized layout (D421). Codegen emits these bits unsigned; it decides
+    /// nothing about signedness or width.
+    IntegerBits(u64),
     Bool(bool),
     F64(f64),
     Char(char),
@@ -2424,6 +2428,40 @@ impl FunctionLowerer<'_> {
         })
     }
 
+    /// Derive the destination-width two's-complement bit pattern for an exact
+    /// integer constant.
+    ///
+    /// The width and signedness come from the destination storage the same
+    /// pass just allocated -- physical MIR owns representation, so the target
+    /// fact is read here and never reconstructed in the backend. The checker
+    /// and the SIR verifier already admitted the value against its type, so a
+    /// value outside the destination range is malformed IR and fails closed.
+    fn integer_const_bits(&self, dest: StorageId, value: i128) -> Result<u64, PhysicalError> {
+        let storage = self
+            .storage
+            .get(dest.0 as usize)
+            .ok_or_else(|| PhysicalError::new("integer constant has no destination storage"))?;
+        let width = integer_width_bits(&storage.layout).ok_or_else(|| {
+            PhysicalError::new("integer constant requires an integer destination layout")
+        })?;
+        let (low, high) = integer_bit_range(width, storage.ty.is_signed_integer());
+        if value < low || value > high {
+            return Err(PhysicalError::new(format!(
+                "integer constant {value} does not fit its {width}-bit destination `{}`",
+                storage.ty.user_facing()
+            )));
+        }
+        // Deliberate two's-complement truncation: the value is already proven
+        // in range, and the destination-width bit pattern is exactly the low
+        // bits of its two's-complement encoding.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the destination-width bit pattern is the low bits of the two's-complement encoding"
+        )]
+        Ok(mask_to_width(value as u64, width))
+    }
+
     fn one_result(&self, operation: &SemOp) -> Result<StorageId, PhysicalError> {
         let [result] = operation.results.as_slice() else {
             return Err(PhysicalError::new(format!(
@@ -2484,10 +2522,14 @@ impl FunctionLowerer<'_> {
                         .collect::<Result<_, _>>()?,
                 })
             }
-            SemOpKind::ConstI64(value) => one(PhysicalOp::Const {
-                dest: self.one_result(operation)?,
-                value: PhysicalConst::I64(*value),
-            }),
+            SemOpKind::ConstInteger(value) => {
+                let dest = self.one_result(operation)?;
+                let bits = self.integer_const_bits(dest, *value)?;
+                one(PhysicalOp::Const {
+                    dest,
+                    value: PhysicalConst::IntegerBits(bits),
+                })
+            }
             SemOpKind::ConstBool(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Bool(*value),
@@ -5060,6 +5102,41 @@ fn verify_whole_value_borrow(
     verify_borrow_dependency(function, dest, source)
 }
 
+/// Width in bits of an integer destination layout, or `None` when the layout
+/// is not an integer.
+fn integer_width_bits(layout: &PhysicalLayout) -> Option<u16> {
+    match layout.repr {
+        PhysicalRepr::Integer { bits } => Some(bits),
+        _ => None,
+    }
+}
+
+/// Inclusive mathematical range a `width`-bit integer destination admits.
+fn integer_bit_range(width: u16, signed: bool) -> (i128, i128) {
+    if signed {
+        let magnitude = 1i128 << (width - 1);
+        (-magnitude, magnitude - 1)
+    } else {
+        (0, (1i128 << width) - 1)
+    }
+}
+
+/// Keep only the low `width` bits of a bit pattern.
+fn mask_to_width(bits: u64, width: u16) -> u64 {
+    if width >= 64 {
+        bits
+    } else {
+        bits & ((1u64 << width) - 1)
+    }
+}
+
+/// True when no bit above the destination width is set. A constant that
+/// carries stray high bits is malformed IR: the backend emits the pattern as
+/// written and would silently produce a different value.
+fn canonical_integer_bits(bits: u64, width: u16) -> bool {
+    mask_to_width(bits, width) == bits
+}
+
 fn verify_constant(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -5068,7 +5145,12 @@ fn verify_constant(
 ) -> Result<(), PhysicalError> {
     let destination = storage(function, dest)?;
     let matches_destination = match value {
-        PhysicalConst::I64(_) => destination.ty.is_integer() && destination.own == OwnKind::None,
+        PhysicalConst::IntegerBits(bits) => {
+            destination.ty.is_integer()
+                && destination.own == OwnKind::None
+                && integer_width_bits(&destination.layout)
+                    .is_some_and(|width| canonical_integer_bits(*bits, width))
+        }
         PhysicalConst::Bool(_) => {
             destination.ty == ResolvedTy::Bool && destination.own == OwnKind::None
         }
@@ -8062,7 +8144,7 @@ mod tests {
                 ops: vec![SemOp {
                     id: hew_sir::OpId(0),
                     results: vec![value],
-                    kind: SemOpKind::ConstI64(7),
+                    kind: SemOpKind::ConstInteger(7),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -8195,7 +8277,7 @@ mod tests {
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
                         }],
-                        kind: SemOpKind::ConstI64(40),
+                        kind: SemOpKind::ConstInteger(40),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -8205,7 +8287,7 @@ mod tests {
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
                         }],
-                        kind: SemOpKind::ConstI64(2),
+                        kind: SemOpKind::ConstInteger(2),
                         provenance: Provenance::Synthesized,
                     },
                 ],
@@ -9123,7 +9205,7 @@ mod tests {
             .flat_map(|block| &mut block.ops)
             .find_map(|operation| match operation {
                 PhysicalOp::Const {
-                    value: value @ PhysicalConst::I64(_),
+                    value: value @ PhysicalConst::IntegerBits(_),
                     ..
                 } => Some(value),
                 _ => None,

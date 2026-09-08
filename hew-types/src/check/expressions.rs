@@ -1103,7 +1103,7 @@ impl Checker {
                 continue;
             }
             if let ConstValue::Integer(v) = value {
-                env.insert(name.clone(), i128::from(*v));
+                env.insert(name.clone(), *v);
             }
         }
         env

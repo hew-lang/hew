@@ -153,7 +153,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
     let mut ops = vec![
         op(
             0,
-            sir::SemOpKind::ConstI64(10),
+            sir::SemOpKind::ConstInteger(10),
             Some((0, ResolvedTy::I64, OwnKind::None)),
         ),
         op(
@@ -196,7 +196,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
     };
     ops.push(op(
         3,
-        sir::SemOpKind::ConstI64(42),
+        sir::SemOpKind::ConstInteger(42),
         Some((3, ResolvedTy::I64, OwnKind::None)),
     ));
     let cleanup = |id| {

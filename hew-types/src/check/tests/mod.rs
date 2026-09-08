@@ -147,7 +147,7 @@ pub(super) fn check_source_in_canonical_std_module(
     Checker::new(ModuleRegistry::new(vec![])).check_program(&program)
 }
 
-pub(super) fn make_int_literal(n: i64, span: Span) -> Spanned<Expr> {
+pub(super) fn make_int_literal(n: i128, span: Span) -> Spanned<Expr> {
     (
         Expr::Literal(Literal::Integer {
             value: n,

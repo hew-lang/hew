@@ -2722,10 +2722,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         match literal {
             Literal::Integer { value, .. } => {
                 let dst = self.temp_local(&Ty::I64, Some(span.clone()));
+                // Admission already rejected anything outside `i64`; saturating
+                // here keeps the emitter total without inventing a value that
+                // could reach a running program.
+                let value = i64::try_from(*value).unwrap_or(i64::MAX);
                 self.emit_instruction(
                     "const.i64",
                     Some(dst.clone()),
-                    vec![i64_literal_operand(*value)],
+                    vec![i64_literal_operand(value)],
                     Some(span),
                     None,
                 );
@@ -4257,7 +4261,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             if let Some(tag) = self.pattern_tag(pattern, scrutinee_ty) {
                 let tag_const = self.lower_literal(
                     &Literal::Integer {
-                        value: i64::try_from(tag).unwrap_or(0),
+                        value: i128::try_from(tag).unwrap_or(0),
                         radix: hew_parser::ast::IntRadix::Decimal,
                     },
                     pattern.1.clone(),
@@ -4797,7 +4801,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or(0, |(tag, _)| tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
-                value: i64::try_from(expected_tag).unwrap_or(0),
+                value: i128::try_from(expected_tag).unwrap_or(0),
                 radix: hew_parser::ast::IntRadix::Decimal,
             },
             span.clone(),
@@ -4913,7 +4917,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or(0, |(tag, _)| tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
-                value: i64::try_from(expected_tag).unwrap_or(0),
+                value: i128::try_from(expected_tag).unwrap_or(0),
                 radix: hew_parser::ast::IntRadix::Decimal,
             },
             span.clone(),
@@ -5026,7 +5030,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or(0, |(_, tag, _)| *tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
-                value: i64::try_from(expected_tag).unwrap_or(0),
+                value: i128::try_from(expected_tag).unwrap_or(0),
                 radix: hew_parser::ast::IntRadix::Decimal,
             },
             span.clone(),
@@ -5385,7 +5389,9 @@ fn i64_requires_string_encoding(value: i64) -> bool {
 /// (which the educational profile does not yet admit in child specs).
 fn literal_json(expr: &Expr) -> Option<Value> {
     match expr {
-        Expr::Literal(Literal::Integer { value, .. }) => Some(supervisor_i64_literal(*value)),
+        Expr::Literal(Literal::Integer { value, .. }) => {
+            Some(supervisor_i64_literal(i64::try_from(*value).ok()?))
+        }
         Expr::Literal(Literal::Float(value)) => Some(Value::from(*value)),
         Expr::Literal(Literal::String(value)) => Some(Value::from(value.clone())),
         Expr::Literal(Literal::Bool(value)) => Some(Value::from(*value)),

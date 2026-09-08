@@ -69,48 +69,30 @@ pub(crate) enum TypeParseContext {
 ///
 /// Handles hex (`0x`), octal (`0o`), binary (`0b`) prefixes and underscore separators.
 /// Merges the old `parse_int_literal` + `detect_int_radix` to avoid scanning twice.
-pub(crate) fn parse_int_literal(s: &str) -> Result<(i64, IntRadix), std::num::ParseIntError> {
+///
+/// The value is the exact mathematical magnitude in an `i128` carrier (D421),
+/// so every Hew integer type -- including `u64::MAX` and `i64::MIN` -- is
+/// representable. Range admission belongs to the checker against the
+/// contextual type; the parser only rejects a magnitude beyond the carrier.
+pub(crate) fn parse_int_literal(s: &str) -> Result<(i128, IntRadix), std::num::ParseIntError> {
     let cleaned: String = s.chars().filter(|c| *c != '_').collect();
     if let Some(hex) = cleaned
         .strip_prefix("0x")
         .or_else(|| cleaned.strip_prefix("0X"))
     {
-        i64::from_str_radix(hex, 16).map(|v| (v, IntRadix::Hex))
+        i128::from_str_radix(hex, 16).map(|v| (v, IntRadix::Hex))
     } else if let Some(oct) = cleaned
         .strip_prefix("0o")
         .or_else(|| cleaned.strip_prefix("0O"))
     {
-        i64::from_str_radix(oct, 8).map(|v| (v, IntRadix::Octal))
+        i128::from_str_radix(oct, 8).map(|v| (v, IntRadix::Octal))
     } else if let Some(bin) = cleaned
         .strip_prefix("0b")
         .or_else(|| cleaned.strip_prefix("0B"))
     {
-        i64::from_str_radix(bin, 2).map(|v| (v, IntRadix::Binary))
+        i128::from_str_radix(bin, 2).map(|v| (v, IntRadix::Binary))
     } else {
-        cleaned.parse::<i64>().map(|v| (v, IntRadix::Decimal))
-    }
-}
-
-/// Parse the digits following a unary `-` as a single negated integer literal.
-///
-/// Delegates to [`parse_int_literal`] and negates the result for every
-/// magnitude that already fits a positive `i64`. Falls back to parsing
-/// `-<digits>` directly (decimal only) so `i64::MIN`/`isize::MIN`'s
-/// magnitude (`9223372036854775808`, one past `i64::MAX`) — which cannot be
-/// tokenized as a positive `i64` at all — still parses when written with its
-/// sign attached.
-pub(crate) fn parse_negated_int_literal(
-    s: &str,
-) -> Result<(i64, IntRadix), std::num::ParseIntError> {
-    match parse_int_literal(s) {
-        Ok((val, radix)) => Ok((-val, radix)),
-        Err(original_err) => {
-            let cleaned: String = s.chars().filter(|c| *c != '_').collect();
-            match format!("-{cleaned}").parse::<i64>() {
-                Ok(v) => Ok((v, IntRadix::Decimal)),
-                Err(_) => Err(original_err),
-            }
-        }
+        cleaned.parse::<i128>().map(|v| (v, IntRadix::Decimal))
     }
 }
 

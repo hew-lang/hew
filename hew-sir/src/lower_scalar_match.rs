@@ -142,7 +142,7 @@ impl Builder<'_, '_> {
     ) -> Result<ValueId, String> {
         let constant =
             match literal {
-                HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstI64(*value),
+                HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstInteger(*value),
                 HirLiteral::Bool(value) if *ty == ResolvedTy::Bool => SemOpKind::ConstBool(*value),
                 HirLiteral::Char(value) if *ty == ResolvedTy::Char => SemOpKind::ConstChar(*value),
                 HirLiteral::String(value) if *ty == ResolvedTy::String => {

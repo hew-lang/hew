@@ -21,7 +21,7 @@ fn native_defer_abi_child() {
     };
     if case == "checked" {
         fixture::probe(&mut semantic).blocks[0].ops[2].kind =
-            hew_sir::SemOpKind::ConstI64(i64::MAX);
+            hew_sir::SemOpKind::ConstInteger(i128::from(i64::MAX));
     }
     let diagnostics = hew_sir::verify_module(&semantic);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");

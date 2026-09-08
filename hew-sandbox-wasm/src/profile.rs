@@ -567,6 +567,20 @@ impl<'a> ProfileChecker<'a> {
     fn check_expr(&mut self, expr: &Spanned<Expr>) {
         let (expr, span) = expr;
         match expr {
+            // The sandbox VM's integer values are `i64`. Native admits the
+            // full `u64` range (D421), so a literal outside `i64` is rejected
+            // here rather than silently encoded as a negative `const.i64`.
+            Expr::Literal(hew_parser::ast::Literal::Integer { value, .. })
+                if i64::try_from(*value).is_err() =>
+            {
+                self.reject(
+                    span.clone(),
+                    "sandbox_profile_rejected",
+                    format!(
+                        "integer literal `{value}` is outside the i64 range the browser                          sandbox admits"
+                    ),
+                );
+            }
             Expr::Literal(_) | Expr::Identifier(_) | Expr::RegexLiteral(_) => {}
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {

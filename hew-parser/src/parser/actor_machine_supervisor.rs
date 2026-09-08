@@ -1160,7 +1160,11 @@ impl Parser<'_> {
                     self.advance();
                     self.expect(&Token::Colon)?;
                     let restarts = if let Some(Token::Integer(num_str)) = self.peek() {
-                        let n = parse_int_literal(num_str).ok().map(|(v, _)| v);
+                        // The declared restart count keeps its `i64` range;
+                        // the literal carrier is wider than the field.
+                        let n = parse_int_literal(num_str)
+                            .ok()
+                            .and_then(|(v, _)| i64::try_from(v).ok());
                         self.advance();
                         n
                     } else {

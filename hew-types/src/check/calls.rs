@@ -2028,13 +2028,12 @@ impl Checker {
                             value: idx, ..
                         }) = idx_expr
                         {
-                            #[expect(
-                                clippy::cast_sign_loss,
-                                clippy::cast_possible_truncation,
-                                reason = "supervisor child index is always non-negative and small"
-                            )]
-                            let i = *idx as usize;
-                            if i < statics.len() {
+                            // A negative or oversized index simply names no
+                            // static slot; the non-constant path below then
+                            // supplies a fresh type var.
+                            if let Some(i) =
+                                usize::try_from(*idx).ok().filter(|i| *i < statics.len())
+                            {
                                 let child_type = &statics[i].1;
                                 return Ty::child_ref(Ty::Named {
                                     builtin: None,

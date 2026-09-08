@@ -144,8 +144,10 @@ impl Builder<'_, '_> {
                 let index = self.emit_typed(
                     provenance.clone(),
                     &ResolvedTy::I64,
-                    SemOpKind::ConstI64(
-                        i64::try_from(selected_index).map_err(|_| "selection index exceeds i64")?,
+                    SemOpKind::ConstInteger(
+                        i64::try_from(selected_index)
+                            .map_err(|_| "selection index exceeds i64")?
+                            .into(),
                     ),
                 )?;
                 let condition = self.emit_typed(

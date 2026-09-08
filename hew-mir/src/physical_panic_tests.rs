@@ -56,7 +56,7 @@ fn panic_requires_a_live_borrowed_string_and_finite_fault_cleanup() {
                 7 | 8 => {
                     let scalar = hew_sir::SemOp {
                         id: hew_sir::OpId(99),
-                        kind: SemOpKind::ConstI64(7),
+                        kind: SemOpKind::ConstInteger(7),
                         results: vec![hew_sir::ValueDef {
                             id: ValueId(99),
                             ty: ResolvedTy::I64,

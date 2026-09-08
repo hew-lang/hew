@@ -1083,7 +1083,10 @@ pub enum SemOpKind {
     LoadBorrow {
         place: PlaceId,
     },
-    ConstI64(i64),
+    /// An integer constant carrying its exact mathematical value (D421).
+    /// The concrete width is the result type; physical lowering derives the
+    /// destination-width bit pattern.
+    ConstInteger(i128),
     ConstBool(bool),
     /// Construct a semantic tuple value from its ordered elements.
     ///
@@ -1290,7 +1293,7 @@ impl SemOpKind {
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::StreamPipe { .. }
-            | Self::ConstI64(_)
+            | Self::ConstInteger(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
             | Self::ConstChar(_)
@@ -1380,7 +1383,7 @@ impl SemOpKind {
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::StreamPipe { .. }
-            | Self::ConstI64(_)
+            | Self::ConstInteger(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
             | Self::ConstChar(_)
@@ -1475,7 +1478,7 @@ impl SemOpKind {
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::DynMake { .. }
-            | Self::ConstI64(..)
+            | Self::ConstInteger(..)
             | Self::ConstBool(..)
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
@@ -1567,7 +1570,7 @@ impl SemOpKind {
             | Self::StoreAssign { .. }
             | Self::EndLifetime { .. } => EffectSet::IMPURE,
             Self::FunctionMake { .. }
-            | Self::ConstI64(_)
+            | Self::ConstInteger(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
             | Self::ConstChar(_)

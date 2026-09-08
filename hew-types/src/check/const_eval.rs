@@ -40,9 +40,9 @@ use hew_parser::ast::{BinaryOp, Expr, Literal, Spanned, UnaryOp};
 
 /// Module-level constexpr environment threaded into the integer evaluators.
 ///
-/// Values deliberately use `i128`: the parser admits `i64` literals while
-/// arithmetic may need one wider signed carrier to distinguish a typed
-/// arithmetic overflow from a literal that is simply outside its declaration.
+/// Values use the same `i128` carrier as parser literals (D421), which holds
+/// every Hew integer type exactly and lets arithmetic distinguish a typed
+/// overflow from a literal that is simply outside its declaration.
 /// The machine-const wrapper below still exposes its historical `u64`/`usize`
 /// contract unchanged.
 #[derive(Debug, Default, Clone)]

@@ -2854,7 +2854,7 @@ impl Checker {
         hole_vars: &mut Vec<TypeVar>,
         context: TypeResolutionContext,
     ) -> Ty {
-        let ty = self.resolve_named_type_expr(te, hole_vars, context);
+        let ty = self.resolve_type_expr_inner(te, hole_vars, context);
         if matches!(&ty, Ty::Named { name, args, builtin: None }
             if name == crate::actor_delivery::ACTOR_ERROR_TYPE && args.is_empty())
         {
@@ -2867,7 +2867,7 @@ impl Checker {
         clippy::too_many_lines,
         reason = "generic instantiation requires many cases"
     )]
-    fn resolve_named_type_expr(
+    fn resolve_type_expr_inner(
         &mut self,
         te: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,

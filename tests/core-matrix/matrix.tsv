@@ -60,11 +60,11 @@ closure__mutate	PASS
 closure__pass_fn	PASS
 closure__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime argument 1 has `fn[clone](i64) -> i64`, expected `fn(i64) -> i64`
 closure__return_fn	PASS
-closure__store_map_value	NYI-CLEAN	tests/core-matrix/cells/closure__store_map_value.hew:3:12: error: `HashMap<_, fn(i64) -> i64>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `fn(i64) -> i64` contains closure value `fn(i6
+closure__store_map_value	NYI-CLEAN	tests/core-matrix/cells/closure__store_map_value.hew:3:12: error: `HashMap<_, fn(i64) -> i64>` is not supported: a callable value has no map ingress; store it in a record field or a `Vec` instead
 closure__store_vec	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime argument 1 has `fn[clone](i64) -> i64`, expected `fn(i64) -> i64`
 enum_payload__across_suspend	PASS
 enum_payload__actor_send	PASS
-enum_payload__clone	NYI-INTERNAL	internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "__hew_fn_main", callable: Some(CallableId(0)), kind: InvalidOperation { op: OpId(3), reason: "ownership operation result `Shape`
+enum_payload__clone	PASS
 enum_payload__construct	PASS
 enum_payload__drop_early_return	PASS
 enum_payload__drop_panic	PASS
@@ -83,7 +83,7 @@ enum_payload__store_map_value	PASS
 enum_payload__store_vec	PASS
 enum_unit__across_suspend	PASS
 enum_unit__actor_send	PASS
-enum_unit__clone	NYI-INTERNAL	internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "__hew_fn_main", callable: Some(CallableId(0)), kind: InvalidOperation { op: OpId(2), reason: "ownership operation result `Colour
+enum_unit__clone	PASS
 enum_unit__construct	PASS
 enum_unit__equality	PASS
 enum_unit__format	NYI-CLEAN	tests/core-matrix/cells/enum_unit__format.hew:8:18: error: type `Colour` does not implement `Display` (f-string interpolation requires `impl Display for Colour`)
@@ -126,15 +126,15 @@ generator__move	PASS
 generator__pass_fn	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_use_it` is not implemented: E_OWN_CONSUME_BORROWED: `v` is borrowed here; a value with no copy operation transfers only from an owning binding
 generator__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: E_OWN_CONSUME_BORROWED: `e` is borrowed here; a value with no copy operation transfers only from an owning binding
 generator__return_fn	PASS
-generator__store_map_value	NYI-CLEAN	tests/core-matrix/cells/generator__store_map_value.hew:6:12: error: `HashMap<_, Generator<i64, ()>>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Generator<i64, ()>` contains unregister
+generator__store_map_value	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: E_OWN_CONSUME_BORROWED: `e` is borrowed here; a value with no copy operation transfers only from an owning binding
 generator__store_vec	PASS
 hashmap__across_suspend	PASS
 hashmap__actor_send	PASS
 hashmap__clone	PASS
 hashmap__construct	PASS
-hashmap__drop_early_return	NYI-CLEAN	tests/core-matrix/cells/hashmap__drop_early_return.hew:13:12: error: `HashMap<_, Tok>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Tok` contains resource/linear value `Tok` which has n
-hashmap__drop_panic	NYI-CLEAN	tests/core-matrix/cells/hashmap__drop_panic.hew:13:12: error: `HashMap<_, Tok>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Tok` contains resource/linear value `Tok` which has no seman
-hashmap__drop_scope	NYI-CLEAN	tests/core-matrix/cells/hashmap__drop_scope.hew:13:12: error: `HashMap<_, Tok>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Tok` contains resource/linear value `Tok` which has no seman
+hashmap__drop_early_return	PASS
+hashmap__drop_panic	PASS
+hashmap__drop_scope	PASS
 hashmap__equality	NYI-CLEAN	tests/core-matrix/cells/hashmap__equality.hew:11:16: error: `HashMap<string, i64>` has no selected Eq implementation for equality comparison
 hashmap__format	NYI-CLEAN	tests/core-matrix/cells/hashmap__format.hew:5:18: error: type `HashMap<string, i64>` does not implement `Display` (f-string interpolation requires `impl Display for HashMap<string, i64>`)
 hashmap__index	PASS
@@ -197,7 +197,7 @@ i64__store_map_value	PASS
 i64__store_vec	PASS
 machine__across_suspend	PASS
 machine__actor_send	PASS
-machine__clone	NYI-INTERNAL	internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "__hew_fn_main", callable: Some(CallableId(2)), kind: InvalidOperation { op: OpId(13), reason: "ownership operation result `Count
+machine__clone	PASS
 machine__construct	PASS
 machine__drop_early_return	NYI-CLEAN	tests/core-matrix/cells/machine__drop_early_return.hew:12:1: error: machine evaluator is not demonstrably pure: `Gate` can carry external identity, effects or unclassified payloads
 machine__drop_panic	NYI-CLEAN	tests/core-matrix/cells/machine__drop_panic.hew:12:1: error: machine evaluator is not demonstrably pure: `Gate` can carry external identity, effects or unclassified payloads
@@ -231,11 +231,11 @@ opaque__mutate	PASS
 opaque__pass_fn	PASS
 opaque__read_back	PASS
 opaque__return_fn	PASS
-opaque__store_map_value	NYI-CLEAN	tests/core-matrix/cells/opaque__store_map_value.hew:26:12: error: `HashMap<_, Dq>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Dq` contains resource/linear value `Dq` which has no sema
+opaque__store_map_value	PASS
 opaque__store_vec	PASS
 option__across_suspend	PASS
 option__actor_send	PASS
-option__clone	NYI-INTERNAL	internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "__hew_fn_main", callable: Some(CallableId(0)), kind: InvalidOperation { op: OpId(3), reason: "ownership operation result `Option
+option__clone	PASS
 option__construct	PASS
 option__drop_early_return	PASS
 option__drop_panic	PASS
@@ -288,7 +288,7 @@ resource__mutate	PASS
 resource__pass_fn	PASS
 resource__read_back	PASS
 resource__return_fn	PASS
-resource__store_map_value	NYI-CLEAN	tests/core-matrix/cells/resource__store_map_value.hew:14:12: error: `HashMap<_, Tok>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Tok` contains resource/linear value `Tok` which has no
+resource__store_map_value	PASS
 resource__store_vec	PASS
 result__across_suspend	PASS
 result__actor_send	PASS
@@ -338,7 +338,7 @@ traitobj__mutate	PASS
 traitobj__pass_fn	PASS
 traitobj__read_back	NYI-CLEAN	tests/core-matrix/cells/traitobj__read_back.hew:34:11: error: `Vec<dyn Trait>.get()` is not supported because returning an owned element would require a semantic trait-object clone; use pop/remove or consuming iteration
 traitobj__return_fn	PASS
-traitobj__store_map_value	NYI-CLEAN	tests/core-matrix/cells/traitobj__store_map_value.hew:32:12: error: `HashMap<_, dyn Named>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `dyn Named` contains opaque pointer value `dyn Na
+traitobj__store_map_value	PASS
 traitobj__store_vec	PASS
 tuple__across_suspend	PASS
 tuple__actor_send	PASS

@@ -2830,6 +2830,10 @@ fn lower_initial_value_transfer(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OwnedBindingUse {
     Copy,
+    /// A read that never becomes an owner: a match scrutinee, which is probed
+    /// and whose payloads name its region. A binding that names a loan may be
+    /// read through it here.
+    Probe,
     Move,
     /// A final value may move only when cleanup does not still need its binding.
     Return,
@@ -3557,7 +3561,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let name = self.source_bindings[self.binding_declarations[&binding]]
             .name
             .clone();
-        if binding_use == OwnedBindingUse::Copy
+        if binding_use == OwnedBindingUse::Probe
             && self.value_own_kind(source) == Some(OwnKind::Guaranteed)
         {
             if self.ended_loans.contains(&source) {
@@ -4945,7 +4949,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 match self.binding_target(*binding)? {
                     BindingTarget::Value(value) => {
-                        if binding_use != OwnedBindingUse::Copy {
+                        if !matches!(binding_use, OwnedBindingUse::Copy | OwnedBindingUse::Probe) {
                             self.require_selected_binding(*binding, value)?;
                         }
                         Ok(value)
@@ -6127,7 +6131,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self,
             scrutinee_expr,
             "variant match scrutinee",
-            OwnedBindingUse::Copy,
+            OwnedBindingUse::Probe,
         )?;
         let outer_bindings = self
             .bindings

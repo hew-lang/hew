@@ -959,8 +959,11 @@ pub fn collection_value_dependencies(
         if matches!(&ty, ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::LocalPid), args, ..
         } if args.len() == 1)
+            || matches!(&ty, ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::LambdaPid), args, ..
+            } if args.len() == 2)
         {
-            // The protocol parameter describes an actor, not an embedded value.
+            // The protocol parameters describe an actor, not an embedded value.
             // The handle's checked copy recipe is complete on its own.
             continue;
         }

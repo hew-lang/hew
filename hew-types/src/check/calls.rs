@@ -1890,7 +1890,7 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                if resolved.as_actor_handle().is_some() {
+                if resolved.addresses_local_actor() {
                     let operation = if func_name == "close" {
                         crate::actor_delivery::ActorDeliveryCall::Close
                     } else {

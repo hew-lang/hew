@@ -1278,6 +1278,23 @@ impl Ty {
         }
     }
 
+    /// Whether this type addresses a local actor for a lifecycle boundary.
+    ///
+    /// A lambda actor's handle carries its message and reply rather than the
+    /// actor nominal it has none of, so it is not an `as_actor_handle`, but it
+    /// addresses an actor the same way and closes the same way.
+    #[must_use]
+    pub fn addresses_local_actor(&self) -> bool {
+        self.as_actor_handle().is_some()
+            || matches!(
+                self,
+                Ty::Named {
+                    builtin: Some(BuiltinType::LambdaPid),
+                    ..
+                }
+            )
+    }
+
     fn as_single_arg_builtin_named(&self, kind: BuiltinNamedType) -> Option<&Ty> {
         match self {
             Ty::Named { builtin, args, .. }

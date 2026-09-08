@@ -95,6 +95,15 @@ pub enum Delivery {
     Discarded,
 }
 
+impl Display for Delivery {
+    fn fmt(outcome: Delivery) -> string {
+        match outcome {
+            Delivery.Accepted => "accepted",
+            Delivery.Discarded => "discarded by the chosen policy",
+        }
+    }
+}
+
 /// A sender chooses how its own submission responds to a full mailbox.
 pub enum OnFull {
     Reject,

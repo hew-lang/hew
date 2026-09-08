@@ -8976,42 +8976,27 @@ impl Checker {
     /// The `trait_impls_set` / `trait_impl_method_names` identity for an impl
     /// target named `type_name`.
     ///
-    /// Mirrors `canonical_nominal_name`'s "leave it as written" rule
-    /// (`resolution.rs`): a name the compiler's builtin-type catalog
-    /// recognises (`TimeoutError`, `SendError`, `NodeId`, `Location`, …) is
-    /// looked up by that same bare spelling everywhere else the checker
-    /// resolves a `Ty::Named` to it — `type_implements_trait_for_ty`
-    /// (`generics.rs`) never module-qualifies a builtin-catalog name, because
-    /// `canonical_nominal_name` returns `None` for one before any qualifying
-    /// logic runs. Module-qualifying it HERE (the module-registration
-    /// fallback below, meant for ordinary same-named types in different
-    /// stdlib modules) mints a `("std.builtins.TimeoutError", "Display")`
-    /// entry that lookup, keyed by the bare `("TimeoutError", "Display")`,
-    /// can never find — `impl Display for TimeoutError` in `std/builtins.hew`
-    /// registered but never satisfying `require_display_impl`. Every other
-    /// receiver kind (primitives, `Vec`/`HashMap`/generics, the synthetic
-    /// cursors) already has its own dedicated arm in
-    /// `canonical_primitive_or_builtin_key_for_impl_name` and never reaches
-    /// this fallback at all.
+    /// A generated monomorphic builtin enum (`SendError`, `TimeoutError`,
+    /// `LinkError`, `Delivery`, …) is declared in a stdlib `.hew` source and
+    /// carries exactly one identity: the catalog's `canonical_name`. The
+    /// resolver already stamps that spelling onto every annotation, field and
+    /// variant payload naming the declaration, so registering its impls under
+    /// the bare leaf mints an entry lookup can never find — which is why
+    /// `ActorError.Rejected(reason)` could not interpolate `reason` while a
+    /// bare `SendError.Full` could. Both sides now select the catalog identity.
     ///
-    /// `LinkError` / `LookupError` are the one exception:
-    /// `register_builtin_error_prelude_bindings` (above) is the checker's
-    /// OTHER, pre-existing authority publishing THESE two — and only these
-    /// two, of every `std.builtins` error enum — as ordinary
-    /// module-qualified nominals (`known_types` + `published_bare_type`), so
-    /// a bare `LinkError.TargetDead` construction resolves to
-    /// `Ty::Named { name: "std.builtins.LinkError", .. }`, not the bare
-    /// `BuiltinType`-tagged form `TimeoutError`/`AskError`/`SendError` get.
-    /// Their impl identity must match that qualified spelling, so they take
-    /// the qualifying fallback below like any ordinary stdlib nominal.
+    /// Every other receiver kind (primitives, `Vec`/`HashMap`/generics, the
+    /// synthetic cursors) has its own arm in
+    /// `canonical_primitive_or_builtin_key_for_impl_name` and never reaches
+    /// the module-qualifying fallback.
     pub(super) fn trait_impl_type_identity(&self, type_name: &str) -> String {
         self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
+            .or_else(|| {
+                crate::builtin_enums::canonical_monomorphic_builtin_enum_identity(type_name)
+                    .map(ToString::to_string)
+            })
             .unwrap_or_else(|| {
-                let published_as_qualified_nominal =
-                    matches!(type_name, "LinkError" | "LookupError");
-                if !published_as_qualified_nominal
-                    && crate::lookup_builtin_type(type_name).is_some()
-                {
+                if crate::lookup_builtin_type(type_name).is_some() {
                     return type_name.to_string();
                 }
                 self.current_module

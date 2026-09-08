@@ -20,10 +20,10 @@ actor Gate {
 
 fn describe(problem: ActorError<Never>) -> string {
     match problem {
-        ActorError.Rejected(reason) => match reason {
-            SendError.Full => "rejected: full",
-            _ => "rejected: other",
-        },
+        // The refusal reason is reached through `Rejected` and interpolated,
+        // so its `Display` impl must be selected under the same identity the
+        // payload carries.
+        ActorError.Rejected(reason) => f"rejected: {reason}",
         ActorError.Trapped => "trapped",
         ActorError.Dead => "dead",
         ActorError.Timeout => "timeout",
@@ -43,7 +43,7 @@ fn main() {
     // occupying its single mailbox seat. Both return only once accepted, so
     // the seat is provably taken before the next call is made.
     match inbox.occupy(2000) {
-        .Ok(_) => {},
+        .Ok(outcome) => println(f"submitted: {outcome}"),
         .Err(_) => panic("the first submission was refused"),
     }
     match inbox.occupy(0) {

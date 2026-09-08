@@ -99,6 +99,19 @@ pub fn resolved_monomorphic_builtin_enum_ty(name: &str) -> Option<crate::Resolve
     })
 }
 
+/// The one nominal identity a generated monomorphic builtin enum carries.
+///
+/// `resolve_type_expr_tracking_holes` already stamps annotations, fields and
+/// variant payloads with the catalog's `canonical_name`, so every other table
+/// keyed by that declaration — trait impls above all — must agree on the same
+/// spelling. Accepts either the source leaf (`SendError`) or the canonical
+/// identity itself, and returns the canonical identity.
+#[must_use]
+pub fn canonical_monomorphic_builtin_enum_identity(name: &str) -> Option<&'static str> {
+    let fact = monomorphic_builtin_enum(name)?;
+    crate::lookup_builtin_type(fact.name).map(|_| fact.canonical_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

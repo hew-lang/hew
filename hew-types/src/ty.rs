@@ -1689,7 +1689,39 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.materialize_literal_defaults().fmt(f)
+        source_spelling(&self.0.materialize_literal_defaults()).fmt(f)
+    }
+}
+
+/// Rewrite a type into the spelling a programmer writes, for diagnostics only.
+///
+/// The `std.builtins` declarations are prelude-published, so their owner is
+/// never written in source and printing it makes a diagnostic unusable as the
+/// impl signature it asks for. `ActorError` additionally means
+/// `ActorError<Never>` when written bare, so an uninhabited error argument is
+/// elided rather than shown as `ActorError<Never>`.
+fn source_spelling(ty: &Ty) -> Ty {
+    let Ty::Named {
+        name,
+        args,
+        builtin,
+    } = ty
+    else {
+        return ty.clone();
+    };
+    let mut args: Vec<Ty> = args.iter().map(source_spelling).collect();
+    if name == crate::actor_delivery::ACTOR_ERROR_TYPE
+        && matches!(args.as_slice(), [Ty::Named { name, .. }] if name == "Never")
+    {
+        args.clear();
+    }
+    Ty::Named {
+        name: name
+            .strip_prefix("std.builtins.")
+            .unwrap_or(name)
+            .to_string(),
+        args,
+        builtin: *builtin,
     }
 }
 

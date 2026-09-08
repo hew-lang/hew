@@ -476,6 +476,18 @@ impl Checker {
             // already an exact nominal identity.
             return None;
         }
+        // A generated monomorphic builtin enum has exactly one identity: the
+        // catalog's `canonical_name`, which the resolver already stamps onto
+        // every annotation, field and variant payload naming it. A bare
+        // source spelling reaching here names that same declaration unless a
+        // local declaration shadows it, checked next.
+        if !self.local_type_defs.contains(name) {
+            if let Some(canonical) =
+                crate::builtin_enums::canonical_monomorphic_builtin_enum_identity(name)
+            {
+                return (canonical != name).then(|| canonical.to_string());
+            }
+        }
         // A root-local declaration keeps its bare identity: it is a DISTINCT
         // nominal type from any imported `owner.Name` sharing the bare spelling.
         // A non-root module's local declaration, however, must retain that

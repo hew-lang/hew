@@ -110,29 +110,39 @@ else
     fail "fixture yielded ${#FIXTURE_OUTFILES[@]} fences, expected 4 (got: ${FIXTURE_OUTFILES[*]:-none})"
 fi
 
-if ((${#FIXTURE_OUTFILES[@]} >= 1)) &&
-    grep -qxF 'let a = 1;' "${FIXTURE_OUTFILES[0]}" 2>/dev/null; then
+# Fence ids are keyed by content hash (doc_fence_next_id), not file position,
+# so an outfile's place in a sorted directory listing no longer reflects its
+# order in the source doc. Find each fence by its own content instead.
+find_fence_holding() {
+    local needle="$1" f
+    for f in "${FIXTURE_OUTFILES[@]}"; do
+        grep -qxF "$needle" "$f" 2>/dev/null && {
+            printf '%s' "$f"
+            return 0
+        }
+    done
+    return 1
+}
+
+if find_fence_holding 'let a = 1;' >/dev/null; then
     pass "first fence (module //! doc) extracts its own content"
 else
-    fail "first fence content mismatch: $(cat "${FIXTURE_OUTFILES[0]:-/dev/null}" 2>/dev/null || echo MISSING)"
+    fail "first fence content mismatch: no extracted fence holds 'let a = 1;'"
 fi
 
-if ((${#FIXTURE_OUTFILES[@]} >= 2)) &&
-    grep -qxF 'let b = 2;' "${FIXTURE_OUTFILES[1]}" 2>/dev/null; then
+if find_fence_holding 'let b = 2;' >/dev/null; then
     pass "second fence (item /// doc) extracts its own content"
 else
-    fail "second fence content mismatch: $(cat "${FIXTURE_OUTFILES[1]:-/dev/null}" 2>/dev/null || echo MISSING)"
+    fail "second fence content mismatch: no extracted fence holds 'let b = 2;'"
 fi
 
-# The pinned bug: without the in_other tri-state, this third extracted fence
-# holds the prose ("Another example...") swallowed between the ```text
-# close and the real fence open, instead of `let c = 3;`.
-if ((${#FIXTURE_OUTFILES[@]} >= 3)) &&
-    grep -qxF 'let c = 3;' "${FIXTURE_OUTFILES[2]}" 2>/dev/null &&
-    ! grep -q 'Another example' "${FIXTURE_OUTFILES[2]}" 2>/dev/null; then
+# The pinned bug: without the in_other tri-state, the extracted fence after
+# the ```text block holds the prose ("Another example...") swallowed between
+# the ```text close and the real fence open, instead of `let c = 3;`.
+if fence_c="$(find_fence_holding 'let c = 3;')" && ! grep -q 'Another example' "$fence_c" 2>/dev/null; then
     pass "fence after a text-tagged block extracts its own content, not the intervening prose"
 else
-    fail "fence after text-tagged block corrupted: $(cat "${FIXTURE_OUTFILES[2]:-/dev/null}" 2>/dev/null || echo MISSING)"
+    fail "fence after text-tagged block corrupted: $(cat "${fence_c:-/dev/null}" 2>/dev/null || echo MISSING)"
 fi
 
 if ! grep -rq 'hew wire check' "$OUTDIR"/*example*.hew 2>/dev/null; then
@@ -145,11 +155,10 @@ fi
 # whitespace before matching the `///` marker, an indented trait-member doc
 # comment is never recognized as a doc comment at all, so its fence is
 # silently dropped instead of extracted.
-if ((${#FIXTURE_OUTFILES[@]} >= 4)) &&
-    grep -qxF 'let d = 4;' "${FIXTURE_OUTFILES[3]}" 2>/dev/null; then
+if find_fence_holding 'let d = 4;' >/dev/null; then
     pass "fourth fence (indented trait-member /// doc) extracts its own content"
 else
-    fail "fourth fence content mismatch: $(cat "${FIXTURE_OUTFILES[3]:-/dev/null}" 2>/dev/null || echo MISSING)"
+    fail "fourth fence content mismatch: no extracted fence holds 'let d = 4;'"
 fi
 
 echo ""

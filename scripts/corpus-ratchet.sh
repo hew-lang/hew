@@ -392,7 +392,7 @@ RATCHET_TAIL_FN=""
 # or harness failure under the same fixture identity.
 RATCHET_REFUSAL_DRIFT_STR=""
 # Filled by RATCHET_EXTRA_FAIL_FN with the count of its own failure class, so a
-# corpus with a third mutation to detect (doc-fences' stale checksums) reports
+# corpus with an extra mutation class to detect beyond pass/fail reports
 # it without the shared core knowing what it is.
 RATCHET_EXTRA_FAIL_COUNT=0
 
@@ -921,16 +921,14 @@ hew_corpus_diagnostic() {
 # comment is SKIPPED — spec-ahead-of-implementation is not drift when a plan
 # exists. The default is fail-closed: a fence is checked unless marked.
 #
-# This corpus carries a third mutation class the others do not. Its
-# expected-failures entries are `<fence-id> <cksum>` pairs, so a fence whose
-# CONTENT changed under a listed id fails even when its verdict did not: the
-# root-cause label attached to that id was written about different text and has
-# to be re-verified rather than inherited by position.
+# A fence id is `<prefix>-<cksum-of-content>` (see doc_fence_next_id), not a
+# position in the file, so this corpus needs no extra mutation-detection class
+# on top of the shared expected-vs-actual set diff every other corpus uses: a
+# fence whose content changes gets a new id and shows up as an ordinary
+# add/remove, while an unrelated fence inserted or removed earlier in the same
+# doc never relabels the fences after it.
 
 DOC_FENCE_OUTDIR=""
-DOC_FENCE_EXPECTED_CKSUM_STR=""
-DOC_FENCE_STALE=""
-DOC_FENCE_STALE_COUNT=0
 
 DOC_FENCE_SOURCES=(
     "docs/hew-language-guide.md:guide"
@@ -947,6 +945,29 @@ DOC_FENCE_NYI_PATTERNS=("Not yet implemented" "doctest: skip" "doctest:skip")
 
 DOC_FENCE_IDS=()
 DOC_FENCE_SKIPPED=()
+
+# Fence identity is the fence's own content, not its position in the file.
+# A `<prefix>-<cksum>` id is unaffected by an unrelated fence inserted or
+# removed earlier in the same doc, so editing fence 12 no longer relabels
+# fences 13 through 200 as "changed". Content that genuinely changes gets a
+# new id and shows up as an ordinary new/removed entry against the expected
+# list — the id itself carries what a separate stale-checksum column used to
+# track, so that second column is gone.
+#
+# Two fences with byte-identical content in the same doc would otherwise
+# collide on the same id; disambiguate deterministically with a numeric
+# suffix so both are still checked independently.
+doc_fence_next_id() {
+    local prefix="$1" content="$2" hash base candidate suffix=1
+    hash="$(printf '%s' "$content" | cksum | awk '{print $1}')"
+    base="${prefix}-${hash}"
+    candidate="$base"
+    while line_set_contains "$(printf '%s\n' "${DOC_FENCE_IDS[@]}")" "$candidate"; do
+        suffix=$((suffix + 1))
+        candidate="${base}-${suffix}"
+    done
+    printf '%s' "$candidate"
+}
 
 doc_fence_add_language_sources() {
     local language_doc language_name relative_path
@@ -1043,7 +1064,6 @@ doc_fence_extract() {
         fi
 
         fence_num=$((fence_num + 1))
-        printf -v fence_id "%s-%04d" "$prefix" "$fence_num"
 
         skip=0
         for ((j = i > 5 ? i - 5 : 0; j < i; j++)); do
@@ -1069,6 +1089,7 @@ doc_fence_extract() {
             ((i += 1))
         done
 
+        fence_id="$(doc_fence_next_id "$prefix" "$content")"
         outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
         printf '%s' "$content" >"$outfile"
 
@@ -1132,7 +1153,6 @@ doc_fence_extract_std() {
         fi
 
         fence_num=$((fence_num + 1))
-        printf -v fence_id "%s-%04d" "$prefix" "$fence_num"
 
         skip=0
         for ((j = i > 5 ? i - 5 : 0; j < i; j++)); do
@@ -1158,43 +1178,13 @@ doc_fence_extract_std() {
             ((i += 1))
         done
 
+        fence_id="$(doc_fence_next_id "$prefix" "$content")"
         outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
         printf '%s' "$content" >"$outfile"
 
         DOC_FENCE_IDS+=("$fence_id")
         DOC_FENCE_SKIPPED+=("$skip")
     done
-}
-
-# doc-fences' expected-failures entries carry a checksum, so the shared
-# name-only parser is not enough: the pair is validated here and the names are
-# handed to EXPECTED_STR in the same form every other corpus uses.
-doc_fence_read_expected() {
-    local line fields name recorded_cksum extra_field
-    EXPECTED_STR=""
-    DOC_FENCE_EXPECTED_CKSUM_STR=""
-    while IFS= read -r line; do
-        fields="${line%%#*}"
-        fields="${fields#"${fields%%[! ]*}"}"
-        fields="${fields%"${fields##*[! ]}"}"
-        [[ -z "$fields" ]] && continue
-        name=""
-        recorded_cksum=""
-        extra_field=""
-        read -r name recorded_cksum extra_field <<<"$fields"
-        if [[ -z "$name" || -z "$recorded_cksum" || -n "$extra_field" ]]; then
-            echo "error: expected-failures entry must be: <fence-id> <cksum>" >&2
-            echo "       bad entry: $line" >&2
-            exit 1
-        fi
-        if [[ ! "$recorded_cksum" =~ ^[0-9]+$ ]]; then
-            echo "error: expected-failures checksum must be decimal cksum output" >&2
-            echo "       bad entry: $line" >&2
-            exit 1
-        fi
-        EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
-        DOC_FENCE_EXPECTED_CKSUM_STR="${DOC_FENCE_EXPECTED_CKSUM_STR}${name} ${recorded_cksum}"$'\n'
-    done <"$EXPECTED_FAILURES_FILE"
 }
 
 run_doc_fences() {
@@ -1238,7 +1228,7 @@ run_doc_fences() {
     # empty, so the extracted count is floored before anything is compared.
     corpus_nonempty_assert "doc-hew-fences" "$total_fences" || exit 1
 
-    doc_fence_read_expected
+    read_expected_failures
 
     for ((idx = 0; idx < total_fences; idx++)); do
         fence_id="${DOC_FENCE_IDS[$idx]}"
@@ -1285,44 +1275,6 @@ doc_fence_diagnostic() {
     echo "  UNEXPECTED: $1  ($first_err)"
 }
 
-# Third mutation class: content changed under a listed id, so the root-cause
-# label must be re-verified instead of trusted by position alone.
-# Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2317,SC2329
-doc_fence_extra_failures() {
-    local entry name recorded_cksum actual_cksum outfile plural
-
-    case "$1" in
-    detect)
-        DOC_FENCE_STALE=""
-        while IFS= read -r entry; do
-            [[ -z "$entry" ]] && continue
-            read -r name recorded_cksum <<<"$entry"
-            outfile="$DOC_FENCE_OUTDIR/${name}.hew"
-            [[ -f "$outfile" ]] || continue
-            actual_cksum="$(cksum "$outfile" | awk '{print $1}')"
-            if [[ "$recorded_cksum" != "$actual_cksum" ]]; then
-                DOC_FENCE_STALE="${DOC_FENCE_STALE}${name} ${recorded_cksum} ${actual_cksum}"$'\n'
-            fi
-        done <<<"$DOC_FENCE_EXPECTED_CKSUM_STR"
-        DOC_FENCE_STALE_COUNT="$(count_set "$DOC_FENCE_STALE")"
-        RATCHET_EXTRA_FAIL_COUNT="$DOC_FENCE_STALE_COUNT"
-        ;;
-    report)
-        ((DOC_FENCE_STALE_COUNT > 0)) || return 0
-        plural="ies"
-        ((DOC_FENCE_STALE_COUNT == 1)) && plural="y"
-        echo "RATCHET FAIL: $DOC_FENCE_STALE_COUNT stale expected-failure metadata entr${plural}:"
-        while IFS= read -r entry; do
-            [[ -z "$entry" ]] && continue
-            read -r name recorded_cksum actual_cksum <<<"$entry"
-            echo "  STALE METADATA: $name content changed since label was written (recorded=$recorded_cksum actual=$actual_cksum) — re-verify and update the label"
-        done <<<"$DOC_FENCE_STALE"
-        echo ""
-        ;;
-    esac
-}
-
 # ── Corpus table ──────────────────────────────────────────────────────────────
 
 case "$CORPUS" in
@@ -1340,8 +1292,8 @@ hew-suite)
     run_hew_suite
     ;;
 stdlib)
-    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-/dev/null}"
-    RATCHET_ALL_PASS_TEXT="All stdlib files pass type-check."
+    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$REPO_ROOT/scripts/stdlib-expected-failures.txt}"
+    RATCHET_ALL_PASS_TEXT="All stdlib files pass type-check. Remove entries from expected-failures file."
     RATCHET_LIST_TRACKED=1
     RATCHET_DIAGNOSTIC_FN=stdlib_diagnostic
     RATCHET_UNEXPECTED_HELP="  To accept these as known failures, add them to:
@@ -1375,7 +1327,6 @@ doc-fences)
     RATCHET_FAIL_LEADING_BLANK=1
     RATCHET_VERDICT_LABEL="Doc-test ratchet"
     RATCHET_DIAGNOSTIC_FN=doc_fence_diagnostic
-    RATCHET_EXTRA_FAIL_FN=doc_fence_extra_failures
     RATCHET_UNEXPECTED_HELP="  A doc fence that previously passed now fails — this is a documentation
   regression.  Fix the fence in the doc file, OR if the failure is
   intentional (e.g. the surface is now NYI), add a '<!-- doctest: skip -->'

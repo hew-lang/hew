@@ -1313,6 +1313,77 @@ impl Checker {
         }
     }
 
+    /// Record how each `fails` handler's declared error renders when it has
+    /// no caller. A one-way submission through a mailbox view turns the
+    /// handler's `Err(e)` into the actor's own fault, and the fault carries
+    /// the error's text; a handler whose error the checker cannot render is
+    /// refused at the submission rather than faulting with nothing to say.
+    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: &HashMap<String, FnSig>) {
+        let mut targets: HashMap<String, crate::actor_protocol::ReceiveFailureDisplay> =
+            HashMap::new();
+        for method_id in self.receive_fails_methods.clone() {
+            let Some(sig) = resolved_fn_sigs.get(&method_id) else {
+                continue;
+            };
+            let Some((_, error_ty)) = sig.return_type.as_result() else {
+                continue;
+            };
+            let error_ty = self.subst.resolve(error_ty);
+            if let Some(target) = self.receive_failure_display(&error_ty, resolved_fn_sigs) {
+                targets.insert(method_id, target);
+                continue;
+            }
+            if let Some(span) = self.view_submitted_fails_methods.get(&method_id).cloned() {
+                let handler = method_id
+                    .rsplit_once("::")
+                    .map_or(method_id.as_str(), |(_, name)| name);
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    &span,
+                    format!(
+                        "`{handler}` fails with `{}`, which has no `impl Display` body to render \
+                         the fault a one-way submission raises; give the error type a `Display` \
+                         impl, or call `{handler}` on the actor handle to receive its failure",
+                        error_ty.user_facing()
+                    ),
+                );
+            }
+        }
+        for descriptor in self.actor_protocol_descriptors.values_mut() {
+            for handler in &mut descriptor.handlers {
+                let key = format!("{}::{}", descriptor.actor_name, handler.name);
+                handler.failure_display = targets.get(&key).cloned();
+            }
+        }
+    }
+
+    /// The rendering for one declared failure type, or `None` when the
+    /// checker cannot name one.
+    fn receive_failure_display(
+        &mut self,
+        error_ty: &Ty,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<crate::actor_protocol::ReceiveFailureDisplay> {
+        if matches!(error_ty, Ty::String) {
+            return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
+        }
+        let (declaration, signature_key) =
+            self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
+        let signature = resolved_fn_sigs.get(&signature_key)?;
+        let instance = if signature.type_params.is_empty() {
+            EntryCallableInstance::Declared
+        } else {
+            let ResolvedTy::Named { args, .. } = ResolvedTy::from_ty(error_ty).ok()? else {
+                return None;
+            };
+            EntryCallableInstance::Generic { type_args: args }
+        };
+        Some(crate::actor_protocol::ReceiveFailureDisplay::Declared {
+            declaration,
+            instance,
+        })
+    }
+
     fn classify_entry_exit_plan(
         &mut self,
         program: &Program,
@@ -2190,6 +2261,7 @@ impl Checker {
             *sig = self.resolve_fn_sig(sig);
         }
         let entry_exit_plan = self.classify_entry_exit_plan(program, &resolved_fn_sigs);
+        self.attach_receive_failure_displays(&resolved_fn_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }

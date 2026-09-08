@@ -144,7 +144,12 @@ One-way delivery is a separate, explicit surface: `mailbox(target, on_full:
 accepted, with the value `Result<Delivery, SendFailure<M>>`. `Delivery`
 reports `.Accepted` or an explicitly chosen `.Discarded`. A value-returning
 handler cannot be called through a mailbox view; the diagnostic names
-`fork target.m(..)` for concurrency.
+`fork target.m(..)` for concurrency. A `fails` handler that returns no value
+may be submitted this way: with no caller to receive its declared error, an
+`Err(e)` becomes the actor's own fault, carrying the error's `Display` text
+into the diagnostic and reaching its supervisor. The error type must therefore
+render — `string`, or a type with an `impl Display` body — or the submission
+is refused.
 
 A completion call chooses its own admission through the other view:
 `policy(target, on_full: ...)` yields a view whose calls complete exactly as a

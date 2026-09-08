@@ -73,6 +73,25 @@ pub struct ActorHandlerDescriptor {
     /// consumer "the symbol and the `msg_id` for this handler are these
     /// values, atomically").
     pub symbol: String,
+    /// How a `fails` handler's declared error renders when it has no caller.
+    /// A one-way submission through a mailbox view leaves the handler's
+    /// `Err(e)` with nowhere to go, so it becomes the actor's own fault and
+    /// this target supplies the fault's text. `None` for a handler without a
+    /// `fails` clause, and for an error type whose rendering the checker
+    /// cannot name — those handlers stay refused through a view.
+    pub failure_display: Option<ReceiveFailureDisplay>,
+}
+
+/// How one `fails` handler's declared error becomes fault text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiveFailureDisplay {
+    /// The error is already its own rendering: `fails string`.
+    Identity,
+    /// A declared `impl Display` body for the error type.
+    Declared {
+        declaration: crate::DefId,
+        instance: crate::EntryCallableInstance,
+    },
 }
 
 /// Build the fully-qualified name fed into the `msg_id` hash.
@@ -165,6 +184,7 @@ impl ActorProtocolDescriptor {
                 param_tys: spec.param_tys.clone(),
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
+                failure_display: None,
             });
         }
         Ok(Self {
@@ -208,6 +228,7 @@ impl ActorProtocolDescriptor {
                 param_tys: spec.param_tys.clone(),
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
+                failure_display: None,
             });
         }
         Ok(Self {

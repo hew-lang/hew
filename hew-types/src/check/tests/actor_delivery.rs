@@ -315,6 +315,37 @@ fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
     assert!(message.contains("fork target.total(..)"), "{message}");
 }
 
+/// A `fails` handler that owes no value may be submitted one way: its declared
+/// error has no caller and becomes the actor's own fault instead.
+#[test]
+fn a_unit_fails_handler_submits_through_a_mailbox_view() {
+    let output = check_source(
+        "actor Worker { receive fn note(n: i64) -> () fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a unit `fails` handler submits through a view: {:?}",
+        output.errors
+    );
+}
+
+/// The fault a one-way submission raises carries the error's own text, so a
+/// failure type with no way to render is refused at the submission.
+#[test]
+fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
+    let output = check_source(
+        "type Opaque { code: i64 }          actor Worker { receive fn note(n: i64) -> () fails Opaque {            if n < 0 { return error Opaque { code: n }; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("no `impl Display` body")),
+        "expected the un-renderable failure refusal: {:?}",
+        output.errors
+    );
+}
+
 /// `Never` has no values, so an infallible handler's completion envelope needs
 /// no `Failed` arm.
 #[test]

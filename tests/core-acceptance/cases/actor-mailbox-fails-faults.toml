@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-mailbox-fails-faults"
+intent = "A `fails` handler submitted one way through a mailbox view has no caller for its declared error, so the error becomes the actor's own fault with its own `Display` text in the diagnostic, and the supervisor restarts the child once."
+source = "cases/actor-mailbox-fails-faults.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "open\n60\nopen\n100\n"
+stderr = "hew: failure: ActorUnhandledFailure (213): cannot withdraw 500 from 60\nhew: actor crash in Actor (actor 1): ActorUnhandledFailure\n"
+exit = 0

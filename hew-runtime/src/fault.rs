@@ -78,6 +78,29 @@ pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut 
     }))
 }
 
+/// Copy a borrowed managed string into the fault a `fails` handler raises
+/// when its declared error has no caller to answer. The submission arrived
+/// through a mailbox view, so the failure is the actor's own.
+///
+/// The caller may release the original string immediately after this returns.
+/// Allocation failure remains process-fatal, as with [`hew_fault_new`].
+///
+/// # Safety
+/// `message` must be a live managed string for this call; null means empty.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_new_unhandled_failure(
+    message: *const HewString,
+) -> *mut HewFault {
+    // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
+    let message = unsafe { string_as_str(message) }.into();
+    Box::into_raw(Box::new(HewFault {
+        code: crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE,
+        message: Some(message),
+        secondary: Vec::new(),
+    }))
+}
+
 /// Combine optional fault owners, preserving the primary code and message.
 /// Secondary diagnostics are flattened in occurrence order into owned text.
 /// This compiler-private operation does not read or change callable status.

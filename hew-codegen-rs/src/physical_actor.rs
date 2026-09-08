@@ -2,7 +2,7 @@
 
 use super::suspend::call_value;
 use super::*;
-use hew_mir::physical::{ActorId, ActorOperation, SemActor, SemActorHandler};
+use hew_mir::physical::{ActorId, ActorOperation, SemActor, SemActorHandler, SemFailureDisplay};
 use inkwell::types::StructType;
 
 #[path = "physical_actor_ask.rs"]
@@ -30,7 +30,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         actor: &SemActor,
         handler: &SemActorHandler,
         output: Option<PointerValue<'ctx>>,
-        fault: PointerValue<'ctx>,
+        fault_slot: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         // A void handler replies too: its completion is the unit reply a
         // completion call waits for. `hew_actor_reply_native` discards the
@@ -42,7 +42,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let complete = self.ctx.append_basic_block(function, "reply.complete");
         let publish = self.ctx.append_basic_block(function, "reply.publish");
         let fault = builder
-            .build_load(ptr, fault, "reply.fault")
+            .build_load(ptr, fault_slot, "reply.fault")
             .llvm_ctx("inspect handler completion")?
             .into_pointer_value();
         let success = builder
@@ -52,6 +52,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_conditional_branch(success, publish, complete)
             .llvm_ctx("publish only an initialized reply")?;
         builder.position_at_end(publish);
+        // A `fails` handler submitted one way through a mailbox view has no
+        // caller to receive its declared error, so the error becomes this
+        // actor's own fault instead of being discarded with the reply.
+        if let (Some(display), Some(output)) = (handler.failure_display, output) {
+            let reply = self.ctx.append_basic_block(function, "reply.transfer");
+            self.emit_unhandled_failure(
+                builder, function, actor, handler, output, fault_slot, display, reply, complete,
+            )?;
+            builder.position_at_end(reply);
+        }
         let size = if output.is_some() {
             self.module
                 .target
@@ -89,6 +99,169 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_unconditional_branch(complete)
             .llvm_ctx("complete typed reply")?;
         builder.position_at_end(complete);
+        Ok(())
+    }
+
+    /// Raise a `fails` handler's declared error as this actor's own fault when
+    /// the submission carried no reply channel. The caller positions the
+    /// builder in the reply-publishing block; on return control reaches
+    /// `transfer` for every completion that still owes a reply.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one failure raise owns the reply slot, the fault seat and its rendering"
+    )]
+    fn emit_unhandled_failure(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        actor: &SemActor,
+        handler: &SemActorHandler,
+        output: PointerValue<'ctx>,
+        fault_slot: PointerValue<'ctx>,
+        display: SemFailureDisplay,
+        transfer: BasicBlock<'ctx>,
+        complete: BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let values = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder,
+            value: function,
+        };
+        let inspect = self.ctx.append_basic_block(function, "reply.oneway");
+        let raise = self.ctx.append_basic_block(function, "reply.unhandled");
+        let channel = coro::external(&self.llvm, "hew_get_reply_channel", ptr.fn_type(&[], false))?;
+        let channel = call_value(builder, channel, &[], "reply.channel")?.into_pointer_value();
+        let one_way = builder
+            .build_is_null(channel, "reply.oneway.test")
+            .llvm_ctx("classify a one-way submission")?;
+        builder
+            .build_conditional_branch(one_way, inspect, transfer)
+            .llvm_ctx("select the one-way completion")?;
+        builder.position_at_end(inspect);
+        let layout = values.variant_layout(&handler.return_ty)?;
+        let object = values.variant_object_ptr(output, layout)?;
+        let tag = values.load_variant_tag(object, layout)?;
+        let succeeded = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                tag.get_type().const_zero(),
+                "reply.declared.ok",
+            )
+            .llvm_ctx("classify the declared handler outcome")?;
+        builder
+            .build_conditional_branch(succeeded, transfer, raise)
+            .llvm_ctx("raise only a declared failure")?;
+        builder.position_at_end(raise);
+        let payload_ty = llvm_type(self.ctx, &layout.variants[1].repr)?.into_struct_type();
+        let payload = builder
+            .build_load(
+                payload_ty,
+                values.variant_payload_ptr(object, layout)?,
+                "reply.declared.payload",
+            )
+            .llvm_ctx("read the declared failure payload")?
+            .into_struct_value();
+        let error = builder
+            .build_extract_value(payload, 0, "reply.declared.error")
+            .llvm_ctx("take the declared failure")?;
+        // `Identity` means the error is already its text and stays owned by the
+        // reply; a rendered error is a fresh string this block owns.
+        let (text, release_text, drop_reply) = match display {
+            SemFailureDisplay::Identity => (error.into_pointer_value(), false, true),
+            SemFailureDisplay::Callable(id) => {
+                let render = callable(self.module, id)?;
+                let parameter = render.params.first().ok_or_else(|| {
+                    CodegenError::FailClosed("declared failure Display takes no receiver".into())
+                })?;
+                let out = builder
+                    .build_alloca(ptr, "reply.declared.text")
+                    .llvm_ctx("allocate the rendered failure")?;
+                let argument: BasicMetadataValueEnum<'ctx> = match parameter.carrier {
+                    ParamCarrier::Direct => error.into(),
+                    ParamCarrier::Indirect => {
+                        let slot = builder
+                            .build_alloca(
+                                llvm_type(self.ctx, &parameter.layout.repr)?,
+                                "reply.declared.arg",
+                            )
+                            .llvm_ctx("allocate the failure Display argument")?;
+                        builder
+                            .build_store(slot, error)
+                            .llvm_ctx("place the failure Display argument")?;
+                        slot.into()
+                    }
+                };
+                builder
+                    .build_call(
+                        self.functions[&id],
+                        &[argument, out.into(), fault_slot.into()],
+                        "reply.render",
+                    )
+                    .llvm_ctx("render the declared failure")?;
+                let rendered = builder
+                    .build_load(ptr, out, "reply.declared.rendered")
+                    .llvm_ctx("take the rendered failure")?
+                    .into_pointer_value();
+                // A consuming renderer took the payload with it; only a
+                // borrowing one leaves the reply for its own drop glue.
+                let borrows = !matches!(
+                    parameter.passing,
+                    hew_mir::physical::SemParamPassing::Consume
+                );
+                (rendered, true, borrows)
+            }
+        };
+        // A renderer that faulted owns the diagnostic; its fault is already in
+        // the seat and the rendered text was never produced.
+        let rendered = self.ctx.append_basic_block(function, "reply.rendered");
+        let faulted = builder
+            .build_load(ptr, fault_slot, "reply.render.fault")
+            .llvm_ctx("inspect the renderer's completion")?
+            .into_pointer_value();
+        let clean = builder
+            .build_is_null(faulted, "reply.render.clean")
+            .llvm_ctx("check the renderer's completion")?;
+        let discard = self.ctx.append_basic_block(function, "reply.discard");
+        builder
+            .build_conditional_branch(clean, rendered, discard)
+            .llvm_ctx("keep the first fault")?;
+        builder.position_at_end(rendered);
+        let create = get_or_declare_external(
+            &self.llvm,
+            "hew_fault_new_unhandled_failure",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let raised = call_value(builder, create, &[text.into()], "reply.unhandled.fault")?;
+        builder
+            .build_store(fault_slot, raised)
+            .llvm_ctx("retain the unhandled failure")?;
+        if release_text {
+            let release = external_drop(self.ctx, &self.llvm, "hew_string_drop")?;
+            builder
+                .build_call(release, &[text.into()], "")
+                .llvm_ctx("release the rendered failure")?;
+        }
+        builder
+            .build_unconditional_branch(discard)
+            .llvm_ctx("discard the unreplied outcome")?;
+        builder.position_at_end(discard);
+        if drop_reply {
+            if let Some(glue) = self
+                .llvm
+                .get_function(&reply_symbol(actor.id, handler.message_id))
+            {
+                builder
+                    .build_call(glue, &[output.into()], "")
+                    .llvm_ctx("destroy the unreplied outcome")?;
+            }
+        }
+        builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish the unreplied completion")?;
         Ok(())
     }
 }
@@ -1280,7 +1453,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let handler = actor
             .handlers
             .iter()
-            .find(|handler| handler.return_ty == ResolvedTy::Unit && handler.params == *params)
+            .find(|handler| handler.owes_no_reply() && handler.params == *params)
             .ok_or_else(|| {
                 CodegenError::FailClosed(
                     "message payload has no exact actor protocol signature".into(),

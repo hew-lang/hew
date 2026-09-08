@@ -27,6 +27,36 @@ pub struct SemActorHandler {
     pub return_ty: ResolvedTy,
     /// `receive gen fn`: the element type each `yield` sends to the sink.
     pub stream: Option<ResolvedTy>,
+    /// How this handler's declared failure renders when a one-way submission
+    /// leaves it with no caller. `None` when the handler cannot fail.
+    pub failure_display: Option<SemFailureDisplay>,
+}
+
+impl SemActorHandler {
+    /// Whether a submission to this handler owes its sender no value. A unit
+    /// handler qualifies, and so does a `fails` handler whose success is unit:
+    /// its declared error becomes the actor's own fault, not a reply.
+    #[must_use]
+    pub fn owes_no_reply(&self) -> bool {
+        if self.return_ty == ResolvedTy::Unit {
+            return true;
+        }
+        self.failure_display.is_some()
+            && matches!(&self.return_ty, ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Result),
+                args,
+                ..
+            } if matches!(args.as_slice(), [ResolvedTy::Unit, _]))
+    }
+}
+
+/// The rendering a `fails` handler's declared error uses for its fault text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemFailureDisplay {
+    /// The error is already its own rendering: `fails string`.
+    Identity,
+    /// The demanded `Display::fmt` body for the error type.
+    Callable(CallableId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,50 @@
+// A `fails` handler submitted one way through a mailbox view has no caller to
+// receive its declared error. The error becomes the actor's own fault, the
+// diagnostic carries the error's own text, and the supervisor restarts the
+// child once before the ledger answers again from a fresh state.
+actor Ledger {
+    var balance: i64 = 100,
+
+    #[on(start)]
+    fn started() { println("open"); }
+
+    receive fn withdraw(amount: i64) -> () fails string {
+        if amount > balance {
+            return error f"cannot withdraw {amount} from {balance}";
+        }
+        balance = balance - amount;
+    }
+
+    receive fn balance_now() -> i64 { balance }
+}
+
+supervisor Bank {
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child ledger: Ledger,
+}
+
+fn main() {
+    let bank = spawn Bank;
+    let inbox = mailbox(bank.ledger, on_full: .Wait);
+    // A submission the handler can serve: the view reports acceptance only.
+    match inbox.withdraw(40) {
+        .Ok(_) => {},
+        .Err(_) => println("refused"),
+    }
+    // A completion call waits for its own turn, so it also flushes the queue.
+    match bank.ledger.balance_now() {
+        .Ok(left) => println(left),
+        .Err(_) => println("unavailable"),
+    }
+    // Nothing waits on this one, so the declared failure faults the actor.
+    match inbox.withdraw(500) {
+        .Ok(_) => {},
+        .Err(_) => println("refused"),
+    }
+    let _ = await_restart bank.ledger;
+    match bank.ledger.balance_now() {
+        .Ok(left) => println(left),
+        .Err(_) => println("unavailable"),
+    }
+}

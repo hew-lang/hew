@@ -294,7 +294,7 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
 #[test]
 fn test_try_list_dir_handles_success_and_missing_paths() {
     match fs.list_dir("tests/hew") {
-        .Ok(entries) => testing.assert_true(entries.len() > 0),
+        .Ok(entries) => testing.assert_true(!entries.is_empty()),
         .Err(_) => panic("expected tests/hew listing to succeed"),
     }
     match fs.list_dir("tests/hew/_fs_stream_missing_dir") {

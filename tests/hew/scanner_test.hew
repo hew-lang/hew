@@ -89,7 +89,7 @@ fn test_lines_crlf_trailing() {
 #[test]
 fn test_scan_iterate_three_lines() {
     var sc = scanner.from_string("line1\nline2\nline3");
-    let result: Vec<string> = Vec.new();
+    var result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -121,7 +121,7 @@ fn test_scan_single_line_without_newline() {
 #[test]
 fn test_scan_blank_lines_emitted() {
     var sc = scanner.from_string("a\n\nb");
-    let result: Vec<string> = Vec.new();
+    var result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -136,7 +136,7 @@ fn test_scan_blank_lines_emitted() {
 #[test]
 fn test_scan_crlf_stripped() {
     var sc = scanner.from_string("p\r\nq\r\nr");
-    let result: Vec<string> = Vec.new();
+    var result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -151,7 +151,7 @@ fn test_scan_crlf_stripped() {
 #[test]
 fn test_scan_trailing_newline_no_extra_token() {
     var sc = scanner.from_string("x\ny\n");
-    let result: Vec<string> = Vec.new();
+    var result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -265,7 +265,7 @@ fn test_words_only_whitespace_returns_empty() {
 fn test_with_split_switches_to_words_mode() {
     var sc = scanner.from_string("foo bar baz");
     sc = scanner.with_split(sc, SplitMode.SplitWords);
-    let result: Vec<string> = Vec.new();
+    var result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));

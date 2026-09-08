@@ -10,7 +10,7 @@ fn test_key() -> bytes {
 
 fn tamper_last_byte(ciphertext: bytes) -> bytes {
     let last_index = ciphertext.len() - 1;
-    let tampered: bytes = bytes.new();
+    var tampered: bytes = bytes.new();
     var i = 0;
     while i < ciphertext.len() {
         let byte = ciphertext[i];

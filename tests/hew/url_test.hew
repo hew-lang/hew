@@ -84,9 +84,8 @@ fn test_port_returns_none_when_absent() {
     let parsed = url.parse("http://localhost/path");
     let port = parsed.port();
     parsed.close();
-    match port {
-        .Some(value) => panic(f"expected None, got Some({value})"),
-        .None => {},
+    if let .Some(value) = port {
+        panic(f"expected None, got Some({value})");
     }
 }
 

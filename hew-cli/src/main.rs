@@ -1627,7 +1627,10 @@ fn cmd_run_native(
     };
 
     drop(artifact);
-    std::process::exit(status.code().unwrap_or(1));
+    std::process::exit(crate::process::native_run_exit_code(
+        status,
+        &mut std::io::stderr().lock(),
+    ));
 }
 
 fn default_profile_endpoint() -> &'static str {

@@ -286,6 +286,46 @@ fn terminating_signal(status: ExitStatus) -> Option<i32> {
     status.signal()
 }
 
+/// Preserve explicit program exits and report abnormal native termination.
+///
+/// OS signals do not identify a language trap, so use the runtime's
+/// `UnknownFault` category rather than guessing a source-level cause.
+/// Windows reports exceptions and explicit exits through the same integer;
+/// preserve that integer because the two cannot be distinguished here.
+pub(crate) fn native_run_exit_code(status: ExitStatus, stderr: &mut impl std::io::Write) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    if let Some(signal) = terminating_signal(status) {
+        let name = match signal {
+            libc::SIGABRT => "SIGABRT",
+            libc::SIGBUS => "SIGBUS",
+            libc::SIGFPE => "SIGFPE",
+            libc::SIGILL => "SIGILL",
+            libc::SIGINT => "SIGINT",
+            libc::SIGKILL => "SIGKILL",
+            libc::SIGPIPE => "SIGPIPE",
+            libc::SIGQUIT => "SIGQUIT",
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGTERM => "SIGTERM",
+            libc::SIGTRAP => "SIGTRAP",
+            _ => "unknown signal",
+        };
+        // An unavailable stderr must not turn a child failure into a CLI panic.
+        let _ = writeln!(
+            stderr,
+            "hew: failure: UnknownFault ({signal}): native program terminated by signal {signal} ({name})"
+        );
+        return 1;
+    }
+    let _ = writeln!(
+        stderr,
+        "hew: failure: UnknownFault: native program terminated abnormally ({status})"
+    );
+    1
+}
+
 #[cfg(not(unix))]
 fn terminating_signal(_status: ExitStatus) -> Option<i32> {
     None
@@ -761,6 +801,34 @@ mod tests {
     use std::cell::Cell;
     use std::io::{BufRead, BufReader};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn native_run_reports_signalled_child() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "ulimit -c 0; kill -SEGV $$"]);
+        let status = BoundedChild::spawn(&mut command)
+            .unwrap()
+            .wait_unbounded()
+            .unwrap();
+        let mut stderr = Vec::new();
+        assert_eq!(native_run_exit_code(status, &mut stderr), 1);
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
+        assert!(stderr.contains("SIGSEGV"), "{stderr}");
+    }
+
+    #[test]
+    fn native_run_preserves_explicit_child_exits() {
+        for code in [0, 1, 37, 124, 212] {
+            let status = Command::new("sh")
+                .args(["-c", &format!("exit {code}")])
+                .status()
+                .unwrap();
+            let mut stderr = Vec::new();
+            assert_eq!(native_run_exit_code(status, &mut stderr), code);
+            assert!(stderr.is_empty());
+        }
+    }
 
     /// Verify that [`BoundedChild::wait_with_timeout`] kills the full process
     /// GROUP on timeout, not just the direct child process.

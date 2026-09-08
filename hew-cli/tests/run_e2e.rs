@@ -97,6 +97,51 @@ fn run_native_compile_error_exits_one() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn run_native_signal_prints_typed_failure() {
+    require_codegen();
+    let dir = support::tempdir();
+    let path = dir.path().join("signal_run.hew");
+    // SIGKILL cannot be intercepted by the runtime's fault handlers. This
+    // exercises the parent CLI's diagnostic without invalid memory access.
+    std::fs::write(
+        &path,
+        format!(
+            "extern \"C\" {{ fn raise(signal: i32) -> i32; }}\nfn main() {{ unsafe {{ raise({}); }} }}\n",
+            libc::SIGKILL
+        ),
+    )
+    .unwrap();
+    for timeout in [false, true] {
+        let mut command = Command::new(hew_binary());
+        command.arg("run");
+        if timeout {
+            command.args(["--timeout", "10s"]);
+        }
+        command.arg(&path).current_dir(dir.path());
+        let output = support::run_bounded_command(command, "native signal diagnostic");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
+        assert!(stderr.contains("SIGKILL"), "{stderr}");
+        assert!(!stderr.contains("timed out"), "{stderr}");
+    }
+}
+
+#[test]
+fn run_native_preserves_explicit_exit() {
+    require_codegen();
+    let dir = support::tempdir();
+    let path = dir.path().join("explicit_exit.hew");
+    std::fs::write(&path, "fn main() -> i32 { 37 }\n").unwrap();
+    let mut command = Command::new(hew_binary());
+    command.arg("run").arg(&path).current_dir(dir.path());
+    let output = support::run_bounded_command(command, "native explicit exit");
+    assert_eq!(output.status.code(), Some(37));
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+}
+
 #[test]
 fn run_compile_error_exit_matches_check() {
     let dir = support::tempdir();

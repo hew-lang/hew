@@ -26,13 +26,26 @@ impl Builder<'_, '_> {
         else {
             return Err("mutable method lowering requires a var-self call".into());
         };
-        let (CallTarget::User(declaration) | CallTarget::ImplMethod(declaration)) = call_target
-        else {
-            return Err("mutable method requires a resolved direct declaration".into());
+        let receiver_ty = self.ty(receiver_ty);
+        let callee = match call_target {
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => self
+                .service
+                .resolve_direct_call(declaration, expr.site, &self.substitution)?,
+            // A generic body reaches `it.next()` through its bound; the
+            // implementation is selected here, from the receiver type this
+            // instance substituted.
+            CallTarget::StaticTraitMethod {
+                declaring_trait,
+                method,
+            } => self
+                .service
+                .resolve_static_trait_call(declaring_trait, method, &receiver_ty)?,
+            _ => {
+                return Err(
+                    "mutable method requires a resolved direct or static-trait declaration".into(),
+                )
+            }
         };
-        let callee =
-            self.service
-                .resolve_direct_call(declaration, expr.site, &self.substitution)?;
         let source = self
             .service
             .table
@@ -46,7 +59,6 @@ impl Builder<'_, '_> {
         {
             return Err("mutable method target has no exact var-self receiver contract".into());
         }
-        let receiver_ty = self.ty(receiver_ty);
         let return_ty = self.ty(ret_ty);
         let signature = callee.signature;
         let dual_return_ty = ResolvedTy::Tuple(vec![return_ty.clone(), receiver_ty.clone()]);
@@ -59,7 +71,7 @@ impl Builder<'_, '_> {
         {
             return Err(format!(
                 "mutable method `{}` differs from its checked receiver and dual-return signature: receiver {receiver_ty:?}, result {return_ty:?}, signature {signature:?}",
-                declaration.full_path()
+                callee.declaration.full_path()
             ));
         }
         self.service.require_type_facts(&receiver_ty)?;

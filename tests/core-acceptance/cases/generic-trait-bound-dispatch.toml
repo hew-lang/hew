@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-trait-bound-dispatch"
+intent = "A trait method reached through a where-clause bound resolves to the concrete impl of the monomorphised instance; the same impls reached through a `dyn` value keep vtable dispatch."
+source = "cases/generic-trait-bound-dispatch.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "square(4) = 16\nrect(3x5) = 15\n46\nsquare(9)\n16\n"
+exit = 0

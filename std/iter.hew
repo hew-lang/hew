@@ -399,37 +399,37 @@ pub fn find<I, A>(consume it: I, pred: fn(A) -> bool) -> Option<A> where I: Iter
 // operation as `cursor.map(f)` selects exactly the same implementation as
 // `iter::map(cursor, f)`.
 impl<T> VecIter<T> {
-    pub fn map<U>(self, consume f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
+    pub fn map<U>(consume self, consume f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
         map(self, f)
     }
-    pub fn filter(self, consume pred: fn(T) -> bool) -> Filter<VecIter<T>, T> {
+    pub fn filter(consume self, consume pred: fn(T) -> bool) -> Filter<VecIter<T>, T> {
         filter(self, pred)
     }
-    pub fn fold<U>(self, init: U, f: fn(U, T) -> U) -> U {
+    pub fn fold<U>(consume self, init: U, f: fn(U, T) -> U) -> U {
         fold(self, init, f)
     }
-    pub fn any(self, pred: fn(T) -> bool) -> bool {
+    pub fn any(consume self, pred: fn(T) -> bool) -> bool {
         any(self, pred)
     }
-    pub fn all(self, pred: fn(T) -> bool) -> bool {
+    pub fn all(consume self, pred: fn(T) -> bool) -> bool {
         all(self, pred)
     }
-    pub fn find(self, pred: fn(T) -> bool) -> Option<T> {
+    pub fn find(consume self, pred: fn(T) -> bool) -> Option<T> {
         find(self, pred)
     }
-    pub fn count(self) -> i64 {
+    pub fn count(consume self) -> i64 {
         count(self)
     }
-    pub fn enumerate(self) -> Enumerate<VecIter<T>, T> {
+    pub fn enumerate(consume self) -> Enumerate<VecIter<T>, T> {
         enumerate(self)
     }
-    pub fn take(self, n: i64) -> Take<VecIter<T>, T> {
+    pub fn take(consume self, n: i64) -> Take<VecIter<T>, T> {
         take(self, n)
     }
-    pub fn skip(self, n: i64) -> Skip<VecIter<T>, T> {
+    pub fn skip(consume self, n: i64) -> Skip<VecIter<T>, T> {
         skip(self, n)
     }
-    pub fn collect(self) -> Vec<T> {
+    pub fn collect(consume self) -> Vec<T> {
         collect(self)
     }
 }

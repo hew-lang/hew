@@ -34,6 +34,8 @@ impl Builder<'_, '_> {
         if source_arms.is_empty() {
             return Err("aggregate match has no source arms".to_string());
         }
+        // Every arm is a conditional path: a loan may not end inside one.
+        self.branch_depth += 1;
         let aggregate_ty = self.ty(&scrutinee_expr.ty);
         let initial_value = is_initial_value_type(&aggregate_ty);
         let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
@@ -179,6 +181,7 @@ impl Builder<'_, '_> {
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::Unreachable)?;
         }
+        self.branch_depth -= 1;
         self.merge_match_exits(exits, &result_ty)
     }
 

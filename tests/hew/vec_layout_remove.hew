@@ -107,7 +107,7 @@ fn test_remove_sole_element_leaves_empty_vec() {
     var points: Vec<Point> = Vec.new();
     points.push(Point { x: 50, y: 60 });
     points.remove(0);
-    if points.len() != 0 {
+    if !points.is_empty() {
         panic(f"expected len 0, got {points.len()}");
     }
 }
@@ -137,7 +137,7 @@ fn test_sequential_removals_reach_empty() {
         panic(f"expected last.y=60, got {last.y}");
     }
     points.remove(0);
-    if points.len() != 0 {
+    if !points.is_empty() {
         panic(f"expected len 0, got {points.len()}");
     }
 }

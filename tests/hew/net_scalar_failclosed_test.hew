@@ -10,7 +10,6 @@ import std.net;
 
 import std.net.http.http_client;
 
-import std.net.tls;
 
 import std.testing;
 

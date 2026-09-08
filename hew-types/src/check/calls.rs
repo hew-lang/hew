@@ -1355,11 +1355,19 @@ impl Checker {
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
             return CallTarget::Runtime(family);
         }
-        if !self.fn_def_spans.contains_key(signature_key) {
+        // An impl method with no source span of its own is still a declared
+        // implementation: publish its declaration identity.  The declaring
+        // module is not part of this decision — a `duration` constructor
+        // declared in `std/builtins.hew` is as much a direct call as a user
+        // impl method, and both emit a body.  What IS part of it is the typed
+        // builtin registry: a spelling registered there (`instant::now`) is
+        // metadata for a compiler-known endpoint, so it keeps the target that
+        // registry published rather than acquiring a body it does not have.
+        if !self.fn_def_spans.contains_key(signature_key)
+            && !self.builtin_call_targets.contains_key(signature_key)
+        {
             if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
-                if !declaration.full_path().starts_with("std.builtins.") {
-                    return CallTarget::ImplMethod(declaration.clone());
-                }
+                return CallTarget::ImplMethod(declaration.clone());
             }
         }
         if let Some(target) = self.user_call_target_for_declared_fn(signature_key) {

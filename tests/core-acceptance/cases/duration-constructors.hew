@@ -1,0 +1,24 @@
+// `duration` constructors are ordinary declared statics on a builtin type:
+// `duration.from_millis(250)` resolves to the emitted `duration::from_millis`
+// body (`n * 1ms`) and its result reads back through the duration accessors.
+fn main() {
+    let ms = duration.from_millis(250);
+    println(ms.millis());
+    println(ms.micros());
+
+    let secs = duration.from_secs(3);
+    println(secs.secs());
+    println(secs.millis());
+
+    let us = duration.from_micros(1500);
+    println(us.micros());
+    println(us.millis());
+
+    let ns = duration.from_nanos(2_000_000);
+    println(ns.nanos());
+    println(ns.millis());
+
+    // Constructed durations compose with literal durations and comparisons.
+    println((duration.from_millis(750) + 250ms).secs());
+    println(duration.from_secs(0).is_zero());
+}

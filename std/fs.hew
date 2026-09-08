@@ -3,8 +3,7 @@
 //! Read, write, and query files on the local file system.
 //!
 //! For path-only helpers prefer `std.path`, and for stdin/stdout prefer
-//! `std.io`. This module keeps `fs.exists` as a compatibility surface
-//! for existing code.
+//! `std.io`. `fs.exists(path)` checks whether a file-system entry exists.
 //!
 //! # Error Handling
 //!

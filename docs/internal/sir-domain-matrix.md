@@ -1,5 +1,13 @@
 # SIR domain matrix
 
+> Historical design reference. The revision-specific tables and obligations
+> below describe the earlier ladder program, not current symbol ownership or
+> language support. Use [the current architecture](../diagrams.md),
+> [the language guide](../hew-language-guide.md) and the active compiler
+> contracts in `hew-sir` and `hew-mir` when making changes. Do not restore
+> deleted runtime APIs or source spellings from this inventory.
+
+
 Total mapping from the Hew surface (as HIR on main `54e8dde2c`) to the final
 ladder in `hew-orchestration/plans/final-ladder-program.md` (§1). One row per
 construct; a construct with no row is a defect in this document.

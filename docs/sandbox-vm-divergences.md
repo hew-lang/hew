@@ -1,5 +1,12 @@
 # Sandbox VM divergences
 
+> Native cutover note: this is a target-capability reference, not current
+> native/sandbox parity evidence. The native actor-call and ownership changes
+> still need sandbox integration. Source syntax follows the
+> [language guide](hew-language-guide.md); older runtime dispositions below
+> do not authorize retired source forms.
+
+
 The sandbox VM is deterministic by design. It admits programs whose observable behavior can be reproduced in a browser-hosted runtime and rejects native-only APIs that require host operating-system authority. This document is the public catalog for accepted runtime divergences and out-of-scope native surfaces.
 
 ## Contents

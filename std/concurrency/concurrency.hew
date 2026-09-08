@@ -1,10 +1,20 @@
 //! Structured concurrency support types.
 //!
-//! `ScopeError<E>` is the stdlib failure-aggregation shape used by structured
-//! concurrency surfaces to report a primary child error, any additional child
-//! failures, and how many siblings were cancelled.
+//! A plain call waits for its result. `fork expression` creates a `Task<T>`;
+//! `await task` returns `T`, and awaiting `Vec<Task<T>>` returns `Vec<T>`.
+//! Await preserves application values, including `Result` values.
+//!
+//! `scope { ... }` yields its body's value after waiting for child tasks and
+//! cleanup. `scope within duration { ... } handle failure { ... }` adds a
+//! deadline and recovery after cleanup. Ordinary `Err` values remain values;
+//! structured faults and cancellation determine scope failure and sibling
+//! cancellation. Parent cancellation propagates to the enclosing scope.
+//!
+//! `ScopeError<E>` below is a legacy aggregation record. Current scope recovery
+//! uses the built-in `ScopeFailure`; it does not automatically aggregate every
+//! application's `Err` into this record.
 
-/// Aggregated failure details for a structured concurrency scope.
+/// Legacy aggregation record; current scope recovery uses `ScopeFailure`.
 pub type ScopeError<E> {
     primary: E,
     also_failed: Vec<E>,

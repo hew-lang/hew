@@ -112,7 +112,10 @@ pub fn decode(token: string, secret: string, algorithm: string) -> Result<string
 /// import std.crypto.jwt;
 ///
 /// fn main() {
-///     let token = jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256");
+///     let token = jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256") handle error {
+///         println(f"operation failed: {error}");
+///         return;
+///     };
 ///     let payload = jwt.decode_insecure(token);
 ///     println(payload);
 /// }
@@ -133,7 +136,10 @@ pub fn decode_insecure(token: string) -> string {
 /// import std.crypto.jwt;
 ///
 /// fn main() {
-///     let token = jwt.encode("{\"sub\":\"1234\"}", "my_secret", "HS256");
+///     let token = jwt.encode("{\"sub\":\"1234\"}", "my_secret", "HS256") handle error {
+///         println(f"operation failed: {error}");
+///         return;
+///     };
 ///     if jwt.validate(token, "my_secret", "HS256") {
 ///         println("valid");
 ///     }

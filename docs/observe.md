@@ -1,4 +1,4 @@
-# Hew observability (`std::observe` and `hew-observe`)
+# Hew observability (`std.observe` and `hew-observe`)
 
 Hew's observability surface is runtime-owned and read-only from Hew code. Use it
 when you want to inspect memory, scheduler, actor, coroutine, reactor, and
@@ -9,7 +9,7 @@ the runtime or toolchain must be observable in the artifact's output, response,
 or telemetry — see the observable-honesty axiom in the
 [IR ladder reference](internal/ir-ladder.md#design-axioms).
 
-There are three primary metric APIs in `std::observe`:
+There are three primary metric APIs in `std.observe`:
 
 ```hew
 import std.observe;
@@ -37,7 +37,7 @@ value as `Option<i64>`.
 import std.observe;
 
 println(observe.read("heap.live_bytes").unwrap_or(0));
-println(observe.read("actors.turns_total").unwrap_or(0));
+println(observe.read("actors.turns_total") ?? 0);
 println(observe.read("does.not.exist")); // None
 ```
 
@@ -96,7 +96,7 @@ Save this as `observe_demo.hew`:
 import std.observe;
 
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -108,13 +108,13 @@ actor Counter {
 }
 
 let counter = spawn Counter(count: 0);
-counter.increment(1);
-counter.increment(2);
-let total = await counter.total();
+counter.increment(1).expect("increment completes");
+counter.increment(2).expect("increment completes");
+let total = counter.total().expect("total query completes");
 let _barrier = observe.barrier().expect("barrier succeeds");
 
 println(total);
-println(observe.read("actors.turns_total").unwrap_or(0));
+println(observe.read("actors.turns_total") ?? 0);
 println(observe.series());
 observe.scrape()
 ```
@@ -213,9 +213,9 @@ questions such as:
 Use this pattern in examples and tests that need deterministic scrape output:
 
 ```hew
-let actor = spawn Counter(count: 0);
-actor.increment(1);
-let value = await actor.total();
+let counter = spawn Counter(count: 0);
+counter.increment(1).expect("increment completes");
+let value = counter.total().expect("total query completes");
 let _barrier = observe.barrier().expect("barrier succeeds");
 println(observe.scrape());
 ```
@@ -305,7 +305,7 @@ delegation fails; run `hew-observe` directly or build/install it alongside
 
 - **No custom application metrics.** Hew programs can read runtime-owned metrics,
   but cannot define counters, gauges, histograms, labels, spans, or traces
-  through `std::observe`.
+  through `std.observe`.
 - **Fragmented surfaces.** `observe.read`, `observe.scrape`, `/api/metrics`,
   `/api/actors`, and `/api/metrics/history` do not expose one identical schema.
   In particular, `/api/metrics` currently omits several fields that the runtime
@@ -315,7 +315,7 @@ delegation fails; run `hew-observe` directly or build/install it alongside
   `# TYPE`, but there is no API for descriptions, units, stability, or hot-tier
   requirements.
 - **No programmatic hot-tier check in Hew.** The runtime has an internal hot-tier
-  flag, but `std::observe` does not expose `hot_enabled()`.
+  flag, but `std.observe` does not expose `hot_enabled()`.
 - **`observe.barrier` is narrow.** It is present as a synchronization helper for
   attribution visibility, but it is not a custom metric or flush API.
 - **`hew observe` depends on a sibling binary.** The main `hew` CLI delegates to

@@ -1,4 +1,4 @@
-//! Status: runnable (v0.5 for-await over Stream<bytes>)
+//! Status: runnable (v0.5 ordinary for over Stream<bytes>)
 //! Description: Drains a byte stream with `for`.
 
 import std.encoding.utf8;

@@ -1,6 +1,6 @@
-# std::net::quic
+# std.net.quic
 
-`std::net::quic` — QUIC transport for internode messaging.
+`std.net.quic` — QUIC transport for internode messaging.
 
 Part of the [Hew](https://hew.sh) standard library. See the [std overview](../../README.md) for all modules.
 
@@ -115,9 +115,9 @@ prefer the explicit TLS constructors shown in the API table below.
 
 ### QUICEvent Methods
 
-| Method         | Description                                     |
-| -------------- | ----------------------------------------------- |
-| `event.kind()` | Return the event kind integer (see table below) |
+| Method          | Description                                                   |
+| --------------- | ------------------------------------------------------------- |
+| `event.kind()`  | Return the event kind integer (see table below)               |
 | `event.close()` | Release event resources early; otherwise scope exit closes it |
 
 **Event kinds:** `0` connected · `1` disconnected · `2` stream opened ·

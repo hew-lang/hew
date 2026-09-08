@@ -80,7 +80,7 @@ fn main() -> i64 {
             return 1;
         },
         .Ok(kv) => {
-            // Scenario 1: put("hello","world") — fire and forget via send.
+            // Scenario 1: put("hello","world") — wait for the remote handler.
             let send1 = kv.send(KvReq.Put(KvPut { key: "hello", val: "world" }));
             match send1 {
                 .Err(_) => {
@@ -90,7 +90,7 @@ fn main() -> i64 {
                 },
                 .Ok(_) => {},
             }
-            // Scenario 2: put("count","42") — fire and forget via send.
+            // Scenario 2: put("count","42") — wait for the remote handler.
             let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
             match send2 {
                 .Err(_) => {
@@ -101,10 +101,10 @@ fn main() -> i64 {
                 .Ok(_) => {},
             }
             println("[kv-client] put('hello','world') and put('count','42') dispatched");
-            // Give the server time to process the send messages before asking.
+            // The completion calls above already wait for their handlers.
             sleep(500ms);
 
-            // Scenario 3: get("hello") — blocking remote ask, exercises await-over-wire.
+            // Scenario 3: get("hello") — blocking remote ask, exercises the remote completion path.
             let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
             match ask1 {
                 .Err(_) => {

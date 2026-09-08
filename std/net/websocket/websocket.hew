@@ -263,7 +263,7 @@ impl Server {
 /// import std.net.websocket;
 ///
 /// actor Echo {
-///     let conn: websocket.Conn;
+///     let conn: websocket.Conn,
 ///     receive fn on_message(text: string) {
 ///         conn.send_text("echo: " + text);
 ///     }

@@ -1,4 +1,4 @@
-// Stage-0 pattern-discharge pin: enum struct-variant match with one bound
+// Stage-0 pattern-discharge pin: enum record-variant match with one bound
 // owned field and one wildcarded owned sibling.
 //
 // The wildcard is absent from the payload-binding list. The bound `a` is a

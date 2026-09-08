@@ -1,4 +1,4 @@
-//! Status: runnable (v0.5 for-await over Receiver<f64>)
+//! Status: runnable (v0.5 ordinary for over Receiver<f64>)
 //! Description: Drains a float channel receiver with `for`.
 //!
 //! `Receiver<f64>` rides the element-layout witness: the checker admits any

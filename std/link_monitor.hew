@@ -18,7 +18,7 @@
 // `LinkError` is prelude-published from `std/builtins.hew` (the error type of
 // the `link()` builtin, like `SendError` for `.tell`), so it is NOT redeclared
 // here — that would collide with the always-loaded prelude on import. Programs
-// name `LinkError::AlreadyLinked` / `TargetDead` without importing this module.
+// name `LinkError.AlreadyLinked` / `TargetDead` without importing this module.
 import std.failure.{CrashKind};
 
 /// Error returned when a monitor delivery cannot be completed.

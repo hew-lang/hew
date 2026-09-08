@@ -1,20 +1,20 @@
-# std::encoding::xml
+# std.encoding.xml
 
 XML parsing and serialization for Hew.
 
 ## API
 
-| Function | Description |
-|---|---|
-| `xml.parse(s)` | Parse an XML string into a `Node` tree |
-| `node.to_string()` | Serialize a node tree back to XML |
-| `node.get_tag()` | Get the tag name of an element |
-| `node.get_attribute(name)` | Get an attribute value (empty if missing) |
-| `node.children_count()` | Number of child nodes |
-| `node.get_child(i)` | Get child node by index |
-| `node.get_text()` | Concatenated text content (recursive) |
-| `node.is_element()` | 1 for elements, 0 for text nodes |
-| `node.close()` | Release node resources early; otherwise scope exit closes it |
+| Function                   | Description                                                  |
+| -------------------------- | ------------------------------------------------------------ |
+| `xml.parse(s)`             | Parse an XML string into a `Node` tree                       |
+| `node.to_string()`         | Serialize a node tree back to XML                            |
+| `node.get_tag()`           | Get the tag name of an element                               |
+| `node.get_attribute(name)` | Get an attribute value (empty if missing)                    |
+| `node.children_count()`    | Number of child nodes                                        |
+| `node.get_child(i)`        | Get child node by index                                      |
+| `node.get_text()`          | Concatenated text content (recursive)                        |
+| `node.is_element()`        | 1 for elements, 0 for text nodes                             |
+| `node.close()`             | Release node resources early; otherwise scope exit closes it |
 
 ## Example
 

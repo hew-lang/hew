@@ -1,4 +1,4 @@
-# std::time::cron
+# std.time.cron
 
 The cron expression scheduling module within Hew's `hew-std` crate
 

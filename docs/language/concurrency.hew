@@ -1,81 +1,34 @@
 //! # Structured concurrency
 //!
-//! `scope` owns child tasks. A `fork` starts work, and scope exit waits for all
-//! children. `await task` joins a named value-producing fork. If one child
-//! traps, sibling structured tasks are cancelled and the trap escapes the
-//! scope; lambda actors are independent and are not sibling-cancelled.
+//! Ordinary calls wait. `fork` creates a `Task<T>` and `await task` yields `T`.
+//! Awaiting a `Vec<Task<T>>` consumes it and yields `Vec<T>` in vector order.
+//! If `T` is a Result, each application error remains a value to handle.
+//!
+//! A scope owns its child tasks and produces a value after their cleanup. A plain
+//! call in a scope is still a call; it does not implicitly start a task.
 //!
 //! ```hew
-//! fn left_half() -> i64 { 20 }
-//! fn right_half() -> i64 { 22 }
-//!
-//! actor Totals {
-//!     receive fn combined() -> i64 {
-//!         var total = 0;
-//!         scope {
-//!             let left = fork left_half();
-//!             let right = fork right_half();
-//!             let a = await left;
-//!             let b = await right;
-//!             total = a + b;
-//!         }
-//!         total
-//!     }
-//! }
-//!
+//! fn left() -> i64 { 20 }
+//! fn right() -> i64 { 22 }
 //! fn main() {
-//!     let totals = spawn Totals;
-//!     match totals.combined() {
-//!         .Ok(value) => println(f"{value}"),
-//!         .Err(_) => println("ask failed"),
-//!     }
+//!     let total = scope {
+//!         let a = fork left();
+//!         let b = fork right();
+//!         (await a) + (await b)
+//!     };
+//!     println(total);
 //! }
 //! ```
 //!
-//! Two placement rules govern where this form is legal today.
+//! `await fork [left(), right()]` collects a vector; the parenthesized batch
+//! form collects a tuple. Each batch expression first creates a task.
 //!
-//! First, `scope { fork ... }` suspends, and every suspension point needs an
-//! execution context to park. Every Hew function may suspend and none is
-//! marked as suspending, so the rule is about the context a call runs on, not
-//! about the function it sits in: an actor handler and a task body carry a
-//! coroutine context, and a free function inherits its caller's. `fn main`
-//! gains a context whose park and unpark are the main thread's parker; until
-//! it does, a `fork` written directly in `fn main`, or in a free function
-//! `main` calls, is refused with `E_LIMIT_MAIN_CONTEXT` rather than parked on
-//! a contextless wait. Host the loop in an actor and park `main` on its ask,
-//! or use batch `fork` for a fan-out from `main`.
+//! `scope within duration { ... } handle failure { ... }` bounds structured work.
+//! A fault or cancellation settles children and cleanup before recovery; an
+//! ordinary Err does not trigger it. Parent cancellation continues outward.
+//! Cancellation is cooperative and cannot skip resource cleanup.
 //!
-//! Second, a statement in a `scope` body that is a bare call is read as a task
-//! spawn, not as an ordinary call. `println(f"{a},{b}")` inside the scope is
-//! therefore rejected as a spawn of `println` rather than executed — carry the
-//! result out through a `var` assigned inside the scope and print after the
-//! scope joins, as above.
-//!
-//! A value-producing `fork` currently takes no arguments; an argument-bearing
-//! `let name = fork f(args)` requires a unit-returning `f`. Value propagation out
-//! of argument-bearing spawns is fail-closed rather than silently dropped.
-//!
-//! Batch `fork` is the fan-out form for waiting on every branch. It issues
-//! every branch concurrently, waits for all replies, and binds a tuple in
-//! source order. Two branches have result shape `(R0, R1)`, not a list, map,
-//! or nested `Result`:
-//!
-//! ```hew
-//! actor Doubler {
-//!     receive fn compute(value: i64) -> i64 { value * 2 }
-//! }
-//!
-//! fn main() {
-//!     let a = spawn Doubler;
-//!     let b = spawn Doubler;
-//!     let (first, second) = await fork (a.compute(10), b.compute(11));
-//!     assert_eq(first, 20);
-//!     assert_eq(second, 22);
-//!     println(f"{first},{second}");
-//! }
-//! ```
-//!
-//! `scope` and batch `fork` are distinct: scope manages task lifetime, while
-//! `await fork (...)` collects ordered results. Cancellation is cooperative
-//! at suspension points and is part of normal scope teardown, not an
-//! exception to the model.
+//! `race` chooses the first completion, including an ordinary Err, and cleans up
+//! losers. `select` uses `value from source => ...` and `after duration => ...`.
+//! Task, timer and channel-receive selection are on the native path. Actor-call
+//! registration and stream selection remain pending at this checkpoint. Actor streams use ordinary `for`, without await.

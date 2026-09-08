@@ -8,7 +8,7 @@
 //!
 //! Intentionally tiny — Unit states only, no entry/exit blocks, no
 //! transition payloads — so it exercises only the substrate path under
-//! test without depending on MIR-layer machinery (struct-state ctors,
+//! test without depending on MIR-layer machinery (record-state ctors,
 //! `event.handle` field access, `state` wildcard transitions) that is
 //! out of scope here.
 

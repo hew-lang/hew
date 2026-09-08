@@ -33,5 +33,5 @@ fn main() {
     println(f"w1 -> {a}");
     println(f"w2 -> {b}");
 }
-// supervisor_stop is not in the sandbox profile allowlist; the pool
-// winds down with the program here.
+// The pool winds down with the program here. Explicit supervisor close/closed
+// forms are decided but their implementation is pending.

@@ -2,7 +2,8 @@
 //!
 //! Bounded channels for passing typed messages between producers and a
 //! single consumer. `Sender<T>` is cloneable for multi-producer use;
-//! `Receiver<T>` drains the channel.
+//! `Receiver<T>` drains the channel. Calls wait directly; use `fork` to run
+//! work concurrently and `await` only on the resulting task.
 //!
 //! Both `recv()` and `try_recv()` return `Option<T>`, where `None`
 //! indicates the channel is closed (all senders dropped) or empty
@@ -49,7 +50,7 @@
 /// An opaque sender handle.
 ///
 /// Created by `channel.new(capacity)`. Can be cloned for multi-producer
-/// use. Must be closed with `close()` when no longer needed.
+/// use. Scope exit releases the handle; `close()` releases it early.
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
@@ -59,8 +60,8 @@ pub type Sender {
 
 /// An opaque receiver handle.
 ///
-/// Created by `channel.new(capacity)`. Must be closed with `close()`
-/// when no longer needed.
+/// Created by `channel.new(capacity)`. Scope exit releases the handle;
+/// `close()` releases it early.
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.

@@ -1,5 +1,5 @@
 import std.encoding.utf8;
-// MIR-corpus fixture: typed byte stream pipe — awaited send/recv + close.
+// MIR-corpus fixture: typed byte stream pipe — ordinary send/recv + close.
 //
 // Pins the suspending sink write (lowered as a Suspend carrier; the
 // `hew_sink_write_bytes` symbol materialises at codegen), the

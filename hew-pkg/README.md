@@ -17,7 +17,7 @@ hew build
 hew run
 
 # Add a dependency
-hew add std::net::http --version "^1.0"
+hew add std.net.http --version "^1.0"
 
 # Install dependencies
 hew install
@@ -104,8 +104,8 @@ keywords = ["hew", "web"]
 repository = "https://github.com/user/project"
 
 [dependencies]
-"std::net::http" = "^1.0"
-"ecosystem::db::postgres" = "~2.0"
+"std.net.http" = "^1.0"
+"ecosystem.db.postgres" = "~2.0"
 ```
 
 The `edition` field selects the Hew language edition the package's sources

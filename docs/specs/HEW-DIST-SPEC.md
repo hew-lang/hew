@@ -1,5 +1,13 @@
 # Hew Distributed Runtime Specification
 
+> Actor-call surface: ordinary calls wait for completion; `fork` creates a task
+> and `await` joins it. Protocol operations below do not introduce a public
+> send keyword or actor-specific await. See [the actor guide](../hew-language-guide.md#actors)
+> for completion, mailbox and admission views, including the pending typed
+> request-recovery contract. Protocol descriptions are not native cutover
+> acceptance evidence.
+
+
 **Status:** normative for v0.6.0-rc1
 **Protocol epoch:** 2
 **Targets:** native only
@@ -261,7 +269,7 @@ connection MUST be rejected.
 
 `RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
 creates a request identifier, sends the typed request, suspends the caller, and
-resumes with either the typed reply or `AskError`.
+resumes with the completion-call `Result` and its `ActorError` envelope.
 
 Pending asks are owned by one reply table. Connection loss, SWIM death, local
 shutdown, cancellation, timeout, version mismatch, stale identity, and explicit

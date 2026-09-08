@@ -1,14 +1,6 @@
-//! Worker-occupancy proof for non-blocking `await conn.read()` (NEW-1).
-//!
-//! N readers each connect on their own socket and `await` a read. Run with
-//! `HEW_WORKERS=1`: all N suspend concurrently on the single worker (each freed
-//! while it waits, resumed by the reactor when its socket is readable), so N
-//! concurrent awaits occupy fewer than N workers. A blocking `read` would strand
-//! the lone worker on reader-0 forever and deadlock the rest.
-//!
-//! Each reader binds its OWN payload — the value-routing edge: the reactor must
-//! deposit each socket's bytes into the right parked continuation, not cross
-//! them. A correct run prints `reader-i-got: payload-i` for every i.
+//! Multiple TCP readers using ordinary `conn.read()` calls.
+//! Each reader must run concurrently with the server that supplies its data;
+//! completion calls in the launch loop need review before running this demo.
 
 import std.encoding.utf8;
 

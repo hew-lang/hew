@@ -1,15 +1,6 @@
-//! Non-blocking `await conn.read()` (NEW-1): the positive ARC.
-//!
-//! A `Reader` actor connects to a server and `await`s a read. The await SUSPENDS
-//! the handler's continuation (freeing the scheduler worker that was running it);
-//! when the reactor reports the socket readable it reads the bytes, deposits
-//! them, and RESUMES the handler with the value bound. Running with
-//! `HEW_WORKERS=1` is the worker-freeing proof: a single worker suspends the
-//! reader, serves the accept/write on the main thread, and the reactor resumes
-//! the reader — a blocking `read` would strand the lone worker.
-//!
-//! The `Connection` is a handler LOCAL (from `net.connect`), not actor state: an
-//! opaque handle in actor state is rejected by the supervisor-restart clone gate.
+//! TCP read from an actor using the ordinary `conn.read()` call.
+//! Migration needed: main waits for the reader before accepting its connection.
+//! Start the reader concurrently before accepting and serving the connection.
 
 import std.encoding.utf8;
 
@@ -19,7 +10,7 @@ actor Reader {
     let port: string,
     receive fn go(unused: i64) {
 
-        // Give main a moment to start listening, then connect + await a read.
+        // Give main a moment to start listening, then connect and read.
         sleep(200ms);
         let conn = match net.connect(f"127.0.0.1:{port}") {
             .Ok(conn) => conn,

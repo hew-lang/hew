@@ -1,13 +1,6 @@
-// W6.010 — multiple sequential `await`s in a single handler body.
-//
-// A handler may suspend more than once: `Coordinator.two` awaits twice,
-// `three` awaits three times, and `loop_sum` awaits inside a `for` loop. Each
-// `await` parks the continuation and resumes on its own reply; the coroutine
-// epilogue's single fallthrough `coro.end` lets every yield-back-to-executor
-// return cleanly, so the second-and-later await resumes at the right point
-// instead of running off into undefined code. With HEW_WORKERS=1 all of these
-// funnel through one worker by suspension — a lost wake or mis-resumed second
-// await would hang or crash; a bounded run with the correct totals is the proof.
+// Sequential actor completion calls, including calls inside a loop.
+// Each call returns its own Result before the next call begins.
+
 actor Worker {
     let factor: i64,
     receive fn compute(n: i64) -> i64 {
@@ -19,7 +12,7 @@ actor Coordinator {
     let worker: LocalPid<Worker>,
     let rounds: i64,
 
-    // Two sequential awaits: 7*6 + 7*6 = 84.
+    // Two sequential calls: 7*6 + 7*6 = 84.
     receive fn two(n: i64) -> i64 {
         let a = worker.compute(n);
         let b = worker.compute(n);
@@ -32,7 +25,7 @@ actor Coordinator {
         }
     }
 
-    // Three sequential awaits: 42 * 3 = 126.
+    // Three sequential calls: 42 * 3 = 126.
     receive fn three(n: i64) -> i64 {
         let a = worker.compute(n);
         let b = worker.compute(n);
@@ -49,7 +42,7 @@ actor Coordinator {
         }
     }
 
-    // An await inside a loop: `rounds` (4) awaits accumulate 42 each -> 168.
+    // A call inside a loop: `rounds` (4) calls accumulate 42 each -> 168.
     receive fn loop_sum(n: i64) -> i64 {
         var total: i64 = 0;
         for i in 0 .. rounds {

@@ -1,5 +1,13 @@
 # Runtime ownership table
 
+> Historical design reference. The revision-specific tables and obligations
+> below describe the earlier ladder program, not current symbol ownership or
+> language support. Use [the current architecture](../diagrams.md),
+> [the language guide](../hew-language-guide.md) and the active compiler
+> contracts in `hew-sir` and `hew-mir` when making changes. Do not restore
+> deleted runtime APIs or source spellings from this inventory.
+
+
 Status: generated inventory over main `54e8dde2c` (2026-09-01), revision 6 (revision 5 with the reconciliation pass applied: sections 3 and 8 below, plus the `fork` spelling in section 2a. No row, count or generator output moves).
 
 ## When these documents disagree

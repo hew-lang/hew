@@ -43,7 +43,8 @@ item.
 **[REJECTED]**
 
 Hew cancellation is **scope-structural only**: a `scope {}` block cancels its
-children when any child fails or when the scope exits. There is no
+children on a structured fault or cancellation. Normal scope exit waits for
+child completion; an ordinary Err remains a value. There is no
 user-visible `CancellationToken` type, no `Token.cancel()`, and no
 `#[noncancellable]` attribute — the attribute is deleted from the parser
 rather than left parsing as a mark that marks nothing, and an unknown
@@ -61,8 +62,9 @@ computation gives it its own scope.
 
 `close(actor)` and `closed(actor)` are normative (HEW-SPEC-2026 §4.10).
 The "awaited read acts as a barrier" rule that accompanied them in earlier
-drafts is not: it parses today but lacks end-to-end implementation and has
-not been audited against the actor mailbox protocol's failure modes. Track
+drafts is historical, not a separate current API. Ordinary actor calls now
+wait for handler completion; that does not promise durability or certainty
+after a transport failure. Track
 under #1236.
 
 ### 1.4 Deferred `select{}` arm: stream-next
@@ -327,8 +329,8 @@ surface.
 
 ## 5. Declarative macros (adopted design, U386)
 
-Adopted 2026-09-07 as the v1 design; implemented as its own lane after the
-native cutover PR is open. The full text with examples is
+Adopted 2026-09-07 as the v1 design; implementation is scheduled after the
+native cutover PR is open and the surface lanes are integrated. The full text with examples is
 `hew-orchestration/plans/macros-v1.md`.
 
 - `macro name { (pattern) => expr { .. }; (pattern) => items { .. }; }`

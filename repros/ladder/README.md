@@ -1,5 +1,10 @@
 # Ladder probes
 
+Historical record of the compiler revisions named below. The outcomes and
+`[current]` labels refer to those revisions, not the final compiler core.
+Use the current language contract when deciding whether a probe needs migration;
+an old rejection is not a permanent language restriction.
+
 The `.hew` programs `docs/internal/ir-ladder.md` cites for its `[current]`
 claims: every transcript that document quotes was produced by running one of
 these. They lived in `.tmp/` while the ladder was being written, which made

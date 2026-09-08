@@ -1,11 +1,6 @@
-// MIR-corpus fixture: string-element pipe send.
-//
-// A `sink.send("hi")` over a `Sink<string>` pipe inside a context-carrying
-// caller (an actor handler) lowers to the backpressure-aware suspend ramp
-// (`suspend [stream_send]`), the same path `Sink<bytes>` uses — every
-// describable element suspends now, not just bytes. Even a NON-awaited send
-// suspends in an execution-context caller (it must not block the scheduler
-// thread); a context-free caller (`fn main`) keeps the blocking call.
+// Send a string through a pipe from an actor handler.
+// The plain send call can suspend while the pipe is full.
+
 import std.stream;
 
 actor Echo {

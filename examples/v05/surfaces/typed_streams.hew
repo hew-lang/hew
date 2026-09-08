@@ -1,24 +1,7 @@
-//! Status: runnable (suspending typed streams over await; owned-handle actor state)
-//! Description: Typed streams — a `Stream<bytes>` half owned in actor state, drained with `await stream.recv()`.
-//!
-//! A `Stream<bytes>` half MOVES INTO a consumer actor's state and the actor
-//! drains it with the suspending `await stream.recv()` terminator: each recv
-//! suspends until a frame is ready and yields the next `Option<bytes>`
-//! (`Some(frame)` until EOF, then `None`). The actor's teardown closes the
-//! held half exactly once — the compiler proves the handle is freed once
-//! (`hew_stream_close`), never double-freed.
-//!
-//! The `Sink<bytes>` half stays a LOCAL in `main`, which sends frames (each
-//! `sink.send(item)` writes a frame, suspending on a full ring —
-//! backpressure-aware for a context-carrying caller) and then `close()`s it to
-//! deliver EOF to the parked consumer. Closing a half you own as a LOCAL is how
-//! you signal EOF; a half held in actor state is closed only by the actor's
-//! teardown (explicitly closing a state-held handle is refused fail-closed,
-//! because the teardown drop already owns that close).
-//!
-//! The canonical method names are `recv()` / `send()` (not `next()` / `write()`).
-//! Frames are built from text with the public `string.to_bytes()` surface — no
-//! raw extern, no `unsafe`.
+//! A consumer actor drains a `Stream<bytes>` with `input.recv()`.
+//! The producer calls `sink.send(item)` and closes the sink to signal EOF.
+//! Empty frames are values; only `None` marks EOF. Run producer and consumer
+//! concurrently when either can wait for the other.
 
 import std.encoding.utf8;
 

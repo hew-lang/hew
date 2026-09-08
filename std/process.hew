@@ -15,7 +15,7 @@
 //!     let shell_output = process.run("echo hello").expect("run succeeds");
 //!     println(shell_output.stdout);
 //!
-//!     let args: Vec<string> = Vec.new();
+//!     var args: Vec<string> = Vec.new();
 //!     args.push("<%s>|<%s>");
 //!     args.push("hello world");
 //!     args.push("hew");

@@ -1,10 +1,6 @@
-//! Retained future semantic fixture for a closure that awaits a captured
-//! Connection twice. Once function types carry suspension metadata, this will
-//! exercise a matching closure driver across both parks: the first read should
-//! bind the server payload and the second should resume on EOF with an empty
-//! string. Today closure invocation sites cannot select that driver safely, so
-//! MIR deliberately rejects this fixture with `suspension inside a closure`
-//! before code generation.
+//! Closure probe with two reads from a captured connection.
+//! Each ordinary read waits for data or EOF; the closure must preserve its
+//! captured handle across suspension. This is a probe, not acceptance evidence.
 
 import std.encoding.utf8;
 

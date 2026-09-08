@@ -1,6 +1,6 @@
 // TCP three-way handshake — Mealy machine (outputs depend on state × event).
 //
-// Transition bodies emit a protocol event and carry the next state struct.
+// Transition bodies emit a protocol event and carry the next state record.
 // The example demonstrates:
 //   - States with payload fields (e.g. SynReceived carries the remote port)
 //   - Emit expressions in transition bodies (Mealy outputs)

@@ -7,7 +7,7 @@ Shipped IDE/LSP features for Hew source files include:
 - Real-time diagnostics (parse errors, type errors)
 - Completions
 - Hover information
-- Go-to-definition, including struct field accesses at use sites
+- Go-to-definition, including record field accesses at use sites
 - Find references
 - Rename (with prepare support)
 - Document symbols

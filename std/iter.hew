@@ -21,9 +21,9 @@
 //! ```
 //!
 //! `Iterator.next` takes a mutable receiver (`fn next(var self) -> Option<Self.Item>`).
-//! Call sites write the returned `Self` state back into the caller binding; the
-//! for-loop desugar that will introduce and drive that binding lands in a later
-//! iteration-foundation stage.
+//! A manually driven iterator needs a `var` binding; a `for` loop advances it
+//! automatically. Adapters and terminal helpers consume their input iterator.
+//! After passing an iterator to an adapter, use the returned adapter to continue.
 //!
 //! ## Lazy combinator surface
 //!
@@ -132,7 +132,7 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
 ///
 /// `A` is the inner `Item` type. It is carried as a direct type parameter
 /// (rather than left projection-only in the impl bound) so a concrete site
-/// — `Take<Countdown, i64>` — pins the item type in the struct args, which
+/// — `Take<Countdown, i64>` — pins the item type in the record arguments, which
 /// is what the cross-module monomorphisation collector keys on. Map/Filter
 /// carry their item type the same way; without it a projection-only `A`
 /// stays free and terminals (`count`/`collect`/`fold`) fail to monomorphise
@@ -394,10 +394,10 @@ pub fn find<I, A>(consume it: I, pred: fn(A) -> bool) -> Option<A> where I: Iter
 
 // VecIter method surface ---------------------------------------------------
 //
-// These are deliberately thin wrappers. `std::iter` remains the sole place
+// These are deliberately thin wrappers. `std.iter` remains the sole place
 // that defines adapter state machines and terminal semantics; spelling an
 // operation as `cursor.map(f)` selects exactly the same implementation as
-// `iter::map(cursor, f)`.
+// `iter.map(cursor, f)`.
 impl<T> VecIter<T> {
     pub fn map<U>(consume self, consume f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
         map(self, f)

@@ -8,7 +8,7 @@
 // In Rust you'd use governor or tower::limit (generic middleware layers).
 // In Hew the rate limiter is an actor — requests are serialised through
 // its mailbox, so there are no races, no mutexes, and no channels to
-// wire up. Callers simply `await limiter.acquire()`.
+// wire up. Callers simply `limiter.acquire()`.
 //
 // Pattern: Ask/Reply — the caller blocks until the limiter replies with
 // a boolean (allowed or rejected). This is back-pressure by design.

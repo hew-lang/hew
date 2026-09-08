@@ -17,10 +17,10 @@ Every compiled Hew program links against this runtime, which provides:
 
 ```sh
 # Native static library
-cargo build -p hew-runtime
+make runtime
 
 # WebAssembly (for browser/WASI targets)
-cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+make wasm-runtime-debug
 ```
 
 ## C ABI
@@ -29,28 +29,30 @@ All public functions use `#[no_mangle] pub extern "C"` calling convention so the
 
 ## Distributed tracing
 
-Hew programs automatically propagate [W3C Trace Context](https://www.w3.org/TR/trace-context/)-compatible trace IDs across actor message boundaries. The runtime records span begin/end events in a bounded ring buffer.
+The runtime contains trace-context storage, actor-dispatch hooks and a bounded
+span buffer. These facilities do not establish complete tracing through the
+final compiler path. Core trace/telemetry integration remains incomplete; no
+new public tracing API or automatic application-wide propagation is promised.
 
 ### OpenTelemetry OTLP exporter
 
-The OTel exporter sends trace spans to any OTLP/HTTP-compatible collector (Jaeger, Grafana Tempo, OpenTelemetry Collector, etc.) with no changes to your Hew source code.
+The optional OTel exporter sends recorded runtime spans to an OTLP/HTTP
+collector. Export configuration does not fill missing compiler instrumentation.
 
 #### Enabling
 
-Add the `otel` feature when building the runtime:
-
-```sh
-cargo build -p hew-runtime --features otel
-```
+The runtime must be built with its optional `otel` feature. The default
+`make runtime` target does not enable it; the environment variables below
+configure an already-enabled exporter.
 
 Set environment variables before running your Hew program:
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `HEW_OTEL_ENDPOINT` | **yes** | *(exporter disabled)* | Base URL of the OTLP/HTTP collector, e.g. `http://localhost:4318` |
-| `HEW_SERVICE_NAME` | no | binary name | `service.name` resource attribute |
-| `HEW_OTEL_INTERVAL_SECS` | no | `5` | Flush interval in seconds |
-| `HEW_OTEL_BATCH_SIZE` | no | `512` | Maximum spans per flush |
+| Variable                 | Required | Default               | Description                                                       |
+| ------------------------ | -------- | --------------------- | ----------------------------------------------------------------- |
+| `HEW_OTEL_ENDPOINT`      | **yes**  | _(exporter disabled)_ | Base URL of the OTLP/HTTP collector, e.g. `http://localhost:4318` |
+| `HEW_SERVICE_NAME`       | no       | binary name           | `service.name` resource attribute                                 |
+| `HEW_OTEL_INTERVAL_SECS` | no       | `5`                   | Flush interval in seconds                                         |
+| `HEW_OTEL_BATCH_SIZE`    | no       | `512`                 | Maximum spans per flush                                           |
 
 #### Connecting to Jaeger
 
@@ -82,7 +84,7 @@ HEW_SERVICE_NAME=my-service \
 - Uses a dedicated OS thread (`hew-otel-exporter`) — same pattern as the built-in profiler.
 - Sends OTLP/HTTP JSON (`Content-Type: application/json`, path `/v1/traces`).
 - Uses [`ureq`](https://crates.io/crates/ureq) for synchronous HTTP — **no `tokio` or async runtime**.
-- Zero overhead when `HEW_OTEL_ENDPOINT` is unset: the exporter thread is never spawned.
+- When `HEW_OTEL_ENDPOINT` is unset, the exporter thread is not spawned.
 - Each span carries `hew.actor_id` and `hew.msg_type` attributes for per-actor analysis.
 
 ## Part of the Hew compiler

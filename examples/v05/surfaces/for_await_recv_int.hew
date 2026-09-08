@@ -1,4 +1,4 @@
-//! Status: runnable (v0.5 for-await over Receiver<i64>)
+//! Status: runnable (v0.5 ordinary for over Receiver<i64>)
 //! Description: Drains an integer channel receiver with `for`.
 
 import std.channel.channel;

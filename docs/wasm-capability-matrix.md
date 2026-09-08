@@ -1,5 +1,12 @@
 # Hew WASM Capability Matrix
 
+> Native cutover note: this is a target-capability reference, not current
+> native/sandbox parity evidence. The native actor-call and ownership changes
+> still need sandbox integration. Source syntax follows the
+> [language guide](hew-language-guide.md); older runtime dispositions below
+> do not authorize retired source forms.
+
+
 `wasm-capability-manifest.toml` is the **sole authority** for WASM feature
 identity and policy. This document is its human-readable projection: the
 feature-policy and current WASI summary tables below are generated and checked byte-for-byte by
@@ -88,7 +95,7 @@ The **Checker disposition** column documents what the type checker emits when
 | `actor-ask-reply` | Actor ask/reply (`reply_channel_wasm`) | Actor ask/reply (`reply_channel_wasm`) | Pass | — | Implemented | — |
 | `wasi-sockets` | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | WASM-TODO (not checker-gated) | — | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO(wasi-sockets): |
 | `select` | `select {}` (any timeout expression, any arm count) | `select {}` (any timeout expression, any arm count) | Pass | — | Implemented | — |
-| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | WASM-TODO(supervision): |
+| `supervision-trees` | Supervision trees (supervisor declarations and child lifecycle operations) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | WASM-TODO(supervision): |
 | `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | WASM-TODO(link-monitor): |
 | `structured-concurrency` | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join | WASM-TODO(scope): |
 | `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | WASM-TODO(scope): |
@@ -194,7 +201,7 @@ would otherwise end in a trap or linker failure:
   undefined symbol.  Rejecting at compile time gives a clear diagnostic.
   - `WASM-TODO(streams):` implement I/O stream adapters over WASI fd/socket APIs.
 
-- **`std::net::http::http_client` / `std::net::smtp`**: these stdlib wrappers
+- **`std.net.http.http_client` / `std.net.smtp`**: these stdlib wrappers
   are still native-only today (`WASM-TODO` in the module sources).  Letting
   them through type checking on wasm32 only defers the failure to link time.
   The checker now rejects both the module helper calls and their handle methods
@@ -203,19 +210,19 @@ would otherwise end in a trap or linker failure:
   Hew does not currently treat those low-level capabilities as a supported,
   portable stdlib networking surface.
 
-- **HTTP server**: The `std::net::http` server surface is backed by native
+- **HTTP server**: The `std.net.http` server surface is backed by native
   sockets and `tiny_http`. Its runtime symbols are unavailable on wasm32, so
   `http.listen` plus `http.Server` / `http.Request` methods are rejected at
   compile time instead of failing later in codegen or at link time.
   - `WASM-TODO(http-server):` design a cooperative WASI-hosted HTTP server surface.
 
-- **TCP networking**: The `std::net` listener/connection runtime lives in the
+- **TCP networking**: The `std.net` listener/connection runtime lives in the
   native transport module, which is gated out on wasm32. Rejecting `net.*`
   constructors and `net.Listener` / `net.Connection` methods keeps the checker
   fail-closed instead of leaking to undefined-symbol linker failures.
   - `WASM-TODO(tcp-networking):` expose socket-backed listener/connection adapters over WASI.
 
-- **Process execution**: The `std::process` module depends on the host OS
+- **Process execution**: The `std.process` module depends on the host OS
   process model, and its runtime module is not compiled for wasm32. Rejecting
   `process.*` helpers and `process.Child` methods at check time gives a
   feature-specific diagnostic rather than a native-symbol failure downstream.
@@ -231,7 +238,7 @@ would otherwise end in a trap or linker failure:
   - `WASM-TODO(distributed):` define a wasm peer transport and identity/session authority
     before exposing any distributed surface.
 
-- **`std::crypto::crypto.random_bytes`**: Secure randomness is backed by
+- **`std.crypto.crypto.random_bytes`**: Secure randomness is backed by
   `ring::SystemRandom`, which is native-only and absent from the wasm32 link set.
   The checker rejects `crypto.random_bytes` and its fallible twin
   `crypto.random_bytes` on wasm32 so key material generation fails closed
@@ -305,8 +312,8 @@ reject_wasm_feature   → Severity::Error    → self.errors
 
 Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
 `WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI
-socket capability only. `std::net::tls`, `std::net::quic`, `std::net::dns`,
-`std::os`, and `std::crypto::crypto.random_bytes` are all checker-gated.
+socket capability only. `std.net.tls`, `std.net.quic`, `std.net.dns`,
+`std.os`, and `std.crypto.crypto.random_bytes` are all checker-gated.
 
 ---
 
@@ -327,7 +334,7 @@ These gaps are explicitly deferred and tracked here:
 | TLS client parity | wasm-capable TLS-over-sockets design plus checker/runtime classification | `WASM-TODO(tls):` |
 | QUIC parity | wasm-capable UDP/QUIC transport plus feature-gated runtime support | `WASM-TODO(quic):` |
 | DNS resolver parity | WASI-backed resolver shim; current native OS resolver is not compiled for wasm32 | `WASM-TODO(dns):` |
-| `std::os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO(os):` |
+| `std.os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO(os):` |
 | `crypto.random_bytes` parity | Secure wasm32 entropy source and explicit capability classification | `WASM-TODO(crypto-random):` |
 | Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO(process-execution):` |
 | Key-backed distributed identity, remote-actor messaging, and lifecycle parity | wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities | `WASM-TODO(distributed):` |

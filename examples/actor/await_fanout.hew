@@ -1,14 +1,6 @@
-// W6.010 — worker-occupancy + multi-await re-arm.
-//
-// `Hub.relay` awaits `Worker.work` once per dispatch. main drives several relay
-// dispatches; each await suspends the hub's continuation (freeing the worker)
-// until the reply lands, and the hub's continuation slot RE-ARMS after each
-// completion so the next dispatch parks a fresh continuation. Run with
-// HEW_WORKERS=1: every await funnels through one OS worker by suspension, not
-// one-blocked-thread-per-await — a blocking ask would deadlock the lone worker.
-//
-// Five dispatches sum the relayed values:
-// (0+100)+(1+100)+(2+100)+(3+100)+(4+100) = 10 + 500 = 510.
+// Repeated actor completion calls from a hub. Each call waits for its reply
+// and can suspend the caller so other work can run.
+
 actor Worker {
     let base: i64,
     receive fn work(n: i64) -> i64 {

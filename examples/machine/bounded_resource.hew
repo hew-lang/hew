@@ -11,8 +11,8 @@
 //   * inline `<T: Resource>` bound on a machine declaration
 //   * use-site type annotation `Bounded<File>` (Path 2 — annotation
 //     resolution)
-//   * struct-state brace-init at `Holding { handle: f }` typed
-//     against the machine self-type (Path 1 — struct-state init)
+//   * record-state brace-init at `Holding { handle: f }` typed
+//     against the machine self-type (Path 1 — record-state init)
 //
 // Per-substitution machine layout (per-monomorphisation `MachineLayout`
 // entries under mangled names) is future work; this fixture is the

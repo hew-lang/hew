@@ -1,5 +1,12 @@
 # The ladder, worked: source → SIR → MIR → LLVM for the shapes that keep failing
 
+> Historical design reference. The revision-specific tables and obligations
+> below describe the earlier ladder program, not current symbol ownership or
+> language support. Use [the current architecture](../diagrams.md),
+> [the language guide](../hew-language-guide.md) and the active compiler
+> contracts in `hew-sir` and `hew-mir` when making changes. Do not restore
+> deleted runtime APIs or source spellings from this inventory.
+
 Companion to `ir-ladder.md` (`DOC-LADDER`). That document states the rules;
 this one shows the full flow for the shapes that produced double frees,
 leaks, and silent wrong answers on the legacy lowerer during the v0.6.0

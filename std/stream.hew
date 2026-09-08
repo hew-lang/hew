@@ -3,17 +3,18 @@
 //! Streams and sinks are language intrinsics for passing typed data between
 //! producers and consumers, including across actor boundaries.
 //!
-//! Contract slice frozen here:
+//! Stream behaviour:
 //! - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class foundation
 //! - `Stream<string>` / `Sink<string>` are convenience text ABI wrappers
 //! - EOF means end-of-stream only; zero-length `bytes` and empty `string`
 //!   values are valid items
 //! - `sink.close()` or drop yields graceful EOF; `stream.close()` or drop is a
 //!   local cancel/discard of unread items
-//! - Core `.recv()` / `.write()` operations are blocking and backpressured; no
-//!   nonblocking semantics are promised here
-//! - Stage-1 errors cover constructor/open failures only; transport/runtime
-//!   read/write errors remain wrapper-specific and out of scope
+//! - Call `input.recv()` and `sink.send(value)` directly. Pipe operations can
+//!   suspend while waiting for data or capacity; file wrappers can block.
+//!   `await` is reserved for tasks created by `fork`.
+//! - Constructors report errors; read/write error handling depends on the
+//!   wrapper. Check each operation rather than assuming a shared error type.
 //!
 //! Current stdlib scope:
 //! - `bytes_pipe()` is the canonical in-memory constructor
@@ -30,8 +31,8 @@
 //! fn main() {
 //!     let (sink, input) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 //!
-//!     sink.write("hello");
-//!     sink.write("world");
+//!     sink.send("hello");
+//!     sink.send("world");
 //!     sink.close();  // optional — would auto-close on drop
 //!
 //!     for item in input {
@@ -58,9 +59,8 @@ pub type Sink<T> {
 
 // ── Sink<T> methods ───────────────────────────────────────────────────
 //
-// `.write(value)` dispatches to `hew_sink_write_string` for string
-// or `hew_sink_write_bytes` for bytes.  `.flush()` and `.close()`
-// are element-type-independent.
+// `.send(value)` dispatches to the element-specific sink write entry.
+// `.close()` releases the sink; no public sink flush method is registered.
 
 // ── Constructors ──────────────────────────────────────────────────────
 /// Create a bounded in-memory string pipe with the given capacity.
@@ -107,10 +107,7 @@ pub fn bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), string>
 
 /// Open a file as a readable `Stream<string>`.
 ///
-/// This preserves `from_file`'s runtime behaviour while returning `fs.IoError`
-/// instead of a raw OS message string. Import `std.fs` when matching on the
-/// returned error value so you can use the existing unqualified
-/// `IoError.Variant(...)` constructor/pattern style.
+/// Returns `fs.IoError` on open failure.
 pub fn from_file(path: string) -> Result<Stream<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_read(path);
@@ -129,10 +126,7 @@ pub fn from_file(path: string) -> Result<Stream<string>, fs.IoError> {
 
 /// Open a file as a writable `Sink<string>`.
 ///
-/// This preserves `to_file`'s runtime behaviour while returning `fs.IoError`
-/// instead of a raw OS message string. Import `std.fs` when matching on the
-/// returned error value so you can use the existing unqualified
-/// `IoError.Variant(...)` constructor/pattern style.
+/// Returns `fs.IoError` on open failure.
 pub fn to_file(path: string) -> Result<Sink<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_write(path);

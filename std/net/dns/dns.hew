@@ -8,12 +8,18 @@
 //! import std.net.dns;
 //!
 //! fn main() {
-//!     let addrs = dns.resolve("localhost");
-//!     for i in 0..addrs.len() {
-//!         println(addrs[i]);
+//!     let addrs = dns.resolve("localhost") handle error {
+//!         println(f"operation failed: {error}");
+//!         return;
+//!     };
+//!     for addr in addrs {
+//!         println(addr);
 //!     }
 //!
-//!     let first = dns.lookup_host("localhost");
+//!     let first = dns.lookup_host("localhost") handle error {
+//!         println(f"operation failed: {error}");
+//!         return;
+//!     };
 //!     println(first);
 //! }
 //! ```
@@ -72,6 +78,9 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
 ///
 /// fn main() {
 ///     let addrs = dns.resolve_timed("slow.example.com", 500);
+///     for addr in addrs {
+///         println(addr);
+///     }
 /// }
 /// ```
 pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {

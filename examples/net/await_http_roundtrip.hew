@@ -1,17 +1,6 @@
-//! Status: runnable (NEW-2 async HTTP/1.1 over `await`)
-//! Description: An await-suspended HTTP/1.1 server and client round-trip on one worker.
-//!
-//! The `Server` actor creates a listener, `await`s a connection (the NEW-2
-//! `SuspendingAccept` carrier), then `await`s the request bytes (the NEW-1
-//! `SuspendingRead` carrier) until the request is fully buffered, and replies.
-//! The `Client` actor connects, writes a GET, and `await`s the response to
-//! close. Run with `HEW_WORKERS=1` for the worker-freeing proof: a single
-//! worker serves AND fetches only because every `await` suspends its handler
-//! (a blocking accept/read would strand the lone worker).
-//!
-//! The `Listener`/`Connection` handles are handler LOCALs, never actor state —
-//! an opaque handle in actor state is rejected by the supervisor-restart clone
-//! gate.
+//! HTTP/1.1 client and server using ordinary accept and read calls.
+//! Client and server must run concurrently; completion-call launch ordering
+//! still needs review before this example is treated as runnable.
 
 import std.encoding.utf8;
 

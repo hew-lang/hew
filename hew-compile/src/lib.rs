@@ -2240,11 +2240,17 @@ fn resolve_file_imports_internal(
                 }
 
                 if let Some(canonical) = resolved.into_iter().next() {
-                    // Resolve a directory peer to its entry before loading
-                    // the completed import. This makes the physical source
-                    // owner unique and ensures a peer-first import receives
-                    // the entry plus every peer file.
-                    if is_module_import {
+                    // The shipped stdlib directory peers are alternate
+                    // spellings of one compiler-owned module. Promote those
+                    // imports to the entry source before loading the
+                    // completed source set. User package directories retain
+                    // their requested module identity and source surface.
+                    if is_module_import
+                        && hew_types::module_registry::canonical_stdlib_module_for_source(
+                            &canonical,
+                        )
+                        .is_some()
+                    {
                         canonical_directory_module_entry_source(&canonical)
                     } else {
                         canonical
@@ -3479,6 +3485,62 @@ mod tests {
                 "peer-only imports must load the complete package item set"
             );
         }
+    }
+
+    #[test]
+    fn user_directory_peer_import_keeps_requested_module_owner() {
+        let dir = tempfile::tempdir().expect("create module-owner fixture");
+        let module_dir = dir.path().join("greeting");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(&module_dir, "greeting.hew", "pub fn entry() -> i64 { 1 }\n");
+        let peer = Path::new(&write_source(
+            &module_dir,
+            "dog.hew",
+            "pub fn bark() -> i64 { 2 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical peer source");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import greeting.dog;\n\nfn main() {}\n",
+        );
+        let source = fs::read_to_string(&input).expect("read module-owner fixture");
+        let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: dir.path(),
+            module_search_paths: None,
+        };
+
+        let graph = build_module_graph(
+            Path::new(&input),
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("user peer import should build a module graph");
+        let peer_id = hew_parser::module::ModuleId::new(
+            ["greeting", "dog"].into_iter().map(String::from).collect(),
+        );
+        let peer_module = graph
+            .modules
+            .get(&peer_id)
+            .expect("the requested user peer module should be present");
+        assert_eq!(peer_module.source_paths, vec![peer]);
+        assert!(
+            !graph
+                .modules
+                .contains_key(&hew_parser::module::ModuleId::new(
+                    ["greeting"].into_iter().map(String::from).collect(),
+                )),
+            "a user peer import must not be promoted to its directory entry"
+        );
     }
 
     /// Two peer files of one directory module that claim the same assembled

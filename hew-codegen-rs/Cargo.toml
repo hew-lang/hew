@@ -11,6 +11,7 @@ keywords = ["hew", "compiler", "llvm", "codegen", "wasm"]
 categories = ["compilers"]
 
 [dependencies]
+serde_json.workspace = true
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
 hew-parser = { path = "../hew-parser" }

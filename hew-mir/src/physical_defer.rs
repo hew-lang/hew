@@ -220,6 +220,7 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             std::iter::once(normal).chain(unwind).collect()
         }
         PhysicalTerminator::TaskScopeJoin { normal, unwind, .. }
+        | PhysicalTerminator::WireCodec { normal, unwind, .. }
         | PhysicalTerminator::ValueCall { normal, unwind, .. } => vec![normal, unwind],
         PhysicalTerminator::RuntimeCall {
             normal, failure, ..
@@ -366,6 +367,9 @@ fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>)
         | PhysicalTerminator::Call { args, .. }
         | PhysicalTerminator::RuntimeCall { args, .. }
         | PhysicalTerminator::ValueCall { args, .. } => used.extend(args.iter().map(source)),
+        PhysicalTerminator::WireCodec { input, .. } => {
+            used.insert(source(input));
+        }
         PhysicalTerminator::IndirectCall { callee, args, .. } => {
             used.insert(source(callee));
             used.extend(args.iter().map(source));
@@ -530,6 +534,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
             match &block.terminator {
                 PhysicalTerminator::CheckedBinary { result, .. }
                 | PhysicalTerminator::NativeIo { result, .. }
+                | PhysicalTerminator::WireCodec { result, .. }
                 | PhysicalTerminator::ValueCall { result, .. } => {
                     region.values.insert(*result);
                 }

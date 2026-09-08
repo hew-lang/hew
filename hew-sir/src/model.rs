@@ -1207,7 +1207,9 @@ pub enum SemOpKind {
         to: ResolvedTy,
     },
     // --- P1 literal producers (matrix Legend `const.{f,char,unit,duration,str,bytes}`)
-    ConstF64(f64),
+    /// Literal value represented at host f64 precision; the exact result type
+    /// selects f32 or f64 rounding at physical materialization.
+    ConstFloat(f64),
     ConstChar(char),
     ConstUnit,
     /// Nanoseconds, the representation `duration` already carries.
@@ -1323,7 +1325,7 @@ impl SemOpKind {
             | Self::StreamPipe { .. }
             | Self::ConstInteger(_)
             | Self::ConstBool(_)
-            | Self::ConstF64(_)
+            | Self::ConstFloat(_)
             | Self::ConstChar(_)
             | Self::ConstUnit
             | Self::ConstDuration(_)
@@ -1415,7 +1417,7 @@ impl SemOpKind {
             | Self::StreamPipe { .. }
             | Self::ConstInteger(_)
             | Self::ConstBool(_)
-            | Self::ConstF64(_)
+            | Self::ConstFloat(_)
             | Self::ConstChar(_)
             | Self::ConstUnit
             | Self::ConstDuration(_)
@@ -1527,7 +1529,7 @@ impl SemOpKind {
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Cast { .. }
-            | Self::ConstF64(..)
+            | Self::ConstFloat(..)
             | Self::ConstChar(..)
             | Self::ConstUnit
             | Self::ConstDuration(..)
@@ -1608,7 +1610,7 @@ impl SemOpKind {
             Self::FunctionMake { .. }
             | Self::ConstInteger(_)
             | Self::ConstBool(_)
-            | Self::ConstF64(_)
+            | Self::ConstFloat(_)
             | Self::ConstChar(_)
             | Self::ConstUnit
             | Self::ConstDuration(_)
@@ -1794,6 +1796,18 @@ pub enum SemTerminator {
         normal: Edge,
         unwind: CallUnwind,
     },
+    /// Execute the checked wire schema using borrowed input. The complete
+    /// owned result exists only on success; logical failure enters cleanup.
+    WireCodec {
+        id: OpId,
+        direction: hew_types::WireCodecDirection,
+        plan: std::sync::Arc<crate::SemWirePlan>,
+        text_result: Option<crate::SemWireTextResult>,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
     RtCall {
         id: OpId,
         family: hew_types::RuntimeCallFamily,
@@ -1877,6 +1891,7 @@ impl SemTerminator {
             Self::Panic { message, .. } => visit(OperandSlot(0), message),
             Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
             Self::Call { args, .. }
+            | Self::WireCodec { args, .. }
             | Self::RtCall { args, .. }
             | Self::ExternCall { args, .. }
             | Self::ActorCall { args, .. }
@@ -1938,6 +1953,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::WireCodec {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::RtCall {
                 result: CallResult::Value(result),
                 ..
@@ -1983,6 +2002,10 @@ impl SemTerminator {
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::Call {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::WireCodec {
                 result: CallResult::Unit | CallResult::Never,
                 ..
             }
@@ -2129,7 +2152,13 @@ impl SemTerminator {
             } => {
                 visit_call_operands(args, normal.as_ref(), unwind, argument_start, visit);
             }
-            Self::RtCall {
+            Self::WireCodec {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::RtCall {
                 args,
                 normal,
                 unwind,
@@ -2289,7 +2318,13 @@ impl SemTerminator {
             } => {
                 visit_call_operands_mut(args, normal.as_mut(), unwind, argument_start, visit);
             }
-            Self::RtCall {
+            Self::WireCodec {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::RtCall {
                 args,
                 normal,
                 unwind,
@@ -2416,7 +2451,8 @@ impl SemTerminator {
                     visit(SuccessorSlot(1), edge);
                 }
             }
-            Self::RtCall { normal, unwind, .. }
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
             | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => {
@@ -2512,7 +2548,8 @@ impl SemTerminator {
                     visit(SuccessorSlot(1), edge);
                 }
             }
-            Self::RtCall { normal, unwind, .. }
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
             | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => {
@@ -2588,7 +2625,8 @@ impl SemTerminator {
                 },
                 _ => None,
             },
-            Self::RtCall { normal, unwind, .. }
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
             | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => match slot.0 {
@@ -2673,7 +2711,8 @@ impl SemTerminator {
                 },
                 _ => None,
             },
-            Self::RtCall { normal, unwind, .. }
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
             | Self::ExternCall { normal, unwind, .. }
             | Self::ActorCall { normal, unwind, .. }
             | Self::ValueCall { normal, unwind, .. } => match slot.0 {
@@ -2776,6 +2815,7 @@ impl SemTerminator {
                 "call normal-edge argument"
             }
             Self::Call { args, .. }
+            | Self::WireCodec { args, .. }
             | Self::RtCall { args, .. }
             | Self::ExternCall { args, .. }
             | Self::ActorCall { args, .. }
@@ -2791,7 +2831,8 @@ impl SemTerminator {
             {
                 "call normal-edge argument"
             }
-            Self::RtCall { args, normal, .. }
+            Self::WireCodec { args, normal, .. }
+            | Self::RtCall { args, normal, .. }
             | Self::ExternCall { args, normal, .. }
             | Self::ActorCall { args, normal, .. }
             | Self::ValueCall { args, normal, .. }
@@ -2801,6 +2842,7 @@ impl SemTerminator {
                 "call normal-edge argument"
             }
             Self::Call { .. }
+            | Self::WireCodec { .. }
             | Self::RtCall { .. }
             | Self::ExternCall { .. }
             | Self::ActorCall { .. }

@@ -1,3 +1,6 @@
+#[path = "lower_wire.rs"]
+mod wire;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
@@ -602,6 +605,7 @@ struct InstanceService<'a> {
     variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
+    wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlan>>,
     value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
 }
@@ -1120,6 +1124,7 @@ impl<'a> InstanceService<'a> {
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
             value_capabilities: BTreeMap::new(),
+            wire_plans: HashMap::new(),
         }
     }
 
@@ -2658,9 +2663,10 @@ fn dyn_passing_admits(boundary: SemParamPassing, implementation: SemParamPassing
 
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer()
+        || ty.is_float()
         || matches!(
             ty,
-            hew_types::ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char | ResolvedTy::Duration
+            ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::Duration
         )
 }
 
@@ -4962,6 +4968,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent recovery cannot produce a SIR value".into()),
             },
+            HirExprKind::WireCodec {
+                direction,
+                operand,
+                value_ty,
+            } => self.lower_wire_codec(expr, *direction, operand, value_ty),
             HirExprKind::RecordCloneCall { src, .. } => {
                 let mut loans = Vec::new();
                 let source = self.lower_borrowed_read(src, &mut loans)?;
@@ -5418,13 +5429,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.emit(expr, SemOpKind::ConstBool(*value))
             }
             HirLiteral::Float(value) => {
-                if self.ty(&expr.ty) != ResolvedTy::F64 {
+                if !self.ty(&expr.ty).is_float() {
                     return Err(format!(
                         "floating literal resolved as `{}` needs a dedicated SIR literal representation",
                         self.ty(&expr.ty).user_facing()
                     ));
                 }
-                self.emit(expr, SemOpKind::ConstF64(*value))
+                self.emit(expr, SemOpKind::ConstFloat(*value))
             }
             HirLiteral::Char(value) => {
                 if self.ty(&expr.ty) != ResolvedTy::Char {
@@ -5782,8 +5793,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
                 self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
             }
-            HirLiteral::Float(value) if ty == ResolvedTy::F64 => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstF64(*value))?
+            HirLiteral::Float(value) if ty.is_float() => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstFloat(*value))?
             }
             HirLiteral::Char(value) if ty == ResolvedTy::Char => {
                 self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstChar(*value))?

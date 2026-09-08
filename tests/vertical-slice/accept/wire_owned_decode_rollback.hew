@@ -1,0 +1,43 @@
+// The text parser accepts these integers; native narrow-field validation fails
+// after earlier strings, variants and collection elements already own storage.
+#[wire]
+enum Payload {
+    Empty,
+    Data(string, Vec<Option<string>>, u8),
+}
+
+#[wire]
+type Item {
+    label: string @1,
+    payload: Payload @2,
+}
+
+#[wire]
+type Batch {
+    items: Vec<Item> @1,
+    lookup: HashMap<bytes, Vec<string>> @2,
+    last: u8 @3,
+}
+
+fn main() -> i64 {
+    for i in 0 .. 32 {
+        match Batch.from_json("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}},{\"label\":\"second\",\"payload\":{\"Data\":[\"partial\",[\"released\"],999]}}],\"lookup\":[],\"last\":1}") {
+            .Ok(_) => return 1,
+            .Err(_) => {},
+        }
+        match Batch.from_json("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}}],\"lookup\":[[[0,255],[\"one\",\"two\"]]],\"last\":999}") {
+            .Ok(_) => return 2,
+            .Err(_) => {},
+        }
+        match Batch.from_json("{\"items\":[],\"lookup\":[[[0],[\"first\"]],[[0],[\"duplicate\"]]],\"last\":1}") {
+            .Ok(_) => return 3,
+            .Err(_) => {},
+        }
+    }
+    // A managed string's NUL does not terminate the input document.
+    match Payload.from_json("\"Empty\"\0ignored suffix") {
+        .Ok(_) => return 4,
+        .Err(_) => {},
+    }
+    42
+}

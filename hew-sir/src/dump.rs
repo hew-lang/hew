@@ -322,7 +322,7 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             writeln!(out, "cast {} to {}", operand(value), to.user_facing())
                 .expect("write to String");
         }
-        SemOpKind::ConstF64(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::ConstFloat(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstChar(value) => writeln!(out, "const {value:?}").expect("write to String"),
         SemOpKind::ConstUnit => writeln!(out, "const ()").expect("write to String"),
         SemOpKind::ConstDuration(nanos) => {
@@ -495,6 +495,7 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         | SemTerminator::IndirectCall { .. }
         | SemTerminator::DynCall { .. }
         | SemTerminator::ActorCall { .. }
+        | SemTerminator::WireCodec { .. }
         | SemTerminator::RtCall { .. }
         | SemTerminator::ExternCall { .. } => {
             dump_call_terminator(out, module, term);
@@ -613,6 +614,21 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
             ..
         } => (
             format!("actor.call{{{operation:?}}}"),
+            args,
+            result,
+            Some(normal),
+            unwind,
+        ),
+        SemTerminator::WireCodec {
+            direction,
+            plan,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("wire.codec{{{direction:?}, {}}}", plan.ty.user_facing()),
             args,
             result,
             Some(normal),

@@ -1432,23 +1432,6 @@ impl Checker {
             return false;
         }
 
-        if matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(&resolved_key),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::MissingOverwriteRelease
-        ) {
-            if !self.has_collection_key_ownership_error("HashMap key") {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`bytes` cannot be used as a HashMap key yet: duplicate-key insertion cannot \
-                     release the caller-owned bytes key on the overwrite path; use `string` or a \
-                     supported fixed-width key"
-                        .to_string(),
-                );
-            }
-            return false;
-        }
-
         // Registration sees legal forward references before their declarations
         // exist. Keep this obligation in the existing inference queue and check
         // it once the complete declaration graph and substitution are available.
@@ -1526,23 +1509,6 @@ impl Checker {
             return false;
         }
 
-        if matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(&resolved),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::MissingOverwriteRelease
-        ) {
-            if !self.has_collection_key_ownership_error("HashSet element") {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`bytes` cannot be used as a HashSet element yet: duplicate insertion cannot \
-                     release the caller-owned bytes value; use `string` or a supported fixed-width \
-                     element"
-                        .to_string(),
-                );
-            }
-            return false;
-        }
-
         if matches!(&resolved, Ty::Named { name, args, builtin: None }
             if args.is_empty() && self.is_type_param_in_scope(name))
         {
@@ -1587,14 +1553,6 @@ impl Checker {
         self.errors.iter().any(|e| {
             matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
                 && SpanKey::in_module(&e.span, self.current_module_idx) == key
-        })
-    }
-
-    fn has_collection_key_ownership_error(&self, collection_role: &str) -> bool {
-        self.errors.iter().any(|error| {
-            matches!(error.kind, TypeErrorKind::InvalidOperation)
-                && error.message.contains("`bytes` cannot be used as a")
-                && error.message.contains(collection_role)
         })
     }
 

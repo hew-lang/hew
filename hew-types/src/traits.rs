@@ -344,82 +344,13 @@ impl TraitRegistry {
             && self.implements_marker(ty, MarkerTrait::Decode)
     }
 
-    /// Key/element shapes for which the wire decoder can reconstruct the same
-    /// runtime Hash+Eq identity used by ordinary HashMap/HashSet construction.
-    fn is_wire_hash_key(ty: &Ty) -> bool {
-        matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(ty),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::Complete
-        ) && matches!(
-            ty,
-            Ty::I32 | Ty::I64 | Ty::U32 | Ty::U64 | Ty::Bool | Ty::Char | Ty::String
-        )
-    }
-
-    /// Exact collection-element lane currently implemented by the CBOR Vec
-    /// codec. Nested collections and bytes lack a Vec ownership layout; an
-    /// Option element is admitted only when its payload is heap-free.
-    fn is_wire_vec_element(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Bool
-            | Ty::I8
-            | Ty::U8
-            | Ty::I16
-            | Ty::U16
-            | Ty::I32
-            | Ty::U32
-            | Ty::Char
-            | Ty::I64
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::Duration
-            | Ty::F32
-            | Ty::F64
-            | Ty::String
-            | Ty::Named { builtin: None, .. } => self.implements_serializable_inner(ty, visiting),
-            Ty::Named {
-                builtin: Some(BuiltinType::Option),
-                args,
-                ..
-            } => {
-                args.len() == 1
-                    && self.is_wire_heap_free(&args[0], &mut HashSet::new())
-                    && self.implements_serializable_inner(&args[0], visiting)
-            }
-            _ => false,
-        }
-    }
-
-    fn is_wire_heap_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.is_wire_heap_free(elem, visiting)),
-            Ty::Array(elem, _) => self.is_wire_heap_free(elem, visiting),
-            Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } => {
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let heap_free = self.serializable_members_any(name).is_some_and(|members| {
-                    members
-                        .iter()
-                        .all(|member| self.is_wire_heap_free(member, visiting))
-                });
-                visiting.remove(name);
-                heap_free
-            }
-            Ty::String
-            | Ty::Bytes
-            | Ty::Named {
-                builtin: Some(_), ..
-            } => false,
-            _ => true,
-        }
+    /// Wire reconstruction uses the ordinary selected Hash/Eq callbacks and
+    /// value cloning, so key admission follows those same capabilities.
+    fn is_wire_hash_key(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        self.implements_marker(ty, MarkerTrait::Hash)
+            && self.implements_marker(ty, MarkerTrait::Eq)
+            && self.implements_marker(ty, MarkerTrait::Clone)
+            && self.implements_serializable_inner(ty, visiting)
     }
 
     fn implements_serializable_inner(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
@@ -468,15 +399,16 @@ impl TraitRegistry {
                             .all(|arg| self.implements_serializable_inner(arg, visiting));
                     }
                     Some(BuiltinType::Vec) => {
-                        return args.len() == 1 && self.is_wire_vec_element(&args[0], visiting);
+                        return args.len() == 1
+                            && self.implements_serializable_inner(&args[0], visiting);
                     }
                     Some(BuiltinType::HashMap) => {
                         return args.len() == 2
-                            && Self::is_wire_hash_key(&args[0])
+                            && self.is_wire_hash_key(&args[0], visiting)
                             && self.implements_serializable_inner(&args[1], visiting);
                     }
                     Some(BuiltinType::HashSet) => {
-                        return args.len() == 1 && Self::is_wire_hash_key(&args[0]);
+                        return args.len() == 1 && self.is_wire_hash_key(&args[0], visiting);
                     }
                     _ => {}
                 }
@@ -1680,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_serializable_admission_matches_wire_layout_lanes() {
+    fn collection_serializable_admission_composes_value_capabilities() {
         let mut registry = TraitRegistry::new();
         registry.register_type("Key".to_string(), vec![Ty::I64]);
         registry.register_record_type("Key".to_string());
@@ -1700,13 +1632,11 @@ mod tests {
             name: "HashSet".to_string(),
             args: vec![record_key],
         };
-        assert!(!registry.is_serializable(&record_map));
-        assert!(!registry.is_serializable(&record_set));
+        assert!(registry.is_serializable(&record_map));
+        assert!(registry.is_serializable(&record_set));
 
-        // `bytes` has a runtime Hash+Eq descriptor, but ordinary caller-key
-        // overwrite release cannot yet uphold its owned-key contract. Wire
-        // admission must not create a collection shape users cannot construct
-        // and mutate through the normal HashMap/HashSet surface.
+        // Managed byte keys use the same retain/release recipe as ordinary
+        // collection insertion, including duplicate insertion and overwrite.
         let bytes_map = Ty::Named {
             builtin: Some(BuiltinType::HashMap),
             name: "HashMap".to_string(),
@@ -1717,8 +1647,8 @@ mod tests {
             name: "HashSet".to_string(),
             args: vec![Ty::Bytes],
         };
-        assert!(!registry.is_serializable(&bytes_map));
-        assert!(!registry.is_serializable(&bytes_set));
+        assert!(registry.is_serializable(&bytes_map));
+        assert!(registry.is_serializable(&bytes_set));
 
         let vec_bytes = Ty::Named {
             builtin: Some(BuiltinType::Vec),
@@ -1734,8 +1664,8 @@ mod tests {
                 args: vec![Ty::I64],
             }],
         };
-        assert!(!registry.is_serializable(&vec_bytes));
-        assert!(!registry.is_serializable(&nested_vec));
+        assert!(registry.is_serializable(&vec_bytes));
+        assert!(registry.is_serializable(&nested_vec));
     }
 
     /// RI-01: the `TraitRegistry` is the single source of truth for the

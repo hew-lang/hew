@@ -900,6 +900,7 @@ impl<'a> Flow<'a> {
                 }
             }
             SemTerminator::ActorCall { normal, unwind, .. }
+            | SemTerminator::WireCodec { normal, unwind, .. }
             | SemTerminator::RtCall { normal, unwind, .. }
             | SemTerminator::ExternCall { normal, unwind, .. }
             | SemTerminator::ValueCall { normal, unwind, .. } => {
@@ -924,7 +925,8 @@ impl<'a> Flow<'a> {
                         state = preserved;
                     }
                     let transfers_fault = match &block.terminator {
-                        SemTerminator::ActorCall { .. }
+                        SemTerminator::WireCodec { .. }
+                        | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }
@@ -1671,6 +1673,7 @@ impl<'a> Flow<'a> {
                         ..
                     } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
+                        | SemTerminator::WireCodec { .. }
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ExternCall { .. }
                         | SemTerminator::ValueCall { .. }

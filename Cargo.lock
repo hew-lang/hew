@@ -1797,6 +1797,7 @@ dependencies = [
  "hew-types",
  "inkwell",
  "llvm-sys",
+ "serde_json",
  "tempfile",
 ]
 
@@ -1987,6 +1988,7 @@ dependencies = [
 name = "hew-sir"
 version = "0.6.0-rc3"
 dependencies = [
+ "heck",
  "hew-hir",
  "hew-parser",
  "hew-types",

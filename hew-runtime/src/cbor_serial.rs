@@ -387,6 +387,17 @@ pub unsafe extern "C" fn hew_cbor_ser_null(buf: *mut c_void) {
     }
 }
 
+/// Emit complete managed UTF-8, including embedded NUL bytes.
+///
+/// # Safety
+/// `buf` is a live writer handle from `hew_cbor_ser_new`.
+pub(crate) unsafe fn ser_text(buf: *mut c_void, text: &str) {
+    // SAFETY: the caller supplies a live writer handle.
+    if let Some(writer) = unsafe { as_ser_buf(buf) } {
+        writer.emit(Value::Text(text.to_owned()));
+    }
+}
+
 /// Emit a string value from a NUL-terminated C string. A null pointer encodes an
 /// empty string.
 ///
@@ -395,18 +406,14 @@ pub unsafe extern "C" fn hew_cbor_ser_null(buf: *mut c_void) {
 /// string that stays valid for the duration of the call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cbor_ser_string(buf: *mut c_void, s: *const c_char) {
-    // SAFETY: buf is a live handle per this fn's contract.
-    let Some(b) = (unsafe { as_ser_buf(buf) }) else {
-        return;
-    };
     let text = if s.is_null() {
-        String::new()
+        std::borrow::Cow::Borrowed("")
     } else {
         // SAFETY: s is a valid NUL-terminated C string per this fn's contract.
-        let cstr = unsafe { core::ffi::CStr::from_ptr(s) };
-        cstr.to_string_lossy().into_owned()
+        unsafe { core::ffi::CStr::from_ptr(s) }.to_string_lossy()
     };
-    b.emit(Value::Text(text));
+    // SAFETY: buf is a live writer handle per this fn's contract.
+    unsafe { ser_text(buf, &text) };
 }
 
 /// Emit a `bytes` value from `(ptr + offset, len)`. A zero length or null pointer
@@ -1207,6 +1214,21 @@ pub unsafe extern "C" fn hew_cbor_de_bool(reader: *mut c_void) -> i8 {
     i8::from(b)
 }
 
+/// Take complete UTF-8 from a staged CBOR string without a C-string adapter.
+///
+/// # Safety
+/// `reader` is a live reader handle from `hew_cbor_de_new`.
+pub(crate) unsafe fn de_text(reader: *mut c_void) -> Option<String> {
+    // SAFETY: the caller supplies a live reader handle.
+    let reader = unsafe { as_de_reader(reader) }?;
+    if let Some(Value::Text(text)) = reader.take_staged() {
+        Some(text)
+    } else {
+        reader.failed = true;
+        None
+    }
+}
+
 /// Read the staged value as a string into a freshly `malloc_cstring`'d buffer the
 /// caller owns (drop with `hew_string_drop`). Latches failure and returns an
 /// empty owned string on type mismatch.
@@ -1215,13 +1237,8 @@ pub unsafe extern "C" fn hew_cbor_de_bool(reader: *mut c_void) -> i8 {
 /// `reader` must be a live handle from `hew_cbor_de_new`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cbor_de_string(reader: *mut c_void) -> *mut c_char {
-    // SAFETY: reader is a live handle per this fn's contract.
-    let Some(r) = (unsafe { as_de_reader(reader) }) else {
-        // SAFETY: empty owned string.
-        return unsafe { malloc_cstring(std::ptr::null(), 0) };
-    };
-    let Some(Value::Text(text)) = r.take_staged() else {
-        r.failed = true;
+    // SAFETY: reader is a live reader handle per this fn's contract.
+    let Some(text) = (unsafe { de_text(reader) }) else {
         // SAFETY: empty owned string.
         return unsafe { malloc_cstring(std::ptr::null(), 0) };
     };
@@ -1233,7 +1250,8 @@ pub unsafe extern "C" fn hew_cbor_de_string(reader: *mut c_void) -> *mut c_char 
     // failure rather than truncated (CLAUDE.md §2: never deliver a fabricated
     // value).
     if bytes.contains(&0) {
-        r.failed = true;
+        // SAFETY: reader remains live for this call.
+        unsafe { hew_cbor_de_fail(reader) };
         // SAFETY: empty owned string.
         return unsafe { malloc_cstring(std::ptr::null(), 0) };
     }

@@ -23,6 +23,7 @@ mod resource;
 mod supervisor;
 mod task_scope;
 mod verify;
+mod wire;
 
 pub use actor::{
     ActorCallProtocol, ActorId, ActorOperation, SemActor, SemActorField, SemActorHandler,
@@ -80,3 +81,5 @@ pub use verify::{
 };
 
 pub use hew_hir::HirSelectionOrder as TaskSelectionOrder;
+
+pub use wire::{SemWireField, SemWireKind, SemWirePlan, SemWireTextResult, SemWireVariant};

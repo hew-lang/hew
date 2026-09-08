@@ -12,7 +12,11 @@ pub use hew_sir::{
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
+pub use hew_sir::{SemWireKind, SemWirePlan};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[path = "physical_wire.rs"]
+mod wire;
 
 #[path = "physical_capability.rs"]
 mod capability;
@@ -365,7 +369,7 @@ pub enum PhysicalConst {
     /// nothing about signedness or width.
     IntegerBits(u64),
     Bool(bool),
-    F64(f64),
+    Float(f64),
     Char(char),
     Unit,
     Duration(i64),
@@ -1062,6 +1066,14 @@ impl PhysicalRuntimeAction {
     }
 }
 
+/// Physical Result storage with its SIR-selected success and error cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalWireTextResult {
+    pub glue: PhysicalVariantId,
+    pub ok: u32,
+    pub error: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
     /// Park until the exclusively borrowed stream yields an element or ends.
@@ -1273,6 +1285,16 @@ pub enum PhysicalTerminator {
     },
     /// Execute the exact selected value callback with borrowed slots. Success
     /// initializes the scalar result; failure owns a fault on the cleanup edge.
+    WireCodec {
+        direction: hew_types::WireCodecDirection,
+        plan: std::sync::Arc<hew_sir::SemWirePlan>,
+        recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
+        text_result: Option<PhysicalWireTextResult>,
+        input: ArgumentTransfer,
+        result: StorageId,
+        normal: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     ValueCall {
         ty: ResolvedTy,
         capability: ValueCapability,
@@ -1959,6 +1981,11 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
             if let Some(result) = terminator_result(&block.terminator) {
                 types.insert(result.ty.clone());
             }
+            if let SemTerminator::WireCodec { plan, .. } = &block.terminator {
+                plan.visit_types(&mut |ty| {
+                    types.insert(ty.clone());
+                });
+            }
         }
     }
     for vtable in &module.vtables {
@@ -2423,6 +2450,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             result: CallResult::Value(result),
             ..
         }
+        | SemTerminator::WireCodec {
+            result: CallResult::Value(result),
+            ..
+        }
         | SemTerminator::RtCall {
             result: CallResult::Value(result),
             ..
@@ -2699,9 +2730,9 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Bool(*value),
             }),
-            SemOpKind::ConstF64(value) => one(PhysicalOp::Const {
+            SemOpKind::ConstFloat(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
-                value: PhysicalConst::F64(*value),
+                value: PhysicalConst::Float(*value),
             }),
             SemOpKind::ConstChar(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
@@ -3230,6 +3261,58 @@ impl FunctionLowerer<'_> {
                 },
                 normal: self.lower_edge(normal)?,
             }),
+            SemTerminator::WireCodec {
+                direction,
+                plan,
+                text_result,
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } => {
+                let (CallResult::Value(result), CallUnwind::Cleanup(unwind)) = (result, unwind)
+                else {
+                    return Err(PhysicalError::new(
+                        "wire codec requires result and fault cleanup",
+                    ));
+                };
+                let transfers = self.argument_transfers(args)?;
+                let [input] = transfers.as_slice() else {
+                    return Err(PhysicalError::new("wire codec requires one borrowed input"));
+                };
+                let mut types = BTreeSet::new();
+                plan.visit_types(&mut |ty| {
+                    types.insert(ty.clone());
+                });
+                let recipes = types
+                    .into_iter()
+                    .map(|ty| {
+                        physical_value_recipe(self.module, self.glue_ids, &ty)
+                            .map(|recipe| (ty, recipe))
+                    })
+                    .collect::<Result<_, _>>()?;
+                let text_result = text_result
+                    .map(|cases| {
+                        self.variant_id(&result.ty)
+                            .map(|glue| PhysicalWireTextResult {
+                                glue,
+                                ok: cases.ok,
+                                error: cases.error,
+                            })
+                    })
+                    .transpose()?;
+                Ok(PhysicalTerminator::WireCodec {
+                    text_result,
+                    direction: *direction,
+                    plan: std::sync::Arc::clone(plan),
+                    recipes,
+                    input: *input,
+                    result: self.value(result.id)?,
+                    normal: self.lower_edge(normal)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
             SemTerminator::RtCall {
                 family,
                 args,
@@ -5547,7 +5630,7 @@ fn verify_constant(
         PhysicalConst::Bool(_) => {
             destination.ty == ResolvedTy::Bool && destination.own == OwnKind::None
         }
-        PhysicalConst::F64(_) => destination.ty.is_float() && destination.own == OwnKind::None,
+        PhysicalConst::Float(_) => destination.ty.is_float() && destination.own == OwnKind::None,
         PhysicalConst::Char(_) => {
             destination.ty == ResolvedTy::Char && destination.own == OwnKind::None
         }
@@ -6728,6 +6811,21 @@ fn terminator_successors(
             state,
             block,
         ),
+        PhysicalTerminator::WireCodec {
+            input,
+            result,
+            normal,
+            unwind,
+            ..
+        } => call_successors(
+            function,
+            std::slice::from_ref(input),
+            Some(*result),
+            Some(normal),
+            Some(unwind),
+            state,
+            block,
+        ),
         PhysicalTerminator::ValueCall {
             args,
             result,
@@ -7570,6 +7668,103 @@ fn verify_terminator(
                 edge(unwind)?;
             }
             Ok(())
+        }
+        PhysicalTerminator::WireCodec {
+            direction,
+            plan,
+            recipes,
+            text_result,
+            input,
+            result,
+            normal,
+            unwind,
+        } => {
+            wire::verify_wire_plan(module, plan)?;
+            let ArgumentTransfer::Borrow(source) = input else {
+                return Err(PhysicalError::new("wire codec input must borrow its slot"));
+            };
+            let input_ty = if direction.is_serialize() {
+                plan.ty.clone()
+            } else if direction.is_text() {
+                ResolvedTy::String
+            } else {
+                ResolvedTy::Bytes
+            };
+            if slot(*source)?.ty != input_ty {
+                return Err(PhysicalError::new(
+                    "wire codec input type differs from its schema",
+                ));
+            }
+            let output = &slot(*result)?.ty;
+            let valid_result = match direction {
+                hew_types::WireCodecDirection::Encode => *output == ResolvedTy::Bytes,
+                hew_types::WireCodecDirection::Decode => *output == plan.ty,
+                hew_types::WireCodecDirection::ToJson | hew_types::WireCodecDirection::ToYaml => {
+                    *output == ResolvedTy::String
+                }
+                hew_types::WireCodecDirection::FromJson
+                | hew_types::WireCodecDirection::FromYaml => {
+                    matches!(output, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
+                }
+            };
+            if !valid_result {
+                return Err(PhysicalError::new(
+                    "wire codec result type differs from its direction",
+                ));
+            }
+            if let Some(cases) = text_result {
+                let glue = module
+                    .variant_glue
+                    .get(cases.glue.0 as usize)
+                    .filter(|glue| glue.ty == *output)
+                    .ok_or_else(|| {
+                        PhysicalError::new("wire text Result has no exact physical glue")
+                    })?;
+                if cases.ok == cases.error
+                    || glue.variants.len() != 2
+                    || !glue
+                        .variants
+                        .get(cases.ok as usize)
+                        .is_some_and(|case| case.fields.len() == 1 && case.fields[0].ty == plan.ty)
+                    || !glue.variants.get(cases.error as usize).is_some_and(|case| {
+                        case.fields.len() == 1 && case.fields[0].ty == ResolvedTy::String
+                    })
+                {
+                    return Err(PhysicalError::new(
+                        "wire text Result cases disagree with payloads",
+                    ));
+                }
+            }
+            if text_result.is_some()
+                != matches!(
+                    direction,
+                    hew_types::WireCodecDirection::FromJson
+                        | hew_types::WireCodecDirection::FromYaml
+                )
+            {
+                return Err(PhysicalError::new(
+                    "wire Result cases differ from codec direction",
+                ));
+            }
+            let mut expected = BTreeSet::new();
+            plan.visit_types(&mut |ty| {
+                expected.insert(ty.clone());
+            });
+            if recipes.keys().cloned().collect::<BTreeSet<_>>() != expected {
+                return Err(PhysicalError::new(
+                    "wire codec value recipes do not cover its exact schema",
+                ));
+            }
+            for (ty, recipe) in recipes {
+                if *ty != recipe.ty {
+                    return Err(PhysicalError::new(
+                        "wire recipe key differs from its value type",
+                    ));
+                }
+                verify_value_recipe(module, recipe)?;
+            }
+            edge(normal)?;
+            edge(unwind)
         }
         PhysicalTerminator::ValueCall {
             ty,
@@ -8983,6 +9178,46 @@ mod tests {
             },
         ];
         module
+    }
+
+    #[test]
+    fn wire_schema_cannot_read_another_physical_field() {
+        let semantic = lower_source(
+            r#"
+            #[wire]
+            type WireRecordProbe { label: string @7, code: u8 @2 }
+            fn main() {
+                let message = WireRecordProbe { label: "owned", code: 7 };
+                let encoded = message.encode();
+                let decoded = WireRecordProbe.decode(encoded);
+                println(decoded.label);
+            }
+        "#,
+        );
+        let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .unwrap()
+            .into_unverified();
+        let mut changed = false;
+        for block in physical
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+        {
+            if let PhysicalTerminator::WireCodec { plan, .. } = &mut block.terminator {
+                let plan = std::sync::Arc::make_mut(plan);
+                let SemWireKind::Record { fields, .. } = &mut plan.kind else {
+                    panic!("record codec");
+                };
+                fields[0].index = 0;
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed);
+        assert!(verify_physical_module(&physical)
+            .unwrap_err()
+            .message
+            .contains("wire schema selects a different physical value shape"));
     }
 
     #[test]

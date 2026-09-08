@@ -78,6 +78,31 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
             }
         }
+        for function in &self.module.functions {
+            for block in &function.blocks {
+                let PhysicalTerminator::WireCodec { recipes, .. } = &block.terminator else {
+                    continue;
+                };
+                for ty in recipes.keys() {
+                    let entry = if let Some(glue) =
+                        self.module.map_glue.iter().find(|glue| &glue.ty == ty)
+                    {
+                        Some((map_key_descriptor_symbol(glue.id), &glue.key))
+                    } else {
+                        self.module
+                            .set_glue
+                            .iter()
+                            .find(|glue| &glue.ty == ty)
+                            .map(|glue| (set_key_descriptor_symbol(glue.id), &glue.element))
+                    };
+                    if let Some((name, recipe)) = entry {
+                        if self.llvm.get_global(&name).is_none() {
+                            self.emit_key_descriptor(&name, recipe, &callbacks)?;
+                        }
+                    }
+                }
+            }
+        }
         Ok(callbacks)
     }
 

@@ -13,6 +13,9 @@ mod supervisor;
 #[path = "physical_callable.rs"]
 mod callable;
 
+#[path = "physical_wire.rs"]
+mod wire;
+
 #[path = "physical_encoding.rs"]
 mod encoding;
 #[path = "physical_key.rs"]
@@ -806,6 +809,73 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         builder
             .build_alloca(ty, name)
             .llvm_ctx("allocate reusable physical scratch storage")
+    }
+
+    fn write_variant_value(
+        &self,
+        destination: PointerValue<'ctx>,
+        variant: u32,
+        fields: &[BasicValueEnum<'ctx>],
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let glue = self.variant_glue(glue_id)?;
+        let layout = self.variant_layout(&glue.ty)?;
+        let object = if layout.is_indirect {
+            self.alloc_variant_node(layout)?
+        } else {
+            destination
+        };
+        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
+        let tag_ty = object_ty
+            .get_field_type_at_index(0)
+            .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?
+            .into_int_type();
+        let tag = tag_ty.const_int(u64::from(variant), false);
+        let header = self
+            .builder
+            .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
+            .llvm_ctx("write physical variant tag")?
+            .into_struct_value();
+        self.builder
+            .build_store(object, header)
+            .llvm_ctx("initialize physical variant storage")?;
+        let case = glue.variants.get(variant as usize).ok_or_else(|| {
+            CodegenError::FailClosed("variant construction tag is invalid".into())
+        })?;
+        let payload_layout = layout
+            .variants
+            .get(variant as usize)
+            .ok_or_else(|| CodegenError::FailClosed("variant payload layout is absent".into()))?;
+        if case.fields.len() != fields.len() {
+            return Err(CodegenError::FailClosed(
+                "variant construction field count changed after verification".into(),
+            ));
+        }
+        if !fields.is_empty() {
+            let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+            let mut payload = payload_ty.get_undef();
+            for (index, field) in fields.iter().enumerate() {
+                let value = *field;
+                let index = u32::try_from(index).map_err(|_| {
+                    CodegenError::FailClosed("variant field index exceeds u32".into())
+                })?;
+                payload = self
+                    .builder
+                    .build_insert_value(payload, value, index, "variant.make.payload")
+                    .llvm_ctx("write physical variant payload field")?
+                    .into_struct_value();
+            }
+            let payload_ptr = self.variant_payload_ptr(object, layout)?;
+            self.builder
+                .build_store(payload_ptr, payload)
+                .llvm_ctx("store physical variant payload")?;
+        }
+        if layout.is_indirect {
+            self.builder
+                .build_store(destination, object)
+                .llvm_ctx("store indirect variant node")?;
+        }
+        Ok(())
     }
 
     fn variant_payload_ptr(
@@ -2738,64 +2808,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         fields: &[BasicValueEnum<'ctx>],
         glue_id: PhysicalVariantId,
     ) -> CodegenResult<()> {
-        let glue = self.value_emitter().variant_glue(glue_id)?;
-        let layout = self.value_emitter().variant_layout(&glue.ty)?;
-        let object = if layout.is_indirect {
-            self.value_emitter().alloc_variant_node(layout)?
-        } else {
-            destination
-        };
-        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
-        let tag_ty = object_ty
-            .get_field_type_at_index(0)
-            .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?
-            .into_int_type();
-        let tag = tag_ty.const_int(u64::from(variant), false);
-        let header = self
-            .builder
-            .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
-            .llvm_ctx("write physical variant tag")?
-            .into_struct_value();
-        self.builder
-            .build_store(object, header)
-            .llvm_ctx("initialize physical variant storage")?;
-        let case = glue.variants.get(variant as usize).ok_or_else(|| {
-            CodegenError::FailClosed("variant construction tag is invalid".into())
-        })?;
-        let payload_layout = layout
-            .variants
-            .get(variant as usize)
-            .ok_or_else(|| CodegenError::FailClosed("variant payload layout is absent".into()))?;
-        if case.fields.len() != fields.len() {
-            return Err(CodegenError::FailClosed(
-                "variant construction field count changed after verification".into(),
-            ));
-        }
-        if !fields.is_empty() {
-            let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
-            let mut payload = payload_ty.get_undef();
-            for (index, field) in fields.iter().enumerate() {
-                let value = *field;
-                let index = u32::try_from(index).map_err(|_| {
-                    CodegenError::FailClosed("variant field index exceeds u32".into())
-                })?;
-                payload = self
-                    .builder
-                    .build_insert_value(payload, value, index, "variant.make.payload")
-                    .llvm_ctx("write physical variant payload field")?
-                    .into_struct_value();
-            }
-            let payload_ptr = self.value_emitter().variant_payload_ptr(object, layout)?;
-            self.builder
-                .build_store(payload_ptr, payload)
-                .llvm_ctx("store physical variant payload")?;
-        }
-        if layout.is_indirect {
-            self.builder
-                .build_store(destination, object)
-                .llvm_ctx("store indirect variant node")?;
-        }
-        Ok(())
+        self.value_emitter()
+            .write_variant_value(destination, variant, fields, glue_id)
     }
 
     /// Read the tag of one enum value with its layout and tag-and-payload object.
@@ -2948,7 +2962,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .const_int(u64::from(*value), false)
                     .into(),
             ),
-            PhysicalConst::F64(value) => {
+            PhysicalConst::Float(value) => {
                 self.store(dest, llvm_ty.into_float_type().const_float(*value).into())
             }
             PhysicalConst::Char(value) => self.store(
@@ -3332,6 +3346,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_call(*callee, args, *result, normal.as_ref(), unwind.as_ref()),
+            PhysicalTerminator::WireCodec {
+                direction,
+                plan,
+                recipes,
+                text_result,
+                input,
+                result,
+                normal,
+                unwind,
+            } => self.emit_wire_codec(
+                *direction,
+                plan,
+                recipes,
+                *text_result,
+                *input,
+                *result,
+                normal,
+                unwind,
+            ),
             PhysicalTerminator::ValueCall {
                 ty,
                 capability,

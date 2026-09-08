@@ -160,7 +160,7 @@ fn generic_wire_facade_records_all_typed_codec_rewrites() {
 }
 
 #[test]
-fn generic_wire_facade_rejects_shapes_outside_typed_codec_admission() {
+fn generic_wire_facade_admits_owned_key_and_element_shapes() {
     let parsed = hew_parser::parse(
         r#"
         import std.encoding.wire;
@@ -182,17 +182,9 @@ fn generic_wire_facade_rejects_shapes_outside_typed_codec_admission() {
     );
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&parsed.program);
-    let serializable_errors = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error.kind == TypeErrorKind::BoundsNotSatisfied
-                && error.message.contains("Serializable")
-        })
-        .count();
-    assert_eq!(
-        serializable_errors, 2,
-        "record-keyed maps and Vec<bytes> must fail at the generic Serializable boundary: {:?}",
+    assert!(
+        output.errors.is_empty(),
+        "record-keyed maps and Vec<bytes> share ordinary native value ownership: {:?}",
         output.errors
     );
 }

@@ -1162,6 +1162,7 @@ fn check_function_with_context(
             }
         }
         if let SemTerminator::Call { id, .. }
+        | SemTerminator::WireCodec { id, .. }
         | SemTerminator::RtCall { id, .. }
         | SemTerminator::ExternCall { id, .. }
         | SemTerminator::ActorCall { id, .. }
@@ -2509,9 +2510,10 @@ fn verify_callable_operation(
 
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer()
+        || ty.is_float()
         || matches!(
             ty,
-            ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char | ResolvedTy::Duration
+            ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::Duration
         )
 }
 
@@ -2859,11 +2861,11 @@ fn verify_operation_shape(
                 actual: result.ty.user_facing().to_string(),
             },
         )),
-        SemOpKind::ConstF64(_) if result.ty != ResolvedTy::F64 => diagnostics.push(diag(
+        SemOpKind::ConstFloat(_) if !result.ty.is_float() => diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidConstType {
                 op: operation.id,
-                expected: "f64",
+                expected: "floating-point type",
                 actual: result.ty.user_facing().to_string(),
             },
         )),
@@ -3514,7 +3516,7 @@ fn verify_operation_shape(
         }
         SemOpKind::ConstInteger(_)
         | SemOpKind::ConstBool(_)
-        | SemOpKind::ConstF64(_)
+        | SemOpKind::ConstFloat(_)
         | SemOpKind::ConstChar(_)
         | SemOpKind::ConstDuration(_)
         | SemOpKind::ConstStr(_)
@@ -4393,6 +4395,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::CheckedBinary { .. }
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
+            | SemTerminator::WireCodec { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::ExternCall { .. }
             | SemTerminator::ActorCall { .. }
@@ -4864,6 +4867,85 @@ fn verify_terminator_shape(
             variants.facts,
             diagnostics,
         ),
+        SemTerminator::WireCodec {
+            id,
+            direction,
+            plan,
+            text_result,
+            args,
+            result,
+            normal,
+            unwind,
+        } => {
+            if let Err(reason) = plan.verify(variants.aggregate_shapes, variants.shapes) {
+                invalid_operation(function, *id, reason, diagnostics);
+            }
+            if let Some(format) = direction.text_format() {
+                if let Err(reason) = plan.verify_text_names(format) {
+                    invalid_operation(function, *id, reason, diagnostics);
+                }
+            }
+            let input_ty = if direction.is_serialize() {
+                plan.ty.clone()
+            } else if direction.is_text() {
+                ResolvedTy::String
+            } else {
+                ResolvedTy::Bytes
+            };
+            let valid_input = matches!(args.as_slice(), [arg] if arg.decision == crate::BoundaryDecision::Borrow && types.get(&arg.operand.value) == Some(&input_ty));
+            let valid_result = match result {
+                crate::CallResult::Value(value) => {
+                    let ty_matches = match direction {
+                        hew_types::WireCodecDirection::Encode => value.ty == ResolvedTy::Bytes,
+                        hew_types::WireCodecDirection::Decode => value.ty == plan.ty,
+                        hew_types::WireCodecDirection::ToJson
+                        | hew_types::WireCodecDirection::ToYaml => value.ty == ResolvedTy::String,
+                        hew_types::WireCodecDirection::FromJson
+                        | hew_types::WireCodecDirection::FromYaml => {
+                            matches!(&value.ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
+                        }
+                    };
+                    ty_matches && normal.args.iter().any(|arg| arg.value == value.id)
+                }
+                _ => false,
+            };
+            let text_decode = matches!(
+                direction,
+                hew_types::WireCodecDirection::FromJson | hew_types::WireCodecDirection::FromYaml
+            );
+            let text_cases_valid = match (text_result, result) {
+                (Some(cases), crate::CallResult::Value(value)) if text_decode => variants
+                    .shapes
+                    .get(cases.shape.0 as usize)
+                    .is_some_and(|shape| {
+                        shape.enum_ty == value.ty
+                            && cases.ok != cases.error
+                            && shape.variants.len() == 2
+                            && shape.variants.get(cases.ok as usize).is_some_and(|case| {
+                                case.name == "Ok"
+                                    && case.fields.len() == 1
+                                    && case.fields[0].ty == plan.ty
+                            })
+                            && shape
+                                .variants
+                                .get(cases.error as usize)
+                                .is_some_and(|case| {
+                                    case.name == "Err"
+                                        && case.fields.len() == 1
+                                        && case.fields[0].ty == ResolvedTy::String
+                                })
+                    }),
+                (None, _) => !text_decode,
+                _ => false,
+            };
+            if !valid_input
+                || !valid_result
+                || !text_cases_valid
+                || !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+            {
+                invalid_operation(function, *id, "wire codec requires its exact borrowed input, complete result and fault cleanup".into(), diagnostics);
+            }
+        }
         SemTerminator::RtCall {
             id,
             family,
@@ -5324,7 +5406,8 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
         SemTerminator::Call { args, normal, .. } => {
             args.len()..args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
         }
-        SemTerminator::RtCall { args, normal, .. }
+        SemTerminator::WireCodec { args, normal, .. }
+        | SemTerminator::RtCall { args, normal, .. }
         | SemTerminator::ExternCall { args, normal, .. }
         | SemTerminator::ActorCall { args, normal, .. }
         | SemTerminator::ValueCall { args, normal, .. } => {

@@ -87,10 +87,13 @@ The body shapes (the `wire-body` rule and its parts):
   that is not an array.
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
   (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
-  the inner encoding for `Some`), `Vec<T>` (a CBOR array), and nested
-  `#[wire]` types/enums (nested maps / unit-tag / map-of-one). A value
-  type outside this floor fails closed at codegen ("unsupported value type …
-  outside the supported wire-body floor") and never reaches the wire.
+  the inner encoding for `Some`), `Vec<T>` (a CBOR array), `HashMap<K, V>`
+  (a map of recursively encoded keys and values), `HashSet<T>` (a canonical
+  array), and nested `#[wire]` types/enums. Nested owned containers and
+  optional elements use the same native copy/drop recipes as ordinary values;
+  strings preserve their full UTF-8 payload, including NUL. SIR checks the
+  exact schema before native code generation. `Option<Option<T>>` remains
+  ambiguous under null encoding and is rejected.
 
 Field presence and value shape are orthogonal. A required `Option<T>` always
 emits its key (`None` is CBOR null) and rejects an absent key. An

@@ -125,6 +125,7 @@ fn canonicalize_verified_function(
             | SemTerminator::CheckedBinary { .. }
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
+            | SemTerminator::WireCodec { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::ExternCall { .. }
             | SemTerminator::ActorCall { .. }

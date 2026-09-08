@@ -305,6 +305,7 @@ pub mod xnode_serial;
 /// CBOR `bstr` payload slot unchanged.
 pub mod cbor_serial;
 
+pub mod wire_native;
 /// Text wire-body codec: the CBOR↔JSON/YAML bridge the compiler's
 /// `__hew_wire_to_json_*` / `__hew_wire_from_json_*` (and yaml) thunks drive.
 /// Reuses the binary CBOR walk above and transcodes its value tree to/from text

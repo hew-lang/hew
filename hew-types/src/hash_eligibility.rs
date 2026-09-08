@@ -17,14 +17,10 @@
 //!   hash-equality contract holds. NaN hashes by its bits like any other value
 //!   — there is no `NaN != NaN` hazard under bitwise semantics.
 //!
-//! Strings are heap-managed but structurally hashable: a `string` field inside a
-//! record key is hashed by dereferencing the field's pointer and hashing the
-//! NUL-terminated payload bytes (codegen descends into the field, mirroring the
-//! `eq_eligibility.rs` string descent), and the owned key is deep-cloned on
-//! insert and dropped exactly once on remove/free. A bare `string` key routes
-//! through the runtime's canonical `hew_layout_key_string` descriptor. Other
-//! heap-managed leaves (`bytes`, owned aggregates, handles) remain ineligible —
-//! their per-record clone/drop discipline is a separate, larger surface.
+//! Strings and bytes are heap-managed but structurally hashable. Their selected
+//! callbacks hash the complete borrowed payload, including embedded NULs and
+//! byte-slice offsets. Collection insertion copies keys through their ordinary
+//! retain/drop recipes, including duplicate and overwrite paths.
 //!
 //! Named records are eligible only when every field is itself hash-eligible
 //! (including `string`-or-string-bearing fields).
@@ -57,32 +53,6 @@ pub(crate) enum HashEligibility {
     IneligibleVar,
     /// Is the error-recovery type (`Ty::Error`).
     IneligibleError,
-}
-
-/// Whether an owned collection key has a complete insertion ownership
-/// protocol. This is deliberately separate from `Hash + Eq`: hashing answers
-/// identity, while insertion must also dispose of the caller's fresh key when
-/// an equal stored key already exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CollectionKeyOwnershipCapability {
-    /// Vacant insertion can move the key and duplicate insertion can release it.
-    Complete,
-    /// The runtime can hash/equal this key, but codegen cannot yet release the
-    /// caller-owned duplicate on the overwrite path.
-    MissingOverwriteRelease,
-}
-
-/// Single typed authority for the key-ownership half of ordinary map/set
-/// insertion and wire collection reconstruction.
-#[must_use]
-pub(crate) const fn collection_key_ownership_capability(
-    ty: &Ty,
-) -> CollectionKeyOwnershipCapability {
-    if matches!(ty, Ty::Bytes) {
-        CollectionKeyOwnershipCapability::MissingOverwriteRelease
-    } else {
-        CollectionKeyOwnershipCapability::Complete
-    }
 }
 
 /// Returns `Some(rejection)` if `ty` is not hash-eligible, `None` if eligible.
@@ -124,6 +94,7 @@ fn hash_ineligibility(
         | Ty::F32
         | Ty::F64
         | Ty::String
+        | Ty::Bytes
         // Compiler-owned identity aggregates have fixed all-integer layouts and
         // exact structural equality, so they use the source-record layout-key ABI.
         | Ty::Named {
@@ -199,7 +170,6 @@ fn hash_ineligibility(
         | Ty::Unit
         | Ty::Isize
         | Ty::Usize
-        | Ty::Bytes
         | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)

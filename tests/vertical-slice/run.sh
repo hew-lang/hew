@@ -4434,24 +4434,8 @@ run_accept_expect_stdout "slice_annotation_alias"
 # what the projection is for, and only a value with no clone is refused.
 run_accept_expect_stdout "hashmap_values_managed_record"
 
-# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
-    '`bytes` cannot be used as a HashMap key yet: duplicate-key insertion cannot release the caller-owned bytes key' \
-    "hashmap_keys_bytes"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
-    1 \
-    "hashmap_keys_bytes"
-# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/hashset_bytes_element.hew" \
-    '`bytes` cannot be used as a HashSet element yet: duplicate insertion cannot release the caller-owned bytes value' \
-    "hashset_bytes_element"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/hashset_bytes_element.hew" \
-    1 \
-    "hashset_bytes_element"
+# Byte-key overwrite, duplicate insertion and key projection use native value
+# ownership and are covered by wire_owned_values below.
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic string; not shell expansion.
 expect_check_fail_contains \
@@ -5721,11 +5705,12 @@ run_accept_expect_status "wire_json_malformed_is_err" 42
 run_accept_expect_status "wire_json_wrong_shape_is_err" 42
 run_accept_expect_status "wire_json_over_range_is_err" 42
 run_accept_expect_status "wire_json_missing_field_is_err" 42
+run_accept_expect_status "wire_owned_values" 42
+run_accept_expect_status "wire_owned_decode_rollback" 42
+run_accept_expect_trap "wire_map_callback_fault" "DivideByZero"
 
-# Deferred wire-body sub-shapes fail closed at codegen-front validation. These
-# are intentionally outside the supported wire-body floor; the codec rejects
-# them with an explicit diagnostic rather than emitting an ambiguous or
-# leak-prone codec. Registered here so the boundary is enforced, not forgotten.
+# Nested Option is inherently ambiguous under the established null encoding.
+# Owned nested containers use ordinary native value glue and are exercised above.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_option_option_rejected.hew" \
     "Option<Option<_>> is ambiguous under the null encoding" \
@@ -5734,27 +5719,6 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_optional_option_option_rejected.hew" \
     "Option<Option<_>> is ambiguous under the null encoding" \
     "wire_cbor_optional_option_option_rejected"
-# `Vec<Option<string>>` now fails closed at the earlier owned-element Vec
-# admission (a heap-owning `Option` payload has no synthesised clone/drop thunk
-# path), before the wire-body floor is reached — a stricter, clearer rejection
-# point for the same unsupported shape. The wire-body floor itself stays covered
-# by `wire_cbor_vec_nested_rejected` below (#2737).
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
-    "has no clone/drop thunk path for the owned-element Vec runtime" \
-    "wire_cbor_vec_owned_compound_rejected"
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \
-    "outside the supported wire-body floor" \
-    "wire_cbor_vec_nested_rejected"
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/wire_hashmap_bytes_key_rejected.hew" \
-    'duplicate-key insertion cannot release the caller-owned bytes key' \
-    "wire_hashmap_bytes_key_rejected"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/wire_hashmap_bytes_key_rejected.hew" \
-    1 \
-    "wire_hashmap_bytes_key_rejected"
 
 # ---------------------------------------------------------------------------
 # Reserved-name shadowing.

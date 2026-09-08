@@ -422,7 +422,7 @@ fn scalar_literal_payloads_use_their_exact_sir_constants() {
         .collect::<Vec<_>>();
     assert!(operations
         .iter()
-        .any(|operation| matches!(operation.kind, SemOpKind::ConstF64(value) if value.to_bits() == 1.5_f64.to_bits())));
+        .any(|operation| matches!(operation.kind, SemOpKind::ConstFloat(value) if value.to_bits() == 1.5_f64.to_bits())));
     assert!(operations
         .iter()
         .any(|operation| matches!(operation.kind, SemOpKind::ConstChar('x'))));
@@ -456,7 +456,7 @@ fn verifier_refuses_scalar_literals_with_forged_result_types() {
         .flat_map(|function| &mut function.blocks)
         .flat_map(|block| &mut block.ops)
     {
-        if matches!(operation.kind, SemOpKind::ConstF64(_)) {
+        if matches!(operation.kind, SemOpKind::ConstFloat(_)) {
             operation.results[0].ty = ResolvedTy::Char;
         } else if matches!(operation.kind, SemOpKind::ConstChar(_)) {
             operation.results[0].ty = ResolvedTy::F64;
@@ -467,7 +467,7 @@ fn verifier_refuses_scalar_literals_with_forged_result_types() {
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidConstType {
-            expected: "f64",
+            expected: "floating-point type",
             actual,
             ..
         } if actual == "char"
@@ -1013,4 +1013,60 @@ fn guard_cannot_consume_a_candidate_binding() {
         "{:#?}",
         lowered.statuses
     );
+}
+
+#[test]
+fn wire_schema_rejects_a_field_codec_for_another_value_type() {
+    let mut lowered = lower_source(
+        r#"
+        #[wire]
+        type WireRecordProbe { label: string @7, code: u8 @2 }
+        fn main() {
+            let message = WireRecordProbe { label: "owned", code: 7 };
+            let encoded = message.encode();
+            let decoded = WireRecordProbe.decode(encoded);
+            println(decoded.label);
+        }
+    "#,
+    );
+    assert_main_lowered(&lowered);
+    let mut changed = false;
+    for term in lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .map(|block| &mut block.terminator)
+    {
+        if let SemTerminator::WireCodec { plan, .. } = term {
+            let plan = std::sync::Arc::make_mut(plan);
+            let hew_sir::SemWireKind::Record { fields, .. } = &mut plan.kind else {
+                panic!("record codec");
+            };
+            std::sync::Arc::make_mut(&mut fields[0].value).ty = ResolvedTy::String;
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed);
+    assert!(verify_module(&lowered.module)
+        .iter()
+        .any(|diagnostic| matches!(
+            &diagnostic.kind, SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("wire child type disagrees with checked shape")
+        )));
+}
+
+#[test]
+fn text_wire_names_cannot_discard_another_field() {
+    let lowered = lower_source(
+        r#"
+        #[wire]
+        type Ambiguous { first: string @1 json("same"), second: string @2 json("same") }
+        fn main() { let text = Ambiguous { first: "first", second: "second" }.to_json(); }
+    "#,
+    );
+    assert!(lowered.statuses.iter().any(|status| matches!(&status.status,
+        SirLoweringStatus::Unsupported { reason } if reason.contains("wire JSON field name `same` is ambiguous")
+    )));
 }

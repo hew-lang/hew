@@ -105,7 +105,8 @@ impl<'a> HostExport<'a> {
                             ));
                         }
                     }
-                    PhysicalTerminator::Return { .. }
+                    PhysicalTerminator::WireCodec { .. }
+                    | PhysicalTerminator::Return { .. }
                     | PhysicalTerminator::Goto(_)
                     | PhysicalTerminator::Branch { .. }
                     | PhysicalTerminator::CheckedBinary { .. }

@@ -1924,21 +1924,17 @@ pub enum HirExprKind {
         receiver: Box<HirExpr>,
         yield_ty: ResolvedTy,
     },
-    /// Binary wire codec call on a `#[wire]` struct.
+    /// Checked binary or text wire codec call for one exact value type.
     ///
-    /// `Encode`: `value.encode() -> bytes` — `operand` is the receiver value;
-    /// codegen calls `__hew_serialize_<key>(value_ptr, &out_len)` and wraps the
-    /// returned malloc'd buffer into a refcounted `bytes` value.
+    /// All directions borrow their operand. `value_ty` is the exact checked
+    /// value encoded or decoded, including generic collection arguments.
     ///
-    /// `Decode`: `Type.decode(bytes) -> Type` — `operand` is the `bytes`
-    /// argument; codegen calls `__hew_deserialize_<key>(data, len, &struct_size)`
-    /// and loads the reconstructed value out of the malloc'd result.
-    ///
-    /// `value_ty` is the wire-struct type. Codegen derives the thunk key via
-    /// `mangle_resolved_ty` — the same encoder the actor message path uses — so
-    /// a direct `.encode()` and an actor send of the same type share one thunk.
-    /// Only the binary `encode`/`decode` methods reach here; the text-format
-    /// wire methods stay fail-closed (no thunk exists yet).
+    /// SIR resolves a shared wire schema from the checker layout table. Native
+    /// callbacks use the physical value layouts and cleanup glue for both
+    /// directions; text formats transcode through the same CBOR representation.
+    /// Binary decode failure raises `WireDecodeFailed`. Text decode returns
+    /// `Result<value_ty, string>` for malformed input and propagates callback
+    /// faults through ordinary cleanup.
     WireCodec {
         direction: WireCodecDirection,
         operand: Box<HirExpr>,

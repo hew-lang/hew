@@ -33639,6 +33639,7 @@ fn check_vec_index_element_type(
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
+                | ResolvedTy::Bytes
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
                 | ResolvedTy::Array(_, _)
@@ -33665,6 +33666,7 @@ fn check_vec_index_element_type(
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
+                | ResolvedTy::Bytes
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
                 | ResolvedTy::Array(_, _)
@@ -33719,7 +33721,7 @@ fn vec_index_unsupported_note(
             "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
              Supported element types for Vec range-slicing are: \
              bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-             usize, f32, f64, string, tuples, user-defined types, and \
+             usize, f32, f64, string, bytes, tuples, user-defined types, and \
              type-parameter elements."
         ),
         (false, true) => format!(
@@ -33732,7 +33734,7 @@ fn vec_index_unsupported_note(
             "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
              Supported element types for Vec scalar indexing are: \
              bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-             usize, f32, f64, string, tuples, type-parameter elements, \
+             usize, f32, f64, string, bytes, tuples, type-parameter elements, \
              and user-defined types (records, enums, \
              Duplex, etc.)."
         ),

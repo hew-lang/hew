@@ -5680,8 +5680,19 @@ fn select_arm_binds_its_source_with_from() {
         panic!("expected select");
     };
     assert_eq!(arms.len(), 2);
-    assert!(arms
-        .iter()
-        .all(|arm| matches!(arm.source.0, Expr::Await(_))));
+    // The `from` clause carries the source operand itself; nothing wraps it.
+    assert!(arms.iter().all(
+        |arm| matches!(&arm.source.0, Expr::Identifier(name) if name == "left"
+            || name == "right")
+    ));
     assert!(timeout.is_some());
+}
+
+/// Negative control for the clause above: the retired `=` spelling no longer
+/// parses as a select arm.
+#[test]
+fn select_arm_rejects_the_retired_equals_spelling() {
+    let parsed =
+        crate::parse("fn f() { let v = select { first = left => first, after 1s => 0 }; }");
+    assert!(!parsed.errors.is_empty(), "expected a parse error");
 }

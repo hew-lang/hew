@@ -1000,6 +1000,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
             | ActorOperation::SupervisorAwaitRestart { .. }
+            | ActorOperation::SupervisorAwaitClosed(_)
             | ActorOperation::SupervisorStop(_) => ActorId(u32::MAX),
         };
         let mut sources = Vec::new();
@@ -1018,6 +1019,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_store(self.active_status, status)
                 .llvm_ctx("record supervisor boundary status")?;
+            return self.emit_call_outcome(status, result, Some(normal), unwind);
+        }
+        if matches!(
+            operation,
+            ActorOperation::AwaitClosed(_) | ActorOperation::SupervisorAwaitClosed(_)
+        ) {
+            let [source] = sources.as_slice() else {
+                return Err(CodegenError::FailClosed(
+                    "termination wait requires one identity".into(),
+                ));
+            };
+            self.emit_actor_await_closed(*source, unwind)?;
+            for source in sources {
+                self.clear_owned(source)?;
+            }
+            let status = self.ctx.i32_type().const_zero();
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("record termination observation status")?;
             return self.emit_call_outcome(status, result, Some(normal), unwind);
         }
         let actor =
@@ -1053,15 +1073,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?;
                 self.ctx.i32_type().const_zero()
             }
-            ActorOperation::AwaitClosed(_) => {
-                let [source] = sources.as_slice() else {
-                    return Err(CodegenError::FailClosed(
-                        "actor wait requires one identity".into(),
-                    ));
-                };
-                self.emit_actor_await_closed(*source, unwind)?;
-                self.ctx.i32_type().const_zero()
-            }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
             ActorOperation::SelfHandle(_) => {
                 let result = result.ok_or_else(|| {
@@ -1084,9 +1095,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.store(result, value)?;
                 self.ctx.i32_type().const_zero()
             }
-            ActorOperation::SupervisorSpawn(_)
+            ActorOperation::AwaitClosed(_)
+            | ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
             | ActorOperation::SupervisorAwaitRestart { .. }
+            | ActorOperation::SupervisorAwaitClosed(_)
             | ActorOperation::SupervisorStop(_) => unreachable!("emitted above"),
             ActorOperation::StreamStart { message, .. } => {
                 self.emit_actor_stream_start(actor, message, &sources, unwind)?

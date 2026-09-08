@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-closed-observer"
+intent = "Wait-only closed observes a generic supervisor without stopping it, composes with concurrent close, and completes after child stop hooks."
+source = "cases/supervisor-closed-observer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "tree remains live\nchild stopped\ntree observed closed\n"
+stderr = ""
+exit = 0

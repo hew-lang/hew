@@ -551,6 +551,8 @@ pub enum ActorOperation {
     /// Stop the supervisor and every child; each child's stop hooks run before
     /// its terminal cleanup.
     SupervisorStop(crate::SupervisorId),
+    /// Observe supervisor reclamation without requesting shutdown.
+    SupervisorAwaitClosed(crate::SupervisorId),
     /// Wait until one declared child is Live again after a crash, or is
     /// permanently gone, then produce its role. The restart barrier: without
     /// it a caller cannot tell a pre-crash incarnation from its replacement.
@@ -571,7 +573,8 @@ impl ActorOperation {
         let (Self::SupervisorSpawn(id)
         | Self::SupervisorChild { supervisor: id, .. }
         | Self::SupervisorAwaitRestart { supervisor: id, .. }
-        | Self::SupervisorStop(id)) = self
+        | Self::SupervisorStop(id)
+        | Self::SupervisorAwaitClosed(id)) = self
         else {
             return Err("operation is not a supervisor boundary".into());
         };
@@ -678,6 +681,7 @@ impl ActorOperation {
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorAwaitRestart { .. }
+            | Self::SupervisorAwaitClosed(_)
             | Self::SupervisorStop(_) => return self.supervisor_signature(actors, supervisors),
         };
         let actor = actors
@@ -706,6 +710,7 @@ impl ActorOperation {
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorAwaitRestart { .. }
+            | Self::SupervisorAwaitClosed(_)
             | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),
             Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
             Self::SelfHandle(_) => (Vec::new(), actor.handle_ty.clone()),

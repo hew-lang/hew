@@ -132,6 +132,7 @@ pub(crate) struct SupervisorControl {
     runtime_id: RuntimeId,
     access_state: AtomicUsize,
     teardown_claimed: AtomicBool,
+    completion: Arc<crate::actor_native::NativeActorCompletion>,
     drain_mutex: Mutex<()>,
     drained: Condvar,
 }
@@ -149,9 +150,14 @@ impl SupervisorControl {
             runtime_id,
             access_state: AtomicUsize::new(0),
             teardown_claimed: AtomicBool::new(false),
+            completion: Arc::default(),
             drain_mutex: Mutex::new(()),
             drained: Condvar::new(),
         }
+    }
+
+    pub(crate) fn finish_terminal(&self) {
+        self.completion.finish(0);
     }
 
     pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {
@@ -999,6 +1005,18 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
     runtime
         .local_handles
         .pin_supervisor(runtime.runtime_id(), token)
+}
+
+/// Observe the stable control even after close has retired the direct route.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_completion(
+    token: HewLocalPidId,
+) -> Option<Arc<crate::actor_native::NativeActorCompletion>> {
+    let runtime = crate::runtime::rt_current_opt()?;
+    runtime.local_handles.state.access(|state| {
+        let control = state.controls.get(&token)?;
+        (control.runtime_id() == runtime.runtime_id()).then(|| Arc::clone(&control.completion))
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]

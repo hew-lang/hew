@@ -1,0 +1,41 @@
+actor Worker<T> {
+    var value: Option<T> = .None,
+    init(seed: T) { value = .Some(seed); }
+    #[on(stop)]
+    fn stopping() { println("child stopped"); }
+    receive fn get() -> T { let snapshot = value; snapshot.expect("worker initialized") }
+}
+
+supervisor Group<T>(seed: T) {
+    child worker: Worker<T>(seed: seed),
+}
+
+actor Progress {
+    var stage: i64 = 0,
+    receive fn set(next: i64) { stage = next; }
+    receive fn get() -> i64 { stage }
+}
+
+fn observe(group: LocalPid<Group<string>>, progress: LocalPid<Progress>) {
+    progress.set(1).expect("observer started");
+    closed(group);
+    progress.set(2).expect("observer finished");
+}
+
+fn main() {
+    let group = spawn Group(seed: "owned".to_upper());
+    let progress = spawn Progress();
+    let observer = fork observe(group, progress);
+    while progress.get().expect("progress") == 0 {}
+    assert(progress.get().expect("pending observer") == 1);
+    assert(group.worker.get().expect("live child") == "OWNED");
+    println("tree remains live");
+    let closing = fork close(group);
+    closed(group);
+    await closing;
+    await observer;
+    assert(progress.get().expect("completed observer") == 2);
+    closed(group);
+    close(progress);
+    println("tree observed closed");
+}

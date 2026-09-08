@@ -1905,12 +1905,12 @@ impl Checker {
                             self.record_submission_suspension(span, true);
                             return Ty::Unit;
                         }
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("`closed({name})` waiting for supervisor termination without requesting shutdown is not implemented"),
+                        self.actor_delivery_calls.insert(
+                            SpanKey::in_module(span, self.current_module_idx),
+                            crate::actor_delivery::ActorDeliveryCall::AwaitClosed,
                         );
-                        return Ty::Error;
+                        self.record_submission_suspension(span, true);
+                        return Ty::Unit;
                     }
                 }
                 if resolved.addresses_local_actor() {

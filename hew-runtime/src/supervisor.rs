@@ -1262,6 +1262,7 @@ unsafe fn close_supervisor_access_with_timeout(sup: *mut HewSupervisor, timeout:
 }
 
 fn finish_supervisor_reclamation(access: &ClosedSupervisorAccess) {
+    access.control.finish_terminal();
     // SAFETY: the runtime remains installed while supervisor reclamation runs.
     unsafe { &*access.handles }.remove_supervisor_control(&access.control);
 }

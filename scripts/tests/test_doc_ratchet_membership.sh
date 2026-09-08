@@ -88,7 +88,6 @@ BASELINE_EXPECTED="$TMP_ROOT/expected-baseline.txt"
 BASELINE_FAIL_IDS="$TMP_ROOT/fail-baseline.txt"
 NOW_PASS_IDS="$TMP_ROOT/fail-now-pass.txt"
 NEW_FAILURE_IDS="$TMP_ROOT/fail-new-failure.txt"
-STALE_EXPECTED="$TMP_ROOT/expected-stale.txt"
 
 touch "$FAIL_IDS" "$CALL_LOG" "$EMPTY_EXPECTED"
 
@@ -233,9 +232,7 @@ while IFS= read -r fence_id; do
     [[ -z "$fence_id" ]] && continue
     if ((baseline_count < 200)); then
         printf '%s\n' "$fence_id" >>"$BASELINE_FAIL_IDS"
-        checksum_output="$(cksum "$OUTDIR/${fence_id}.hew")"
-        read -r checksum _ <<<"$checksum_output"
-        printf '%s %s\n' "$fence_id" "$checksum" >>"$BASELINE_EXPECTED"
+        printf '%s\n' "$fence_id" >>"$BASELINE_EXPECTED"
         baseline_count=$((baseline_count + 1))
     elif [[ -z "$passing_id" ]]; then
         passing_id="$fence_id"
@@ -304,7 +301,7 @@ fi
 # recovery. It must fail closed even in ordinary PR mode.
 MISSING_EXPECTED="$TMP_ROOT/expected-missing-entry.txt"
 cp "$BASELINE_EXPECTED" "$MISSING_EXPECTED"
-printf 'missing-fence 1\n' >>"$MISSING_EXPECTED"
+printf 'missing-fence\n' >>"$MISSING_EXPECTED"
 run_harness "$MISSING_EXPECTED" "$BASELINE_FAIL_IDS" /dev/null
 if [[ "$HARNESS_STATUS" -ne 0 ]]; then
     pass "missing expected entry is rejected"
@@ -326,25 +323,11 @@ fi
 assert_contains "$HARNESS_OUTPUT" "UNEXPECTED: $passing_id" \
     "new-failure mutation names the exact fence"
 
-# Mutation 3: a tracked fence checksum drifts and must be rejected.
-first_entry=1
-while read -r fence_id checksum; do
-    [[ -z "$fence_id" ]] && continue
-    if ((first_entry == 1)); then
-        checksum=$((checksum + 1))
-        first_entry=0
-    fi
-    printf '%s %s\n' "$fence_id" "$checksum" >>"$STALE_EXPECTED"
-done <"$BASELINE_EXPECTED"
-
-run_harness "$STALE_EXPECTED" "$BASELINE_FAIL_IDS" /dev/null
-if [[ "$HARNESS_STATUS" -ne 0 ]]; then
-    pass "stale-metadata mutation is rejected"
-else
-    fail "stale-metadata mutation was accepted"
-fi
-assert_contains "$HARNESS_OUTPUT" "STALE METADATA: $first_failure" \
-    "stale-metadata mutation names the exact fence"
+# A fence id is a content hash (doc_fence_next_id in corpus-ratchet.sh), not a
+# tracked-separately checksum, so content drift under a listed id is not its
+# own mutation class any more: changed content simply mints a different id,
+# which the harness already reports through the ordinary MISSING-EXPECTED /
+# UNEXPECTED pair covered by mutations 1b and 2 above.
 
 echo ""
 echo "Doc-ratchet membership self-test: $PASSES passed, $FAILURES failed"

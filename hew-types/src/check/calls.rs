@@ -2541,76 +2541,35 @@ impl Checker {
                 builtin: Some(crate::BuiltinType::LambdaPid),
                 ..
             } if type_args.len() == 2 => {
-                let msg_ty = type_args[0].clone();
-                let reply_ty = type_args[1].clone();
-                // A multi-param lambda actor carries a Tuple message type
-                // (`actor |a: i64, b: string| { .. }` → `LambdaPid<(i64, string), R>`).
-                // Its call surface is the N-arg form `handle(a, b)`: each call
-                // argument checks against its tuple component and each crosses
-                // the actor boundary independently (per-arg Send enforcement).
-                // Every other shape — including a single literal-tuple argument
-                // for a single-tuple-param lambda — stays on the one-message
-                // path below.
-                let multi_component_tys: Option<Vec<Ty>> = match &msg_ty {
-                    Ty::Tuple(parts) if parts.len() > 1 && parts.len() == args.len() => {
-                        Some(parts.clone())
-                    }
-                    _ => None,
+                self.check_lambda_actor_call(&resolved, type_args, args, span, None)
+            }
+            // A delivery view over a lambda handle: `mailbox(handle, ..)` and
+            // `policy(handle, ..)` carry the same `(msg)` call surface the
+            // handle has, and decide only how the submission is admitted.
+            Ty::Named { builtin: None, .. }
+                if crate::actor_delivery::sender_parts(&resolved)
+                    .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
+                    .is_some_and(|(target, _)| target.as_lambda_pid().is_some()) =>
+            {
+                let one_way = crate::actor_delivery::sender_parts(&resolved).is_some();
+                let (target, policy) = crate::actor_delivery::sender_parts(&resolved)
+                    .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
+                    .expect("checked view protocol");
+                let target = target.clone();
+                let Ty::Named {
+                    args: type_args, ..
+                } = &target
+                else {
+                    unreachable!("a lambda view target is a `LambdaPid<M, R>`")
                 };
-                if let Some(parts) = multi_component_tys {
-                    for (arg, part) in args.iter().zip(parts.iter()) {
-                        let (expr, sp) = arg.expr();
-                        let actual = self.check_against(expr, sp, part);
-                        // Enforce Send per argument (E_DUPLEX_NON_SEND).
-                        if !matches!(actual, Ty::Error | Ty::Var(_))
-                            && !self.registry.implements_marker(&actual, MarkerTrait::Send)
-                        {
-                            self.report_error(
-                                TypeErrorKind::InvalidSend,
-                                sp,
-                                format!(
-                                    "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
-                                    actual.user_facing()
-                                ),
-                            );
-                        }
-                    }
-                } else {
-                    // Arity: exactly one call argument (the message).
-                    self.check_arity(args, 1, "lambda actor handle", span);
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        let actual = self.check_against(expr, sp, &msg_ty);
-                        // Enforce Send on the call-site argument (E_DUPLEX_NON_SEND).
-                        if !matches!(actual, Ty::Error | Ty::Var(_))
-                            && !self.registry.implements_marker(&actual, MarkerTrait::Send)
-                        {
-                            self.report_error(
-                                TypeErrorKind::InvalidSend,
-                                sp,
-                                format!(
-                                    "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
-                                    actual.user_facing()
-                                ),
-                            );
-                        }
-                    }
-                }
-                // `handle(msg)` is the completion call: it waits for the
-                // handler exactly as a call on a named actor's handle does, so
-                // it yields the same envelope whether or not the reply is unit.
-                // A one-way submission goes through `mailbox(handle, ..)`.
-                let argument_order = (0..args.len()).collect();
-                self.actor_method_dispatch.insert(
-                    SpanKey::in_module(span, self.current_module_idx),
-                    ActorMethodKind::Ask {
-                        method_id: crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string(),
-                        reply_ty: reply_ty.clone(),
-                        policy: crate::actor_delivery::SendPolicy::Wait,
-                        argument_order,
-                    },
-                );
-                Ty::result(reply_ty, Ty::actor_error(Ty::never_type()))
+                let type_args = type_args.clone();
+                self.check_lambda_actor_call(
+                    &target,
+                    &type_args,
+                    args,
+                    span,
+                    Some((policy, one_way)),
+                )
             }
             _ => {
                 // Synthesize args even when the callee type is already an error/var so that
@@ -2634,6 +2593,131 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    /// Type-check `handle(msg)` on a lambda-actor handle, or the same call
+    /// through one of its delivery views.
+    ///
+    /// A bare handle and a `policy(..)` view both complete: they wait for the
+    /// handler and yield `Result<R, ActorError>`. A `mailbox(..)` view submits
+    /// one way, so it yields the delivery envelope and refuses a lambda that
+    /// owes its caller a reply.
+    pub(super) fn check_lambda_actor_call(
+        &mut self,
+        target: &Ty,
+        type_args: &[Ty],
+        args: &[CallArg],
+        span: &Span,
+        view: Option<(crate::actor_delivery::SendPolicy, bool)>,
+    ) -> Ty {
+        let msg_ty = type_args[0].clone();
+        let reply_ty = type_args[1].clone();
+        // A multi-param lambda actor carries a Tuple message type
+        // (`actor |a: i64, b: string| { .. }` -> `LambdaPid<(i64, string), R>`).
+        // Its call surface is the N-arg form `handle(a, b)`: each call
+        // argument checks against its tuple component and each crosses
+        // the actor boundary independently (per-arg Send enforcement).
+        // Every other shape — including a single literal-tuple argument
+        // for a single-tuple-param lambda — stays on the one-message
+        // path below.
+        let multi_component_tys: Option<Vec<Ty>> = match &msg_ty {
+            Ty::Tuple(parts) if parts.len() > 1 && parts.len() == args.len() => Some(parts.clone()),
+            _ => None,
+        };
+        let payload = if let Some(parts) = multi_component_tys {
+            for (arg, part) in args.iter().zip(parts.iter()) {
+                let (expr, sp) = arg.expr();
+                let actual = self.check_against(expr, sp, part);
+                self.enforce_lambda_actor_message_send(&actual, sp);
+            }
+            parts
+        } else {
+            // Arity: exactly one call argument (the message).
+            self.check_arity(args, 1, "lambda actor handle", span);
+            if let Some(arg) = args.first() {
+                let (expr, sp) = arg.expr();
+                let actual = self.check_against(expr, sp, &msg_ty);
+                self.enforce_lambda_actor_message_send(&actual, sp);
+            }
+            vec![msg_ty]
+        };
+        let method_id = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string();
+        let argument_order = (0..args.len()).collect();
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let Some((policy, one_way)) = view else {
+            // `handle(msg)` is the completion call: it waits for the
+            // handler exactly as a call on a named actor's handle does, so
+            // it yields the same envelope whether or not the reply is unit.
+            self.actor_method_dispatch.insert(
+                key,
+                ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty: reply_ty.clone(),
+                    policy: crate::actor_delivery::SendPolicy::Wait,
+                    argument_order,
+                },
+            );
+            return Ty::result(reply_ty, Ty::actor_error(Ty::never_type()));
+        };
+        if !one_way {
+            self.actor_method_dispatch.insert(
+                key,
+                ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty: reply_ty.clone(),
+                    policy,
+                    argument_order,
+                },
+            );
+            self.record_submission_suspension(span, true);
+            return Ty::result(reply_ty, Ty::actor_error(Ty::never_type()));
+        }
+        // A mailbox view submits and nothing more, so a lambda that answers
+        // its caller cannot be called through one.
+        if !matches!(self.subst.resolve(&reply_ty), Ty::Unit) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "this lambda actor returns a value, so it cannot be called through a \
+                 mailbox view, which only submits; call the handle to wait for the reply, \
+                 or `fork` the call to run it concurrently"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+        self.actor_method_dispatch.insert(
+            key,
+            ActorMethodKind::Message {
+                method_id,
+                policy,
+                argument_order,
+            },
+        );
+        self.record_submission_suspension(span, policy.may_suspend());
+        crate::actor_delivery::result_type(crate::actor_delivery::message_type(
+            target.clone(),
+            Ty::Tuple(payload),
+            policy,
+        ))
+    }
+
+    /// A lambda actor call crosses an actor boundary, so its message must be
+    /// `Send` (`E_DUPLEX_NON_SEND`).
+    fn enforce_lambda_actor_message_send(&mut self, actual: &Ty, sp: &Span) {
+        if matches!(actual, Ty::Error | Ty::Var(_))
+            || self.registry.implements_marker(actual, MarkerTrait::Send)
+        {
+            return;
+        }
+        self.report_error(
+            TypeErrorKind::InvalidSend,
+            sp,
+            format!(
+                "message type `{}` is not Send; lambda actor calls cross an actor boundary \
+                 (E_DUPLEX_NON_SEND)",
+                actual.user_facing()
+            ),
+        );
     }
 
     pub(super) fn synthesize_select_source(

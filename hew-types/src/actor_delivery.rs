@@ -169,7 +169,7 @@ pub fn message_parts(ty: &Ty) -> Option<(&Ty, &Ty, SendPolicy)> {
     let [target, payload, witness] = args.as_slice() else {
         return None;
     };
-    if name != MESSAGE_TYPE || target.as_local_actor_ref().is_none() {
+    if name != MESSAGE_TYPE || !target.addresses_local_actor() {
         return None;
     }
     Some((target, payload, SendPolicy::from_witness(witness)?))
@@ -192,7 +192,7 @@ fn view_parts<'a>(ty: &'a Ty, view: &str) -> Option<(&'a Ty, SendPolicy)> {
     let [target, witness] = args.as_slice() else {
         return None;
     };
-    if name != view || target.as_local_actor_ref().is_none() {
+    if name != view || !target.addresses_local_actor() {
         return None;
     }
     Some((target, SendPolicy::from_witness(witness)?))

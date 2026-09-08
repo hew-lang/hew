@@ -4891,10 +4891,20 @@ fn verify_terminator_shape(
                         .is_some_and(|signature| {
                             resumes.len() == 1
                                 && inputs.len() == signature.params.len()
-                                && inputs.iter().zip(&signature.params).all(|(input, parameter)| {
-                                    input.decision == crate::BoundaryDecision::Move
-                                        && types.get(&input.operand.value) == Some(&parameter.ty)
-                                })
+                                // The target is read to address the actor and
+                                // is retained nowhere past the reply, so it is
+                                // borrowed; every request argument transfers.
+                                && inputs.iter().zip(&signature.params).enumerate().all(
+                                    |(index, (input, parameter))| {
+                                        let expected = if index == 0 {
+                                            crate::BoundaryDecision::Borrow
+                                        } else {
+                                            crate::BoundaryDecision::Move
+                                        };
+                                        input.decision == expected
+                                            && types.get(&input.operand.value) == Some(&parameter.ty)
+                                    },
+                                )
                                 && matches!(result, crate::CallResult::Value(value) if value.ty == signature.return_ty)
                         })
                 }

@@ -1,0 +1,64 @@
+// A lambda actor's `LambdaPid<M, R>` handle takes the same two delivery views
+// a named actor's pid takes. `mailbox(handle, ..)` submits one way and yields
+// the delivery envelope; `policy(handle, ..)` completes like the bare handle
+// and chooses only how a full mailbox is answered. The handle is an ordinary
+// value throughout: it lives in a record field and in a `Vec`, is called from
+// both, and is released exactly once.
+type Job {
+    name: string,
+    run: LambdaPid<i64, i64>,
+}
+
+fn main() {
+    // A one-way view over a lambda that owes its caller nothing.
+    let log = actor |line: string| {
+        println(line);
+    };
+    let inbox = mailbox(log, on_full: .Reject);
+    let submission = inbox("submitted");
+    // Close waits for the handler, so the submitted line is printed before
+    // the caller reports the delivery outcome.
+    close(log);
+    match submission {
+        .Ok(_) => println("accepted"),
+        .Err(_) => panic("the submission was refused"),
+    }
+
+    // A completion view: the call waits for the handler exactly as a call on
+    // the handle does, under the admission policy the view carries.
+    let scale = actor |n: i64| -> i64 {
+        return n * 3;
+    };
+    let admitted = policy(scale, on_full: .Reject);
+    match admitted(7) {
+        .Ok(v) => println(v),
+        .Err(_) => panic("the completion view refused its call"),
+    }
+    // The bare handle still completes the same way.
+    match scale(8) {
+        .Ok(v) => println(v),
+        .Err(_) => panic("the handle refused its call"),
+    }
+    close(scale);
+
+    // A handle stored in a record field answers `job.run(..)` directly.
+    let job = Job {
+        name: "doubler",
+        run: actor |n: i64| -> i64 { n * 2 },
+    };
+    match job.run(21) {
+        .Ok(v) => println(f"{job.name} {v}"),
+        .Err(_) => panic("the stored handle refused its call"),
+    }
+    close(job.run);
+
+    // A handle read out of a `Vec` is borrowed, not moved: the call addresses
+    // the actor through the borrow and the vector keeps its element.
+    let workers = [actor |n: i64| -> i64 { n + 100 }];
+    let worker = workers[0];
+    match worker(5) {
+        .Ok(v) => println(v),
+        .Err(_) => panic("the borrowed handle refused its call"),
+    }
+    println("done");
+}

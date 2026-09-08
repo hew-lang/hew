@@ -51,14 +51,17 @@ impl Checker {
             .or_else(|| delivery::policy_view_parts(&target_ty))
             .map_or(&target_ty, |(target, _)| target)
             .clone();
-        let Some(actor_ty) = target_ty.as_local_actor_ref() else {
+        // A lambda actor's handle carries its protocol rather than an actor
+        // nominal, but it addresses an actor the same way, so it takes the
+        // same two views.
+        if !target_ty.addresses_local_actor() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &target.1,
                 "a delivery view requires a local actor reference".to_string(),
             );
             return Ty::Error;
-        };
+        }
         let on_full_ty = delivery::nominal(delivery::ON_FULL_TYPE, Vec::new());
         self.check_against(&value.0, &value.1, &on_full_ty);
         let policy = match &value.0 {
@@ -95,7 +98,7 @@ impl Checker {
             return Ty::Error;
         }
         if policy == SendPolicy::ReplaceLatest {
-            let permits_replacement = matches!(actor_ty, Ty::Named { name, .. }
+            let permits_replacement = matches!(target_ty.as_local_actor_ref(), Some(Ty::Named { name, .. })
                 if matches!(self.actor_overflow_policies.get(name), Some(hew_parser::ast::OverflowPolicy::Coalesce { .. })));
             if !permits_replacement {
                 self.report_error(
@@ -129,10 +132,23 @@ impl Checker {
         if let Some((target, _)) =
             delivery::sender_parts(ty).or_else(|| delivery::policy_view_parts(ty))
         {
-            let actor = target
-                .as_local_actor_ref()
-                .expect("checked view protocol")
-                .clone();
+            // A lambda actor answers to `view(msg)` and nothing else: it
+            // declares no named handler a method call could select.
+            let Some(actor) = target.as_local_actor_ref().cloned() else {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "a lambda actor has no method `{method}`; call the view \
+                         itself: `view(message)`"
+                    ),
+                );
+                return Some(Ty::Error);
+            };
             return Some(self.check_named_method_fallback(
                 &actor,
                 method,
@@ -231,6 +247,14 @@ impl Checker {
         result: Ty,
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
+        // A lambda actor's dispatch is complete when it is recorded: it names
+        // no `receive fn` this pass could resolve arguments against.
+        if matches!(self.actor_method_dispatch.get(&key),
+            Some(ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. })
+                if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+        {
+            return result;
+        }
         let (method_id, reply_ty) = match self.actor_method_dispatch.get(&key).cloned() {
             Some(ActorMethodKind::Message { method_id, .. }) => (method_id, None),
             Some(ActorMethodKind::Ask {

@@ -553,6 +553,76 @@ mod tests {
         assert!(ops.contains(&"i64.checked_add"));
     }
 
+    #[test]
+    fn negated_i64_min_literal_folds_to_one_constant() {
+        // The native carrier keeps `-9223372036854775808` as a unary negation
+        // over its magnitude. `i64.neg` cannot build i64::MIN from any positive
+        // i64, so the emitter must fold the pair into a single constant.
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(
+            "fn main() -> i64 { let z: i64 = -9223372036854775808; 0 }",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "i64::MIN must be admitted: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let opcodes: Vec<&str> = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .map(|instruction| instruction.op.as_str())
+            .collect();
+        assert!(
+            !opcodes.contains(&"i64.neg"),
+            "the literal must be folded, not negated at runtime: {opcodes:?}"
+        );
+        let constants: Vec<String> = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| instruction.op == "const.i64")
+            .flat_map(|instruction| &instruction.args)
+            .map(|operand| format!("{operand:?}"))
+            .collect();
+        assert!(
+            constants
+                .iter()
+                .any(|operand| operand.contains("-9223372036854775808")),
+            "i64::MIN must appear as one constant: {constants:?}"
+        );
+    }
+
+    #[test]
+    fn literal_outside_i64_is_rejected_by_sandbox_admission() {
+        // The sandbox VM's integers are i64. Native admits the full u64 range,
+        // so the sandbox refuses the program rather than encoding u64::MAX as
+        // a negative const.i64.
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(
+            "fn main() -> i64 { let big: u64 = 18446744073709551615; 0 }",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == "error" && d.message.contains("outside the i64 range")),
+            "u64::MAX must be refused by admission: {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_none(),
+            "a refused program must emit no bytecode"
+        );
+    }
+
     /// Bytecode for one actor handler, with every span reference erased.
     ///
     /// Two programs that differ only in how they spell a state access carry

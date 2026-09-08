@@ -1847,6 +1847,19 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Expr::Binary { left, op, right } => self.lower_binary(left, *op, right, span.clone()),
             Expr::Unary { op, operand } => {
+                // Fold `-<int literal>` into one constant. `i64::MIN` cannot be
+                // built as `i64.neg` of any positive `i64`, and admission has
+                // already proven the negated value fits.
+                if *op == hew_parser::ast::UnaryOp::Negate {
+                    if let Expr::Literal(inner @ Literal::Integer { .. }) = &operand.0 {
+                        let folded = const_literal(&Expr::Unary {
+                            op: *op,
+                            operand: Box::new((Expr::Literal(inner.clone()), operand.1.clone())),
+                        })
+                        .expect("negating an integer literal yields a literal");
+                        return Ok(self.lower_literal(&folded, span.clone()));
+                    }
+                }
                 let value = self.lower_expr(operand)?;
                 if *op == hew_parser::ast::UnaryOp::Negate {
                     let ty = self.ty_for_expr(expr);
@@ -2722,10 +2735,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         match literal {
             Literal::Integer { value, .. } => {
                 let dst = self.temp_local(&Ty::I64, Some(span.clone()));
-                // Admission already rejected anything outside `i64`; saturating
-                // here keeps the emitter total without inventing a value that
-                // could reach a running program.
-                let value = i64::try_from(*value).unwrap_or(i64::MAX);
+                // Admission runs before emission and rejects every integer
+                // literal outside `i64`.
+                let value = i64::try_from(*value).expect("admission rejects literals outside i64");
                 self.emit_instruction(
                     "const.i64",
                     Some(dst.clone()),

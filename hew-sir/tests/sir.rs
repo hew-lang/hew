@@ -341,6 +341,74 @@ fn verifier_admits_a_consuming_exhaustive_variant_switch() {
     );
 }
 
+/// One `i64` function whose first operation is an integer constant.
+fn integer_constant_module() -> SemModule {
+    module(vec![own_kind_function(OwnKind::None, OwnKind::None)])
+}
+
+#[test]
+fn verifier_refuses_an_integer_constant_outside_its_result_type() {
+    // The constant's exact mathematical value must be admitted by its result
+    // type. u64::MAX typed I64 is the value that used to be unrepresentable
+    // and would now silently become -1 downstream.
+    let mut module = integer_constant_module();
+    let SemOpKind::ConstInteger(value) = &mut module.functions[0].blocks[0].ops[0].kind else {
+        panic!("fixture must contain an integer constant");
+    };
+    *value = i128::from(u64::MAX);
+
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidConstType { actual, .. }
+                if actual.contains("18446744073709551615") && actual.contains("i64")
+        )),
+        "u64::MAX typed i64 must be refused: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn verifier_refuses_an_integer_constant_one_past_u64_max() {
+    let mut module = integer_constant_module();
+    module.functions[0].blocks[0].ops[0].results[0].ty = ResolvedTy::U64;
+    let SemOpKind::ConstInteger(value) = &mut module.functions[0].blocks[0].ops[0].kind else {
+        panic!("fixture must contain an integer constant");
+    };
+    *value = i128::from(u64::MAX) + 1;
+
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidConstType { actual, .. }
+                if actual.contains("18446744073709551616")
+        )),
+        "one past u64::MAX must be refused: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn verifier_admits_u64_max_typed_u64() {
+    // The negative control for the two refusals above: the same value with the
+    // type that does admit it must not be flagged.
+    let mut module = integer_constant_module();
+    module.functions[0].blocks[0].ops[0].results[0].ty = ResolvedTy::U64;
+    let SemOpKind::ConstInteger(value) = &mut module.functions[0].blocks[0].ops[0].kind else {
+        panic!("fixture must contain an integer constant");
+    };
+    *value = i128::from(u64::MAX);
+
+    assert!(
+        !verify_module(&module).iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidConstType { .. }
+        )),
+        "u64::MAX typed u64 must verify: {:#?}",
+        verify_module(&module)
+    );
+}
+
 #[test]
 fn verifier_refuses_a_variant_switch_with_incomplete_coverage() {
     let mut module = exhaustive_choice_switch();

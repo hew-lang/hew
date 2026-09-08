@@ -368,6 +368,17 @@ pub fn canonical_source_module_identity(
     requested_dotted: &str,
     source_paths: &[PathBuf],
 ) -> String {
+    // Directory-module peers are alternate physical spellings of the same
+    // shipped module.  Resolve their owner from the trusted source path so a
+    // direct `std.net.http.http_client` import cannot create a second nominal
+    // owner beside the assembled `std.net.http` module.
+    if let Some(owner) = source_paths
+        .iter()
+        .find_map(|source| canonical_stdlib_module_for_source(source))
+    {
+        return owner;
+    }
+
     if requested_dotted == "std.channel.channel"
         && source_paths
             .iter()
@@ -1191,6 +1202,22 @@ mod tests {
         assert_eq!(
             canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew")).as_deref(),
             Some("std.io.scanner")
+        );
+    }
+
+    #[test]
+    fn canonical_source_owner_follows_directory_peer_layout() {
+        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        assert_eq!(
+            canonical_source_module_identity(
+                "std.net.http.http_client",
+                &[stdlib.join("net/http/http_client.hew")]
+            ),
+            "std.net.http"
+        );
+        assert_eq!(
+            canonical_source_module_identity("std.net.http", &[stdlib.join("net/http/http.hew")]),
+            "std.net.http"
         );
     }
 

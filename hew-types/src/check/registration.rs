@@ -10402,11 +10402,6 @@ impl Checker {
                             )
                         },
                     );
-                    let canonical_short = canonical_owner
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(&canonical_owner)
-                        .to_string();
                     let registry_module = self
                         .identity
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
@@ -10416,10 +10411,18 @@ impl Checker {
                             std::slice::from_ref(&source_path),
                         );
                     }
-                    let short = decl
-                        .module_alias
-                        .clone()
-                        .unwrap_or_else(|| canonical_short.clone());
+                    // Preserve the importer's lexical module binding even
+                    // when the selected source belongs to a directory
+                    // module whose canonical owner has a different leaf
+                    // (`http_client` -> `http`). The binding maps to the
+                    // canonical owner below; it must not be renamed by
+                    // source canonicalisation.
+                    let requested_short = module_path
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&module_path)
+                        .to_string();
+                    let short = decl.module_alias.clone().unwrap_or(requested_short);
 
                     // Registry-backed stdlib imports can also carry a resolved
                     // Hew source surface.  Grant lifecycle authority only when
@@ -10601,7 +10604,7 @@ impl Checker {
                         self.register_resolved_stdlib_hew_source(
                             decl,
                             &module_path,
-                            &canonical_short,
+                            &short,
                             &module_full_path,
                             resolved_items,
                             StdlibBarePublication::Import(&decl.spec),

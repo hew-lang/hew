@@ -1599,6 +1599,33 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     hew_parser::module::ModuleId::new(segments)
 }
 
+/// Resolve a module import of a directory peer through that directory's
+/// canonical entry file before parsing its source set. A peer such as
+/// `http_client.hew` is still a valid import spelling, but loading it as an
+/// independent source would omit the entry module and make the result depend
+/// on import order once both spellings canonicalise to one graph owner.
+fn canonical_directory_module_entry_source(source: &Path) -> PathBuf {
+    let Some(parent) = source.parent() else {
+        return source.to_path_buf();
+    };
+    let Some(directory_name) = parent.file_name().and_then(|name| name.to_str()) else {
+        return source.to_path_buf();
+    };
+    let Some(file_stem) = source.file_stem().and_then(|name| name.to_str()) else {
+        return source.to_path_buf();
+    };
+    if directory_name == file_stem {
+        return source.to_path_buf();
+    }
+
+    let entry = parent.join(format!("{directory_name}.hew"));
+    if entry.is_file() {
+        entry.canonicalize().unwrap_or(entry)
+    } else {
+        source.to_path_buf()
+    }
+}
+
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
 ) -> Option<hew_parser::module::ModuleId> {
@@ -2022,6 +2049,10 @@ fn resolve_file_imports_internal(
     let cwd_crosses_root = source_hew_root.is_some() && cwd_hew_root != source_hew_root;
 
     for idx in &import_indices {
+        let is_module_import = matches!(
+            &items[*idx].0,
+            Item::Import(decl) if !decl.path.is_empty()
+        );
         let canonical = match &items[*idx].0 {
             Item::Import(decl) if decl.file_path.is_some() => {
                 let file_path = decl.file_path.as_ref().expect("checked above");
@@ -2209,7 +2240,15 @@ fn resolve_file_imports_internal(
                 }
 
                 if let Some(canonical) = resolved.into_iter().next() {
-                    canonical
+                    // Resolve a directory peer to its entry before loading
+                    // the completed import. This makes the physical source
+                    // owner unique and ensures a peer-first import receives
+                    // the entry plus every peer file.
+                    if is_module_import {
+                        canonical_directory_module_entry_source(&canonical)
+                    } else {
+                        canonical
+                    }
                 } else {
                     if let Some(package_dir) = installed_package_dir.filter(|dir| dir.is_dir()) {
                         let expected = package_dir.join(format!("{last}.hew"));
@@ -2905,13 +2944,14 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_file_with_state, check_program, checker_search_paths,
+        build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
         hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
         parse_source, retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
         run_file_frontend_to_typecheck_for_migration, DiagnosticPolicy, FrontendDiagnostic,
-        FrontendDiagnosticKind, FrontendOptions, Session, SessionTarget,
+        FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
+    use std::collections::{HashMap, HashSet};
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -3356,6 +3396,89 @@ mod tests {
             "a directly checked peer must share its directory module entry: {:#?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn stdlib_directory_peer_imports_share_one_complete_module_owner() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root")
+            .to_path_buf();
+
+        for imports in [
+            "import std.net.http;\nimport std.net.http.http_client;\n",
+            "import std.net.http.http_client;\nimport std.net.http;\n",
+            "import std.net.http.http_client;\n",
+        ] {
+            let dir = tempfile::tempdir().expect("create module-owner fixture");
+            let input = write_source(
+                dir.path(),
+                "main.hew",
+                &format!("{imports}\nfn main() {{}}\n"),
+            );
+            let source = fs::read_to_string(&input).expect("read module-owner fixture");
+            let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
+            let mut ctx = ImportResolutionContext {
+                in_progress_imports: HashSet::new(),
+                resolved_imports: HashMap::new(),
+                manifest_deps: None,
+                extra_pkg_path: None,
+                locked_versions: None,
+                package_name: None,
+                project_dir: dir.path(),
+                module_search_paths: Some(std::slice::from_ref(&repo_root)),
+            };
+
+            let graph = build_module_graph(
+                Path::new(&input),
+                &mut program.items,
+                program.module_doc.clone(),
+                &mut ctx,
+            )
+            .expect("stdlib peer imports should build a module graph");
+            let http_id = hew_parser::module::ModuleId::new(
+                ["std", "net", "http"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            );
+            let peer_id = hew_parser::module::ModuleId::new(
+                ["std", "net", "http", "http_client"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            );
+            let http = graph
+                .modules
+                .get(&http_id)
+                .expect("the canonical std.net.http module should be present");
+            assert!(
+                !graph.modules.contains_key(&peer_id),
+                "the peer must not become a second graph owner: {:?}",
+                graph.modules.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                http.source_paths
+                    .iter()
+                    .any(|path| path.ends_with("std/net/http/http.hew")),
+                "the canonical module must retain its entry source: {:?}",
+                http.source_paths
+            );
+            assert!(
+                http.source_paths
+                    .iter()
+                    .any(|path| path.ends_with("std/net/http/http_client.hew")),
+                "the canonical module must retain its peer source: {:?}",
+                http.source_paths
+            );
+            assert!(
+                http.items.iter().any(|(item, _)| matches!(
+                    item,
+                    Item::TypeDecl(decl) if decl.name == "Response"
+                )),
+                "peer-only imports must load the complete package item set"
+            );
+        }
     }
 
     /// Two peer files of one directory module that claim the same assembled

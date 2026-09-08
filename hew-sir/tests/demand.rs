@@ -489,6 +489,7 @@ fn unreached_headers_publish_nested_record_and_variant_shapes() {
     let (hir, facts) = lower_hir(
         r#"
         type Payload { text: string }
+        fn unrelated<Payload>(value: Payload) -> Payload { value }
         fn stranded(value: Result<Option<Option<Payload>>, string>) {
             defer { println("unreached"); }
         }
@@ -510,7 +511,7 @@ fn unreached_headers_publish_nested_record_and_variant_shapes() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "stranded")
+        .find(|callable| callable.declaration == declaration_of(&hir, "stranded"))
         .expect("the unreached declaration must retain its admitted header");
     let result = lowered
         .module

@@ -408,6 +408,11 @@ pub fn run_layout_mono_pass(
         all_type_params.extend(type_params);
     }
 
+    // A resolved declaration remains concrete even when another declaration
+    // uses the same spelling for a parameter. The walked function's own
+    // residual domain is checked separately before this borrowed-name set.
+    all_type_params
+        .retain(|name| !record_decls.contains_key(name) && !enum_decls.contains_key(name));
     let mut disc = Discovery {
         record_decls: &record_decls,
         enum_decls: &enum_decls,

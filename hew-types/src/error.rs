@@ -959,16 +959,13 @@ pub enum TypeErrorKind {
         name: String,
     },
     /// A regular fn-closure attempted to capture a lambda-actor handle
-    /// (`Duplex<S, R>`) from an enclosing scope and call it with call syntax.
+    /// (`LambdaPid<M, R>`) from an enclosing scope and call it with call syntax.
     ///
     /// Lambda-actor handles have no materialization protocol through a closure
-    /// capture env: the MIR routing discriminator (`Place::LambdaActorHandle`)
-    /// is attached to the spawning-scope slot, not to the env-loaded copy, and
-    /// the runtime ABI (`hew_lambda_actor_send` vs `hew_duplex_send`) cannot
-    /// be selected without it. Until a full env-materialization protocol exists,
-    /// fn-closure capture of lambda handles must be refused at the checker
-    /// boundary so the permissive MIR path (`lower_lambda_actor_call` via
-    /// `capture_env_sources`) is never silently reached.
+    /// capture env: the handle's release is owned by its spawning-scope slot,
+    /// not by an env-loaded copy, so a captured copy would release the wrapper
+    /// twice. Until a full env-materialization protocol exists, fn-closure
+    /// capture of lambda handles is refused at the checker boundary.
     ///
     /// Envelope code: `E_CLOSURE_CAPTURES_LAMBDA_HANDLE`.
     ClosureCapturesDuplexHandle {

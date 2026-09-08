@@ -2370,9 +2370,9 @@ pub struct HirMatchArmBinding {
 ///
 /// The HIR `captures` field is the producer for the MIR
 /// `LambdaCapture` side-table; the structural fail-closed checker in
-/// `hew-mir` rejects malformed shapes (Weak on non-LambdaActorHandle,
-/// multiple Weak captures on the same handle) that would otherwise
-/// reach codegen.
+/// `hew-mir` rejects malformed shapes (Weak on a non-lambda-actor
+/// handle, multiple Weak captures on the same handle) that would
+/// otherwise reach codegen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLambdaCapture {
     /// The captured binding's id in the enclosing scope.

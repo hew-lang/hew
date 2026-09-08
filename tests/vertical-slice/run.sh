@@ -3065,17 +3065,6 @@ fi
 # over-read, or the run-time wrapper leak. The runnable surface now
 # pins all four of those.
 
-# The legacy low-level constructor has no valid body/state runtime ABI. It
-# must fail closed with the supported actor-literal construction syntax.
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/lambda_actor_constructor.hew" \
-    1 \
-    "lambda actor constructor"
-grep -qF \
-    "call to \`std.concurrency.lambda_actor.LambdaActorHandle.new\` has no MIR body or runtime-ABI lowering; only module functions, extern fns, monomorphisation instantiations, and recognised runtime symbols are callable here" \
-    "${reject_output}" ||
-    record_failure "lambda_actor_constructor" "diagnostic missing"
-
 # Accept: send-shaped lambda actor call dispatch — exercises spawn,
 # `hew_lambda_actor_new`, env-less body synthesis, tell-send, and the
 # wrapper-free path on release at process exit.
@@ -3325,7 +3314,7 @@ run_accept_expect_status "stream_pipe_roundtrip" 5
 
 # Accept + run: `.send()` on a lambda-actor handle delivers the message.
 # Lambda-actor handles are `Duplex<Msg, Reply>` underneath; `.send(msg)` on a
-# `LambdaActorHandle` Place routes to the lambda-actor ABI
+# `LambdaPid` handle type routes to the lambda-actor ABI
 # (`hew_lambda_actor_send`), not the raw-duplex `hew_duplex_send` (which would
 # type-pun the handle and silently drop the message). Statement-context send is
 # fire-and-forget: the actor receives 42 and prints it.
@@ -3342,7 +3331,7 @@ run_accept_expect_status_and_stdout "lambda_send_result_ok" 7
 
 # Accept + run: explicit `.close()` on a LambdaPid handle — statement context.
 # Sends a message then explicitly releases the handle via `hew_lambda_actor_release`
-# (routed by Place::LambdaActorHandle in lower_duplex_close). Stdout "42" proves
+# (routed from the LambdaPid handle type in lower_duplex_close). Stdout "42" proves
 # the message was delivered before the release.
 run_accept_expect_stdout "lambda_close"
 

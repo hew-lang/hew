@@ -2340,10 +2340,9 @@ impl Checker {
             // Authority: checker (this site). MIR has a defence-in-depth guard at
             // `materialize_closure_env` that names this site as authoritative. The
             // rejection is deliberate: there is no env-materialization protocol for
-            // lambda-actor handles yet — the MIR routing discriminator
-            // (`Place::LambdaActorHandle`) is bound to the spawning-scope slot, not
-            // to an env-loaded copy, so emitting the capture would silently
-            // misroute to `hew_duplex_send` instead of `hew_lambda_actor_send`.
+            // lambda-actor handles yet — the handle's release is owned by its
+            // spawning-scope slot, not by an env-loaded copy, so emitting the
+            // capture would release the runtime wrapper twice.
             //
             // When this restriction is lifted (full env-materialization protocol
             // for lambda-actor captures), remove this guard AND the MIR assert in

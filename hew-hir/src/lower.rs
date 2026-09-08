@@ -12729,25 +12729,6 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let source_name = Self::ordinary_call_presentation_name(function);
-        if hew_types::has_builtin_associated_item_identity(
-            &source_name,
-            BuiltinType::LambdaActorHandle,
-            "new",
-        ) {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CallableUnsupportedInMir {
-                    name: source_name.clone(),
-                },
-                span.clone(),
-                "`LambdaActorHandle.new` is not a public constructor; use \
-                 `actor |params| { body }` to create a lambda actor",
-            ));
-            return (
-                HirExprKind::Unsupported(format!("diagnosed: unsupported call to `{source_name}`")),
-                ResolvedTy::Unit,
-            );
-        }
         let Some(target) = self.ordinary_call_target(span) else {
             // Preserve source-resolution diagnostics when the checker rejected
             // the callee before it could publish an executable target.  This is
@@ -20616,10 +20597,8 @@ impl LowerCtx {
     /// classifies the strength: `id == current_actor_self.0` → Weak
     /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
     ///
-    /// The HIR `expr.ty` is the `LambdaPid<Msg, Reply>` handle type. The
-    /// MIR producer wires this directly into a
-    /// `Place::LambdaActorHandle` whose drop selects
-    /// `DropKind::LambdaActorRelease`.
+    /// The HIR `expr.ty` is the `LambdaPid<Msg, Reply>` handle type, whose
+    /// drop releases the runtime wrapper.
     fn lower_spawn_lambda_actor(
         &mut self,
         params: &[LambdaParam],
@@ -23680,31 +23659,6 @@ impl LowerCtx {
             (name.starts_with("std.failure.") || name.starts_with("std.link_monitor."))
                 .then(|| hew_types::lookup_source_owned_lifecycle_type(name))
                 .flatten()
-                // Some bundled declarations deliberately retain their source
-                // owner in checker/HIR facts while the runtime catalog's canonical
-                // spelling is a leaf. Keep this mapping exact: a generic leaf
-                // retry would let compatibility spellings rewrite a different
-                // source-owned declaration (for example `failure.*`).
-                .or_else(|| {
-                    // One shipped declaration, two canonical spellings: the
-                    // shipped `std/concurrency/lambda_actor.hew` source is
-                    // reachable both as a directory-module peer (a direct
-                    // `hew check` of the file lowers it as `std.concurrency`)
-                    // and as the file module every user import resolves
-                    // (`import std::concurrency::lambda_actor` →
-                    // `std.concurrency.lambda_actor`). Matching only the
-                    // former stamped the builtin discriminator on the direct
-                    // path but not through an import, so the same impl block
-                    // was metadata-only one way and a lowered user impl the
-                    // other — the root-vs-import provenance seam the stdlib
-                    // corpus sweep pins. Both spellings stay gated on the
-                    // canonical-source proof above; a user lookalike module
-                    // acquires neither.
-                    (canonical_std_owner
-                        && (name == "std.concurrency.LambdaActorHandle"
-                            || name == "std.concurrency.lambda_actor.LambdaActorHandle"))
-                        .then_some(BuiltinType::LambdaActorHandle)
-                })
         }) {
             return Some(builtin);
         }
@@ -32335,23 +32289,13 @@ fn scan_expr_for_call_shape(
                             _ => callable.names.contains(name),
                         };
                         if !admitted {
-                            let message = if hew_types::has_builtin_associated_item_identity(
-                                name,
-                                BuiltinType::LambdaActorHandle,
-                                "new",
-                            ) {
-                                "`LambdaActorHandle.new` is not a public constructor; use \
-                                 `actor |params| { body }` to create a lambda actor"
-                                    .to_string()
-                            } else {
-                                let source_name = name.replace("::", ".");
-                                format!(
-                                    "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
-                                     only module functions, extern fns, monomorphisation \
-                                     instantiations, and recognised runtime symbols are \
-                                     callable here"
-                                )
-                            };
+                            let source_name = name.replace("::", ".");
+                            let message = format!(
+                                "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
+                                 only module functions, extern fns, monomorphisation \
+                                 instantiations, and recognised runtime symbols are \
+                                 callable here"
+                            );
                             diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CallableUnsupportedInMir { name: name.clone() },
                                 callee.span.clone(),
@@ -35651,7 +35595,6 @@ impl Widget {
                 ("Sink", BuiltinType::Sink),
                 ("Duplex", BuiltinType::Duplex),
                 ("LambdaPid", BuiltinType::LambdaPid),
-                ("LambdaActorHandle", BuiltinType::LambdaActorHandle),
                 ("BoxedActor", BuiltinType::BoxedActor),
                 ("MonitorRef", BuiltinType::MonitorRef),
             ] {

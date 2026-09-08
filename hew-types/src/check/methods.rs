@@ -1266,7 +1266,7 @@ impl Checker {
     ///
     /// Unlike [`Self::record_runtime_method_call_rewrite`], the typed
     /// `descriptor` is unconditionally `None`. An `#[extern_symbol]` method —
-    /// stdlib `duration` / `instant` / `LambdaActorHandle` bindings as well as
+    /// stdlib `duration` / `instant` bindings as well as
     /// user-authored FFI on inherent impls — is open-set *by mechanism*: the
     /// checker has no first-class runtime-call-family knowledge for it. The
     /// family would only be recoverable by reverse-parsing the symbol string,
@@ -4325,13 +4325,12 @@ impl Checker {
     ///   - `.send(msg: M)` → `Result<(), SendError>` (tell-shaped, R = ()) or
     ///     `Result<R, AskError>` (ask-shaped). Verifies `M: @send`. Secondary
     ///     surface to the canonical call-syntax `handle(msg)`; both route
-    ///     through `Place::LambdaActorHandle` to `hew_lambda_actor_send` at MIR.
+    ///     to `hew_lambda_actor_send` at MIR.
     ///   - `.close()` → `()` — consuming; moves the handle. Deliberately returns
     ///     plain `()` rather than `Result<(), CloseError>` (unlike `Duplex::close`):
     ///     the lambda-actor release is unconditionally successful, and the
     ///     `CloseError` layout is not yet codegen-able. Lowers to
-    ///     `hew_lambda_actor_release` via the `Place::LambdaActorHandle` drop
-    ///     discriminator.
+    ///     `hew_lambda_actor_release`.
     ///
     /// `.recv()` / `.try_recv()` / `.try_send()` / `.send_half()` / `.recv_half()`
     /// are NOT a lambda-actor surface: a lambda actor is not a channel. The caller
@@ -4391,8 +4390,7 @@ impl Checker {
                     self.synthesize(expr, sp);
                 }
                 // Records the duplex-send entry hint; MIR's `lower_duplex_send`
-                // re-routes by `Place::LambdaActorHandle` to `hew_lambda_actor_send`
-                // (the two-level checker-type vs MIR-discriminator design).
+                // re-routes a lambda-actor handle to `hew_lambda_actor_send`.
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
                 // Return type depends on reply direction, mirroring call-syntax dispatch:
                 //   tell-shaped (R = ())  → Result<(), SendError>
@@ -4422,13 +4420,10 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-close rewrite symbol.  MIR's
-                // `lower_duplex_close` routes by the receiver's `Place` variant:
-                //   - `Place::LambdaActorHandle` → `hew_lambda_actor_release`
-                //     (the lambda stop-on-last-drop ritual).
-                //   - anything else → raw `Duplex` close (not yet lowered).
-                // Mirrors `.send`'s two-level routing: checker records one symbol;
-                // MIR selects the real ABI from the Place discriminator.
+                // Records the duplex-close rewrite symbol. MIR's
+                // `lower_duplex_close` routes a lambda-actor handle to
+                // `hew_lambda_actor_release` (the lambda stop-on-last-drop
+                // ritual) and anything else to the raw `Duplex` close.
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
                 // Consuming: the LambdaPid<M, R> binding is moved.
                 self.method_call_consumes_receiver
@@ -7439,9 +7434,9 @@ impl Checker {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {
                 // The typed consumption decision overrides a surface Copy
-                // derivation. In particular, LambdaActorHandle is represented
-                // by an empty stdlib nominal, but release still consumes its
-                // sole runtime handle and any later receiver use is invalid.
+                // derivation. In particular, a lambda-actor handle is an
+                // opaque wrapper, but release still consumes its sole runtime
+                // handle and any later receiver use is invalid.
                 self.env.mark_moved(name, receiver.1.clone());
             }
         }

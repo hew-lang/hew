@@ -193,7 +193,7 @@ so the per-arm test can be written against a closed list.
 | `String`, `Bytes` | `CowValue` | `Retain` (refcount +1; a string is immutable, a bytes mutator forks inside the runtime, §4.3) | |
 | `Tuple`, `Array` | aggregate rule | aggregate rule | **decision**: resolves the `is_copy` vs `of_ty` split |
 | user record / enum with no marker | aggregate rule | aggregate rule | **decision**: replaces `ValueClass::Unknown` (15 consumer sites, all `Strategy::UnknownBlocked` refusals); a user type is never unclassified. An `indirect` enum (`HirTypeDecl.is_indirect`, node.rs:1016-1040) keeps its payload class and its `clone` is `FieldWise`: `hew_copy$E` allocates a fresh box and copies the payload into it — the box carries no refcount, so a retain of the box does not exist (§5.2 item 2) |
-| `Named` with `#[resource]` marker; `Named{builtin}` with marker `Resource` and a `close_method()`: `Duplex`, `Sink`, `Stream`, `Sender`, `Receiver`, `HewDuplex`, `HewSendHalf`, `HewRecvHalf`, `SendHalf`, `RecvHalf`, `LambdaActorHandle`, `MonitorRef`, `CancellationToken` | `AffineResource` | `None` (`LambdaPid`: `Retain`, §5.4) | implicit destructor is the registered close/release symbol |
+| `Named` with `#[resource]` marker; `Named{builtin}` with marker `Resource` and a `close_method()`: `Duplex`, `Sink`, `Stream`, `Sender`, `Receiver`, `HewDuplex`, `HewSendHalf`, `HewRecvHalf`, `SendHalf`, `RecvHalf`, `MonitorRef`, `CancellationToken` | `AffineResource` | `None` (`LambdaPid`: `Retain`, §5.4) | implicit destructor is the registered close/release symbol |
 | `Named{builtin: StreamPair}`, the regex `Pattern` handle | `AffineResource` | `None` | marker `None` in `builtin_type.rs`, but the std declarations carry `#[resource]` (`std/stream.hew:247-249` `#[resource] #[opaque] pub type StreamPair` with `close(consume self)` → `hew_stream_pair_free`; `std/text/regex/regex.hew:28-29`), which `lookup_type_marker_for_ty` already reads |
 | `Named{builtin: Generator \| AsyncGenerator \| Rc \| Weak}` | `AffineResource` | generators `None`; `Rc`/`Weak` `Retain` | |
 | `Named{builtin: LambdaPid}` | `AffineResource` | `Retain` (`hew_lambda_actor_clone` mints a new handle) | a send of a `LambdaPid` is `Transfer` only (rule 5, §11 row 5): `repros/ladder/lambda_send_twice.hew` → `use of moved value \`w\`` on the second send |
@@ -1414,7 +1414,7 @@ the symbol comes from `header.symbol` looked up by key.
 - **`Place`** = `LocalId` + projections (`Field(i)`, `Index`, `Deref`,
   `EnumPayload(variant)`, `MachineTag`, `ActorState(field)`, `EnvField(i)`).
   `Place::Value` is forbidden. The current 12 special-cased handle places
-  (`DuplexHandle`, `SendHalf`, `RecvHalf`, `LambdaActorHandle`, `ActorHandle`,
+  (`DuplexHandle`, `SendHalf`, `RecvHalf`, `LambdaPid`, `ActorHandle`,
   `MachineTag`, …, `model.rs:4399`) become ordinary locals whose type carries
   the drop glue (§5).
 - **`Materialize { value, local, reason }`** with `reason ∈ { AddressTaken,
@@ -1894,7 +1894,7 @@ double-insert fixture [P2].
 | `dyn Trait` (`TraitObject`, `Iterator`) | PersistentShare | Retain | `hew_arc_clone` on the box | `hew_arc_drop` (arc `drop_fn = hew_drop$<Concrete>`); the vtable's `drop_in_place` slot 0 is the same glue | never; a mutating method through `CallDynMethod` is not on the surface (`VarSelfMethodCall` requires a concrete `var` receiver) — if P3 finds the checker admits one, it is a wall `E_OWN_MUTATE_SHARED` decided then, not an ICE |
 | `LocalPid<A>`, `RemotePid`, `ChildRef`, `HewActor` | BitCopy | Bits | bits (non-owning pid; `marker()` flips to `BitCopy` at P1) | none | none |
 | `BoxedActor` (compiler-internal) | AffineResource | None | rejected (6b) | release symbol named at P4 or the variant deleted (§1.1) | none |
-| `LambdaPid`, `LambdaActorHandle` | AffineResource | Retain | `hew_lambda_actor_clone` (new handle into `dst`); a send is `Transfer` regardless (rule 5) | `hew_lambda_actor_release` | none |
+| `LambdaPid` | AffineResource | Retain | `hew_lambda_actor_clone` (new handle into `dst`); a send is `Transfer` regardless (rule 5) | `hew_lambda_actor_release` | none |
 | `Generator`, `AsyncGenerator` | AffineResource | None | rejected (6b) | `hew_gen_coro_destroy` | none |
 | `Rc<T>` / `Weak<T>` | AffineResource | Retain | `hew_rc_clone` / `hew_weak_clone_rc`; `hew_rc_new` receives `hew_drop$T` as its payload `drop_fn` (rc.rs:103-107) | `hew_rc_drop` / `hew_weak_drop_rc` | none |
 | `#[resource] T` (record) | AffineResource | None | rejected (6b) | user `close` (consumes) | none |

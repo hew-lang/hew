@@ -4823,6 +4823,39 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.store(dest, array.into())
     }
 
+    fn emit_vector_index_guard(
+        &self,
+        vector: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let length_fn = get_or_declare_external(
+            self.llvm,
+            "hew_vec_len",
+            self.ctx.i64_type().fn_type(&[pointer.into()], false),
+        )?;
+        let length = self
+            .runtime_call_value(length_fn, &[vector.into()], "vector.index.length")?
+            .into_int_value();
+        // Unsigned comparison also rejects every negative signed index.
+        let in_bounds = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, index, length, "vector.index.in.bounds")
+            .llvm_ctx("check vector mutation bounds")?;
+        let safe = self.ctx.append_basic_block(self.value, "vector.index.safe");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "vector.index.failed");
+        self.builder
+            .build_conditional_branch(in_bounds, safe, failed)
+            .llvm_ctx("select vector mutation outcome")?;
+        self.builder.position_at_end(failed);
+        self.emit_edge(failure)?;
+        self.builder.position_at_end(safe);
+        Ok(())
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "each vector action executes its checked storage and failure contract"
@@ -4911,27 +4944,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalVectorOp::Set => {
                 let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
-                let length_fn = get_or_declare_external(
-                    self.llvm,
-                    "hew_vec_len",
-                    i64_ty.fn_type(&[pointer.into()], false),
-                )?;
-                let length = self
-                    .runtime_call_value(length_fn, &[vector.into()], "vector.set.length")?
-                    .into_int_value();
-                // Unsigned comparison also rejects every negative signed index.
-                let in_bounds = self
-                    .builder
-                    .build_int_compare(IntPredicate::ULT, index, length, "vector.set.in.bounds")
-                    .llvm_ctx("check vector replacement bounds")?;
-                let safe = self.ctx.append_basic_block(self.value, "vector.set.safe");
-                let failed = self.ctx.append_basic_block(self.value, "vector.set.failed");
-                self.builder
-                    .build_conditional_branch(in_bounds, safe, failed)
-                    .llvm_ctx("select vector replacement outcome")?;
-                self.builder.position_at_end(failed);
-                self.emit_edge(failure()?)?;
-                self.builder.position_at_end(safe);
+                self.emit_vector_index_guard(vector, index, failure()?)?;
                 let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
                 let function = get_or_declare_external(
                     self.llvm,
@@ -5138,6 +5151,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, sliced)?;
             }
             PhysicalVectorOp::Pop { result: tuple }
+            | PhysicalVectorOp::Remove { result: tuple }
             | PhysicalVectorOp::TakeFirst { result: tuple } => {
                 values.aggregate_glue(tuple)?;
                 let layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
@@ -5145,11 +5159,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 })?;
                 let element_ty = llvm_type(self.ctx, &layout.repr)?;
                 let output = values.entry_scratch(element_ty, "vector.pop.element")?;
-                // The consuming iterator drains from the front so it yields in
-                // order; `pop` takes the last element. Both move the element
-                // out and shrink the vector by one.
-                let take_first = matches!(operation, PhysicalVectorOp::TakeFirst { .. });
-                let status = if take_first {
+                // Indexed removal and iteration share the same owning take;
+                // pop selects the final element through its existing entry.
+                let index = match operation {
+                    PhysicalVectorOp::TakeFirst { .. } => Some(i64_ty.const_zero()),
+                    PhysicalVectorOp::Remove { .. } => {
+                        let index = self
+                            .load(source(1)?, "vector.remove.index")?
+                            .into_int_value();
+                        self.emit_vector_index_guard(vector, index, failure()?)?;
+                        Some(index)
+                    }
+                    _ => None,
+                };
+                let status = if let Some(index) = index {
                     let function = get_or_declare_external(
                         self.llvm,
                         "hew_vec_remove_at_owned",
@@ -5159,7 +5182,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     )?;
                     self.runtime_call_value(
                         function,
-                        &[vector.into(), i64_ty.const_zero().into(), output.into()],
+                        &[vector.into(), index.into(), output.into()],
                         "vector.take.status",
                     )?
                     .into_int_value()

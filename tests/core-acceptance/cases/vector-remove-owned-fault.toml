@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-remove-owned-fault"
+intent = "Invalid removal preserves the vector for fault cleanup."
+source = "cases/vector-remove-owned-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

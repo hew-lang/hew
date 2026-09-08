@@ -671,6 +671,7 @@ pub enum VecValueOp {
     Push,
     Set,
     Pop,
+    Remove,
     Clear,
     /// `v[i]` where the element has no clone: a loan of the element the vector
     /// still owns, readable for the length of the receiver's loan.
@@ -699,6 +700,7 @@ impl VecValueOp {
             crate::VecMethod::Push => Self::Push,
             crate::VecMethod::Set => Self::Set,
             crate::VecMethod::Pop => Self::Pop,
+            crate::VecMethod::Remove => Self::Remove,
             crate::VecMethod::Clear => Self::Clear,
             _ => return None,
         })
@@ -755,6 +757,11 @@ impl VecValueOp {
             // physical choice.
             Self::Pop | Self::TakeFirst => runtime_semantic_contract(
                 &[WRITE],
+                UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::Remove => runtime_semantic_contract(
+                &[WRITE, INDEX],
                 UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
@@ -3096,6 +3103,7 @@ impl RuntimeCallFamily {
                 VecValueOp::Push => "vec.value.push",
                 VecValueOp::Set => "vec.value.set",
                 VecValueOp::Pop => "vec.value.pop",
+                VecValueOp::Remove => "vec.value.remove",
                 VecValueOp::Clear => "vec.value.clear",
                 VecValueOp::IndexBorrow => "vec.value.index_borrow",
                 VecValueOp::GetBorrow => "vec.value.get_borrow",

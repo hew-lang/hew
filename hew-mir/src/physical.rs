@@ -563,6 +563,9 @@ pub enum PhysicalVectorOp {
     Pop {
         result: PhysicalAggregateId,
     },
+    Remove {
+        result: PhysicalAggregateId,
+    },
     Clear,
     /// A loan of the element the vector still owns: the slot bytes are read
     /// without a clone and the result carries no release obligation.
@@ -591,6 +594,7 @@ impl PhysicalVectorOp {
             Self::Push => VecValueOp::Push,
             Self::Set => VecValueOp::Set,
             Self::Pop { .. } => VecValueOp::Pop,
+            Self::Remove { .. } => VecValueOp::Remove,
             Self::Clear => VecValueOp::Clear,
             Self::IndexBorrow => VecValueOp::IndexBorrow,
             Self::GetBorrow { .. } => VecValueOp::GetBorrow,
@@ -3980,6 +3984,9 @@ impl FunctionLowerer<'_> {
                 VecValueOp::Push => PhysicalVectorOp::Push,
                 VecValueOp::Set => PhysicalVectorOp::Set,
                 VecValueOp::Pop => PhysicalVectorOp::Pop {
+                    result: self.aggregate_id(&value.ty)?,
+                },
+                VecValueOp::Remove => PhysicalVectorOp::Remove {
                     result: self.aggregate_id(&value.ty)?,
                 },
                 VecValueOp::Clear => PhysicalVectorOp::Clear,
@@ -8212,7 +8219,9 @@ fn verify_vector_call(
                 ));
             }
         }
-        PhysicalVectorOp::Pop { result: tuple } | PhysicalVectorOp::TakeFirst { result: tuple } => {
+        PhysicalVectorOp::Pop { result: tuple }
+        | PhysicalVectorOp::Remove { result: tuple }
+        | PhysicalVectorOp::TakeFirst { result: tuple } => {
             let tuple = aggregate_glue(module, tuple)?;
             if &tuple.ty != result
                 || tuple.own != OwnKind::Owned

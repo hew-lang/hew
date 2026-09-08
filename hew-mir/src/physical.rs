@@ -8718,7 +8718,7 @@ mod tests {
             fn main() { println(unsafe { make_bytes() }.len()); }
             "#,
         );
-        let mut physical = lower_physical_module(&semantic, target())
+        let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
             .expect("declared byte result must have a C return ABI")
             .into_unverified();
         let call = physical
@@ -10661,7 +10661,7 @@ mod tests {
             }
             let error = verify_physical_module(&physical).expect_err("forged vector recipe");
             let expected = match mutation {
-                0 => "canonical Vec<T> identity",
+                0 => "exact element identity",
                 1 => "physical clone action Vector",
                 2 => "physical destroy action Vector",
                 3 => "semantic ownership or cloneability",

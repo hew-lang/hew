@@ -235,6 +235,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         callable::hew_callable_visit_close,
         value_close::hew_value_close_poll,
         value_close::hew_value_close_finish,
+        mailbox::hew_msg_envelope_release,
         fault::hew_fault_new,
         fault::hew_fault_new_panic,
         fault::hew_fault_combine,

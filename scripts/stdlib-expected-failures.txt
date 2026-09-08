@@ -1,0 +1,2 @@
+# Stdlib ratchet: known failures, one module id per line with its reason.
+# Empty: every std module compiles on the final path.

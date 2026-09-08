@@ -213,6 +213,12 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::TupleGet { tuple, index } => {
             writeln!(out, "tuple.get {}, {index}", operand(tuple)).expect("write to String");
         }
+        SemOpKind::ArrayMake { fields } => {
+            write!(out, "array.make {fields:?}").expect("write to string");
+        }
+        SemOpKind::ArrayRepeat { value } => {
+            write!(out, "array.repeat {value:?}").expect("write to string");
+        }
         SemOpKind::AggregateMake { shape, fields } => {
             write!(out, "aggregate.make {}(", aggregate_shape(*shape)).expect("write to String");
             for (index, field) in fields.iter().enumerate() {

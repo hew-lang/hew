@@ -1311,6 +1311,14 @@ pub enum HirExprKind {
     TupleLiteral {
         elements: Vec<HirExpr>,
     },
+    /// A checked fixed-size value; the exact element type and length remain in `ty`.
+    ArrayLiteral {
+        elements: Vec<HirExpr>,
+    },
+    /// Evaluate the seed once; the checked result type supplies the repeat length.
+    ArrayRepeat {
+        value: Box<HirExpr>,
+    },
     Call {
         /// Checker-selected direct, runtime, or indirect call target. The
         /// callee expression remains the evaluation payload, never the

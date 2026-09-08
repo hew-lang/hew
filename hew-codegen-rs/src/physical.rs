@@ -239,6 +239,28 @@ fn realize_layout(
             ty.user_facing()
         )));
     }
+    if let ResolvedTy::Array(element, length) = ty {
+        realize_layout(
+            ctx,
+            data,
+            target,
+            element,
+            aggregate_fields,
+            variant_shapes,
+            visiting,
+        )?;
+        let element = target
+            .layout(element)
+            .ok_or_else(|| CodegenError::FailClosed("array element has no target layout".into()))?;
+        hew_mir::physical::validate_array_allocation(
+            *length,
+            element,
+            u64::from(data.get_pointer_byte_size(None)),
+        )
+        .map_err(|error| {
+            CodegenError::FailClosed(format!("{}: {}", ty.user_facing(), error.message))
+        })?;
+    }
     let captures = match ty {
         ResolvedTy::Closure { captures, .. } => Some(captures.as_slice()),
         ResolvedTy::Function { .. } => Some([].as_slice()),
@@ -609,7 +631,9 @@ fn primitive_repr(
         ResolvedTy::Isize | ResolvedTy::Usize => PhysicalRepr::Integer { bits: pointer_bits },
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
-        ResolvedTy::String | ResolvedTy::CancellationToken => PhysicalRepr::Pointer,
+        ResolvedTy::String | ResolvedTy::CancellationToken | ResolvedTy::Array(_, _) => {
+            PhysicalRepr::Pointer
+        }
         // A trait object is the runtime's two-word `HewTraitObject`:
         // the boxed value and its dispatch table.
         ResolvedTy::Function { .. }
@@ -1137,8 +1161,15 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(clone.into())
             }
             CloneAction::Variant(id) => self.clone_variant_value(value, layout, id),
-            CloneAction::Vector(_) | CloneAction::Map(_) | CloneAction::Set(_) => {
+            CloneAction::Array(_)
+            | CloneAction::Vector(_)
+            | CloneAction::Map(_)
+            | CloneAction::Set(_) => {
                 let symbol = match action {
+                    CloneAction::Array(id) => {
+                        self.vector_glue(id)?;
+                        "hew_array_clone"
+                    }
                     CloneAction::Vector(id) => {
                         self.vector_glue(id)?;
                         "hew_vec_clone_owned"
@@ -1250,7 +1281,10 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         unreachable!("matched primitive release")
                     }
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
-                    DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
+                    DestroyAction::Array(_)
+                    | DestroyAction::Vector(_)
+                    | DestroyAction::Map(_)
+                    | DestroyAction::Set(_) => {
                         unreachable!("matched primitive release")
                     }
                 };
@@ -1267,7 +1301,10 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         unreachable!("matched primitive release")
                     }
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
-                    DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
+                    DestroyAction::Array(_)
+                    | DestroyAction::Vector(_)
+                    | DestroyAction::Map(_)
+                    | DestroyAction::Set(_) => {
                         unreachable!("matched primitive release")
                     }
                 };
@@ -1304,8 +1341,15 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(())
             }
             DestroyAction::Variant(id) => self.destroy_variant_value(value, layout, id),
-            DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
+            DestroyAction::Array(_)
+            | DestroyAction::Vector(_)
+            | DestroyAction::Map(_)
+            | DestroyAction::Set(_) => {
                 let symbol = match action {
+                    DestroyAction::Array(id) => {
+                        self.vector_glue(id)?;
+                        "hew_array_free"
+                    }
                     DestroyAction::Vector(id) => {
                         self.vector_glue(id)?;
                         "hew_vec_free_owned"
@@ -2432,6 +2476,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_extract_value(tuple, *index, "tuple.get")
                     .llvm_ctx("extract physical tuple field")?;
                 self.store(*dest, field)
+            }
+            PhysicalOp::ArrayMake { dest, fields, glue } => {
+                self.emit_array_make(*dest, fields, *glue)
+            }
+            PhysicalOp::ArrayRepeat { dest, seed, glue } => {
+                self.emit_array_repeat(*dest, *seed, *glue)
             }
             PhysicalOp::AggregateMake { dest, fields, .. } => {
                 let BasicTypeEnum::StructType(aggregate_ty) =
@@ -3948,6 +3998,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
+            PhysicalRuntimeAction::Array { operation, glue } => {
+                use hew_types::runtime_call::ArrayValueOp;
+                let operation = match operation {
+                    ArrayValueOp::Len => PhysicalVectorOp::Len,
+                    ArrayValueOp::Index => PhysicalVectorOp::Index,
+                    ArrayValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
+                    ArrayValueOp::Set => PhysicalVectorOp::Set,
+                };
+                return self.emit_vector_call(
+                    (operation, glue),
+                    transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
+            }
             PhysicalRuntimeAction::Vector { operation, glue } => {
                 return self.emit_vector_call(
                     (operation, glue),
@@ -4577,6 +4643,141 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )));
         }
         self.emit_result_edge(result, normal)
+    }
+
+    fn new_array_storage(
+        &self,
+        glue: PhysicalVectorId,
+    ) -> CodegenResult<inkwell::values::PointerValue<'ctx>> {
+        let values = self.value_emitter();
+        let descriptor = values.vector_glue(glue)?;
+        let ResolvedTy::Array(_, length) = &descriptor.ty else {
+            return Err(CodegenError::FailClosed(
+                "array construction has a non-array descriptor".into(),
+            ));
+        };
+        let layout = self
+            .llvm
+            .get_global(&vector_descriptor_symbol(glue))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("array element descriptor was not emitted".into())
+            })?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let constructor = get_or_declare_external(
+            self.llvm,
+            "hew_vec_new_with_elem_layout_capacity",
+            pointer.fn_type(&[pointer.into(), self.ctx.i64_type().into()], false),
+        )?;
+        Ok(self
+            .runtime_call_value(
+                constructor,
+                &[
+                    layout.as_pointer_value().into(),
+                    self.ctx.i64_type().const_int(*length, false).into(),
+                ],
+                "array.storage",
+            )?
+            .into_pointer_value())
+    }
+
+    fn emit_array_make(
+        &self,
+        dest: StorageId,
+        fields: &[StorageId],
+        glue: PhysicalVectorId,
+    ) -> CodegenResult<()> {
+        let array = self.new_array_storage(glue)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let push = get_or_declare_external(
+            self.llvm,
+            "hew_vec_push_owned_move",
+            self.ctx
+                .void_type()
+                .fn_type(&[pointer.into(), pointer.into()], false),
+        )?;
+        for field in fields {
+            self.runtime_call_void(
+                push,
+                &[array.into(), self.slots[field.0 as usize].into()],
+                "array.element",
+            )?;
+            self.clear_owned(*field)?;
+        }
+        self.store(dest, array.into())
+    }
+
+    fn emit_array_repeat(
+        &self,
+        dest: StorageId,
+        seed: StorageId,
+        glue: PhysicalVectorId,
+    ) -> CodegenResult<()> {
+        let values = self.value_emitter();
+        let descriptor = values.vector_glue(glue)?;
+        let ResolvedTy::Array(_, length) = &descriptor.ty else {
+            return Err(CodegenError::FailClosed(
+                "array repeat has a non-array descriptor".into(),
+            ));
+        };
+        let array = self.new_array_storage(glue)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let push_ty = self
+            .ctx
+            .void_type()
+            .fn_type(&[pointer.into(), pointer.into()], false);
+        if *length > 1 {
+            let push = get_or_declare_external(self.llvm, "hew_vec_push_owned", push_ty)?;
+            let before = self.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::FailClosed("array repeat has no insertion block".into())
+            })?;
+            let body = self.ctx.append_basic_block(self.value, "array.repeat.copy");
+            let done = self.ctx.append_basic_block(self.value, "array.repeat.done");
+            self.builder
+                .build_unconditional_branch(body)
+                .llvm_ctx("enter array repeat")?;
+            self.builder.position_at_end(body);
+            let i64_ty = self.ctx.i64_type();
+            let index = self
+                .builder
+                .build_phi(i64_ty, "array.repeat.index")
+                .llvm_ctx("array repeat counter")?;
+            index.add_incoming(&[(&i64_ty.const_zero(), before)]);
+            self.runtime_call_void(
+                push,
+                &[array.into(), self.slots[seed.0 as usize].into()],
+                "array.repeat.element",
+            )?;
+            let next = self
+                .builder
+                .build_int_add(
+                    index.as_basic_value().into_int_value(),
+                    i64_ty.const_int(1, false),
+                    "array.repeat.next",
+                )
+                .llvm_ctx("advance array repeat")?;
+            let more = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::ULT,
+                    next,
+                    i64_ty.const_int(*length - 1, false),
+                    "array.repeat.more",
+                )
+                .llvm_ctx("check array repeat limit")?;
+            self.builder
+                .build_conditional_branch(more, body, done)
+                .llvm_ctx("continue array repeat")?;
+            index.add_incoming(&[(&next, body)]);
+            self.builder.position_at_end(done);
+        }
+        let push = get_or_declare_external(self.llvm, "hew_vec_push_owned_move", push_ty)?;
+        self.runtime_call_void(
+            push,
+            &[array.into(), self.slots[seed.0 as usize].into()],
+            "array.repeat.last",
+        )?;
+        self.clear_owned(seed)?;
+        self.store(dest, array.into())
     }
 
     #[expect(
@@ -7351,6 +7552,79 @@ mod tests {
             }
             assert!(returns > 0, "callback cleanup must reach fault propagation");
         }
+    }
+
+    #[test]
+    fn fixed_arrays_check_target_allocation_geometry_without_stack_limits() {
+        for (triple, pointer_bytes) in [
+            ("x86_64-unknown-linux-gnu", 8),
+            ("x86_64-pc-windows-msvc", 8),
+            ("aarch64-apple-darwin", 8),
+            ("wasm32-wasip1", 4),
+        ] {
+            let large = ResolvedTy::Array(Box::new(ResolvedTy::I64), 4_000_000);
+            let target = physical_target_for_types(triple, [&large]).unwrap();
+            let layout = target.layout(&large).unwrap();
+            assert_eq!(layout.size, pointer_bytes, "{triple}");
+            assert_eq!(layout.repr, PhysicalRepr::Pointer);
+            let limit = if pointer_bytes == 8 {
+                i64::MAX as u64
+            } else {
+                i32::MAX as u64
+            };
+            let length_limit = if pointer_bytes == 8 {
+                i64::MAX as u64
+            } else {
+                u64::from(u32::MAX)
+            };
+            for invalid in [
+                ResolvedTy::Array(Box::new(ResolvedTy::I64), limit / 8 + 1),
+                ResolvedTy::Array(Box::new(ResolvedTy::Unit), length_limit + 1),
+            ] {
+                let error = physical_target_for_types(triple, [&invalid]).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("target allocation or runtime length range"),
+                    "{triple}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_array_repeat_emits_constant_size_glue_and_no_array_stack_temporary() {
+        let triple = native_emission_triple();
+        let machine =
+            crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+        let mut instruction_counts = Vec::new();
+        for length in [3, 4_000_000] {
+            let semantic = lower_source(&format!(
+                "fn main() -> i64 {{ let values: [i64; {length}] = [7; {length}]; values[0] }}"
+            ));
+            let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+            let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+            let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+            let physical = verified.module();
+            assert_eq!(physical.vector_glue.len(), 1);
+            for function in &physical.functions {
+                for storage in &function.storage {
+                    if matches!(storage.ty, ResolvedTy::Array(_, _)) {
+                        assert_eq!(storage.layout.repr, PhysicalRepr::Pointer);
+                    }
+                }
+            }
+            let ctx = Context::create();
+            let llvm = build_module(&ctx, physical, "fixed_array_repeat", &machine).unwrap();
+            llvm.verify().unwrap();
+            instruction_counts.push(
+                llvm.get_functions()
+                    .flat_map(|function| function.get_basic_blocks())
+                    .map(|block| block.get_instructions().count())
+                    .sum::<usize>(),
+            );
+        }
+        assert_eq!(instruction_counts[0], instruction_counts[1]);
     }
 
     #[test]

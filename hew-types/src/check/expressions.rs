@@ -2771,7 +2771,21 @@ impl Checker {
                 }
                 Ty::Error
             }
-            Ty::Array(elem, _) | Ty::Slice(elem) => {
+            Ty::Array(elem, _) => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                if matches!(ctx, IndexContext::Read) {
+                    match self.vec_iteration_element_mode(elem, span) {
+                        Some(super::types::VecIterationMode::Borrow) => {
+                            self.borrowed_element_index_reads
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                        }
+                        Some(super::types::VecIterationMode::Clone) => {}
+                        None => return Ty::Error,
+                    }
+                }
+                (**elem).clone()
+            }
+            Ty::Slice(elem) => {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 (**elem).clone()
             }
@@ -3837,6 +3851,15 @@ impl Checker {
             // proven to equal `N` in a fixed-array position and is rejected too.
             (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, size)) => {
                 self.check_against(&value.0, &value.1, elem_ty);
+                self.record_callable_value_transfer(&value.0, &value.1);
+                if *size > 1
+                    && self.vec_iteration_element_mode(elem_ty, span)
+                        != Some(super::types::VecIterationMode::Clone)
+                {
+                    self.report_error(TypeErrorKind::InvalidOperation, &value.1,
+                        format!("fixed array repeat of length {size} requires a Clone element; `{}` cannot be duplicated", elem_ty.user_facing()));
+                    return Ty::Error;
+                }
                 self.check_against(&count.0, &count.1, &Ty::I64);
                 let const_env = self.const_eval_env();
                 match crate::check::const_eval::eval_const_expr(count, &const_env) {

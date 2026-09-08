@@ -1,0 +1,10 @@
+[[case]]
+id = "fixed-array-generators"
+intent = "Array replacement and release cooperatively close suspended generator elements, preserving reverse element cleanup order."
+source = "cases/fixed-array-generators.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "first\nsecond\nreplacement\nfirst cleaned\n2\nsecond cleaned\nreplacement cleaned\ndone\n"
+exit = 0

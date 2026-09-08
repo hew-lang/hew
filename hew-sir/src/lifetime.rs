@@ -1719,6 +1719,8 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
             | SemOpKind::DynMake { .. }
             | SemOpKind::TupleMake { .. }
             | SemOpKind::AggregateMake { .. }
+            | SemOpKind::ArrayMake { .. }
+            | SemOpKind::ArrayRepeat { .. }
             | SemOpKind::VariantMake { .. }
             | SemOpKind::VariantDestructure { .. }
             | SemOpKind::DestroyValue { .. }

@@ -1,0 +1,12 @@
+fn make_values() -> [i64; 4000000] {
+    [7; 4000000]
+}
+
+fn main() -> i64 {
+    let original = make_values();
+    var changed = original;
+    changed[3999999] = 42;
+    if original.len() != 4000000 || original[3999999] != 7 || changed[3999999] != 42 { return 1; }
+    println("large array");
+    0
+}

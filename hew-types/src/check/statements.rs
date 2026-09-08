@@ -1817,7 +1817,16 @@ impl Checker {
                 }
                 // Infer the element type from the iterable.
                 let elem_ty = match &iter_ty {
-                    Ty::Array(inner, _) | Ty::Slice(inner) => (**inner).clone(),
+                    Ty::Array(inner, _) => {
+                        if self.vec_iteration_element_mode(inner, &iterable.1)
+                            == Some(super::types::VecIterationMode::Borrow)
+                        {
+                            self.borrowed_element_for_loops
+                                .insert(SpanKey::in_module(&iterable.1, self.current_module_idx));
+                        }
+                        (**inner).clone()
+                    }
+                    Ty::Slice(inner) => (**inner).clone(),
                     Ty::Named {
                         builtin: Some(BuiltinType::Range),
                         args,

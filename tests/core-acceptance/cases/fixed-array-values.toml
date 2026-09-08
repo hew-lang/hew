@@ -1,0 +1,11 @@
+[[case]]
+id = "fixed-array-values"
+intent = "Fixed arrays preserve exact lengths, independent scalar and owned copies, nested record and call composition, and once-only repeat seed evaluation."
+source = "cases/fixed-array-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "index\nseed\nseed\nfixed values\n"
+stderr = ""
+exit = 0

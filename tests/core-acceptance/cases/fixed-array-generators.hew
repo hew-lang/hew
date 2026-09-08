@@ -1,0 +1,20 @@
+gen fn words(label: string) -> string {
+    defer println(label + " cleaned");
+    yield label;
+    yield "later";
+}
+
+fn started(label: string) -> Generator<string, ()> {
+    let values = words(label);
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    values
+}
+
+fn main() {
+    {
+        var values: [Generator<string, ()>; 2] = [started("first"), started("second")];
+        values[0] = started("replacement");
+        println(values.len());
+    }
+    println("done");
+}

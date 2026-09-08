@@ -10,6 +10,7 @@ pub use hew_sir::{
     SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor, SupervisorId,
     TaskScopeJoinMode, TaskSelectionOrder,
 };
+use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,8 +81,8 @@ pub use hew_sir::{
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
 use hew_types::{
-    vector_element_type, BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
-    RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, ValueCapability, VecValueOp,
+    BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect, RuntimeCallFamily,
+    RuntimeResultEffect, TypeInstanceKey, ValueCapability, VecValueOp,
 };
 
 /// Function-local identity of one concrete storage allocation.
@@ -383,6 +384,8 @@ pub enum CloneAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
+    /// Fixed-array element storage with reverse-order cleanup.
+    Array(PhysicalVectorId),
     Map(PhysicalMapId),
     Set(PhysicalSetId),
 }
@@ -402,6 +405,8 @@ pub enum DestroyAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
+    /// Fixed-array element storage with reverse-order cleanup.
+    Array(PhysicalVectorId),
     Map(PhysicalMapId),
     Set(PhysicalSetId),
 }
@@ -751,6 +756,17 @@ pub enum PhysicalOp {
         fields: Vec<StorageId>,
         glue: PhysicalAggregateId,
     },
+    /// Heap-backed fixed array construction with one shared element recipe.
+    ArrayMake {
+        dest: StorageId,
+        fields: Vec<StorageId>,
+        glue: PhysicalVectorId,
+    },
+    ArrayRepeat {
+        dest: StorageId,
+        seed: StorageId,
+        glue: PhysicalVectorId,
+    },
     AggregateProjectCopy {
         dest: StorageId,
         aggregate: StorageId,
@@ -959,6 +975,10 @@ pub enum PhysicalRuntimeAction {
     BytesSlice,
     BytesSliceFrom,
     BytesPushOwned,
+    Array {
+        operation: ArrayValueOp,
+        glue: PhysicalVectorId,
+    },
     Vector {
         operation: PhysicalVectorOp,
         glue: PhysicalVectorId,
@@ -1028,6 +1048,7 @@ impl PhysicalRuntimeAction {
             Self::BytesSlice => RuntimeCallFamily::BytesSlice,
             Self::BytesSliceFrom => RuntimeCallFamily::BytesSliceFrom,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
+            Self::Array { operation, .. } => RuntimeCallFamily::Array(operation),
             Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
             Self::Map { operation, .. } => RuntimeCallFamily::Map(operation.semantic_op()),
             Self::Set { operation, .. } => RuntimeCallFamily::Set(operation.semantic_op()),
@@ -1837,7 +1858,11 @@ fn clone_action_for_type(
             CloneAction::Callable
         }
         CloneKind::DeepCopy | CloneKind::FieldWise if ids.vectors.contains_key(ty) => {
-            CloneAction::Vector(ids.vectors[ty])
+            if matches!(ty, ResolvedTy::Array(_, _)) {
+                CloneAction::Array(ids.vectors[ty])
+            } else {
+                CloneAction::Vector(ids.vectors[ty])
+            }
         }
         CloneKind::DeepCopy | CloneKind::FieldWise if ids.maps.contains_key(ty) => {
             CloneAction::Map(ids.maps[ty])
@@ -1875,6 +1900,9 @@ fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<Des
         ResolvedTy::TraitObject { .. } => Some(DestroyAction::TraitObject),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
+        ResolvedTy::Array(_, _) if ids.vectors.contains_key(ty) => {
+            Some(DestroyAction::Array(ids.vectors[ty]))
+        }
         _ if ids.vectors.contains_key(ty) => Some(DestroyAction::Vector(ids.vectors[ty])),
         _ if ids.maps.contains_key(ty) => Some(DestroyAction::Map(ids.maps[ty])),
         _ if ids.sets.contains_key(ty) => Some(DestroyAction::Set(ids.sets[ty])),
@@ -2011,7 +2039,7 @@ fn collect_inventory_type(
         }
         return;
     }
-    if let Some(element) = vector_element_type(ty) {
+    if let Some(element) = sequence_element_type(ty) {
         inventory.vectors.insert(
             ty.clone(),
             PhysicalVectorDescriptor {
@@ -2716,6 +2744,37 @@ impl FunctionLowerer<'_> {
                 tuple: self.value(tuple.value)?,
                 index: *index,
             }),
+            SemOpKind::ArrayMake { fields } => {
+                let dest = self.one_result(operation)?;
+                let glue = self
+                    .glue_ids
+                    .vectors
+                    .get(&self.storage[dest.0 as usize].ty)
+                    .copied()
+                    .ok_or_else(|| PhysicalError::new("fixed array has no element recipe"))?;
+                one(PhysicalOp::ArrayMake {
+                    dest,
+                    glue,
+                    fields: fields
+                        .iter()
+                        .map(|field| self.value(field.value))
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            }
+            SemOpKind::ArrayRepeat { value } => {
+                let dest = self.one_result(operation)?;
+                let glue = self
+                    .glue_ids
+                    .vectors
+                    .get(&self.storage[dest.0 as usize].ty)
+                    .copied()
+                    .ok_or_else(|| PhysicalError::new("fixed array has no element recipe"))?;
+                one(PhysicalOp::ArrayRepeat {
+                    dest,
+                    glue,
+                    seed: self.value(value.value)?,
+                })
+            }
             SemOpKind::AggregateMake { fields, .. } => {
                 let dest = self.one_result(operation)?;
                 one(PhysicalOp::AggregateMake {
@@ -3766,6 +3825,19 @@ impl FunctionLowerer<'_> {
             RuntimeCallFamily::Set(op) => return self.set_action(op, args, result),
             _ => {}
         }
+        if let RuntimeCallFamily::Array(operation) = family {
+            let receiver = args
+                .first()
+                .ok_or_else(|| PhysicalError::new("array operation has no receiver"))?;
+            let ty = &self.storage[self.value(receiver.operand.value)?.0 as usize].ty;
+            let glue = self
+                .glue_ids
+                .vectors
+                .get(ty)
+                .copied()
+                .ok_or_else(|| PhysicalError::new("array receiver has no element recipe"))?;
+            return Ok(PhysicalRuntimeAction::Array { operation, glue });
+        }
         if let RuntimeCallFamily::Vector(op) = family {
             let CallResult::Value(value) = result else {
                 return Err(PhysicalError::new("vector operation has no result value"));
@@ -4155,6 +4227,47 @@ fn verify_value_recipe(
     Ok(())
 }
 
+/// Check fixed-array allocation geometry against the target pointer width and
+/// the runtime's signed length ABI. This is shared by target realization and
+/// physical verification; source size is never inferred from a stack budget.
+///
+/// # Errors
+/// Refuses an invalid element layout, overflowing allocation or unrepresentable length.
+pub fn validate_array_allocation(
+    length: u64,
+    element: &PhysicalLayout,
+    pointer_bytes: u64,
+) -> Result<(), PhysicalError> {
+    if !(1..=8).contains(&pointer_bytes)
+        || element.align == 0
+        || !element.align.is_power_of_two()
+        || element.size > i64::MAX as u64
+        || !element.size.is_multiple_of(u64::from(element.align))
+    {
+        return Err(PhysicalError::new(
+            "fixed array has an invalid target element layout",
+        ));
+    }
+    let bits = pointer_bytes * 8;
+    let length_limit = if bits == 64 {
+        i64::MAX as u64
+    } else {
+        (1u64 << bits) - 1
+    };
+    let allocation_limit = (1u64 << (bits - 1)) - 1;
+    let padded_limit = allocation_limit.checked_sub(u64::from(element.align - 1));
+    let bytes = length.checked_mul(element.size).filter(|bytes| {
+        let allocation_bytes = if length == 0 { 0 } else { (*bytes).max(1) };
+        padded_limit.is_some_and(|limit| allocation_bytes <= limit)
+    });
+    if length > length_limit || bytes.is_none() {
+        return Err(PhysicalError::new(
+            "fixed array exceeds the target allocation or runtime length range",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_vector_glue(
     module: &PhysicalModule,
     index: usize,
@@ -4166,10 +4279,15 @@ fn verify_vector_glue(
             glue.id.0
         )));
     }
-    if vector_element_type(&glue.ty) != Some(&glue.element.ty) {
+    if sequence_element_type(&glue.ty) != Some(&glue.element.ty) {
         return Err(PhysicalError::new(
-            "physical vector descriptor disagrees with canonical Vec<T> identity",
+            "physical sequence descriptor disagrees with its exact element identity",
         ));
+    }
+    if let ResolvedTy::Array(_, length) = &glue.ty {
+        let element_layout = required_layout(&module.target, &glue.element.ty)?;
+        let carrier = required_layout(&module.target, &glue.ty)?;
+        validate_array_allocation(*length, element_layout, carrier.size)?;
     }
     let vector_facts = semantic_type_facts(module, &glue.ty)?;
     if OwnKind::of_class(vector_facts.class) != OwnKind::Owned {
@@ -4567,6 +4685,7 @@ fn verify_clone_action(
                 CloneKind::DeepCopy | CloneKind::FieldWise,
                 CloneAction::Callable
                     | CloneAction::Vector(_)
+                    | CloneAction::Array(_)
                     | CloneAction::Map(_)
                     | CloneAction::Set(_)
             )
@@ -4593,9 +4712,13 @@ fn verify_clone_action(
                     && own == OwnKind::Owned
                     && glue.fields.iter().all(|field| field.clone.is_some())
             }
-            CloneAction::Vector(id) => {
+            CloneAction::Vector(id) | CloneAction::Array(id) => {
                 let glue = vector_glue(module, id)?;
-                glue.ty == *ty && own == OwnKind::Owned && glue.element.clone.is_some()
+                let fixed = matches!(ty, ResolvedTy::Array(_, _));
+                fixed == matches!(action, CloneAction::Array(_))
+                    && glue.ty == *ty
+                    && own == OwnKind::Owned
+                    && glue.element.clone.is_some()
             }
             CloneAction::Map(id) => {
                 let glue = map_glue(module, id)?;
@@ -4668,9 +4791,10 @@ fn verify_destroy_action(
                         .iter()
                         .all(|field| field.own != OwnKind::Owned || field.destroy.is_some())
             }
-            DestroyAction::Vector(id) => {
+            DestroyAction::Vector(id) | DestroyAction::Array(id) => {
                 let glue = vector_glue(module, id)?;
-                glue.ty == *ty
+                matches!(ty, ResolvedTy::Array(_, _)) == matches!(action, DestroyAction::Array(_))
+                    && glue.ty == *ty
                     && own == OwnKind::Owned
                     && (glue.element.own != OwnKind::Owned || glue.element.destroy.is_some())
             }
@@ -5134,6 +5258,53 @@ fn verify_operation_storage(
         PhysicalOp::TupleMake { dest, elements } => verify_tuple_make(function, *dest, elements)?,
         PhysicalOp::TupleGet { dest, tuple, index } => {
             verify_tuple_get(function, *dest, *tuple, *index)?;
+        }
+        PhysicalOp::ArrayMake { dest, fields, glue } => {
+            let descriptor = vector_glue(module, *glue)?;
+            let ResolvedTy::Array(element, length) = &descriptor.ty else {
+                return Err(PhysicalError::new("array.make has a non-array descriptor"));
+            };
+            if storage(function, *dest)?.ty != descriptor.ty
+                || storage(function, *dest)?.own != OwnKind::Owned
+                || fields.contains(dest)
+                || usize::try_from(*length).ok() != Some(fields.len())
+            {
+                return Err(PhysicalError::new(
+                    "array.make length or result differs from its descriptor",
+                ));
+            }
+            let mut consumed = BTreeSet::new();
+            for field in fields {
+                let field = storage(function, *field)?;
+                if field.ty != **element
+                    || field.own != descriptor.element.own
+                    || (field.own == OwnKind::Owned && !consumed.insert(field.id))
+                {
+                    return Err(PhysicalError::new(
+                        "array.make element differs from its descriptor",
+                    ));
+                }
+            }
+        }
+        PhysicalOp::ArrayRepeat { dest, seed, glue } => {
+            let descriptor = vector_glue(module, *glue)?;
+            let ResolvedTy::Array(element, length) = &descriptor.ty else {
+                return Err(PhysicalError::new(
+                    "array.repeat has a non-array descriptor",
+                ));
+            };
+            if storage(function, *dest)?.ty != descriptor.ty
+                || storage(function, *dest)?.own != OwnKind::Owned
+                || dest == seed
+                || storage(function, *seed)?.ty != **element
+                || storage(function, *seed)?.own != descriptor.element.own
+                || *length == 0
+                || (*length > 1 && descriptor.element.clone.is_none())
+            {
+                return Err(PhysicalError::new(
+                    "array.repeat seed, length or copy recipe differs from its descriptor",
+                ));
+            }
         }
         PhysicalOp::AggregateMake { dest, fields, glue } => {
             verify_aggregate_make(module, function, *dest, fields, *glue)?;
@@ -5773,6 +5944,7 @@ fn apply_operation(
             define(function, state, *dest, block, "tuple projection")?;
         }
         PhysicalOp::AggregateMake { dest, fields, .. }
+        | PhysicalOp::ArrayMake { dest, fields, .. }
         | PhysicalOp::ClosureMake { dest, fields, .. } => {
             for field in fields {
                 initialized(function, state, *field, block, "aggregate construction")?;
@@ -5781,6 +5953,11 @@ fn apply_operation(
             for field in fields {
                 consume_if_owned(function, state, *field)?;
             }
+        }
+        PhysicalOp::ArrayRepeat { dest, seed, .. } => {
+            initialized(function, state, *seed, block, "array repeat seed")?;
+            define(function, state, *dest, block, "array repeat")?;
+            consume_if_owned(function, state, *seed)?;
         }
         PhysicalOp::VariantMake { dest, fields, .. } => {
             for field in fields {
@@ -7689,6 +7866,26 @@ fn verify_terminator(
                 }
             }
             match *action {
+                PhysicalRuntimeAction::Array { operation, glue } => {
+                    let descriptor = vector_glue(module, glue)?;
+                    if !matches!(descriptor.ty, ResolvedTy::Array(_, _)) {
+                        return Err(PhysicalError::new(
+                            "array operation has a non-array descriptor",
+                        ));
+                    }
+                    verify_vector_call(
+                        module,
+                        match operation {
+                            ArrayValueOp::Len => PhysicalVectorOp::Len,
+                            ArrayValueOp::Index => PhysicalVectorOp::Index,
+                            ArrayValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
+                            ArrayValueOp::Set => PhysicalVectorOp::Set,
+                        },
+                        glue,
+                        &parameter_types,
+                        result_type,
+                    )?;
+                }
                 PhysicalRuntimeAction::Vector { operation, glue } => {
                     verify_vector_call(module, operation, glue, &parameter_types, result_type)?;
                 }
@@ -10348,7 +10545,7 @@ mod tests {
                 "{element}: ordinary vector value must use the shared vector clone"
             );
             for glue in &physical.vector_glue {
-                assert_eq!(vector_element_type(&glue.ty), Some(&glue.element.ty));
+                assert_eq!(sequence_element_type(&glue.ty), Some(&glue.element.ty));
                 assert_eq!(
                     glue.element.own,
                     OwnKind::of_ty(&glue.element.ty, &module.type_facts).unwrap()

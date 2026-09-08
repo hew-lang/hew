@@ -1,0 +1,18 @@
+#[resource]
+type Token { id: i64 }
+
+impl Token {
+    fn close(consume self) { println(f"close {self.id}"); }
+}
+
+fn fail() -> Token {
+    let local = Token { id: 2 };
+    let words: [string; 1] = ["live".to_upper()];
+    words[-1];
+    local
+}
+
+fn main() {
+    let values: [Token; 3] = [Token { id: 1 }, fail(), Token { id: 3 }];
+    println(values.len());
+}

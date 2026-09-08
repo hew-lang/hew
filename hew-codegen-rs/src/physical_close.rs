@@ -102,6 +102,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             }
             DestroyAction::Callable
             | DestroyAction::Vector(_)
+            | DestroyAction::Array(_)
             | DestroyAction::Map(_)
             | DestroyAction::Set(_) => {
                 let (symbol, owner) = if action == DestroyAction::Callable {
@@ -111,6 +112,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                     )
                 } else {
                     let symbol = match action {
+                        DestroyAction::Array(_) => "hew_array_visit_close",
                         DestroyAction::Vector(_) => "hew_vec_visit_close",
                         DestroyAction::Map(_) => "hew_hashmap_visit_close",
                         _ => "hew_hashset_visit_close",

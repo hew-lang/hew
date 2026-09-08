@@ -494,7 +494,7 @@ fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
 }
 
 /// Class and clone of a heap collection over its element facts (§1.1
-/// `Vec`/`HashMap`/`HashSet` row).
+/// `Vec`/`HashMap`/`HashSet` and fixed-array rows).
 ///
 /// The collection is never `BitCopy`: its buffer is heap, so the class floor
 /// is `CowValue`.
@@ -516,7 +516,7 @@ fn collection_facts(elements: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneK
 }
 
 /// Class and clone of an ordinary aggregate over its member facts (§1.1
-/// Aggregate rule): records, enums, tuples, arrays, `Option`/`Result`.
+/// Aggregate rule): records, enums, tuples, `Option`/`Result`.
 fn aggregate_facts(members: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneKind) {
     let class = members
         .iter()
@@ -717,7 +717,8 @@ fn classify(
             )
         }
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
-        ResolvedTy::Array(element, _) => aggregate_facts(&[classify(element, decls, walk)?]),
+        // Arrays own their element storage; copying uses the element recipe.
+        ResolvedTy::Array(element, _) => collection_facts(&[classify(element, decls, walk)?]),
         ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
         ResolvedTy::Named {
             name,

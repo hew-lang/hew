@@ -47,6 +47,9 @@
 //! covered by this substrate by design — it is structurally open-set
 //! and clippy-gated.
 
+mod array;
+pub use array::ArrayValueOp;
+
 mod async_io;
 pub use async_io::{AsyncIoLoan, AsyncIoOp, AsyncIoResume, IoHandleKind};
 mod tcp;
@@ -165,6 +168,10 @@ pub enum RuntimeValueKind {
     Duration,
     /// The signature's receiver, constrained by canonical builtin identity.
     Receiver(BuiltinType),
+    /// The exact fixed-size array receiver, including its length.
+    FixedArray,
+    /// The element of that exact fixed-size array receiver.
+    ArrayElement,
     /// One type argument from the signature's canonical collection receiver.
     TypeArgument(usize),
     /// Ordinary type construction, shared by optional results and projections.
@@ -241,6 +248,18 @@ impl RuntimeValueKind {
                     return None;
                 }
                 receiver.clone()
+            }
+            Self::FixedArray => {
+                let array @ ResolvedTy::Array(_, _) = receiver? else {
+                    return None;
+                };
+                array.clone()
+            }
+            Self::ArrayElement => {
+                let ResolvedTy::Array(element, _) = receiver? else {
+                    return None;
+                };
+                (**element).clone()
             }
             Self::TypeArgument(index) => {
                 collection_type_arguments(receiver?)?.1.get(index)?.clone()
@@ -439,6 +458,7 @@ impl RuntimeSemanticContract {
             .first()
             .filter(|ty| {
                 runtime_receiver_builtin(ty).is_some()
+                    || matches!(ty, ResolvedTy::Array(_, _))
                     || FileReadHandleKind::of_ty(ty).is_some()
                     || IoHandleKind::of_ty(ty).is_some()
                     || ChannelHalfKind::of_ty(ty).is_some()
@@ -621,6 +641,16 @@ pub fn vector_element_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
             ..
         } if args.len() == 1 => args.first(),
         _ => None,
+    }
+}
+
+/// Element of a contiguous owning sequence. Physical allocation and value glue
+/// are shared by vectors and fixed arrays; their semantic operations stay distinct.
+#[must_use]
+pub fn sequence_element_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Array(element, _) => Some(element),
+        _ => vector_element_type(ty),
     }
 }
 
@@ -1821,6 +1851,7 @@ pub enum RuntimeCallFamily {
     // --- Vec<T> ------------------------------------------------------------
     /// Final semantic values; target lowering chooses layout-backed runtime entry points.
     Vector(VecValueOp),
+    Array(ArrayValueOp),
     Map(MapValueOp),
     Set(SetValueOp),
     VecAppend,
@@ -3033,6 +3064,7 @@ impl RuntimeCallFamily {
                 SetValueOp::Clear => "set.value.clear",
                 SetValueOp::Elements => "set.value.elements",
             },
+            Self::Array(op) => op.symbol(),
             Self::Vector(op) => match op {
                 VecValueOp::New => "vec.value.new",
                 VecValueOp::Len => "vec.value.len",
@@ -3461,6 +3493,10 @@ impl RuntimeCallFamily {
             "hew_vec_is_empty" => Self::VecIsEmpty,
             "hew_vec_join_str" => Self::VecJoinStr,
             "hew_vec_len" => Self::VecLen,
+            "array.value.len" => Self::Array(ArrayValueOp::Len),
+            "array.value.index" => Self::Array(ArrayValueOp::Index),
+            "array.value.index_borrow" => Self::Array(ArrayValueOp::IndexBorrow),
+            "array.value.set" => Self::Array(ArrayValueOp::Set),
             "vec.value.new" => Self::Vector(VecValueOp::New),
             "map.value.new" => Self::Map(MapValueOp::New),
             "map.value.len" => Self::Map(MapValueOp::Len),
@@ -3719,7 +3755,8 @@ impl RuntimeCallFamily {
     pub const fn is_synthetic_mir_symbol(self) -> bool {
         matches!(
             self,
-            Self::Vector(_)
+            Self::Array(_)
+                | Self::Vector(_)
                 | Self::Map(_)
                 | Self::Set(_)
                 | Self::BytesGet
@@ -3808,6 +3845,7 @@ impl RuntimeCallFamily {
 
     const fn collection_semantic_contract(self) -> Option<RuntimeSemanticContract> {
         match self {
+            Self::Array(op) => Some(op.contract()),
             Self::Vector(op) => Some(op.contract()),
             Self::Map(op) => Some(op.contract()),
             Self::Set(op) => Some(op.contract()),
@@ -4148,6 +4186,8 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::Char
                     | RuntimeValueKind::Duration
                     | RuntimeValueKind::Receiver(_)
+                    | RuntimeValueKind::FixedArray
+                    | RuntimeValueKind::ArrayElement
                     | RuntimeValueKind::ChannelHalf(_)
                     | RuntimeValueKind::ChannelHalfResult(_)
                     | RuntimeValueKind::ChannelPair
@@ -4321,6 +4361,7 @@ impl RuntimeCallFamily {
             // so adding a new variant requires an explicit decision.
             F::FileRead(_)
             | F::Tcp(_)
+            | F::Array(_)
             | F::Vector(_)
             | F::Map(_)
             | F::Set(_)
@@ -5109,6 +5150,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
             }
             F::FileRead(_) => out.extend(FileReadOp::iter().map(F::FileRead)),
             F::Tcp(_) => out.extend(TcpOp::iter().map(F::Tcp)),
+            F::Array(_) => out.extend(ArrayValueOp::iter().map(F::Array)),
             F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
             F::Map(_) => out.extend(MapValueOp::iter().map(F::Map)),
             F::Set(_) => out.extend(SetValueOp::iter().map(F::Set)),

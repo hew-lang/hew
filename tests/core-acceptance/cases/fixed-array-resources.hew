@@ -1,0 +1,22 @@
+#[resource]
+type Token { id: i64, label: string }
+
+impl Token {
+    fn close(consume self) { println(f"close {self.id}"); }
+}
+
+fn make_token(id: i64) -> Token { Token { id: id, label: "token".to_upper() } }
+
+fn work() {
+    let empty: [Token; 0] = [make_token(0); 0];
+    println(empty.len());
+    var values: [Token; 2] = [make_token(1), make_token(2)];
+    println(values[0].label);
+    println(values[0].id);
+    values[0] = make_token(values[0].id + 2);
+    let single: [Token; 1] = [make_token(4); 1];
+    println(single.len());
+    for token in single { println(token.id); }
+}
+
+fn main() { work(); println("released"); }

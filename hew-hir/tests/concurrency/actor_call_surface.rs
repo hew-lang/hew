@@ -101,7 +101,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(operand, out);
         }
         HirExprKind::SubsumedValue { source, .. } => visit_expr(source, out),
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 visit_expr(elem, out);
             }
@@ -172,6 +172,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             }
         }
         HirExprKind::CoerceToDynTrait { value, .. }
+        | HirExprKind::ArrayRepeat { value }
         | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. } => {

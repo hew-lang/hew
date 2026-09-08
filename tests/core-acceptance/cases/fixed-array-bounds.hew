@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    var values: [string; 2] = ["first".to_upper(), "second".to_upper()];
+    let incoming = "incoming".to_upper();
+    values[values.len()] = incoming;
+    println("unreachable");
+    0
+}

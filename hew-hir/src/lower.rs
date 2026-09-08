@@ -7257,13 +7257,14 @@ fn collect_call_sites_in_expr(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_call_sites_in_expr(operand, out, trait_out);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
             }
@@ -11185,13 +11186,14 @@ impl LowerCtx {
             HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
                 self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
             }
-            HirExprKind::NumericCast { value, .. }
+            HirExprKind::ArrayRepeat { value }
+            | HirExprKind::NumericCast { value, .. }
             | HirExprKind::SaturatingWidthCast { value, .. }
             | HirExprKind::TryWidthCast { value, .. }
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirExprKind::TupleLiteral { elements } => {
+            HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
                 for elem in elements {
                     self.wrap_var_self_explicit_expr_returns(elem, receiver, abi_return_ty);
                 }
@@ -21499,7 +21501,7 @@ impl LowerCtx {
         )
     }
 
-    fn array_literal_vec_ty(&mut self, span: &Span) -> Option<(ResolvedTy, ResolvedTy)> {
+    fn array_literal_ty(&mut self, span: &Span) -> Option<(ResolvedTy, ResolvedTy)> {
         let key = self.mk_key(span);
         let Some(ty) = self.expr_types.get(&key).cloned() else {
             self.diagnostics.push(HirDiagnostic::new(
@@ -21508,7 +21510,7 @@ impl LowerCtx {
                     reason: "missing expr_types entry".to_string(),
                 },
                 span.clone(),
-                "array literal lowering requires the checker element type; HIR desugars to Vec<T>, never to a fixed-size Array<T, N>",
+                "array literal lowering requires its exact checker result type",
             ));
             return None;
         };
@@ -21532,9 +21534,9 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => Some((Self::resolved_vec_ty(args[0].clone()), args[0].clone())),
-            ResolvedTy::Array(elem_ty, _) => {
+            ResolvedTy::Array(elem_ty, len) => {
                 let elem_ty = *elem_ty;
-                Some((Self::resolved_vec_ty(elem_ty.clone()), elem_ty))
+                Some((ResolvedTy::Array(Box::new(elem_ty.clone()), len), elem_ty))
             }
             other => {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -21543,7 +21545,7 @@ impl LowerCtx {
                         reason: format!("checker produced non-array type `{other}`"),
                     },
                     span.clone(),
-                    "array literal lowering requires the checker element type; HIR desugars to Vec<T>, never to a fixed-size Array<T, N>",
+                    "array literal lowering requires its exact checker result type",
                 ));
                 None
             }
@@ -21817,12 +21819,20 @@ impl LowerCtx {
         elems: &[Spanned<Expr>],
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((vec_ty, _)) = self.array_literal_vec_ty(span) else {
+        let Some((vec_ty, _)) = self.array_literal_ty(span) else {
             return (
                 HirExprKind::Unsupported("array literal missing checker element type".into()),
                 ResolvedTy::Unit,
             );
         };
+
+        if matches!(vec_ty, ResolvedTy::Array(_, _)) {
+            let elements = elems
+                .iter()
+                .map(|element| self.lower_expr(element, IntentKind::Read))
+                .collect();
+            return (HirExprKind::ArrayLiteral { elements }, vec_ty);
+        }
 
         let lowered_elems: Vec<HirExpr> = elems
             .iter()
@@ -21890,12 +21900,17 @@ impl LowerCtx {
         count: &Spanned<Expr>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((vec_ty, elem_ty)) = self.array_literal_vec_ty(span) else {
+        let Some((vec_ty, elem_ty)) = self.array_literal_ty(span) else {
             return (
                 HirExprKind::Unsupported("array-repeat missing checker element type".into()),
                 ResolvedTy::Unit,
             );
         };
+
+        if matches!(vec_ty, ResolvedTy::Array(_, _)) {
+            let value = Box::new(self.lower_expr(value, IntentKind::Read));
+            return (HirExprKind::ArrayRepeat { value }, vec_ty);
+        }
 
         // Owned (non-BitCopy) elements are cloned per slot by the runtime push
         // path: push_str / push_bytes creates an independent copy, and push_owned
@@ -25736,6 +25751,8 @@ impl LowerCtx {
             hew_types::RuntimeCallFamily::StringLen
         } else if sequence_ty == ResolvedTy::Bytes {
             hew_types::RuntimeCallFamily::BytesLen
+        } else if matches!(sequence_ty, ResolvedTy::Array(_, _)) {
+            hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Len)
         } else {
             hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len)
         };
@@ -25915,6 +25932,23 @@ impl LowerCtx {
                 span,
                 (&iterable.1, None),
                 false,
+            );
+        }
+
+        if let ResolvedTy::Array(element_ty, _) = lowered_iterable.ty.clone() {
+            let borrowed = self
+                .borrowed_element_for_loops
+                .contains(&SpanKey::in_module(&iterable.1, self.current_module_idx));
+            let source =
+                (borrowed && Self::for_in_iterable_is_place(&iterable.0)).then_some(iterable);
+            return self.lower_for_sequence_index_desugar(
+                lowered_iterable,
+                (&var_name, &pattern.1, &element_ty),
+                body,
+                label,
+                span,
+                (&iterable.1, source),
+                borrowed,
             );
         }
 
@@ -30354,13 +30388,14 @@ fn collect_captures_walk(
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_captures_walk(listener, param_ids, seen, captures, self_id);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
             }
@@ -30624,13 +30659,14 @@ fn collect_general_closure_captures_walk(
         HirExprKind::StreamRecvAwait { stream, .. } => {
             collect_general_closure_captures_walk(stream, outer_bindings, seen, captures);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
             }
@@ -32580,12 +32616,13 @@ fn scan_expr_for_call_shape(
         HirExprKind::StreamRecvAwait { stream, .. } => {
             scan_expr_for_call_shape(stream, callable, diagnostics);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 scan_expr_for_call_shape(elem, callable, diagnostics);
             }
@@ -33654,6 +33691,7 @@ fn check_vec_index_element_type(
                 | ResolvedTy::String
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
+                | ResolvedTy::Array(_, _)
                 | ResolvedTy::TypeParam { .. }
         )
     } else {
@@ -33679,6 +33717,7 @@ fn check_vec_index_element_type(
                 | ResolvedTy::String
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
+                | ResolvedTy::Array(_, _)
                 | ResolvedTy::TypeParam { .. }
                 // Closure-pair elements: `xs[i]` loads the pair out of the
                 // slot's heap box (`hew_vec_get_ptr` + codegen unbox). The
@@ -35967,7 +36006,7 @@ impl Widget {
             },
         );
         assert_eq!(
-            vec_ctx.array_literal_vec_ty(&(0..0)).map(|(_, elem)| elem),
+            vec_ctx.array_literal_ty(&(0..0)).map(|(_, elem)| elem),
             Some(ResolvedTy::I64),
             "a renamed builtin Vec<T> still owns array literal lowering"
         );
@@ -35997,7 +36036,7 @@ impl Widget {
             ),
             "checker/HIR qualification must preserve a user Vec<T>, got {stored_user_vec_ty:?}"
         );
-        let user_vec_literal_ty = user_vec_ctx.array_literal_vec_ty(&(0..0));
+        let user_vec_literal_ty = user_vec_ctx.array_literal_ty(&(0..0));
         assert!(
             user_vec_literal_ty.is_none(),
             "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"

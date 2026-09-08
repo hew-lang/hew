@@ -1238,8 +1238,8 @@ mod tests {
             ),
             (
                 ResolvedTy::Array(Box::new(ResolvedTy::I64), 4),
-                ValueClass::BitCopy,
-                CloneKind::Bits,
+                ValueClass::CowValue,
+                CloneKind::DeepCopy,
             ),
             (
                 ResolvedTy::Array(Box::new(conn()), 3),

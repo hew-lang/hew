@@ -1129,6 +1129,16 @@ pub enum SemOpKind {
         shape: AggregateShapeRef,
         fields: Vec<Operand>,
     },
+    /// Construct a fixed array by consuming exactly N element operands.
+    /// No allocation or per-element layout is attached at this stage.
+    ArrayMake {
+        fields: Vec<Operand>,
+    },
+    /// Construct a nonempty fixed array from one evaluated seed. Consumes the
+    /// seed; lengths greater than one require its semantic copy capability.
+    ArrayRepeat {
+        value: Operand,
+    },
     /// Read one aggregate field and produce an independent logical copy.
     AggregateProjectCopy {
         shape: AggregateShapeRef,
@@ -1336,6 +1346,7 @@ impl SemOpKind {
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
             Self::AggregateMake { fields, .. }
+            | Self::ArrayMake { fields }
             | Self::VariantMake { fields, .. }
             | Self::ClosureMake { fields, .. } => {
                 for (index, field) in fields.iter().enumerate() {
@@ -1374,6 +1385,7 @@ impl SemOpKind {
             | Self::Move { source: value }
             | Self::Fork { source: value }
             | Self::DestroyValue { value }
+            | Self::ArrayRepeat { value }
             | Self::BeginBorrow { owner: value }
             | Self::EndBorrow { borrow: value }
             | Self::Destructure {
@@ -1426,6 +1438,7 @@ impl SemOpKind {
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
             Self::AggregateMake { fields, .. }
+            | Self::ArrayMake { fields }
             | Self::VariantMake { fields, .. }
             | Self::ClosureMake { fields, .. } => {
                 for (index, field) in fields.iter_mut().enumerate() {
@@ -1464,6 +1477,7 @@ impl SemOpKind {
             | Self::Move { source: value }
             | Self::Fork { source: value }
             | Self::DestroyValue { value }
+            | Self::ArrayRepeat { value }
             | Self::BeginBorrow { owner: value }
             | Self::EndBorrow { borrow: value }
             | Self::Destructure {
@@ -1501,6 +1515,8 @@ impl SemOpKind {
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
             | Self::AggregateMake { .. }
+            | Self::ArrayMake { .. }
+            | Self::ArrayRepeat { .. }
             | Self::AggregateProjectCopy { .. }
             | Self::AggregateProjectBorrow { .. }
             | Self::VariantMake { .. }
@@ -1573,6 +1589,8 @@ impl SemOpKind {
             | Self::Move { .. }
             | Self::Fork { .. }
             | Self::AggregateMake { .. }
+            | Self::ArrayMake { .. }
+            | Self::ArrayRepeat { .. }
             | Self::VariantMake { .. }
             | Self::AggregateProjectCopy { .. }
             | Self::AggregateProjectBorrow { .. }
@@ -1628,6 +1646,8 @@ impl SemOpKind {
                 | Self::Move { .. }
                 | Self::Fork { .. }
                 | Self::AggregateMake { .. }
+                | Self::ArrayMake { .. }
+                | Self::ArrayRepeat { .. }
                 | Self::VariantMake { .. }
                 | Self::VariantDestructure { .. }
                 | Self::Destructure { .. }

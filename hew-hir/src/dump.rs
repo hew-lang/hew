@@ -1296,6 +1296,21 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  unary {op:?}").expect("write to string");
             dump_expr(out, operand, indent + 4);
         }
+        HirExprKind::ArrayLiteral { elements } => {
+            writeln!(
+                out,
+                "{pad}  fixed array literal ({} elements)",
+                elements.len()
+            )
+            .expect("write to string");
+            for element in elements {
+                dump_expr(out, element, indent + 4);
+            }
+        }
+        HirExprKind::ArrayRepeat { value } => {
+            writeln!(out, "{pad}  fixed array repeat").expect("write to string");
+            dump_expr(out, value, indent + 4);
+        }
         HirExprKind::TupleLiteral { elements } => {
             writeln!(out, "{pad}  tuple literal ({} elements)", elements.len())
                 .expect("write to string");

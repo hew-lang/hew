@@ -445,6 +445,37 @@ impl Verifier {
                     ));
                 }
             }
+            HirExprKind::ArrayLiteral { elements } => {
+                if !matches!(&expr.ty, ResolvedTy::Array(element, len)
+                    if usize::try_from(*len).ok() == Some(elements.len())
+                        && elements.iter().all(|value| value.ty == **element))
+                {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "fixed array literal".into(),
+                            reason: "literal elements disagree with the checked array type".into(),
+                        },
+                        expr.span.clone(),
+                        "fixed array literal must preserve its exact checked type",
+                    ));
+                }
+                for element in elements {
+                    self.expr(element);
+                }
+            }
+            HirExprKind::ArrayRepeat { value } => {
+                if !matches!(&expr.ty, ResolvedTy::Array(element, _) if value.ty == **element) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "fixed array repeat".into(),
+                            reason: "seed disagrees with the checked array element type".into(),
+                        },
+                        expr.span.clone(),
+                        "fixed array repeat must preserve its exact checked type",
+                    ));
+                }
+                self.expr(value);
+            }
             HirExprKind::TupleLiteral { elements } => {
                 // Arity check: expr.ty must be ResolvedTy::Tuple with width
                 // matching elements.len(). Checker-authoritative invariant: the

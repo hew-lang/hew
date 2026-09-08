@@ -2524,7 +2524,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
         || matches!(
             ty,
-            ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_)
+            ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
         )
 }
 
@@ -2992,6 +2992,27 @@ fn verify_operation_shape(
                     ),
                     diagnostics,
                 );
+            }
+        }
+        SemOpKind::ArrayMake { fields } => {
+            let valid = matches!(&result.ty, ResolvedTy::Array(element, length)
+                if usize::try_from(*length).ok() == Some(fields.len())
+                    && fields.iter().all(|field| types.get(&field.value) == Some(element.as_ref())));
+            if !valid {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "array.make elements disagree with its exact array type".into(),
+                    diagnostics,
+                );
+            }
+        }
+        SemOpKind::ArrayRepeat { value } => {
+            let valid = matches!(&result.ty, ResolvedTy::Array(element, length)
+                if *length > 0 && types.get(&value.value) == Some(element.as_ref())
+                    && (*length == 1 || facts.get(&hew_types::TypeInstanceKey((**element).clone())).is_some_and(|row| row.clone != hew_types::CloneKind::None)));
+            if !valid {
+                invalid_operation(function, operation.id, "array.repeat requires an exact nonempty array and a copyable seed when length exceeds one".into(), diagnostics);
             }
         }
         SemOpKind::AggregateMake { shape, fields } => {
@@ -5066,15 +5087,18 @@ fn verify_terminator_shape(
                                 2
                             };
                             inputs.len() == expected_len
-                                    && inputs[0].decision == crate::BoundaryDecision::Borrow
-                                    && types.get(&inputs[0].operand.value).is_some_and(|ty| {
-                                        crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned)
-                                            && (*selection == crate::ValueCloseSelection::Whole
-                                                || matches!(ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Vec), args, .. } if args.len() == 1))
-                                    })
-                                    && (*selection == crate::ValueCloseSelection::Whole
-                                        || (inputs[1].decision == crate::BoundaryDecision::Copy
-                                            && types.get(&inputs[1].operand.value) == Some(&ResolvedTy::I64)))
+                                && inputs[0].decision == crate::BoundaryDecision::Borrow
+                                && types.get(&inputs[0].operand.value).is_some_and(|ty| {
+                                    crate::OwnKind::of_ty(ty, variants.facts).ok()
+                                        == Some(crate::OwnKind::Owned)
+                                        && (*selection == crate::ValueCloseSelection::Whole
+                                            || hew_types::runtime_call::sequence_element_type(ty)
+                                                .is_some())
+                                })
+                                && (*selection == crate::ValueCloseSelection::Whole
+                                    || (inputs[1].decision == crate::BoundaryDecision::Copy
+                                        && types.get(&inputs[1].operand.value)
+                                            == Some(&ResolvedTy::I64)))
                         }
                 }
                 crate::SuspendKind::Join { .. } => {

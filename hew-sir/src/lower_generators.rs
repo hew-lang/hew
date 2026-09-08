@@ -506,6 +506,7 @@ pub(super) fn value_needs_close(service: &super::InstanceService<'_>, ty: &Resol
             ResolvedTy::Closure { captures, .. } | ResolvedTy::Tuple(captures) => {
                 captures.iter().any(|ty| visit(ty, service, seen))
             }
+            ResolvedTy::Array(element, length) => *length != 0 && visit(element, service, seen),
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::Generator),
                 ..

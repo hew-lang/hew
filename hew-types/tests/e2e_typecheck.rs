@@ -3957,7 +3957,7 @@ fn rc_field_assignment_escape_errors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Unsupported Vec array elements
+//  Fixed arrays in collection values
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn assert_invalid_operation_contains(source: &str, needle: &str, context: &str) {
@@ -3978,80 +3978,30 @@ fn assert_invalid_operation_contains(source: &str, needle: &str, context: &str) 
 }
 
 #[test]
-fn vec_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<[i64; 2]> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<[i64; 2]>` is not supported",
-        "annotated Vec<[i64; 2]>",
-    );
-}
-
-// NOTE: the former `vec_from_array_elements_rejected` and
-// `vec_tuple_with_array_elements_rejected` tests were removed: they constructed
-// the array-element case via array LITERALS (`[1, 2]`), which now type as
-// `Vec<i64>` (array literals desugar to Vec), so the `Vec<[i64; 2]> is not
-// supported` rejection no longer applies to that syntax. The fixed-size-array
-// (`[T; N]`) Vec-element rejection is still covered by the annotation-based
-// tests below (`vec_nested_vec_array_annotation_rejected`,
-// `vec_generic_wrapper_array_annotation_rejected`).
-
-#[test]
-fn vec_nested_vec_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<Vec<[i64; 2]>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<[i64; 2]>` is not supported",
-        "annotated Vec<Vec<[i64; 2]>>",
-    );
+fn fixed_arrays_compose_with_collection_element_types() {
+    for element in [
+        "[i64; 2]",
+        "Vec<[i64; 2]>",
+        "Box<[i64; 2]>",
+        "Option<[i64; 2]>",
+        "Result<[i64; 2], string>",
+    ] {
+        assert_inline_typechecks_cleanly(&format!(
+            "type Box<T> {{ value: T }} fn main() {{ let values: Vec<{element}> = Vec.new(); println(values.len()); }}"
+        ), element);
+    }
 }
 
 #[test]
-fn vec_generic_wrapper_array_annotation_rejected() {
+fn fixed_array_repeat_refuses_implicit_affine_duplication() {
     assert_invalid_operation_contains(
         r"
-        type Box<T> {
-            value: T,
-        }
-
-        fn main() {
-            let v: Vec<Box<[i64; 2]>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<Box<[i64; 2]>>` is not supported",
-        "annotated Vec<Box<[i64; 2]>>",
-    );
-}
-
-#[test]
-fn vec_option_wrapper_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<Option<[i64; 2]>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<Option<[i64; 2]>>` is not supported",
-        "annotated Vec<Option<[i64; 2]>>",
-    );
-}
-
-#[test]
-fn vec_result_wrapper_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<Result<[i64; 2], string>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<Result<[i64; 2], string>>` is not supported",
-        "annotated Vec<Result<[i64; 2], string>>",
+        #[resource] type Token { id: i64 }
+        impl Token { fn close(consume self) {} }
+        fn main() { let values: [Token; 2] = [Token { id: 1 }; 2]; }
+    ",
+        "requires a Clone element",
+        "fixed array repeat cannot duplicate a resource",
     );
 }
 
@@ -5381,8 +5331,6 @@ fn type_def_with_error_field_is_pruned_from_output() {
 #[test]
 fn enum_with_error_variant_payload_is_pruned_from_output() {
     // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
-    // `Vec<[i64; 2]>` fires only a diagnostic — the field type remains the
-    // concrete Named type, so pruning does not trigger.
     // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
     // returns Ty::Error directly via the TaskNotNameable path, which is exactly
     // what triggers variant pruning.

@@ -745,11 +745,11 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 > and `fn f(xs: [T])` both type-check and lower as `Vec<T>`, so an `[T; N]`
 > value does not satisfy an `[T]` annotation (``expected `Vec<i64>`, found
 > `[i64; 3]` ``). Prefer the explicit `Vec<T>` spelling for dynamically-sized
-> sequences. `.len()` reads an array's length through the `Vec<T>` method
-> surface, so it is available on an inferred or `[T]`-annotated binding; a
-> binding annotated `[T; N]` does not resolve methods and is refused
-> (``no method `len` on `[i64; 3]` ``). Removing that asymmetry is a
-> checker fix, not a surface change.
+> sequences. Fixed arrays support `.len()`, indexing and replacement through a
+> mutable binding. Their length remains part of the type through calls, returns
+> and nested values. The compiler chooses storage; the source type does not
+> promise stack allocation. `[seed; N]` evaluates `seed` once, even when `N` is
+> zero, and requires a cloneable element when `N` exceeds one.
 
 **Frozen derivation:**
 
@@ -2992,9 +2992,11 @@ needs its exact layout and lifetime contract; a clone recipe is required only
 for operations that copy it. A borrowed read and an owning removal are distinct
 operations (§3.8.1).
 
-Fixed-size array value contracts remain incomplete on the native path. That
-limits arrays as collection elements as well; it is not a reason to describe
-all opaque, task or callable elements as forbidden.
+Fixed-size arrays retain their exact element type and length on the native
+path, including when stored in a collection. They use the element's ordinary
+copy and cleanup contracts. Native storage currently uses a heap buffer;
+allocation geometry must fit the target address space and runtime length
+representation. There is no source size cap derived from a stack budget.
 
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `.contains()`, `.trim()`, `.replace()`, `.split()`, `.lines()`,

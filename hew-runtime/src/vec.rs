@@ -1542,14 +1542,20 @@ unsafe fn drop_element_range(v: *mut HewVec, start: usize, end: usize) {
 /// # Safety
 ///
 /// `v` must be null or a valid Vec allocation.
-unsafe fn free_vec_descriptor(v: *mut HewVec) {
+unsafe fn free_vec_descriptor(v: *mut HewVec, reverse: bool) {
     // SAFETY: caller guarantees `v` was allocated by a Vec constructor.
     unsafe {
         if v.is_null() {
             return;
         }
         if !(*v).data.is_null() {
-            drop_element_range(v, 0, (*v).len);
+            if reverse {
+                for index in (0..(*v).len).rev() {
+                    drop_element_range(v, index, index + 1);
+                }
+            } else {
+                drop_element_range(v, 0, (*v).len);
+            }
             if (*v).layout.is_null() {
                 libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
             } else {
@@ -1584,7 +1590,27 @@ pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
-    unsafe { free_vec_descriptor(v) }
+    unsafe { free_vec_descriptor(v, false) }
+}
+
+/// Release a fixed array's initialized elements from last to first, then its buffer.
+///
+/// # Safety
+/// `value` must be null or an independently owned descriptor-backed array allocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_free(value: *mut HewVec) {
+    // SAFETY: the array shares the vector allocation and element descriptor protocol.
+    unsafe { free_vec_descriptor(value, true) }
+}
+
+/// Clone a fixed array, unwinding any partially copied prefix in reverse order.
+///
+/// # Safety
+/// `value` must be null or a readable array allocation with a cloneable element descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_clone(value: *const HewVec) -> *mut HewVec {
+    // SAFETY: the array shares the vector allocation and element descriptor protocol.
+    unsafe { clone_vec_descriptor(value, true) }
 }
 
 /// Drop one boxed closure pair in place.
@@ -1695,7 +1721,7 @@ pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
 /// # Safety
 ///
 /// `v` must be null or a valid Vec allocation.
-unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
+unsafe fn clone_vec_descriptor(v: *const HewVec, reverse_cleanup: bool) -> *mut HewVec {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         if v.is_null() {
@@ -1721,7 +1747,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
         if src.len == 0 {
             return new_v;
         }
-        ensure_cap_raw(new_v, src.len);
+        allocate_exact_capacity(new_v, src.len);
         if src.layout.is_null() {
             if src.elem_kind == ElemKind::String {
                 retain_string_elements_into(
@@ -1746,7 +1772,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
                 let status = clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>());
                 if status != 0 {
                     (*new_v).len = i;
-                    free_vec_descriptor(new_v);
+                    free_vec_descriptor(new_v, reverse_cleanup);
                     let msg = b"PANIC: Vec descriptor clone failed\n\0";
                     write_stderr(&msg[..msg.len() - 1]);
                     libc::abort();
@@ -1770,7 +1796,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
     // SAFETY: forwarded allocation contract.
-    unsafe { clone_vec_descriptor(v) }
+    unsafe { clone_vec_descriptor(v, false) }
 }
 
 /// Clone a layout-backed `BitCopy` (Plain ownership) vec by bulk-copying all
@@ -1796,7 +1822,7 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
     // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
-        clone_vec_descriptor(v)
+        clone_vec_descriptor(v, false)
     }
 }
 
@@ -2617,6 +2643,56 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
     }
 }
 
+/// Allocate descriptor-backed storage with an exact, initially empty capacity.
+/// Fixed array construction initializes the slots in order; `len` counts only
+/// completed elements, so the ordinary element cleanup protocol applies.
+///
+/// # Safety
+///
+/// `layout` must be a valid descriptor for this call. `capacity` must be
+/// nonnegative and its allocation must fit the target address space. The
+/// returned owner must use its container's release protocol: [`hew_array_free`]
+/// for a fixed array or [`hew_vec_free_owned`] for a vector.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_with_elem_layout_capacity(
+    layout: *const HewValueLayout,
+    capacity: i64,
+) -> *mut HewVec {
+    // SAFETY: the constructor validates and copies the supplied descriptor.
+    unsafe {
+        let capacity = usize::try_from(capacity).unwrap_or_else(|_| libc::abort());
+        let value = hew_vec_new_with_elem_layout(layout);
+        if value.is_null() {
+            return value;
+        }
+        allocate_exact_capacity(value, capacity);
+        value
+    }
+}
+
+/// Allocate a fresh buffer without geometric capacity rounding.
+unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
+    // SAFETY: callers supply a new vector with no backing allocation.
+    unsafe {
+        if capacity == 0 {
+            return;
+        }
+        let bytes = capacity
+            .checked_mul((*value).elem_size)
+            .unwrap_or_else(|| libc::abort());
+        let data = if (*value).layout.is_null() {
+            libc::malloc(bytes.max(1)).cast::<u8>()
+        } else {
+            alloc(buffer_layout(bytes, (*(*value).layout).align))
+        };
+        if data.is_null() {
+            libc::abort();
+        }
+        (*value).data = data;
+        (*value).cap = capacity;
+    }
+}
+
 /// Copy an element into a new slot through its descriptor. The source remains
 /// independently owned by the caller. Plain values need only a byte copy.
 ///
@@ -2978,7 +3054,7 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
-    unsafe { free_vec_descriptor(v) }
+    unsafe { free_vec_descriptor(v, false) }
 }
 
 /// Clone a Vec through the same descriptor-driven recursive protocol as
@@ -2991,7 +3067,7 @@ pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
     // SAFETY: forwarded allocation contract.
-    unsafe { clone_vec_descriptor(v) }
+    unsafe { clone_vec_descriptor(v, false) }
 }
 
 /// Move a Vec's entire contents into a freshly allocated Vec with the same
@@ -3285,6 +3361,25 @@ pub unsafe extern "C" fn hew_vec_visit_close(v: *mut HewVec, context: *mut c_voi
             if let Some(visit) = layout.visit_close {
                 for index in 0..vec.len {
                     visit(vec.data.add(index * layout.size).cast(), context);
+                }
+            }
+        }
+    }
+}
+
+/// Visit a fixed array's initialized elements from last to first before release.
+///
+/// # Safety
+/// The array remains exclusively borrowed until collected cleanup completes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_visit_close(value: *mut HewVec, context: *mut c_void) {
+    // SAFETY: the caller retains the array and its exact element descriptor.
+    unsafe {
+        let array = &*value;
+        if let Some(layout) = array.layout.as_ref() {
+            if let Some(visit) = layout.visit_close {
+                for index in (0..array.len).rev() {
+                    visit(array.data.add(index * layout.size).cast(), context);
                 }
             }
         }

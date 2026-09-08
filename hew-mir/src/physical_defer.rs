@@ -283,10 +283,15 @@ fn operation_storage(
             used.insert(*tuple);
         }
         PhysicalOp::AggregateMake { dest, fields, .. }
+        | PhysicalOp::ArrayMake { dest, fields, .. }
         | PhysicalOp::VariantMake { dest, fields, .. }
         | PhysicalOp::ClosureMake { dest, fields, .. } => {
             defined.insert(*dest);
             used.extend(fields);
+        }
+        PhysicalOp::ArrayRepeat { dest, seed, .. } => {
+            defined.insert(*dest);
+            used.insert(*seed);
         }
         PhysicalOp::AggregateProjectCopy {
             dest, aggregate, ..

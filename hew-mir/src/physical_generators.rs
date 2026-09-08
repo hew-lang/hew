@@ -176,7 +176,7 @@ pub(super) fn verify_suspend(
             if let Some(index) = index {
                 if *conditional
                     || storage(function, *index)?.ty != ResolvedTy::I64
-                    || !matches!(&slot.ty, ResolvedTy::Named { builtin: Some(BuiltinType::Vec), args, .. } if args.len() == 1)
+                    || hew_types::runtime_call::sequence_element_type(&slot.ty).is_none()
                 {
                     return Err(PhysicalError::new(
                         "selected value close requires a vector owner and copied i64 index",

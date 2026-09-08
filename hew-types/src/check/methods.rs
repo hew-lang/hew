@@ -3847,7 +3847,7 @@ impl Checker {
     /// name found, or `None` if clean. Uses `canonical_owned_handle_type_name`
     /// as the single opaque-detection authority (mirrors `ty_contains_owned_handle`
     /// in `registration.rs`); the substitution mirrors
-    /// `vec_element_contains_structural_array` (admissibility.rs).
+    /// the ordinary recursive member walk.
     fn record_field_contains_opaque(
         &self,
         name: &str,
@@ -3941,7 +3941,7 @@ impl Checker {
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
         // bound in the substitution environment is walked at its concrete type
-        // (mirrors `vec_element_contains_structural_array`).
+        // through each concrete member.
         let resolved = self.subst.resolve(ty);
         match &resolved {
             Ty::Named {
@@ -6154,6 +6154,7 @@ impl Checker {
             // iteration move the two-word fat pointer, while clone-dependent
             // surfaces remain refused.
             Ty::TraitObject { .. } => true,
+            Ty::Array(element, _) => self.vec_collection_arg_clonable(element, visiting),
             // Tuple element: a tuple with at least one owned (non-Copy) field
             // routes through the synthesized `__hew_tuple_*_inplace` thunk. An
             // all-Copy tuple is `Copy` and never reaches this admissibility
@@ -6190,6 +6191,11 @@ impl Checker {
                 // `resolved_ty_element_owns_heap_for_owned_vec`, so the clone
                 // primitive can never disagree with the inner Vec's ABI.
                 match builtin {
+                    Some(BuiltinType::Option | BuiltinType::Result) => {
+                        return args
+                            .iter()
+                            .all(|argument| self.vec_collection_arg_clonable(argument, visiting));
+                    }
                     Some(BuiltinType::HashMap | BuiltinType::HashSet) => return true,
                     Some(BuiltinType::Vec) => {
                         if args
@@ -6364,6 +6370,7 @@ impl Checker {
                 .iter()
                 .all(|elem| self.vec_tuple_owned_field_admissible(elem)),
             Ty::String | Ty::Bytes => true,
+            Ty::Array(element, _) => self.vec_tuple_owned_field_admissible(element),
             Ty::Named {
                 builtin: Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender),
                 args,
@@ -6375,7 +6382,6 @@ impl Checker {
             }
             Ty::Function { .. }
             | Ty::Closure { .. }
-            | Ty::Array(_, _)
             | Ty::Slice(_)
             | Ty::Named {
                 builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
@@ -6542,7 +6548,7 @@ impl Checker {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "Vec keeps the divergent contains/join/map/filter/fold arms and the structural-array guard inline; runtime-backed signatures delegate to the stdlib-source authority."
+        reason = "Vec keeps divergent contains/join/map/filter/fold arms inline; runtime-backed signatures delegate to the stdlib-source authority."
     )]
     pub(super) fn check_vec_method(
         &mut self,
@@ -6557,10 +6563,6 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        let elem_ty_before = self.subst.resolve(&elem_ty);
-        let mut elem_ty_before_visiting = HashSet::new();
-        let elem_ty_before_has_structural_array = self
-            .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
         let _ = self.validate_vec_element_type(&elem_ty, span);
         let runtime_method_declared = self
             .lookup_builtin_vec_method_sig(type_args, method)
@@ -6912,14 +6914,6 @@ impl Checker {
                 Ty::Error
             }
         };
-        let elem_ty_after = self.subst.resolve(&elem_ty);
-        let mut elem_ty_after_visiting = HashSet::new();
-        let elem_ty_after_has_structural_array =
-            self.vec_element_contains_structural_array(&elem_ty_after, &mut elem_ty_after_visiting);
-        if elem_ty_after_has_structural_array && !elem_ty_before_has_structural_array {
-            let _ = self.validate_vec_element_type(&elem_ty_after, span);
-            return Ty::Error;
-        }
         result
     }
 
@@ -7990,6 +7984,7 @@ impl Checker {
             && matches!(
                 &resolved,
                 Ty::Tuple(_)
+                    | Ty::Array(_, _)
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
@@ -8001,6 +7996,7 @@ impl Checker {
             let is_structural_value = matches!(
                 &resolved,
                 Ty::Tuple(_)
+                    | Ty::Array(_, _)
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
@@ -8095,6 +8091,14 @@ impl Checker {
         }
 
         match (&resolved, method) {
+            (Ty::Array(_, _), "len") => {
+                self.check_arity(args, 0, "fixed array len", span);
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Len),
+                );
+                Ty::I64
+            }
             (Ty::CancellationToken, "is_cancelled") => {
                 self.check_arity(args, 0, "`CancellationToken.is_cancelled`", span);
                 self.record_method_call_rewrite(

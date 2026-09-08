@@ -637,13 +637,14 @@ fn walk_expr(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             walk_expr(operand, subst, residual_domain, disc);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 walk_expr(elem, subst, residual_domain, disc);
             }

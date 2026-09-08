@@ -1637,55 +1637,6 @@ impl Checker {
             || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
     }
 
-    pub(super) fn vec_element_contains_structural_array(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> bool {
-        let resolved = self.subst.resolve(ty);
-        match &resolved {
-            Ty::Array(_, _) => true,
-            Ty::Tuple(elems) => elems
-                .iter()
-                .any(|elem| self.vec_element_contains_structural_array(elem, visiting)),
-            Ty::Named {
-                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
-                args,
-                ..
-            } => args
-                .iter()
-                .any(|arg| self.vec_element_contains_structural_array(arg, visiting)),
-            Ty::Named { name, args, .. } => {
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return false;
-                };
-                if visiting.contains(type_def.name.as_str()) {
-                    return false;
-                }
-
-                visiting.insert(type_def.name.clone());
-                let result = type_def.fields.values().any(|field_ty| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.vec_element_contains_structural_array(&field_ty, visiting)
-                }) || type_def.variants.values().any(|variant| match variant {
-                    VariantDef::Unit => false,
-                    VariantDef::Tuple(tys) => tys.iter().any(|ty| {
-                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
-                        self.vec_element_contains_structural_array(&ty, visiting)
-                    }),
-                    VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
-                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
-                        self.vec_element_contains_structural_array(&ty, visiting)
-                    }),
-                });
-                visiting.remove(type_def.name.as_str());
-                result
-            }
-            _ => false,
-        }
-    }
-
     /// True when a Vec element type transitively carries a function/closure
     /// value INSIDE a composite (record field, enum variant payload, tuple
     /// member, Option/Result/Range argument). A direct `Vec<fn(...)>` element
@@ -1693,8 +1644,7 @@ impl Checker {
     /// exempts the top-level Function/Closure shape. Composite elements ride
     /// the layout/owned byte-copy ABIs, which would shallow-copy the embedded
     /// pair and alias its sole-owner environment box, so they fail closed at
-    /// admission. Recursion shape mirrors
-    /// [`vec_element_contains_structural_array`](Self::vec_element_contains_structural_array).
+    /// admission.
     pub(super) fn vec_element_contains_fn_value(
         &self,
         ty: &Ty,
@@ -1752,24 +1702,6 @@ impl Checker {
         span: &Span,
     ) -> bool {
         if !self.validate_concrete_collection_types(resolved, span) {
-            return false;
-        }
-
-        // Reject ANY Vec element that contains a structural array, regardless of
-        // whether the array has a copy layout.  Codegen cannot lower array/composite
-        // Vec elements yet (Cluster 2 deferred).  Admitting a copy-layout array
-        // (e.g. [i64; 2]) here only defers the failure to an unspanned codegen
-        // error — fail closed at the checker instead so the user sees a source span.
-        let mut visiting = HashSet::new();
-        if self.vec_element_contains_structural_array(resolved, &mut visiting) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Vec<{}>` is not supported; vec lowering does not support array element types yet",
-                    resolved.user_facing()
-                ),
-            );
             return false;
         }
 

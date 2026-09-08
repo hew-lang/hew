@@ -1024,7 +1024,9 @@ fn require_type_shapes(
                 ty.user_facing()
             ));
         }
-        if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
+        if let ResolvedTy::Array(element, _) = &ty {
+            pending.push((**element).clone());
+        } else if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
             for argument in arguments {
                 if !is_supported_call_value(module, facts, argument) {
                     let component = if builtin == hew_types::BuiltinType::Vec {
@@ -2640,6 +2642,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
             ResolvedTy::String
                 | ResolvedTy::Task(_)
                 | ResolvedTy::Bytes
+                | ResolvedTy::Array(_, _)
                 | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }
                 | ResolvedTy::TraitObject { .. }
@@ -4248,7 +4251,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.lower_let_statement(binding, value.as_ref())?;
                 }
                 HirStmtKind::Expr(expr) => {
+                    let loan_floor = self.scope_loans.len();
                     self.lower_discarded_expr(expr)?;
+                    // A discarded expression cannot retain a borrowed result.
+                    // End its interior element loans before the next statement,
+                    // so an indexed field read does not freeze its collection.
+                    if self.is_open() && self.scope_loans.len() > loan_floor {
+                        let loans = self.scope_loans.split_off(loan_floor);
+                        self.end_call_loans(&loans)?;
+                    }
                 }
                 HirStmtKind::Return(value) => {
                     self.lower_function_return(value.as_ref())?;
@@ -4324,6 +4335,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn lower_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
+        if let HirExprKind::Index { container, index } = &target.kind {
+            if matches!(self.ty(&container.ty), ResolvedTy::Array(_, _)) {
+                let mut operation = target.clone();
+                operation.ty = ResolvedTy::Unit;
+                let mut replacement = value.clone();
+                replacement.intent = IntentKind::Read;
+                self.lower_runtime_operation(
+                    &operation,
+                    hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set),
+                    &[container.as_ref(), index.as_ref(), &replacement],
+                    false,
+                )?;
+                return Ok(());
+            }
+        }
         if matches!(
             target.kind,
             HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
@@ -4935,6 +4961,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } => self
                 .lower_dyn_call(expr, receiver, *slot, args, signature, true)?
                 .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
+            HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
+            HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {
@@ -5143,6 +5171,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .ok_or_else(|| "value-producing checked call has no result".to_string()),
             HirExprKind::SubsumedValue { source, .. } => {
                 self.lower_expr_with_binding_use(source, binding_use)
+            }
+            HirExprKind::Index { container, index }
+                if matches!(self.ty(&container.ty), ResolvedTy::Array(_, _)) =>
+            {
+                self.lower_runtime_operation(
+                    expr,
+                    hew_types::RuntimeCallFamily::Array(
+                        hew_types::runtime_call::ArrayValueOp::Index,
+                    ),
+                    &[container.as_ref(), index.as_ref()],
+                    true,
+                )?
+                .ok_or_else(|| "array index must produce a value".to_string())
+            }
+            HirExprKind::BorrowedIndex { container, index }
+                if matches!(self.ty(&container.ty), ResolvedTy::Array(_, _)) =>
+            {
+                self.lower_runtime_operation(
+                    expr,
+                    hew_types::RuntimeCallFamily::Array(
+                        hew_types::runtime_call::ArrayValueOp::IndexBorrow,
+                    ),
+                    &[container.as_ref(), index.as_ref()],
+                    true,
+                )?
+                .ok_or_else(|| "array index must produce an element loan".to_string())
             }
             HirExprKind::Index { container, index }
                 if matches!(
@@ -6414,6 +6468,81 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    fn lower_array_make(
+        &mut self,
+        expr: &HirExpr,
+        elements: &[HirExpr],
+    ) -> Result<ValueId, String> {
+        let ResolvedTy::Array(element_ty, length) = self.ty(&expr.ty) else {
+            return Err("fixed array literal has no exact array type".into());
+        };
+        if usize::try_from(length).ok() != Some(elements.len()) {
+            return Err("fixed array literal length differs from its checked type".into());
+        }
+        let mut fields = Vec::with_capacity(elements.len());
+        for element in elements {
+            if self.ty(&element.ty) != *element_ty {
+                return Err("fixed array literal element differs from its checked type".into());
+            }
+            self.service.require_type_facts(&element_ty)?;
+            let binding_use =
+                if self.service.checked_facts.rows()[&TypeInstanceKey((*element_ty).clone())].clone
+                    == hew_types::CloneKind::None
+                {
+                    OwnedBindingUse::Move
+                } else {
+                    OwnedBindingUse::Copy
+                };
+            let value =
+                lower_initial_value_transfer(self, element, "fixed array element", binding_use)?;
+            fields.push(Operand { value });
+        }
+        let consumed = fields.iter().map(|field| field.value).collect::<Vec<_>>();
+        let result = self.emit(expr, SemOpKind::ArrayMake { fields })?;
+        for value in consumed {
+            self.owned_live.remove(&value);
+        }
+        Ok(result)
+    }
+
+    fn lower_array_repeat(&mut self, expr: &HirExpr, seed: &HirExpr) -> Result<ValueId, String> {
+        let ResolvedTy::Array(element_ty, length) = self.ty(&expr.ty) else {
+            return Err("fixed array repeat has no exact array type".into());
+        };
+        if self.ty(&seed.ty) != *element_ty {
+            return Err("fixed array repeat seed differs from its checked element type".into());
+        }
+        self.service.require_type_facts(&element_ty)?;
+        let copy = self.service.checked_facts.rows()[&TypeInstanceKey((*element_ty).clone())].clone;
+        if length > 1 && copy == hew_types::CloneKind::None {
+            return Err("fixed array repeat requires Clone when its length exceeds one".into());
+        }
+        let value = lower_initial_value_transfer(
+            self,
+            seed,
+            "fixed array repeat seed",
+            if copy == hew_types::CloneKind::None {
+                OwnedBindingUse::Move
+            } else {
+                OwnedBindingUse::Copy
+            },
+        )?;
+        if length == 0 {
+            if self.owned_live.contains_key(&value) {
+                self.emit_destroy(value)?;
+            }
+            return self.emit(expr, SemOpKind::ArrayMake { fields: Vec::new() });
+        }
+        let result = self.emit(
+            expr,
+            SemOpKind::ArrayRepeat {
+                value: Operand { value },
+            },
+        )?;
+        self.owned_live.remove(&value);
+        Ok(result)
+    }
+
     /// Construct a tuple from exact semantic fields, including receiver transfers.
     fn lower_tuple_make(
         &mut self,
@@ -7165,7 +7294,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         later_arguments_are_stable: bool,
         can_borrow_projection: bool,
     ) -> Result<Operand, String> {
-        if !later_arguments_are_stable {
+        let scope_loan_floor = self.scope_loans.len();
+        let call_loan_floor = loans.len();
+        let operand = if !later_arguments_are_stable {
             Ok(Operand {
                 value: lower_initial_value_transfer(
                     self,
@@ -7178,7 +7309,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.lower_borrowed_read(expr, loans)
         } else {
             self.lower_read_operand(expr, "call argument")
+        }?;
+        // Interior loans created while evaluating an argument belong to this
+        // call. An independent return cannot keep them alive in the caller's
+        // lexical scope; a borrowed runtime result explicitly promotes the
+        // call's loans when it needs them.
+        if self.scope_loans.len() > scope_loan_floor {
+            let interior = self.scope_loans.split_off(scope_loan_floor);
+            // New projected field loans depend on these interior parents.
+            loans.splice(call_loan_floor..call_loan_floor, interior);
         }
+        Ok(operand)
     }
 
     fn lower_value_equality(
@@ -8215,15 +8356,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             )?;
             if matches!(
                 family,
-                hew_types::RuntimeCallFamily::Vector(
-                    hew_types::runtime_call::VecValueOp::Clear
-                        | hew_types::runtime_call::VecValueOp::Set
-                )
+                hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set)
+                    | hew_types::RuntimeCallFamily::Vector(
+                        hew_types::runtime_call::VecValueOp::Clear
+                            | hew_types::runtime_call::VecValueOp::Set
+                    )
             ) && self.value_needs_close(&place.leaf_ty)
             {
                 let index = matches!(
                     family,
                     hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Set)
+                        | hew_types::RuntimeCallFamily::Array(
+                            hew_types::runtime_call::ArrayValueOp::Set
+                        )
                 )
                 .then(|| lowered_args[0].operand.value);
                 let loan_depth = self.argument_receiver_loans.len();

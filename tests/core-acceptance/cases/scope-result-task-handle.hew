@@ -1,0 +1,30 @@
+actor Worker {
+    receive fn scale(x: i64) -> i64 { x * 2 }
+}
+
+actor Driver {
+    var runs: i64 = 0,
+    var left: Worker,
+    var right: Worker,
+    receive fn drive(base: i64) -> i64 {
+        runs = runs + 1;
+        let (a, b) = await fork (left.scale(base), right.scale(base + 1));
+        let x = match a {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let y = match b {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        x + y
+    }
+}
+
+fn main() {
+    let driver = spawn Driver(left: spawn Worker, right: spawn Worker);
+    match driver.drive(4) {
+        .Ok(total) => println(total),
+        .Err(_) => println("drive failed"),
+    }
+}

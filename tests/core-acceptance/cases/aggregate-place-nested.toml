@@ -1,0 +1,10 @@
+[[case]]
+id = "aggregate-place-nested"
+intent = "Nested record field writes through an owned local reach the leaf place: a scalar assignment, a compound assignment, a heap-leaf replacement and a whole-field update all read back from the same aggregate."
+source = "cases/aggregate-place-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "REPORT:settled:42\n"
+exit = 0

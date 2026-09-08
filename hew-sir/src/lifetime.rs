@@ -45,7 +45,7 @@ const CANCEL: u8 = 4;
 pub enum CleanupMode {
     /// Normal scope exit or replacement; a linear consume is still required.
     Ordinary,
-    /// A trap-only cleanup reclaims representation without a linear consume.
+    /// Fault or cancellation cleanup reclaims representation without a linear consume.
     /// Resource close behaviour remains part of the type's drop contract.
     Trap,
 }
@@ -1939,9 +1939,9 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_and_mixed_predecessors_never_certify_a_trap_cleanup() {
-        // Cancellation owns a fault but does not certify trap-only disposal.
-        // A mixed success/cancellation merge must preserve that distinction.
+    fn cancellation_cleanup_requires_no_ordinary_predecessor() {
+        // Cancellation permits exceptional disposal after structured cleanup.
+        // A mixed success/cancellation merge still requires ordinary disposal.
         for mixed in [false, true] {
             let analysis = cleanup_analysis(vec![
                 block(
@@ -1992,7 +1992,11 @@ mod tests {
             assert!(analysis.violations.is_empty(), "{:?}", analysis.violations);
             assert_eq!(
                 analysis.lifetimes.cleanup(OpId(22)),
-                Some(super::CleanupMode::Ordinary)
+                Some(if mixed {
+                    super::CleanupMode::Ordinary
+                } else {
+                    super::CleanupMode::Trap
+                })
             );
         }
         let analysis = cleanup_analysis(vec![

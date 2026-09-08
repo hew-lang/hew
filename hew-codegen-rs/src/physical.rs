@@ -3836,6 +3836,55 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
+            PhysicalRuntimeAction::ChannelSenderClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelSenderClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ChannelReceiverClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelReceiverClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ChannelPairNew => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairNew,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ChannelPairFree => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairFree,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ChannelPairIsValid => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairIsValid,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ChannelPairSender => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairSender,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ChannelPairReceiver => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairReceiver,
+                    transfers,
+                    result,
+                )?;
+            }
             PhysicalRuntimeAction::Encoding { format, op } => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::Encoding { format, op },

@@ -26,6 +26,11 @@ pub enum ResourceRelease {
     Stream,
     /// `Sink<T>`: closing the write half is the consumer's end of stream.
     Sink,
+    /// `Sender<T>`: closing the last write half is the receiver's end of channel.
+    Sender,
+    /// `Receiver<T>`: closing the read half discards queued elements and wakes
+    /// a parked producer.
+    Receiver,
     /// A `#[resource]` record whose release is the user's consuming `close`.
     ///
     /// The lifecycle is the checker/HIR fact; `close` is the semantic callable
@@ -109,6 +114,7 @@ impl ResourceRelease {
                 RuntimeCallFamily::from_c_symbol(&lifecycle.release_symbol)
                     .filter(|family| {
                         *family == RuntimeCallFamily::FileRead(FileReadOp::Close)
+                            || *family == RuntimeCallFamily::ChannelPairFree
                             || matches!(family, RuntimeCallFamily::Tcp(op) if op.is_release())
                     })
                     .ok_or_else(|| {
@@ -117,6 +123,8 @@ impl ResourceRelease {
             }
             Self::Stream => Ok(RuntimeCallFamily::StreamClose),
             Self::Sink => Ok(RuntimeCallFamily::SinkClose),
+            Self::Sender => Ok(RuntimeCallFamily::ChannelSenderClose),
+            Self::Receiver => Ok(RuntimeCallFamily::ChannelReceiverClose),
             Self::RecordClose { .. } => Err(
                 "a record resource is released by its own close body, not a runtime call".into(),
             ),
@@ -139,6 +147,10 @@ pub(crate) fn resource_release_from_hir(
         Some(ResourceRelease::Stream)
     } else if ty.is_builtin(hew_types::BuiltinType::Sink) {
         Some(ResourceRelease::Sink)
+    } else if ty.is_builtin(hew_types::BuiltinType::Sender) {
+        Some(ResourceRelease::Sender)
+    } else if ty.is_builtin(hew_types::BuiltinType::Receiver) {
+        Some(ResourceRelease::Receiver)
     } else {
         if record_resource_lifecycle(module, ty).is_some() {
             // A record resource's release is a semantic callable, so its
@@ -231,17 +243,22 @@ pub fn verify_resource_release(
             Err("task release requires an exact Task result type".into())
         };
     }
-    if matches!(release, ResourceRelease::Stream | ResourceRelease::Sink) {
-        let builtin = if *release == ResourceRelease::Stream {
-            hew_types::BuiltinType::Stream
-        } else {
-            hew_types::BuiltinType::Sink
-        };
-        return if matches!(ty, ResolvedTy::Named { builtin: Some(kind), args, .. } if *kind == builtin && args.len() == 1)
+    // A pipe half always spells its element. A channel half is spelled with
+    // its message type at a user site and bare inside `std.channel`'s own
+    // declarations; both are the same affine handle with the same close, so
+    // the release admits either arity.
+    if let Some((builtin, elements)) = match release {
+        ResourceRelease::Stream => Some((hew_types::BuiltinType::Stream, 1..=1)),
+        ResourceRelease::Sink => Some((hew_types::BuiltinType::Sink, 1..=1)),
+        ResourceRelease::Sender => Some((hew_types::BuiltinType::Sender, 0..=1)),
+        ResourceRelease::Receiver => Some((hew_types::BuiltinType::Receiver, 0..=1)),
+        _ => None,
+    } {
+        return if matches!(ty, ResolvedTy::Named { builtin: Some(kind), args, .. } if *kind == builtin && elements.contains(&args.len()))
         {
             Ok(())
         } else {
-            Err("pipe half release requires its exact Stream or Sink type".into())
+            Err("a pipe or channel half release requires its exact handle type".into())
         };
     }
     if let ResourceRelease::RecordClose { lifecycle, .. } = release {
@@ -282,6 +299,8 @@ pub fn verify_resource_release(
         | ResourceRelease::Task
         | ResourceRelease::Stream
         | ResourceRelease::Sink
+        | ResourceRelease::Sender
+        | ResourceRelease::Receiver
         | ResourceRelease::RecordClose { .. } => {
             unreachable!("handled exact builtin and record releases above")
         }

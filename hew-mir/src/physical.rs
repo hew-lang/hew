@@ -868,6 +868,15 @@ pub enum PhysicalRuntimeAction {
     FileRead(hew_types::runtime_call::FileReadOp),
     Tcp(hew_types::runtime_call::TcpOp),
     StreamClose,
+    /// The channel substrate's non-suspending entries: allocating and
+    /// splitting a pair, and closing either half.
+    ChannelSenderClose,
+    ChannelReceiverClose,
+    ChannelPairNew,
+    ChannelPairFree,
+    ChannelPairIsValid,
+    ChannelPairSender,
+    ChannelPairReceiver,
     Encoding {
         format: EncodingFormat,
         op: EncodingOp,
@@ -945,6 +954,13 @@ impl PhysicalRuntimeAction {
             Self::FileRead(op) => RuntimeCallFamily::FileRead(op),
             Self::Tcp(op) => RuntimeCallFamily::Tcp(op),
             Self::StreamClose => RuntimeCallFamily::StreamClose,
+            Self::ChannelSenderClose => RuntimeCallFamily::ChannelSenderClose,
+            Self::ChannelReceiverClose => RuntimeCallFamily::ChannelReceiverClose,
+            Self::ChannelPairNew => RuntimeCallFamily::ChannelPairNew,
+            Self::ChannelPairFree => RuntimeCallFamily::ChannelPairFree,
+            Self::ChannelPairIsValid => RuntimeCallFamily::ChannelPairIsValid,
+            Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
+            Self::ChannelPairReceiver => RuntimeCallFamily::ChannelPairReceiver,
             Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
             Self::JsonObjectKeys => RuntimeCallFamily::JsonObjectKeys,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
@@ -2369,6 +2385,13 @@ fn physical_runtime_action(
         RuntimeCallFamily::FileRead(op) => PhysicalRuntimeAction::FileRead(op),
         RuntimeCallFamily::Tcp(op) => PhysicalRuntimeAction::Tcp(op),
         RuntimeCallFamily::StreamClose => PhysicalRuntimeAction::StreamClose,
+        RuntimeCallFamily::ChannelSenderClose => PhysicalRuntimeAction::ChannelSenderClose,
+        RuntimeCallFamily::ChannelReceiverClose => PhysicalRuntimeAction::ChannelReceiverClose,
+        RuntimeCallFamily::ChannelPairNew => PhysicalRuntimeAction::ChannelPairNew,
+        RuntimeCallFamily::ChannelPairFree => PhysicalRuntimeAction::ChannelPairFree,
+        RuntimeCallFamily::ChannelPairIsValid => PhysicalRuntimeAction::ChannelPairIsValid,
+        RuntimeCallFamily::ChannelPairSender => PhysicalRuntimeAction::ChannelPairSender,
+        RuntimeCallFamily::ChannelPairReceiver => PhysicalRuntimeAction::ChannelPairReceiver,
         RuntimeCallFamily::Encoding { format, op } => {
             PhysicalRuntimeAction::Encoding { format, op }
         }
@@ -7072,7 +7095,8 @@ fn verify_terminator(
                         "physical call result-out presence disagrees with callee ABI",
                     ));
                 }
-                (expected, Some(id)) if &slot(*id)?.ty == expected => {}
+                (expected, Some(id))
+                    if hew_sir::call_boundary_types_match(&slot(*id)?.ty, expected) => {}
                 _ => {
                     return Err(PhysicalError::new(
                         "physical call result storage type disagrees with callee ABI",

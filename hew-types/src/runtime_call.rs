@@ -136,6 +136,16 @@ pub enum RuntimeValueKind {
     /// A file-read owner, with exact source or builtin identity supplied by the signature.
     FileReadHandle(FileReadHandleKind),
     IoHandle(IoHandleKind),
+    /// One half of a channel. `std.channel` declares the halves bare and the
+    /// checker attaches the message type per call site, so the kind matches
+    /// either spelling and resolves to the receiver's own type.
+    ChannelHalf(ChannelHalfKind),
+    /// A freshly extracted channel half named by the operation, not by the
+    /// receiver: `hew_channel_pair_sender` borrows a pair and returns a half.
+    ChannelHalfResult(ChannelHalfKind),
+    /// The paired channel allocation `channel.new` splits. Its nominal
+    /// identity comes from the generated `hew_channel_new` ownership row.
+    ChannelPair,
     Bool,
     U8,
     U32,
@@ -198,6 +208,15 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
+            Self::ChannelHalf(kind) => {
+                let receiver = receiver?;
+                if !kind.matches(receiver) {
+                    return None;
+                }
+                receiver.clone()
+            }
+            Self::ChannelHalfResult(kind) => kind.bare_ty(),
+            Self::ChannelPair => channel_pair_ty()?,
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
             Self::U32 => ResolvedTy::U32,
@@ -416,6 +435,7 @@ impl RuntimeSemanticContract {
                 runtime_receiver_builtin(ty).is_some()
                     || FileReadHandleKind::of_ty(ty).is_some()
                     || IoHandleKind::of_ty(ty).is_some()
+                    || ChannelHalfKind::of_ty(ty).is_some()
             })
             .or_else(|| {
                 (params.is_empty()
@@ -504,6 +524,60 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
         }
         _ => None,
     }
+}
+
+/// Which half of a channel a runtime contract's receiver is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelHalfKind {
+    Sender,
+    Receiver,
+}
+
+impl ChannelHalfKind {
+    /// Match the checked handle identity. The message type is a semantic
+    /// parameter the handle's ABI and ownership do not depend on, so a bare
+    /// `std.channel` declaration and a spelled call site both match.
+    #[must_use]
+    pub fn matches(self, ty: &ResolvedTy) -> bool {
+        let expected = match self {
+            Self::Sender => BuiltinType::Sender,
+            Self::Receiver => BuiltinType::Receiver,
+        };
+        matches!(ty, ResolvedTy::Named { builtin: Some(builtin), args, .. }
+            if *builtin == expected && args.len() <= 1)
+    }
+
+    /// The channel half one checked type is, if it is one.
+    #[must_use]
+    pub fn of_ty(ty: &ResolvedTy) -> Option<Self> {
+        [Self::Sender, Self::Receiver]
+            .into_iter()
+            .find(|kind| kind.matches(ty))
+    }
+
+    /// The unspelled handle type `std.channel`'s own declarations use.
+    #[must_use]
+    pub fn bare_ty(self) -> ResolvedTy {
+        let builtin = match self {
+            Self::Sender => BuiltinType::Sender,
+            Self::Receiver => BuiltinType::Receiver,
+        };
+        ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new())
+    }
+}
+
+/// The nominal the generated `hew_channel_new` row names as its owned result.
+/// Reading the row rather than the spelling keeps one ownership authority.
+#[must_use]
+pub fn channel_pair_ty() -> Option<ResolvedTy> {
+    let contract = crate::ffi_contracts::extern_owned_resource_result("hew_channel_new")?;
+    Some(ResolvedTy::named_opaque(contract.resource_type, Vec::new()))
+}
+
+/// Whether one checked type is the paired channel allocation.
+#[must_use]
+pub fn is_channel_pair_ty(ty: &ResolvedTy) -> bool {
+    channel_pair_ty().is_some_and(|pair| pair == *ty)
 }
 
 /// Recognize supported canonical collection instances and their exact arity.
@@ -1393,6 +1467,13 @@ pub enum RuntimeCallFamily {
     ChannelTryRecvLayout,
     ChannelSenderClose,
     ChannelReceiverClose,
+    // The paired allocation `channel.new` splits into its two halves. It never
+    // escapes that function: `new` extracts both halves and frees the pair.
+    ChannelPairNew,
+    ChannelPairFree,
+    ChannelPairIsValid,
+    ChannelPairSender,
+    ChannelPairReceiver,
 
     // --- Duplex<S, R> dual-queue substrate ----------------------------------
     DuplexClone,
@@ -2687,6 +2768,11 @@ impl RuntimeCallFamily {
             Self::ChannelTryRecvLayout => "hew_channel_try_recv_layout",
             Self::ChannelSenderClose => "hew_channel_sender_close",
             Self::ChannelReceiverClose => "hew_channel_receiver_close",
+            Self::ChannelPairNew => "hew_channel_new",
+            Self::ChannelPairFree => "hew_channel_pair_free",
+            Self::ChannelPairIsValid => "hew_channel_pair_is_valid",
+            Self::ChannelPairSender => "hew_channel_pair_sender",
+            Self::ChannelPairReceiver => "hew_channel_pair_receiver",
             // Duplex
             Self::DuplexClone => "hew_duplex_clone",
             Self::DuplexClose => "hew_duplex_close",
@@ -3087,6 +3173,11 @@ impl RuntimeCallFamily {
             "hew_channel_try_recv_layout" => Self::ChannelTryRecvLayout,
             "hew_channel_sender_close" => Self::ChannelSenderClose,
             "hew_channel_receiver_close" => Self::ChannelReceiverClose,
+            "hew_channel_new" => Self::ChannelPairNew,
+            "hew_channel_pair_free" => Self::ChannelPairFree,
+            "hew_channel_pair_is_valid" => Self::ChannelPairIsValid,
+            "hew_channel_pair_sender" => Self::ChannelPairSender,
+            "hew_channel_pair_receiver" => Self::ChannelPairReceiver,
             // Duplex
             "hew_duplex_clone" => Self::DuplexClone,
             "hew_duplex_close" => Self::DuplexClose,
@@ -3750,6 +3841,7 @@ impl RuntimeCallFamily {
                 | Self::SinkClose
                 | Self::ChannelSenderClose
                 | Self::ChannelReceiverClose
+                | Self::ChannelPairFree
                 | Self::DuplexClose
                 | Self::DuplexCloseHalf
                 // The half-extract methods move the unified `Duplex` handle out:
@@ -3915,6 +4007,13 @@ impl RuntimeCallFamily {
             Self::FileRead(op) => op.contract(),
             Self::Tcp(op) => op.contract(),
             Self::StreamClose => file_resources::stream_close_contract(),
+            Self::ChannelSenderClose => channel_sender_close_contract(),
+            Self::ChannelReceiverClose => channel_receiver_close_contract(),
+            Self::ChannelPairNew => channel_pair_new_contract(),
+            Self::ChannelPairFree => channel_pair_free_contract(),
+            Self::ChannelPairIsValid => channel_pair_is_valid_contract(),
+            Self::ChannelPairSender => channel_pair_half_contract(true),
+            Self::ChannelPairReceiver => channel_pair_half_contract(false),
             Self::Encoding { format, op } => op.contract(format),
             Self::JsonObjectKeys => runtime_semantic_contract(
                 &[RuntimeArgumentContract {
@@ -4014,6 +4113,9 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::Char
                     | RuntimeValueKind::Duration
                     | RuntimeValueKind::Receiver(_)
+                    | RuntimeValueKind::ChannelHalf(_)
+                    | RuntimeValueKind::ChannelHalfResult(_)
+                    | RuntimeValueKind::ChannelPair
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
@@ -4198,6 +4300,11 @@ impl RuntimeCallFamily {
             | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
+            | F::ChannelPairNew
+            | F::ChannelPairFree
+            | F::ChannelPairIsValid
+            | F::ChannelPairSender
+            | F::ChannelPairReceiver
             | F::DuplexClone
             | F::DuplexCloseHalf
             | F::DuplexPair
@@ -5034,6 +5141,94 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
 /// When the follow-up wires the producers, the symbols join the allowlist and
 /// this list shrinks.
 #[must_use]
+/// `channel.new`'s allocation: one capacity in, one owned pair out.
+const fn channel_pair_new_contract() -> RuntimeSemanticContract {
+    runtime_semantic_contract(
+        &[RuntimeArgumentContract {
+            ty: RuntimeValueKind::I64,
+            effect: RuntimeArgumentEffect::Copy,
+        }],
+        RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelPair),
+        &[],
+    )
+}
+
+/// Freeing the pair consumes it and reports nothing.
+const fn channel_pair_free_contract() -> RuntimeSemanticContract {
+    runtime_semantic_contract(
+        &[RuntimeArgumentContract {
+            ty: RuntimeValueKind::ChannelPair,
+            effect: RuntimeArgumentEffect::Move,
+        }],
+        RuntimeResultEffect::Unit,
+        &[],
+    )
+}
+
+/// Whether the allocation succeeded; the pair stays with the caller.
+const fn channel_pair_is_valid_contract() -> RuntimeSemanticContract {
+    runtime_semantic_contract(
+        &[RuntimeArgumentContract {
+            ty: RuntimeValueKind::ChannelPair,
+            effect: RuntimeArgumentEffect::Borrow,
+        }],
+        RuntimeResultEffect::BitCopy(RuntimeValueKind::Bool),
+        &[],
+    )
+}
+
+/// Extracting one half borrows the pair and hands back an owned endpoint.
+/// The pair keeps its own obligation: freeing it releases whatever was not
+/// extracted.
+const fn channel_pair_half_contract(sender: bool) -> RuntimeSemanticContract {
+    const PAIR: RuntimeArgumentContract = RuntimeArgumentContract {
+        ty: RuntimeValueKind::ChannelPair,
+        effect: RuntimeArgumentEffect::Borrow,
+    };
+    if sender {
+        runtime_semantic_contract(
+            &[PAIR],
+            RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelHalfResult(
+                ChannelHalfKind::Sender,
+            )),
+            &[],
+        )
+    } else {
+        runtime_semantic_contract(
+            &[PAIR],
+            RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelHalfResult(
+                ChannelHalfKind::Receiver,
+            )),
+            &[],
+        )
+    }
+}
+
+/// Closing the write half consumes it and reports nothing.
+const fn channel_sender_close_contract() -> RuntimeSemanticContract {
+    runtime_semantic_contract(
+        &[RuntimeArgumentContract {
+            ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Sender),
+            effect: RuntimeArgumentEffect::Move,
+        }],
+        RuntimeResultEffect::Unit,
+        &[],
+    )
+}
+
+/// Closing the read half consumes it and reports nothing.
+const fn channel_receiver_close_contract() -> RuntimeSemanticContract {
+    runtime_semantic_contract(
+        &[RuntimeArgumentContract {
+            ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Receiver),
+            effect: RuntimeArgumentEffect::Move,
+        }],
+        RuntimeResultEffect::Unit,
+        &[],
+    )
+}
+
+#[must_use]
 pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
@@ -5045,6 +5240,11 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
+            | F::ChannelPairNew
+            | F::ChannelPairFree
+            | F::ChannelPairIsValid
+            | F::ChannelPairSender
+            | F::ChannelPairReceiver
             | F::HashMapKeysLayout
             | F::HashMapEntriesLayout
             | F::HashMapNew

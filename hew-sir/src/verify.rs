@@ -2554,6 +2554,9 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
             .is_some_and(|row| row.class == hew_types::ValueClass::BitCopy))
         || crate::stream_element(ty).is_some()
         || crate::sink_element(ty).is_some()
+        || ty.is_builtin(hew_types::BuiltinType::Sender)
+        || ty.is_builtin(hew_types::BuiltinType::Receiver)
+        || hew_types::runtime_call::is_channel_pair_ty(ty)
         || module.actors.iter().any(|actor| actor.admits_target(ty))
         || module
             .supervisors
@@ -3602,7 +3605,7 @@ fn verify_direct_call_terminator(
             },
         ));
     } else if let crate::CallResult::Value(result) = result {
-        if result.ty != target.signature.return_ty {
+        if !crate::call_boundary_types_match(&result.ty, &target.signature.return_ty) {
             invalid_operation(
                 function,
                 id,
@@ -4427,7 +4430,7 @@ fn verify_variant_switch_terminator(
         ));
         return;
     };
-    if &descriptor.enum_ty != enum_ty {
+    if !crate::call_boundary_types_match(&descriptor.enum_ty, enum_ty) {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidTerminator {

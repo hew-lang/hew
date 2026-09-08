@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1649u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1651u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1649] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -4180,6 +4180,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1649] = {
      "HewRemotePid, ) -> c_int\"}",
      "native", "non-declarable", "nul-terminated", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_api_lookup_location_string",
+     "{\"native\": \"fn hew_node_api_lookup_location_string( *const HewString, "
+     "*mut HewRemotePid, ) -> c_int\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_register",
      "{\"native\": \"fn hew_node_api_register( *const c_char, *mut HewActor, ) "
      "-> c_int\"}",
@@ -4189,6 +4194,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1649] = {
      "{\"native\": \"fn hew_node_api_register_by_pid( *const c_char, u64) -> "
      "c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_api_register_by_pid_string",
+     "{\"native\": \"fn hew_node_api_register_by_pid_string( *const HewString, "
+     "u64, ) -> c_int\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_send_location",
      "{\"native\": \"fn hew_node_api_send_location( *const HewRemotePid, "
@@ -4210,7 +4220,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1649] = {
     {"hew_node_api_start_config",
      "{\"native\": \"fn hew_node_api_start_config( *const HewNodeConfig) -> "
      "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_unregister",
      "{\"native\": \"fn hew_node_api_unregister( *const c_char) -> c_int\"}",

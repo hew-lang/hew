@@ -11275,6 +11275,19 @@
       ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_api_lookup_location_string( *const HewString, *mut HewRemotePid, ) -> c_int"
+      },
+      "symbol": "hew_node_api_lookup_location_string"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
@@ -11294,6 +11307,19 @@
         "native": "fn hew_node_api_register_by_pid( *const c_char, u64) -> c_int"
       },
       "symbol": "hew_node_api_register_by_pid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_api_register_by_pid_string( *const HewString, u64, ) -> c_int"
+      },
+      "symbol": "hew_node_api_register_by_pid_string"
     },
     {
       "availability": [
@@ -11351,7 +11377,7 @@
       "availability": [
         "native"
       ],
-      "classification": "stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",

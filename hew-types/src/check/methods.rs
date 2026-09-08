@@ -3278,14 +3278,14 @@ impl Checker {
     /// folding a single leading unary negation (`-2` parses as
     /// `Unary { Negate, Literal::Integer(2) }`).  Returns `None` for any
     /// non-literal expression — those are validated at runtime, never const.
-    fn literal_integer_value(expr: &Expr) -> Option<i64> {
+    fn literal_integer_value(expr: &Expr) -> Option<i128> {
         match expr {
             Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
             Expr::Unary {
                 op: UnaryOp::Negate,
                 operand,
             } => match &operand.0 {
-                Expr::Literal(Literal::Integer { value, .. }) => Some(value.wrapping_neg()),
+                Expr::Literal(Literal::Integer { value, .. }) => value.checked_neg(),
                 _ => None,
             },
             _ => None,

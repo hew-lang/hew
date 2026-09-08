@@ -141,7 +141,7 @@ fn len_receiver(expr: &Expr) -> Option<&Spanned<Expr>> {
 }
 
 /// The value of a bare non-negative integer literal, or `None`.
-fn int_literal(expr: &Expr) -> Option<i64> {
+fn int_literal(expr: &Expr) -> Option<i128> {
     match expr {
         Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
         _ => None,
@@ -155,7 +155,7 @@ fn int_literal(expr: &Expr) -> Option<i64> {
 /// test (`is_empty()`), `Some(false)` when it is a non-emptiness test
 /// (`!is_empty()`), and `None` for any operator/literal pairing that is not a
 /// clean emptiness test.
-fn comparison_meaning(op: BinaryOp, value: i64, len_on_left: bool) -> Option<bool> {
+fn comparison_meaning(op: BinaryOp, value: i128, len_on_left: bool) -> Option<bool> {
     let canonical = if len_on_left { op } else { flip(op)? };
     match (canonical, value) {
         (BinaryOp::Equal | BinaryOp::LessEqual, 0) | (BinaryOp::Less, 1) => Some(true),

@@ -772,7 +772,11 @@ pub enum IntRadix {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Integer {
-        value: i64,
+        /// Exact mathematical value of the literal. `i128` is an evaluation
+        /// carrier, not a Hew source type: it contains every value of every
+        /// Hew integer type, including `i64::MIN` and `u64::MAX`. The checker
+        /// owns range admission against the contextual type.
+        value: i128,
         radix: IntRadix,
     },
     Float(f64),
@@ -784,13 +788,16 @@ pub enum Literal {
 }
 
 // Custom Serialize/Deserialize for Literal so that Integer { value, radix }
-// serializes as just the plain i64 on the wire (backward-compatible with the codegen wire contract).
-// The radix field is only used by the Rust-side formatter and is not sent over MessagePack.
+// serializes as just the value on the wire; radix is presentation metadata used
+// only by the Rust-side formatter. Integer payloads are decimal strings for
+// every integer literal (D421): the `hew-wasm` `parse_source` JSON is read by
+// JavaScript, which cannot represent `u64::MAX` exactly as a number. One
+// schema, no number-or-string threshold for consumers to guess at.
 impl serde::Serialize for Literal {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(serde::Serialize)]
         enum LiteralWire<'a> {
-            Integer(i64),
+            Integer(String),
             Float(f64),
             String(&'a str),
             Bool(bool),
@@ -798,7 +805,7 @@ impl serde::Serialize for Literal {
             Duration(i64),
         }
         match self {
-            Literal::Integer { value, .. } => LiteralWire::Integer(*value),
+            Literal::Integer { value, .. } => LiteralWire::Integer(value.to_string()),
             Literal::Float(v) => LiteralWire::Float(*v),
             Literal::String(s) => LiteralWire::String(s),
             Literal::Bool(b) => LiteralWire::Bool(*b),
@@ -813,7 +820,7 @@ impl<'de> serde::Deserialize<'de> for Literal {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         enum LiteralWire {
-            Integer(i64),
+            Integer(String),
             Float(f64),
             String(String),
             Bool(bool),
@@ -823,7 +830,7 @@ impl<'de> serde::Deserialize<'de> for Literal {
         let wire = LiteralWire::deserialize(deserializer)?;
         Ok(match wire {
             LiteralWire::Integer(v) => Literal::Integer {
-                value: v,
+                value: v.parse::<i128>().map_err(serde::de::Error::custom)?,
                 radix: IntRadix::Decimal,
             },
             LiteralWire::Float(v) => Literal::Float(v),

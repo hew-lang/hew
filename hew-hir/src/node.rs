@@ -216,10 +216,11 @@ pub enum HirItem {
 /// scope and fail closed at fold time.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirConstValue {
-    /// Folded integer value. The declared width lives in [`HirConst::ty`]
-    /// (`I32`/`I64`); this carries the value as `i64` and downstream codegen
-    /// truncates/zero-extends to the declared width.
-    Integer(i64),
+    /// Folded integer value. The declared width lives in [`HirConst::ty`];
+    /// this carries the exact mathematical value in the `i128` literal
+    /// carrier (D421) and physical lowering derives the destination-width
+    /// bit pattern.
+    Integer(i128),
     /// Folded string literal value (UTF-8, as written in source).
     String(String),
     /// Folded float literal value. The declared width lives in [`HirConst::ty`]
@@ -2528,7 +2529,10 @@ pub enum HirSelectArmKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirLiteral {
-    Integer(i64),
+    /// Exact mathematical value of an integer literal in the `i128` carrier
+    /// (D421). The concrete Hew type is the expression's `ResolvedTy`; the
+    /// checker has already admitted the value against it.
+    Integer(i128),
     Float(f64),
     String(String),
     Bool(bool),

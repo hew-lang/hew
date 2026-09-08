@@ -133,7 +133,7 @@ pub fn module(failing: bool) -> SemModule {
             vec![
                 op(SemOpKind::AllocPlace { place: PlaceId(0) }),
                 op(SemOpKind::AllocPlace { place: PlaceId(1) }),
-                integer(SemOpKind::ConstI64(4), 10),
+                integer(SemOpKind::ConstInteger(4), 10),
                 op(SemOpKind::StoreInit {
                     place: PlaceId(0),
                     value: operand(10),
@@ -184,7 +184,7 @@ pub fn module(failing: bool) -> SemModule {
             4,
             vec![
                 integer(SemOpKind::LoadCopy { place: PlaceId(0) }, 11),
-                integer(SemOpKind::ConstI64(1), 12),
+                integer(SemOpKind::ConstInteger(1), 12),
             ],
             SemTerminator::CheckedBinary {
                 id: OpId(0),
@@ -230,7 +230,7 @@ pub fn module(failing: bool) -> SemModule {
         block(
             6,
             vec![
-                integer(SemOpKind::ConstI64(105), 16),
+                integer(SemOpKind::ConstInteger(105), 16),
                 op(SemOpKind::StoreAssign {
                     place: PlaceId(0),
                     value: operand(16),

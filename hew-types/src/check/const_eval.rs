@@ -211,7 +211,7 @@ fn eval_inner(
         reason = "explicit variants preserve exhaustive-traversal posture (LESSONS)"
     )]
     match expr {
-        Expr::Literal(Literal::Integer { value, .. }) => Ok(i128::from(*value)),
+        Expr::Literal(Literal::Integer { value, .. }) => Ok(*value),
         Expr::Unary {
             op: UnaryOp::Negate,
             operand,
@@ -360,7 +360,7 @@ mod tests {
         (e, 0..0)
     }
 
-    fn int(n: i64) -> Spanned<Expr> {
+    fn int(n: i128) -> Spanned<Expr> {
         span(Expr::Literal(Literal::Integer {
             value: n,
             radix: IntRadix::Decimal,
@@ -612,16 +612,10 @@ mod tests {
             (crate::ResolvedTy::U32, 0, i128::from(u32::MAX)),
         ] {
             let target = target(&ty);
-            let min = i64::try_from(min).expect("fixed-width boundary fits parser literal");
-            let max = i64::try_from(max).expect("fixed-width boundary fits parser literal");
-            assert_eq!(
-                eval_integer_const_expr(&int(min), &env, target),
-                Ok(i128::from(min))
-            );
-            assert_eq!(
-                eval_integer_const_expr(&int(max), &env, target),
-                Ok(i128::from(max))
-            );
+            // The parser literal carrier and the evaluator share `i128`, so
+            // every fixed-width boundary is expressible as written.
+            assert_eq!(eval_integer_const_expr(&int(min), &env, target), Ok(min));
+            assert_eq!(eval_integer_const_expr(&int(max), &env, target), Ok(max));
         }
     }
 

@@ -113,7 +113,7 @@ fn finish(id: u32, roots: &[u32], fault: bool) -> sir::SemBlock {
     } else {
         ops.push(op(
             1005 + id * 10,
-            sir::SemOpKind::ConstI64(42),
+            sir::SemOpKind::ConstInteger(42),
             vec![result(200 + id, ResolvedTy::I64, sir::OwnKind::None)],
         ));
         sir::SemTerminator::Return {
@@ -405,7 +405,7 @@ fn fault_blocks() -> Vec<sir::SemBlock> {
                 take(2, 5, 4, ResolvedTy::I64, Plain),
                 op(
                     3,
-                    sir::SemOpKind::ConstI64(1),
+                    sir::SemOpKind::ConstInteger(1),
                     vec![result(5, ResolvedTy::I64, Plain)],
                 ),
             ],

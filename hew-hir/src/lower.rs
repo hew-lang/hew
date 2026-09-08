@@ -7990,7 +7990,7 @@ struct LowerCtx {
     /// Populates `ConstEnv` for subsequent const initializers; values are not
     /// used for ordinary expression lowering, which continues to resolve const
     /// references through `const_registry`.
-    folded_integer_consts: HashMap<String, i64>,
+    folded_integer_consts: HashMap<String, i128>,
     /// Per-enum variant descriptors keyed by the enum's type name. Populated
     /// between the type-decl second pass and the source-order third pass so
     /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and
@@ -11362,16 +11362,10 @@ impl LowerCtx {
         match target.map(|target| {
             hew_types::check::const_eval::eval_integer_const_expr(&spanned, &env, target)
         }) {
-            Some(Ok(value)) => match i64::try_from(value) {
-                Ok(value) => return crate::node::HirConstValue::Integer(value),
-                Err(_) => {
-                    self.const_integer_evaluation_error(
-                        span,
-                        "out-of-range",
-                        "constant initializer value exceeds the supported HIR integer carrier",
-                    );
-                }
-            },
+            // The const evaluator and the HIR carrier are both `i128`, and the
+            // evaluator has already range-checked the value against the
+            // declared type, so the folded value passes through exactly.
+            Some(Ok(value)) => return crate::node::HirConstValue::Integer(value),
             Some(Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_))) => {
                 self.unsupported(
                     span,
@@ -11443,7 +11437,7 @@ impl LowerCtx {
     fn const_eval_env_from_folded_integer_consts(&self) -> hew_types::check::const_eval::ConstEnv {
         let mut env = hew_types::check::const_eval::ConstEnv::new();
         for (name, value) in &self.folded_integer_consts {
-            env.insert(name.clone(), i128::from(*value));
+            env.insert(name.clone(), *value);
         }
         env
     }
@@ -20742,11 +20736,10 @@ impl LowerCtx {
     /// (same `expr_types` lookup, same `unwrap_or(default_ty)` fallback):
     /// after the fold this expression IS semantically a literal, so it
     /// inherits the literal contract rather than the compound-expression one.
-    /// `value` is always non-negative here -- the parser only ever hands
-    /// `lower_unary_expr` a bare `Literal` operand under `Negate` when the
-    /// digits parsed positively (see `parse_negated_int_literal`), so
-    /// `-value` never itself overflows `i64`.
-    fn lower_negated_int_literal(&mut self, value: i64, span: &Span) -> (HirExprKind, ResolvedTy) {
+    /// `value` is always non-negative here -- the parser hands
+    /// `lower_unary_expr` a bare `Literal` operand under `Negate` and every
+    /// literal magnitude fits the `i128` carrier, so `-value` cannot overflow.
+    fn lower_negated_int_literal(&mut self, value: i128, span: &Span) -> (HirExprKind, ResolvedTy) {
         let negated = -value;
         let default_ty = ResolvedTy::I64;
         let ty = {
@@ -24020,7 +24013,7 @@ impl LowerCtx {
     /// Build a typed integer-literal HIR expression.  Used to synthesise the
     /// default stride `1` for a non-strided `ForRange` so MIR always sees a
     /// concrete step operand at the loop's element width.
-    fn make_int_literal(&mut self, value: i64, ty: ResolvedTy, span: Span) -> HirExpr {
+    fn make_int_literal(&mut self, value: i128, ty: ResolvedTy, span: Span) -> HirExpr {
         self.make_expr(
             HirExprKind::Literal(HirLiteral::Integer(value)),
             ty,
@@ -24059,7 +24052,7 @@ impl LowerCtx {
         )
     }
 
-    fn make_i64_literal(&mut self, value: i64, span: Span) -> HirExpr {
+    fn make_i64_literal(&mut self, value: i128, span: Span) -> HirExpr {
         self.make_expr(
             HirExprKind::Literal(HirLiteral::Integer(value)),
             ResolvedTy::I64,

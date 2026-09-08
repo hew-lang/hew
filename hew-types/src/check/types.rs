@@ -3669,7 +3669,7 @@ pub struct Checker {
     pub(super) deferred_range_bounds: Vec<(
         Span,
         TypeVar,
-        Option<i64>,
+        Option<i128>,
         Option<Span>,
         u32,
         Option<TypeVar>,
@@ -3782,7 +3782,8 @@ pub(super) struct IntegerTypeInfo {
 /// Known compile-time numeric literal value (for later coercion checks).
 #[derive(Debug, Clone)]
 pub(super) enum ConstValue {
-    Integer(i64),
+    /// Exact mathematical value in the `i128` literal carrier (D421).
+    Integer(i128),
     Float(f64),
 }
 

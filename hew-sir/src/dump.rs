@@ -198,7 +198,7 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::LoadBorrow { place } => {
             writeln!(out, "load.borrow p{}", place.0).expect("write to String");
         }
-        SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::ConstInteger(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::TupleMake { elements } => {
             write!(out, "tuple.make(").expect("write to String");

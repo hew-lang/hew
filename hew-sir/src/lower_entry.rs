@@ -77,7 +77,7 @@ impl Builder<'_, '_> {
             let status = self.emit_typed(
                 Provenance::Synthesized,
                 &ResolvedTy::I64,
-                SemOpKind::ConstI64(status),
+                SemOpKind::ConstInteger(status),
             )?;
             self.finish_return_value(Some(BoundaryOperand {
                 operand: Operand { value: status },

@@ -3571,20 +3571,27 @@ impl<'a> Formatter<'a> {
     fn format_literal(&mut self, lit: &Literal) {
         use std::fmt::Write;
         match lit {
-            Literal::Integer { value, radix } => match radix {
-                IntRadix::Hex => {
-                    let _ = write!(self.output, "0x{value:X}");
+            Literal::Integer { value, radix } => {
+                // Radix forms print the magnitude with an explicit sign: the
+                // `i128` carrier's two's-complement rendering ("{:X}" of -1) is
+                // 32 hex digits and would not round trip through the parser.
+                let sign = if *value < 0 { "-" } else { "" };
+                let magnitude = value.unsigned_abs();
+                match radix {
+                    IntRadix::Hex => {
+                        let _ = write!(self.output, "{sign}0x{magnitude:X}");
+                    }
+                    IntRadix::Octal => {
+                        let _ = write!(self.output, "{sign}0o{magnitude:o}");
+                    }
+                    IntRadix::Binary => {
+                        let _ = write!(self.output, "{sign}0b{magnitude:b}");
+                    }
+                    IntRadix::Decimal => {
+                        let _ = write!(self.output, "{value}");
+                    }
                 }
-                IntRadix::Octal => {
-                    let _ = write!(self.output, "0o{value:o}");
-                }
-                IntRadix::Binary => {
-                    let _ = write!(self.output, "0b{value:b}");
-                }
-                IntRadix::Decimal => {
-                    let _ = write!(self.output, "{value}");
-                }
-            },
+            }
             Literal::Float(f) => {
                 let s = f.to_string();
                 self.write(&s);

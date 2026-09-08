@@ -753,7 +753,7 @@ mod tests {
     // hiding in any of them (via a block-expr) escapes to the enclosing loop;
     // missing one types a breakable loop as `Never` (the B1 soundness hole).
 
-    fn int_lit(value: i64) -> Literal {
+    fn int_lit(value: i128) -> Literal {
         Literal::Integer {
             value,
             radix: crate::ast::IntRadix::Decimal,

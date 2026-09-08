@@ -2859,7 +2859,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     fn emit_const(&self, dest: StorageId, value: &PhysicalConst) -> CodegenResult<()> {
         let llvm_ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
         match value {
-            PhysicalConst::I64(value) | PhysicalConst::Duration(value) => self.store(
+            // Physical MIR already derived the exact destination-width bit
+            // pattern, so the backend emits it verbatim: no sign inference, no
+            // widening decision.
+            PhysicalConst::IntegerBits(bits) => {
+                self.store(dest, llvm_ty.into_int_type().const_int(*bits, false).into())
+            }
+            // Duration keeps its own signed `i64` semantic type.
+            PhysicalConst::Duration(value) => self.store(
                 dest,
                 llvm_ty
                     .into_int_type()
@@ -7272,7 +7279,7 @@ mod tests {
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
                     }],
-                    kind: SemOpKind::ConstI64(7),
+                    kind: SemOpKind::ConstInteger(7),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -7337,7 +7344,7 @@ mod tests {
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
                         }],
-                        kind: SemOpKind::ConstI64(i64::MAX),
+                        kind: SemOpKind::ConstInteger(i128::from(i64::MAX)),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -7347,7 +7354,7 @@ mod tests {
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
                         }],
-                        kind: SemOpKind::ConstI64(1),
+                        kind: SemOpKind::ConstInteger(1),
                         provenance: Provenance::Synthesized,
                     },
                 ],

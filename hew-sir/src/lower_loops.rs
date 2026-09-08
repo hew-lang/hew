@@ -181,7 +181,7 @@ impl Builder<'_, '_> {
         let bound = self.lower_range_operand(end, &ty)?;
         let stride = self.lower_range_operand(step, &ty)?;
         let zero = Operand {
-            value: self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstI64(0))?,
+            value: self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstInteger(0))?,
         };
         let positive = self.range_compare(BinaryOp::Greater, stride.clone(), zero)?;
         let valid = self.new_block(Vec::new());
@@ -253,7 +253,11 @@ impl Builder<'_, '_> {
                 bound.value
             } else {
                 let one = Operand {
-                    value: self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstI64(1))?,
+                    value: self.emit_typed(
+                        Provenance::Synthesized,
+                        &ty,
+                        SemOpKind::ConstInteger(1),
+                    )?,
                 };
                 self.range_advance(&ty, BinaryOp::Subtract, bound.clone(), one, &scope)?
             };

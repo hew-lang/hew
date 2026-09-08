@@ -427,7 +427,7 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(0),
                         results: vec![definition(2)],
-                        kind: SemOpKind::ConstI64(0),
+                        kind: SemOpKind::ConstInteger(0),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -468,7 +468,7 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(2),
                         results: vec![definition(5)],
-                        kind: SemOpKind::ConstI64(1),
+                        kind: SemOpKind::ConstInteger(1),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -498,7 +498,7 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(4),
                         results: vec![definition(8)],
-                        kind: SemOpKind::ConstI64(2),
+                        kind: SemOpKind::ConstInteger(2),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -528,7 +528,7 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(6),
                         results: vec![definition(11)],
-                        kind: SemOpKind::ConstI64(3),
+                        kind: SemOpKind::ConstInteger(3),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -771,7 +771,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 ops: vec![SemOp {
                     id: OpId(0),
                     results: vec![definition(0)],
-                    kind: SemOpKind::ConstI64(1),
+                    kind: SemOpKind::ConstInteger(1),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -808,7 +808,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 ops: vec![SemOp {
                     id: OpId(0),
                     results: vec![definition(0)],
-                    kind: SemOpKind::ConstI64(1),
+                    kind: SemOpKind::ConstInteger(1),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -1007,7 +1007,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
             ops: vec![SemOp {
                 id: OpId(0),
                 results: vec![definition(0)],
-                kind: SemOpKind::ConstI64(1),
+                kind: SemOpKind::ConstInteger(1),
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
@@ -1307,7 +1307,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
             ops: vec![SemOp {
                 id: OpId(0),
                 results: vec![definition(0)],
-                kind: SemOpKind::ConstI64(1),
+                kind: SemOpKind::ConstInteger(1),
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
@@ -1902,7 +1902,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
                         ty: ResolvedTy::I64,
                         own: result_own,
                     }],
-                    kind: SemOpKind::ConstI64(7),
+                    kind: SemOpKind::ConstInteger(7),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Goto(Edge {
@@ -1964,7 +1964,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
                     }],
-                    kind: SemOpKind::ConstI64(7),
+                    kind: SemOpKind::ConstInteger(7),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Goto(Edge {
@@ -2033,7 +2033,7 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
     call_site.blocks[0].ops = vec![SemOp {
         id: OpId(0),
         results: vec![definition(1)],
-        kind: SemOpKind::ConstI64(7),
+        kind: SemOpKind::ConstInteger(7),
         provenance: Provenance::Synthesized,
     }];
     call_site.blocks[0].terminator = call(

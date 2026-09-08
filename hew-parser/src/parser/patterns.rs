@@ -141,8 +141,11 @@ impl Parser<'_> {
                 let (next, _) = self.advance()?;
                 match next {
                     Token::Integer(s) => {
-                        if let Ok((value, radix)) = parse_negated_int_literal(s) {
-                            Pattern::Literal(Literal::Integer { value, radix })
+                        if let Ok((value, radix)) = parse_int_literal(s) {
+                            Pattern::Literal(Literal::Integer {
+                                value: -value,
+                                radix,
+                            })
                         } else {
                             self.error_invalid_literal_with_hint(
                                 format!("invalid integer literal '-{s}'"),

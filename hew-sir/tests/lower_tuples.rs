@@ -52,8 +52,8 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         verify_module(&lowered.module)
     );
     let ops = &main.blocks[0].ops;
-    assert!(matches!(ops[0].kind, SemOpKind::ConstI64(0)));
-    assert!(matches!(ops[1].kind, SemOpKind::ConstI64(42)));
+    assert!(matches!(ops[0].kind, SemOpKind::ConstInteger(0)));
+    assert!(matches!(ops[1].kind, SemOpKind::ConstInteger(42)));
     let tuple_value = ops[2]
         .results
         .first()
@@ -219,7 +219,7 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
                     }],
-                    kind: SemOpKind::ConstI64(0),
+                    kind: SemOpKind::ConstInteger(0),
                     provenance: Provenance::Synthesized,
                 },
                 SemOp {

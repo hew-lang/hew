@@ -563,7 +563,7 @@ mod tests {
                     ops: vec![
                         crate::SemOp {
                             id: crate::OpId(0),
-                            kind: crate::SemOpKind::ConstI64(10),
+                            kind: crate::SemOpKind::ConstInteger(10),
                             results: vec![ValueDef {
                                 id: ValueId(0),
                                 ty: ResolvedTy::I64,

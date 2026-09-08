@@ -180,7 +180,7 @@ fn false_same_target_diamond() -> SemFunction {
                 ops: vec![SemOp {
                     id: OpId(1),
                     results: vec![value(3, ResolvedTy::I64)],
-                    kind: SemOpKind::ConstI64(99),
+                    kind: SemOpKind::ConstInteger(99),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -691,7 +691,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                 ops: vec![SemOp {
                     id: OpId(0),
                     results: vec![value(1, ResolvedTy::I64)],
-                    kind: SemOpKind::ConstI64(1),
+                    kind: SemOpKind::ConstInteger(1),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -704,7 +704,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                 ops: vec![SemOp {
                     id: OpId(1),
                     results: vec![value(2, ResolvedTy::I64)],
-                    kind: SemOpKind::ConstI64(2),
+                    kind: SemOpKind::ConstInteger(2),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {

@@ -89,7 +89,7 @@ fn a_module_constant_reads_as_its_folded_literal() {
     );
     let main = verified_main(&lowered);
     assert_eq!(
-        count_ops(main, |kind| matches!(kind, SemOpKind::ConstI64(5))),
+        count_ops(main, |kind| matches!(kind, SemOpKind::ConstInteger(5))),
         1
     );
 }

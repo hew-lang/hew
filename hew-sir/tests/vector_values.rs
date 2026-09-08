@@ -272,7 +272,7 @@ fn verifier_rejects_a_wrong_element_even_with_the_right_arity() {
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
-        .find(|op| matches!(op.kind, SemOpKind::ConstI64(7)))
+        .find(|op| matches!(op.kind, SemOpKind::ConstInteger(7)))
         .unwrap()
         .results[0]
         .id;

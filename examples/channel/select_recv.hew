@@ -18,13 +18,13 @@ actor Worker {
         };
         txb.send(7);
         select {
-            a = rxa.recv() => {
+            a from rxa.recv() => {
                 match a {
                     .Some(s) => println(f"a:{s}"),
                     .None => println("a:none"),
                 }
             },
-            b = rxb.recv() => {
+            b from rxb.recv() => {
                 match b {
                     .Some(n) => println(f"b:{n}"),
                     .None => println("b:none"),

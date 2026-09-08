@@ -12,7 +12,7 @@ actor Selector {
 
     receive fn run(trigger: i64) -> i64 {
         let selected = select {
-            reply = await fast.text() => reply.expect("ask reply"),
+            reply from fast.text() => reply.expect("ask reply"),
             after 500ms => "timed-out",
         };
         println(f"selected={selected}");

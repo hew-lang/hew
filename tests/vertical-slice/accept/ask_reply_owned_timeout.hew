@@ -24,7 +24,7 @@ actor SlowWorker {
 fn main() -> i64 {
     let slow = spawn SlowWorker;
     let outcome = select {
-        reply = await slow.label() => 1,
+        reply from slow.label() => 1,
         after 10ms => 7,
     };
     outcome

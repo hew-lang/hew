@@ -3150,6 +3150,16 @@ impl Checker {
                 ty
             }
             Expr::Select { arms, timeout } => {
+                if arms.is_empty() && timeout.is_none() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "a `select` needs at least one arm: a source arm \
+                         (`name from source => body`), or an `after` timer arm"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
                 let mut result_ty: Option<Ty> = None;
                 let prepared_depth = self.prepared_select_tasks.len();
                 // Only the BODIES of a select are alternatives. Every arm's
@@ -3165,17 +3175,14 @@ impl Checker {
                     self.env.push_scope();
                     let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
                     if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
-                        if let Expr::Await(task) = &arm.source.0 {
-                            if let Some((root, path)) = self.expr_place(&task.0) {
-                                if let Some(binding) = self.env.lookup_ref(&root) {
-                                    self.prepared_select_tasks.push(
-                                        super::types::PreparedSelectTask {
-                                            binding: binding.id,
-                                            path,
-                                            span: task.1.clone(),
-                                        },
-                                    );
-                                }
+                        if let Some((root, path)) = self.expr_place(&arm.source.0) {
+                            if let Some(binding) = self.env.lookup_ref(&root) {
+                                self.prepared_select_tasks
+                                    .push(super::types::PreparedSelectTask {
+                                        binding: binding.id,
+                                        path,
+                                        span: arm.source.1.clone(),
+                                    });
                             }
                         }
                     }
@@ -3198,12 +3205,10 @@ impl Checker {
                 for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
                     self.env.push_scope();
                     self.env.restore_ownership(&entry);
-                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
-                        if let Expr::Await(task) = &arm.source.0 {
-                            if !self.reject_borrowed_consumption(&task.0, &task.1) {
-                                self.mark_expr_moved(&task.0, &task.1);
-                            }
-                        }
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. }))
+                        && !self.reject_borrowed_consumption(&arm.source.0, &arm.source.1)
+                    {
+                        self.mark_expr_moved(&arm.source.0, &arm.source.1);
                     }
                     self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {

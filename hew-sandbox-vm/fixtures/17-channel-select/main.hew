@@ -2,6 +2,6 @@ fn main() {
     let ch = channel<i64>();
     ch.send(7);
     select {
-        value = ch.recv() => println(value);
+        value from ch.recv() => println(value);
     }
 }

@@ -2627,9 +2627,21 @@ impl Checker {
         expr: &Expr,
         span: &Span,
     ) -> (Ty, Option<CheckedSelectSource>) {
-        let (operand, operand_span, awaited) = match expr {
-            Expr::Await(inner) => (&inner.0, &inner.1, true),
-            _ => (expr, span, false),
+        // `await` is never written on a select arm source: the `select` is what
+        // waits (spec 4.11). Keep synthesizing the inner operand so the arm's
+        // other diagnostics still report, but refuse the spelling.
+        let (operand, operand_span) = match expr {
+            Expr::Await(inner) => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "a select arm source never writes `await` - the `select` is \
+                     what waits; delete `await`"
+                        .to_string(),
+                );
+                (&inner.0, &inner.1)
+            }
+            _ => (expr, span),
         };
         let key = SpanKey::in_module(operand_span, self.current_module_idx);
         self.suspension_operands.insert(key.clone());
@@ -2638,12 +2650,10 @@ impl Checker {
         let ty = self.synthesize(operand, operand_span);
         let ty = self.subst.resolve(&ty);
         if let Ty::Task(result) = &ty {
-            if awaited {
-                return (
-                    (**result).clone(),
-                    Some(CheckedSelectSource::TaskAwait { operand: key }),
-                );
-            }
+            return (
+                (**result).clone(),
+                Some(CheckedSelectSource::TaskAwait { operand: key }),
+            );
         }
         if matches!(
             self.actor_method_dispatch.get(&key),
@@ -2673,7 +2683,8 @@ impl Checker {
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,
-            "select arm source must await a Task or invoke an actor ask or channel receive"
+            "a select arm source is a task, an actor call, or a channel \
+             receive: `name from source => body`"
                 .to_string(),
         );
         (Ty::Error, None)

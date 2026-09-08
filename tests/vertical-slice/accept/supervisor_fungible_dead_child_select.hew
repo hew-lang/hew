@@ -76,7 +76,7 @@ fn main() -> i64 {
     // Select-ask through the same dead fungible handle: the dead-child arm is
     // skipped (never ready), so the `after` arm wins — NOT a trap.
     let select_code = select {
-        reply = await w.get_value() => reply.expect("ask reply"),
+        reply from w.get_value() => reply.expect("ask reply"),
         after 100ms => 25,
     };
     let sentinel = if ask_code == 20 && select_code == 25 {

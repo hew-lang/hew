@@ -13,7 +13,7 @@ fn ping() {
 actor Driver {
     receive fn go() -> i64 {
         scope {
-            fork t = ping();
+            let t = fork ping();
             await t;
         }
         println("scope done");
@@ -23,7 +23,7 @@ actor Driver {
 
 fn main() -> i64 {
     let d = spawn Driver;
-    match await d.go() {
+    match d.go() {
         // The handler replies 7 after the scope joins; exit 0 on the
         // expected reply, non-zero otherwise.
         .Ok(v) => v - 7,

@@ -2077,28 +2077,43 @@ run_accept_expect_status "join_branch_trap" 19
 echo 'PASS select_recv_guard'
 
 # Reject (SELECT ship-3, HEW-SPEC §4.11.1): the task-await arm
-# `<id> from await <expr>` is NOT one of the three sealed select forms
-# (Task<T> remains unnameable in annotations even though `fork name = call()`
-# binds typed handles), so the checker select-arm gate rejects it at CHECK
-# time with the actor-ask form diagnostic — never a silent lowering, never a
-# late MIR/codegen error.
+# A select arm source is a task, an actor call or a channel receive. A plain
+# function call is none of those, so the checker refuses the arm at CHECK time —
+# never a silent lowering, never a late MIR/codegen error.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_await_task_dropped.hew" >"${reject_output}" 2>&1; then
     echo "expected select_arm_await_task_dropped fixture to fail" >&2
     record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}" ||
+grep -qF 'a select arm source is a task, an actor call, or a channel receive' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
-# Reject (SELECT ship-3, HEW-SPEC §4.11.1): the stream-next arm
-# `<id> from <stream>.recv()` over a Stream<T> is NOT a sealed select form — the
-# `.recv()` arm is channel-only (Receiver<T>). A Stream<T> receiver is rejected
-# by the checker select-arm gate (before MIR), so the diagnostic is the select-arm
-# form error, not the owned-handle aggregate-extraction fail-closed.
+# A `Stream<T>` receiver is not yet a select arm source: the stream arm returns
+# with the `pid.stream()` handle. Until then the arm is refused at CHECK time
+# rather than reaching the owned-handle aggregate-extraction fail-closed.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_stream_recv_dropped.hew" >"${reject_output}" 2>&1; then
     echo "expected select_arm_stream_recv_dropped fixture to fail" >&2
     record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -qF 'select arm source must await a Task or invoke an actor ask or channel receive' "${reject_output}" ||
+grep -qF 'a select arm source is a task, an actor call, or a channel receive' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+
+# Negative control for the `from` arm spelling: `await` is never written on a
+# select arm source, because the select is what waits. The checker names the
+# fix rather than unwrapping the operand silently.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_await_source.hew" >"${reject_output}" 2>&1; then
+    echo "expected select_arm_await_source fixture to fail" >&2
+    record_failure "row ${LINENO}" "see stderr above"
+fi
+grep -qF 'a select arm source never writes' "${reject_output}" ||
+    record_failure "row ${LINENO}" "assertion failed"
+
+# Negative control: a select with no arms waits on nothing and is refused
+# before any suspension is lowered.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_no_arms.hew" >"${reject_output}" 2>&1; then
+    echo "expected select_no_arms fixture to fail" >&2
+    record_failure "row ${LINENO}" "see stderr above"
+fi
+grep -qF 'needs at least one arm: a source arm' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
 # Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;

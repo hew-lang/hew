@@ -23,7 +23,7 @@ actor Inbox {
             .None => println("empty"),
         }
         select {
-            again = rx.recv() => {
+            again from rx.recv() => {
                 match again {
                     .Some(msg) => println(msg),
                     .None => println("closed"),

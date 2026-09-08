@@ -31,11 +31,11 @@ fn select_bodies_are_alternatives(held: Conn) -> i64 {
     let a = spawn TestSink;
     let b = spawn TestSink;
     let _winner = select {
-        x = await a.ping(1) => {
+        x from a.ping(1) => {
             held.close();
             x.expect("ask reply")
         },
-        y = await b.ping(2) => {
+        y from b.ping(2) => {
             held.close();
             y.expect("ask reply")
         },

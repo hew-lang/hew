@@ -28,7 +28,10 @@ actor Coordinator {
 
     receive fn select_score(tag: i64, tree: Tree) -> i64 {
         select {
-            reply = scorer.score(tag, tree) => reply,
+            reply from scorer.score(tag, tree) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -2,
+            },
             after 5s => -2,
         }
     }
@@ -42,7 +45,10 @@ fn main() -> i64 {
         .Err(_) => -3,
     };
     let selected = select {
-        reply = scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => reply,
+        reply from scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => match reply {
+            .Ok(value) => value,
+            .Err(_) => -2,
+        },
         after 5s => -4,
     };
     let (joined_a_result, joined_b_result) = await fork (scorer.score(30, .Node(.Leaf(5), .Leaf(6))), scorer.score(40, .Node(.Leaf(7), .Leaf(8))));

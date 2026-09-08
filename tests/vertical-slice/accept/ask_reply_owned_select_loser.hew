@@ -34,8 +34,8 @@ fn main() -> i64 {
     let fast = spawn FastWorker;
     let slow = spawn SlowWorker;
     let winner = select {
-        reply = await fast.label() => reply.expect("ask reply"),
-        reply = await slow.label() => reply.expect("ask reply"),
+        reply from fast.label() => reply.expect("ask reply"),
+        reply from slow.label() => reply.expect("ask reply"),
         after 100ms => "timeout-owned-reply".to_upper(),
     };
     // "WINNER-OWNED-REPLY" is 18 characters; exit code == 18.

@@ -23,9 +23,10 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let read_twice = || {
+        let read_twice = move || {
             let first = utf8.decode(conn.read());
             let second = utf8.decode(conn.read());
+            let _ = conn.close();
             (first, second)
         };
         let (first_result, second_result) = read_twice();
@@ -39,7 +40,6 @@ actor Reader {
         };
         let body = f"{first}|{second}";
         println(f"reader-received: {body}");
-        let _ = conn.close();
     }
 }
 

@@ -58,7 +58,7 @@ actor Dispatcher {
     }
 
     // Ask a slot whose supervisor has been stopped. The refusal must carry a
-    // real error kind: 1 = ActorStopped (expected), -1 = other kind.
+    // real error kind: 1 = Dead (expected), -1 = other kind.
     //
     // The precondition is a GRACEFUL `supervisor_stop`, not a crash loop past
     // the restart intensity. Both reach the same refusal path, but exhausting a
@@ -73,7 +73,7 @@ actor Dispatcher {
         let refused = sup.w1.whoami();
         match refused {
             .Ok(_) => -2,
-            .Err(AskError.ActorStopped) => 1,
+            .Err(ActorError.Dead) => 1,
             .Err(_) => -1,
         }
     }

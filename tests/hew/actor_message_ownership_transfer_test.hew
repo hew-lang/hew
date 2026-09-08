@@ -51,7 +51,8 @@ actor TestSink {
         return text.len();
     }
     receive fn hold(h: Holder) -> i64 {
-        return h.socket.detach();
+        let holder = h;
+        return holder.socket.detach();
     }
 }
 
@@ -90,8 +91,14 @@ actor Racer {
         let a = Socket { fd: 21 };
         let b = Socket { fd: 22 };
         let winner = select {
-            reply from left.take_socket(a) => reply,
-            reply from right.take_socket(b) => reply,
+            reply from left.take_socket(a) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -1,
+            },
+            reply from right.take_socket(b) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -1,
+            },
             after 2s => -1,
         };
         return winner;

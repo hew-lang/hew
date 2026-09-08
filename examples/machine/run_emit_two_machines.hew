@@ -1,14 +1,14 @@
 // Runnable fixture: two machine TYPES declaring a same-tag-index event,
-// proving `m.take_emits(ev)` filters by (machine-type id, event tag) and
-// never by tag alone.
+// proving each machine's step report carries only its OWN outputs — never
+// another machine's, even when both declare an event at the same
+// event-declaration index.
 //
 // `Alarm` and `Beacon` both declare `Ring` at event-declaration index 1
 // (after `Trigger` at index 0) — same tag, different machine types. Only
 // `Alarm` emits `Ring` (triggered by its own `Trigger` step, a distinct
 // event from the one it emits — machines cannot emit the event that
-// re-triggers their own transition). Without the machine-id filter,
-// `b.take_emits(.Ring)` would misattribute `Alarm`'s queued event to
-// `Beacon` and wrongly report `1`; with the filter it must report `0`.
+// re-triggers their own transition). `Beacon`'s own `Trigger` step never
+// emits, so its report's outputs are always empty.
 //
 // `tests/exec/machine_exec.rs::run_emit_two_machines_fixture_executes` is
 // the end-to-end signal for this fixture.
@@ -59,8 +59,9 @@ machine Beacon {
 
 fn main() {
     var a = Armed;
-    let b = Idle;
-    a.step(.Trigger);
-    println(a.take_emits(.Ring));
-    println(b.take_emits(.Ring));
+    var b = Idle;
+    let a_report = a.step(.Trigger);
+    let b_report = b.step(.Trigger);
+    println(a_report.outputs.len());
+    println(b_report.outputs.len());
 }

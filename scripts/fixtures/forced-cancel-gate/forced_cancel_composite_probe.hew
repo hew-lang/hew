@@ -12,23 +12,13 @@
 // without consuming the adapter's ABI-only zero return. A separate successful
 // task returns `Point{x:0,y:0}` to prove payload bytes are not the discriminator.
 //
-// Uses the LEGACY `hew_task_scope_cancel_after_ns` live trigger (empty
-// `after(d) {}` body) rather than the modern `SuspendingScopeDeadline`
-// carrier's non-empty-body form: re-referencing a `fork`-bound task handle
-// from inside a non-empty `after(d) { ... }` body hits a separate,
-// pre-existing NYI gap (`is_value_task_await` does not currently resolve
-// such a reference — confirmed via `hew check`; not exercised or fixed
-// here). Both triggers funnel into the same `hew_task_scope_cancel`, which
-// is what the codegen bug actually depends on — this fixture stays on the
-// surface that compiles today.
-//
-// `after(d) {}` is positioned BEFORE `let v = await t;`, not after: the
-// legacy trigger arms `hew_task_scope_cancel_after_ns` at its own statement
-// position in program order, and `await t` suspends the calling coroutine —
-// so if the deadline arm sat after the await, the timer would never get a
-// chance to arm before the coroutine parks waiting on the very task the
-// timer is meant to cancel (self-deadlock, only broken by the hook's own
-// bounded-wait panic).
+// Uses a `scope within 1ms { ... }` deadline: the scope arms
+// `hew_task_scope_cancel_after_ns` at scope entry, before the paused spawn
+// hook and the `fork`/`await` inside it run, so the timer is live well before
+// the coroutine parks on the very task it is meant to cancel. This is what
+// the codegen bug actually depends on — the deadline clause form this
+// fixture used previously (`after(d) {}` inside the scope body) has been
+// retired in favour of the scope-level deadline.
 type Point {
     x: i64,
     y: i64
@@ -54,12 +44,11 @@ extern "C" {
 actor Driver {
     receive fn run_cancelled() -> Point {
         var out: Point = Point { x: 0, y: 0 };
-        scope {
+        scope within 1ms {
             unsafe {
                 hew_test_pause_next_task_spawn_until_scope_cancel()
             };
             let t = fork compute();
-            after(1ms) {};
             let v = await t;
             out = v;
         };
@@ -67,12 +56,11 @@ actor Driver {
     }
     receive fn run_cancelled_owned() -> string {
         var out: string = "unset".to_upper();
-        scope {
+        scope within 1ms {
             unsafe {
                 hew_test_pause_next_task_result_until_scope_cancel()
             };
             let owned = fork compute_owned();
-            after(1ms) {};
             let owned_value = await owned;
             out = owned_value;
         };
@@ -91,17 +79,17 @@ actor Driver {
 
 fn main() {
     let d = spawn Driver;
-    let zero = await d.run_zero();
+    let zero = d.run_zero();
     match zero {
         .Ok(p) => println(f"zero x={p.x} y={p.y}"),
         .Err(_) => println("zero failed"),
     }
-    let cancelled = await d.run_cancelled();
+    let cancelled = d.run_cancelled();
     match cancelled {
         .Ok(p) => println(f"fabricated x={p.x} y={p.y}"),
         .Err(_) => println("cancelled"),
     }
-    let owned_cancelled = await d.run_cancelled_owned();
+    let owned_cancelled = d.run_cancelled_owned();
     match owned_cancelled {
         .Ok(value) => println(f"fabricated owned={value}"),
         .Err(_) => println("owned cancelled"),

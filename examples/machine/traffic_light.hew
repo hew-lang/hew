@@ -1,8 +1,9 @@
 // Traffic light — Moore machine (outputs depend only on current state).
 //
-// Each state owns its signal colour; transitions are driven by a single
-// Tick event.  Entry blocks are used to log the state change; there are
-// no transition bodies, so effect-parity is trivially satisfied.
+// Each state owns its signal colour. Transitions are driven by a single Tick
+// event; entry/exit hooks are pure value computations (MACHINE-SPEC's
+// Purity section) so they cannot do I/O directly — each hook emits a typed
+// `Signal` output instead, and the caller prints it from the step's report.
 //
 // Run:
 //   hew machine diagram examples/machine/traffic_light.hew
@@ -13,22 +14,26 @@ machine TrafficLight {
         Tick,
     }
 
+    emits {
+        Signal { label: string },
+    }
+
     state Red {
         entry {
-            println("signal: RED — stop");
+            emit Signal { label: "signal: RED — stop" };
         }
         exit {
-            println("leaving red");
+            emit Signal { label: "leaving red" };
         }
     },
     state Green {
         entry {
-            println("signal: GREEN — go");
+            emit Signal { label: "signal: GREEN — go" };
         }
     },
     state Yellow {
         entry {
-            println("signal: YELLOW — prepare to stop");
+            emit Signal { label: "signal: YELLOW — prepare to stop" };
         }
     },
 
@@ -42,5 +47,17 @@ machine TrafficLight {
     }
     on Tick: Yellow => Red {
         TrafficLight.Red
+    }
+}
+
+fn main() {
+    var light = Red;
+    for _ in 0 .. 4 {
+        let report = light.step(.Tick);
+        for output in report.outputs {
+            match output {
+                .Signal { label } => println(label),
+            }
+        }
     }
 }

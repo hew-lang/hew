@@ -1,5 +1,4 @@
-//! Ownership vocabulary of the semantic IR (`docs/internal/ir-ladder.md` §1.2,
-//! §1.3, §1.5).
+//! Ownership vocabulary and checked aggregate recipes of the semantic IR.
 //!
 //! All ownership is explicit in the op stream. An operand's mode **is the op it
 //! feeds**; there is no side tag on a read.

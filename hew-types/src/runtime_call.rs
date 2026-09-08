@@ -1,51 +1,13 @@
-//! Typed cross-layer descriptor for compiler-known runtime / builtin calls.
+//! Typed contracts for compiler-known runtime operations.
 //!
-//! # Why this exists
+//! The checker selects runtime families and argument/result semantics. HIR and
+//! SIR preserve those facts; physical lowering chooses their storage and ABI.
+//! Adding an exported symbol does not by itself implement a source operation:
+//! its selected family still needs a complete lowering and execution contract.
 //!
-//! Today `Instr::CallRuntimeAbi` carries a validated `String` symbol and
-//! `Terminator::Call` dispatches several compiler-magic ABI paths by
-//! string-matching the callee name. The checker / HIR resolved a typed
-//! identity for every one of those calls (`MethodCallRewrite`,
-//! `ResolvedImplCall`, etc.) and stringified it; later layers then have
-//! to re-match the string to recover the family. A new variant of a
-//! closed family — added without updating every string-match site —
-//! silently mis-lowers (LESSONS P0 `boundary-fail-closed`,
-//! `exhaustive-traversal-and-lowering`, `match-fail-closed`).
-//!
-//! This module introduces the closed-set typed substrate that the
-//! checker, HIR await-classifier, MIR carrier, and codegen will all
-//! migrate onto over the follow-up commits. The substrate itself is
-//! purely additive — this commit does not change `MethodCallRewrite`,
-//! `RuntimeCall`, codegen, HIR, or any match site. It is
-//! dead-code-but-compiled until the first producer wires onto it.
-//!
-//! # Correctness anchor
-//!
-//! The bijection enforced by [`RuntimeCallFamily::c_symbol`] and
-//! [`RuntimeCallFamily::from_c_symbol`] is the load-bearing invariant.
-//! Round-trip tests in `hew-mir/tests/runtime_call_allowlist.rs` pin
-//! the substrate against the MIR-side `known_runtime_symbols`
-//! allowlist; the local tests in this module pin everything that is
-//! intrinsic to the substrate itself (uniqueness of `c_symbol()`,
-//! constructor fail-closed behaviour, `consumes_receiver` /
-//! `is_async_suspending` parity).
-//!
-//! # Crate placement
-//!
-//! Lives in `hew-types` because the checker (`MethodCallRewrite`,
-//! `MethodTarget`) is the producer of typed descriptors and must be
-//! able to construct one without a circular dependency. `hew-mir`
-//! re-exports the substrate as `hew_mir::runtime_call` so the existing
-//! MIR/codegen call sites keep their import paths.
-//!
-//! # Asymmetric split discipline
-//!
-//! [`RuntimeCallFamily`] is closed. The sole legitimate open-set string
-//! in the cross-layer descriptor world is
-//! `MethodCallRewrite::RewriteModuleQualifiedToFunction.c_symbol`, which
-//! carries a user-module-qualified dotted-name. That string is NOT
-//! covered by this substrate by design — it is structurally open-set
-//! and clippy-gated.
+//! This module lives in `hew-types` so source checking and downstream stages
+//! consume the same family definitions without a dependency cycle. Foreign
+//! symbol ownership is described separately by `crate::ffi_contracts`.
 
 mod array;
 pub use array::ArrayValueOp;

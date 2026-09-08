@@ -88,6 +88,7 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
         let mut used = BTreeSet::new();
         let mut pending = vec![body.target];
         let mut finished = false;
+        let mut diverged = false;
         while let Some(id) = pending.pop() {
             if !region.blocks.insert(id) {
                 continue;
@@ -127,10 +128,12 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
                     }
                     finished = true;
                 }
+                // Divergence is not escape: a body that calls a `Never`-typed
+                // function never returns control, so it owes no finish.
+                SemTerminator::Unreachable => diverged = true,
                 SemTerminator::Return { .. }
                 | SemTerminator::ResumeUnwind
                 | SemTerminator::Trap { .. }
-                | SemTerminator::Unreachable
                 | SemTerminator::Suspend { .. } => {
                     return Err("defer body escapes without its matching finish");
                 }
@@ -139,7 +142,7 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
                     .visit_successors(|edge| pending.push(edge.target)),
             }
         }
-        if !finished {
+        if !finished && !diverged {
             return Err("defer body has no matching finish");
         }
         // A body-local aggregate's field places are local too. The origin

@@ -485,6 +485,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
         let mut used = BTreeSet::new();
         let mut pending = vec![body.target];
         let mut finish = false;
+        let mut diverged = false;
         while let Some(id) = pending.pop() {
             if !region.blocks.insert(id) {
                 continue;
@@ -542,6 +543,9 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
                     }
                     finish = true;
                 }
+                // Divergence is not escape: a `Never`-typed call in the body
+                // never returns control, so it owes no finish.
+                PhysicalTerminator::Unreachable => diverged = true,
                 PhysicalTerminator::Return { .. }
                 | PhysicalTerminator::PropagateFault
                 | PhysicalTerminator::Trap(_) => {
@@ -552,7 +556,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
                 _ => pending.extend(edges(&block.terminator).iter().map(|e| e.target)),
             }
         }
-        if !finish {
+        if !finish && !diverged {
             return Err(PhysicalError::new("physical defer body has no finish"));
         }
         let is_place = |id| {

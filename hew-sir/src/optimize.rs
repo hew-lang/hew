@@ -265,6 +265,23 @@ fn compact_unreachable(
         .get(&entry)
         .expect("a verified SIR entry must be reachable");
     function.blocks = retained;
+    // A registration and its elaborated body are one fact. When every entry
+    // for an action is proven unreachable — the drain sits behind a diverging
+    // sibling body, say — the registration leaves with them.
+    let entered = function
+        .blocks
+        .iter()
+        .filter_map(|block| match block.terminator {
+            SemTerminator::EnterDefer { defer, .. } => Some(defer),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    for block in &mut function.blocks {
+        block.ops.retain(|op| match op.kind {
+            SemOpKind::RegisterDefer { defer, .. } => entered.contains(&defer),
+            _ => true,
+        });
+    }
     // Source binding rows name definitions, including loop-carried versions.
     // Once a proven unreachable block is removed, its value-only debug rows
     // must leave with it; otherwise they name values absent from valid IR.

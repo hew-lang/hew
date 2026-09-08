@@ -6,7 +6,7 @@
 //! Observable contract: prints `b-payload`.
 
 fn make_pair() -> (string, string) {
-    (string_concat("a-", "payload"), string_concat("b-", "payload"))
+    (("a-" + "payload"), ("b-" + "payload"))
 }
 
 fn main() -> i64 {

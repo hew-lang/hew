@@ -28,7 +28,7 @@ enum Box<T> { Full(T), }
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 10000 {
-        let b: Box<string> = Box.Full(string_concat("df-", "payload"));
+        let b: Box<string> = Box.Full(("df-" + "payload"));
         // Two independent destructures of the same payload: each binds a
         // fresh `string` aliasing the inner buffer with no retain.
         let _x = match b { Box.Full(f) => 0, };

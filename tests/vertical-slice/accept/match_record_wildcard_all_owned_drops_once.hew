@@ -30,8 +30,8 @@ type Outer {
 
 fn make(n: i64) -> Outer {
     Outer {
-        name: string_concat("name-", "x"),
-        inner: Inner { value: string_concat("v-", "x") },
+        name: ("name-" + "x"),
+        inner: Inner { value: ("v-" + "x") },
     }
 }
 

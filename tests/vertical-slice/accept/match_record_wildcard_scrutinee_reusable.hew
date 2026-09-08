@@ -26,8 +26,8 @@ type Outer {
 
 fn make() -> Outer {
     Outer {
-        name: string_concat("alpha", ""),
-        inner: Inner { value: string_concat("beta", "") },
+        name: ("alpha" + ""),
+        inner: Inner { value: ("beta" + "") },
     }
 }
 

@@ -35,7 +35,7 @@ fn measure(p: Packet, skip: bool) -> i64 {
 }
 
 fn main() -> i64 {
-    let kept = measure(Packet { tag: string_concat("t", "g"), body: string_concat("b", "d") }, true);
-    let drained = measure(Packet { tag: string_concat("t", "g"), body: string_concat("b", "d") }, false);
+    let kept = measure(Packet { tag: ("t" + "g"), body: ("b" + "d") }, true);
+    let drained = measure(Packet { tag: ("t" + "g"), body: ("b" + "d") }, false);
     kept + drained - 4
 }

@@ -6,8 +6,8 @@ type EnumHeapMoveCarrier {
 
 fn project(i: i64) -> string {
     let r = EnumHeapMoveCarrier {
-        choice: EnumHeapMoveChoice.Pair(string_concat("enum-", "payload"), i),
-        sibling: string_concat("sibling-", "payload"),
+        choice: EnumHeapMoveChoice.Pair(("enum-" + "payload"), i),
+        sibling: ("sibling-" + "payload"),
     };
     match r.choice {
         EnumHeapMoveChoice.Pair(text, _) => text,

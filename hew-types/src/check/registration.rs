@@ -1109,8 +1109,6 @@ impl Checker {
         self.register_builtin_fn("to_float", vec![Ty::I64], Ty::F64);
 
         // String operations
-        self.register_builtin_fn("string_concat", vec![Ty::String, Ty::String], Ty::String);
-        self.register_builtin_fn("string_length", vec![Ty::String], Ty::I64);
         self.register_builtin_fn_with_bounds(
             "to_string",
             vec!["T".to_string()],
@@ -1338,34 +1336,6 @@ impl Checker {
         self.register_builtin_fn("println_char", vec![Ty::Char], Ty::Unit);
 
         // String utilities
-        self.register_builtin_fn("string_equals", vec![Ty::String, Ty::String], Ty::Bool);
-        self.register_builtin_fn("string_from_int", vec![Ty::I64], Ty::String);
-        self.register_builtin_fn("string_contains", vec![Ty::String, Ty::String], Ty::Bool);
-        self.register_builtin_fn(
-            "string_split",
-            vec![Ty::String, Ty::String],
-            Ty::Named {
-                builtin: Some(BuiltinType::Vec),
-                name: "Vec".to_string(),
-                args: vec![Ty::String],
-            },
-        );
-        self.register_builtin_fn("string_starts_with", vec![Ty::String, Ty::String], Ty::Bool);
-        self.register_builtin_fn("substring", vec![Ty::String, Ty::I64, Ty::I64], Ty::String);
-        self.register_builtin_fn(
-            "string_slice",
-            vec![Ty::String, Ty::I64, Ty::I64],
-            Ty::String,
-        );
-        self.register_builtin_fn("string_trim", vec![Ty::String], Ty::String);
-        self.register_builtin_fn(
-            "string_replace",
-            vec![Ty::String, Ty::String, Ty::String],
-            Ty::String,
-        );
-        self.register_builtin_fn("string_to_upper", vec![Ty::String], Ty::String);
-        self.register_builtin_fn("string_to_lower", vec![Ty::String], Ty::String);
-        self.register_builtin_fn("string_ends_with", vec![Ty::String, Ty::String], Ty::Bool);
         self.register_builtin_fn("int_to_string", vec![Ty::I64], Ty::String);
         self.register_builtin_fn("float_to_string", vec![Ty::F64], Ty::String);
         self.register_builtin_fn("char_to_string", vec![Ty::Char], Ty::String);

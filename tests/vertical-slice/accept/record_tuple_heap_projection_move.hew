@@ -5,8 +5,8 @@ type TupleHeapMoveCarrier {
 
 fn project(i: i64) -> string {
     let r = TupleHeapMoveCarrier {
-        pair: (string_concat("tuple-", "payload"), i),
-        sibling: string_concat("sibling-", "payload"),
+        pair: (("tuple-" + "payload"), i),
+        sibling: ("sibling-" + "payload"),
     };
     r.pair.0
 }

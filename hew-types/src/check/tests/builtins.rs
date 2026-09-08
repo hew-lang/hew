@@ -5,6 +5,28 @@
 pub(super) use super::*;
 
 #[test]
+fn retired_string_free_functions_are_not_source_builtins() {
+    for expression in [
+        "string_concat(\"a\", \"b\")",
+        "string_length(\"a\")",
+        "string_contains(\"a\", \"a\")",
+        "substring(\"abc\", 0, 1)",
+    ] {
+        let parsed = hew_parser::parse(&format!("fn main() {{ let value = {expression}; }}"));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::UndefinedFunction | TypeErrorKind::UndefinedVariable
+            )),
+            "retired call {expression} must be unresolved: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
 fn test_literal_types() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 

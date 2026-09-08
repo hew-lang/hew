@@ -2,7 +2,7 @@
 //! with the else branch taken on the fallthrough arm.
 
 fn lookup(key: i64) -> Option<string> {
-    if key > 0 { .Some(string_concat("value-", "x")) } else { .None }
+    if key > 0 { .Some(("value-" + "x")) } else { .None }
 }
 
 fn main() -> i64 {

@@ -18,7 +18,7 @@ type Holder {
 fn make() -> Holder {
     let k = 3;
     Holder {
-        label: string_concat("label-", "x"),
+        label: ("label-" + "x"),
         op: |x| x * k,
     }
 }

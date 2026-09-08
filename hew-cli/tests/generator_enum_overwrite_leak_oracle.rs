@@ -29,7 +29,7 @@ fn generator_overwrite_source(frames: usize) -> String {
          \n\
          fn generate_once() -> i64 {{\n\
          \x20   let g = gen {{\n\
-         \x20       var value: Box = Box.Full(string_concat(\"generator-\", \"payload\"));\n\
+         \x20       var value: Box = Box.Full((\"generator-\" + \"payload\"));\n\
          \x20       yield 1;\n\
          \x20       value = Box.Empty;\n\
          \x20   }};\n\
@@ -54,7 +54,7 @@ fn ordinary_overwrite_control_source(frames: usize) -> String {
         "enum Box {{ Full(string), Empty, }}\n\
          \n\
          fn overwrite_once() {{\n\
-         \x20   var value: Box = Box.Full(string_concat(\"control-\", \"payload\"));\n\
+         \x20   var value: Box = Box.Full((\"control-\" + \"payload\"));\n\
          \x20   value = Box.Empty;\n\
          }}\n\
          \n\

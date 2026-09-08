@@ -1156,24 +1156,6 @@ pub fn to_float(x: i32) -> f64 {
 // ---------------------------------------------------------------------------
 // string operations
 // ---------------------------------------------------------------------------
-/// Concatenate two strings, returning a new string.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let full = string_concat("hello ", "world");
-/// }
-/// ```
-pub fn string_concat(a: string, b: string) -> string {
-    ""
-}
-
-/// Returns the byte length of a string.
-pub fn string_length(s: string) -> i32 {
-    0 as i32
-}
-
 /// Convert any value to its string representation.
 ///
 /// Accepts any type that implements `Display` — this includes all numeric
@@ -1195,59 +1177,6 @@ pub fn to_string(value: dyn Display) -> string {
 /// Returns the length of a collection or string.
 pub fn len(value: dyn Display) -> i32 {
     0 as i32
-}
-
-/// Returns the character (as a `char`) at the given byte index.
-pub fn string_char_at(s: string, index: i32) -> char {
-    'a'
-}
-
-/// Test whether two strings are equal.
-pub fn string_equals(a: string, b: string) -> bool {
-    false
-}
-
-/// Convert an integer to a string.
-///
-/// Not yet implemented: the checker admits the call but cannot lower it to
-/// an executable target yet, so this snippet does not compile today.
-///
-/// # Examples
-///
-/// ```
-/// let s = string_from_int(42);  // "42"
-/// ```
-pub fn string_from_int(n: i64) -> string {
-    ""
-}
-
-/// Test whether `haystack` contains `needle`.
-pub fn string_contains(haystack: string, needle: string) -> bool {
-    false
-}
-
-/// Test whether a string starts with the given prefix.
-pub fn string_starts_with(s: string, prefix: string) -> bool {
-    false
-}
-
-/// Extract a substring by byte indices `[start, end)`.
-///
-/// Not yet implemented: the checker admits the call but cannot lower it to
-/// an executable target yet, so this snippet does not compile today.
-///
-/// # Examples
-///
-/// ```
-/// let s = substring("hello", 0, 3);  // "hel"
-/// ```
-pub fn substring(s: string, start: i32, end: i32) -> string {
-    ""
-}
-
-/// Strip leading and trailing whitespace.
-pub fn string_trim(s: string) -> string {
-    ""
 }
 
 // ---------------------------------------------------------------------------

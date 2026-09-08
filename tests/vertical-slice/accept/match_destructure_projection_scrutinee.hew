@@ -19,8 +19,8 @@ type Holder {
 fn make_holder() -> Holder {
     Holder {
         p: Pair {
-            a: string_concat("a-", "payload"),
-            b: string_concat("b-", "payload"),
+            a: ("a-" + "payload"),
+            b: ("b-" + "payload"),
         },
     }
 }

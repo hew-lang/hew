@@ -30,8 +30,8 @@ type Pair {
 
 fn make_pair(n: i64) -> Pair {
     Pair {
-        a: string_concat("a-", "-payload"),
-        b: string_concat("b-", "-payload"),
+        a: ("a-" + "-payload"),
+        b: ("b-" + "-payload"),
     }
 }
 

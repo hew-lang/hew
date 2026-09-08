@@ -7,10 +7,10 @@ type NestedHeapMoveCarrier {
 fn project(i: i64) -> string {
     let r = NestedHeapMoveCarrier {
         inner: NestedHeapMoveInner {
-            text: string_concat("inner-", "payload"),
+            text: ("inner-" + "payload"),
             value: i,
         },
-        sibling: string_concat("sibling-", "payload"),
+        sibling: ("sibling-" + "payload"),
     };
     r.inner.text
 }

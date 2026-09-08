@@ -9,8 +9,8 @@ type Carrier {
 
 fn read_scalar(i: i64) -> i64 {
     let r = Carrier {
-        pair: (string_concat("pair-", "payload"), i),
-        sibling: string_concat("sibling-", "payload"),
+        pair: (("pair-" + "payload"), i),
+        sibling: ("sibling-" + "payload"),
     };
     r.pair.1
 }

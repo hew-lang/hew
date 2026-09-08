@@ -30,19 +30,19 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 10000 {
         // Tuple-element alias: `s` moved into the tuple `_t`.
-        let s = string_concat("tuple-", "elem");
+        let s = ("tuple-" + "elem");
         let _t = (s, i);
 
         // Control-flow-join alias: `s3` moved into the `if` result `_y`.
-        let s3 = string_concat("join-", "arm");
-        let _y = if i < 5000 { s3 } else { string_concat("else-", "arm") };
+        let s3 = ("join-" + "arm");
+        let _y = if i < 5000 { s3 } else { ("else-" + "arm") };
 
         // Call-argument alias: `s4` moved into `id`, result aliases the buffer.
-        let s4 = string_concat("call-", "arg");
+        let s4 = ("call-" + "arg");
         let _u = id(s4);
 
         // Variant-payload alias: `s5` moved into the `Some` payload.
-        let s5 = string_concat("variant-", "payload");
+        let s5 = ("variant-" + "payload");
         let _o = Some(s5);
 
         i = i + 1;

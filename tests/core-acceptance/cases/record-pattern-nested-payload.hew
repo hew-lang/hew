@@ -15,14 +15,14 @@ enum Signal {
 
 fn make(text: string) -> Signal {
     Signal.Reading(Sample {
-        label: string_concat("label-", text),
-        unit: string_concat("unit-", text),
+        label: ("label-" + text),
+        unit: ("unit-" + text),
     })
 }
 
 fn both(signal: Signal) -> string {
     match signal {
-        .Reading(Sample { label: label, unit: unit }) => string_concat(label, string_concat(" ", unit)),
+        .Reading(Sample { label: label, unit: unit }) => (label + (" " + unit)),
         .Silence => "silent",
     }
 }
@@ -46,8 +46,8 @@ fn main() -> i64 {
     println(last);
 
     let sample = Sample {
-        label: string_concat("label-", "c"),
-        unit: string_concat("unit-", "c"),
+        label: ("label-" + "c"),
+        unit: ("unit-" + "c"),
     };
     let moved = match sample {
         Sample { label: label, unit: _ } => label,

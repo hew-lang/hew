@@ -166,7 +166,7 @@ fn catalogue_builtins_lower_through_their_runtime_families() {
         r#"
         fn main() {
             let flag = true;
-            let joined = string_concat("a", "b");
+            let joined = ("a" + "b");
             let empty: bytes = bytes.new();
             println(f"{joined} {flag} {empty.len()}");
         }

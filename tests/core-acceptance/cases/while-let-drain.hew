@@ -3,7 +3,7 @@
 //! ends through both an explicit `break` and the fallthrough arm.
 
 fn next(remaining: i64) -> Option<string> {
-    if remaining > 0 { .Some(string_concat("item-", "x")) } else { .None }
+    if remaining > 0 { .Some(("item-" + "x")) } else { .None }
 }
 
 fn main() -> i64 {

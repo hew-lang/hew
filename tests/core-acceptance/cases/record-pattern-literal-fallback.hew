@@ -10,7 +10,7 @@ type Reading {
 }
 
 fn make(code: i64, label: string) -> Reading {
-    Reading { code: code, label: string_concat("reading-", label) }
+    Reading { code: code, label: ("reading-" + label) }
 }
 
 fn describe(r: Reading) -> string {

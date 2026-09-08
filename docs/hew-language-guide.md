@@ -1346,6 +1346,8 @@ fn main() {
 
 `mailbox(target, on_full: ...)` is a one-way view of the same actor: a call through it submits and returns as soon as the message is accepted, with type `Result<Delivery, SendFailure<M>>`. `.Reject` refuses a full mailbox, `.Wait` parks the sender until there is room, and `.DropNewest` discards the message and says so. A refusal hands the whole message back: `failure.message.retry()` resubmits it to the same actor and `failure.message.to(other)` readdresses it, so a consumed payload survives the failure path. A handler that returns a value cannot be called through a mailbox view — use `fork target.m(..)` when you want its reply concurrently.
 
+`policy(target, on_full: ...)` is the other view: its calls still complete — same `Result<R, ActorError<E>>` a call on the handle gives — and the policy chooses only what happens when the destination mailbox is full. `.Wait` is what a bare handle does. `.Reject` refuses instead of parking and reports `ActorError.Rejected(SendError.Full)`, which is the one failure you may safely retry by making the same call again. `policy` completes, `mailbox` submits.
+
 Use a mailbox view for a producer that must not block on its consumer, and for a message an actor sends to itself: a completion call on your own actor could never finish.
 
 ### Ask / request-reply

@@ -995,6 +995,9 @@ pub enum PhysicalTerminator {
     ActorAsk {
         actor: ActorId,
         message: u32,
+        /// Admission behaviour when the destination mailbox is full: `Wait`
+        /// parks the caller, `Reject` refuses the call.
+        policy: hew_types::actor_delivery::SendPolicy,
         deadline_ns: Option<i64>,
         args: Vec<ArgumentTransfer>,
         result: StorageId,
@@ -3131,6 +3134,7 @@ impl FunctionLowerer<'_> {
                     hew_sir::SuspendKind::Ask {
                         actor,
                         message,
+                        policy,
                         deadline_ns,
                     },
                 inputs,
@@ -3141,6 +3145,7 @@ impl FunctionLowerer<'_> {
             } => Ok(PhysicalTerminator::ActorAsk {
                 actor: *actor,
                 message: *message,
+                policy: *policy,
                 deadline_ns: *deadline_ns,
                 args: self.argument_transfers(inputs)?,
                 result: self.value(result.id)?,

@@ -1346,6 +1346,10 @@ pub enum HirExprKind {
         /// Source arguments stay ordered; this maps protocol slots to sources.
         argument_order: Vec<usize>,
         reply_ty: ResolvedTy,
+        /// How this call's own admission behaves when the destination mailbox
+        /// is full: `Wait` for a bare handle, whatever the `policy(..)` view
+        /// carries when the call goes through one.
+        policy: hew_types::actor_delivery::SendPolicy,
         /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
         /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
         /// deadline elapses before the reply, the in-flight ask is cancelled and the

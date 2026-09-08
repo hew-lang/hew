@@ -1019,6 +1019,7 @@ impl Checker {
             ActorMethodKind::Ask {
                 method_id,
                 reply_ty: reply_ty.clone(),
+                policy: crate::actor_delivery::SendPolicy::Wait,
                 argument_order: Vec::new(),
             }
         };

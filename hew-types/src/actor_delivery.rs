@@ -6,6 +6,7 @@ use crate::Ty;
 
 pub const MESSAGE_TYPE: &str = "std.builtins.Message";
 pub const SENDER_TYPE: &str = "std.builtins.ActorMailbox";
+pub const POLICY_VIEW_TYPE: &str = "std.builtins.ActorPolicy";
 pub const FAILURE_TYPE: &str = "std.builtins.SendFailure";
 pub const DELIVERY_TYPE: &str = "std.builtins.Delivery";
 pub const ON_FULL_TYPE: &str = "std.builtins.OnFull";
@@ -17,6 +18,7 @@ pub const DECLARATIONS: &[&str] = &[
     "ActorError",
     "Never",
     "ActorMailbox",
+    "ActorPolicy",
     "Message",
     "SendFailure",
     "Delivery",
@@ -28,7 +30,7 @@ pub const DECLARATIONS: &[&str] = &[
 ];
 
 /// A view's policy is immutable and determines its submission effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SendPolicy {
     Reject,
     Wait,
@@ -139,6 +141,21 @@ pub fn sender_type(target: Ty, policy: SendPolicy) -> Ty {
     )
 }
 
+/// The completion view `policy(target, on_full: ..)` builds: calls through it
+/// complete like a bare-handle call, under the admission policy it carries.
+#[must_use]
+pub fn policy_view_type(target: Ty, policy: SendPolicy) -> Ty {
+    nominal(
+        POLICY_VIEW_TYPE,
+        vec![target, nominal(policy.witness_name(), Vec::new())],
+    )
+}
+
+#[must_use]
+pub fn policy_view_parts(ty: &Ty) -> Option<(&Ty, SendPolicy)> {
+    view_parts(ty, POLICY_VIEW_TYPE)
+}
+
 #[must_use]
 pub fn message_parts(ty: &Ty) -> Option<(&Ty, &Ty, SendPolicy)> {
     let Ty::Named {
@@ -160,6 +177,10 @@ pub fn message_parts(ty: &Ty) -> Option<(&Ty, &Ty, SendPolicy)> {
 
 #[must_use]
 pub fn sender_parts(ty: &Ty) -> Option<(&Ty, SendPolicy)> {
+    view_parts(ty, SENDER_TYPE)
+}
+
+fn view_parts<'a>(ty: &'a Ty, view: &str) -> Option<(&'a Ty, SendPolicy)> {
     let Ty::Named {
         name,
         args,
@@ -171,7 +192,7 @@ pub fn sender_parts(ty: &Ty) -> Option<(&Ty, SendPolicy)> {
     let [target, witness] = args.as_slice() else {
         return None;
     };
-    if name != SENDER_TYPE || target.as_local_actor_ref().is_none() {
+    if name != view || target.as_local_actor_ref().is_none() {
         return None;
     }
     Some((target, SendPolicy::from_witness(witness)?))

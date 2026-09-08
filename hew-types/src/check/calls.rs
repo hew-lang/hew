@@ -1577,8 +1577,8 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        if self.is_actor_mailbox_builtin(&func.0) {
-            return self.check_actor_mailbox(args, span);
+        if let Some(view) = self.actor_delivery_view_builtin(&func.0) {
+            return self.check_actor_delivery_view(view, args, span);
         }
         if let Expr::ContextVariant(context) = &func.0 {
             for arg in args {

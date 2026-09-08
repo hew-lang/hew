@@ -146,6 +146,16 @@ reports `.Accepted` or an explicitly chosen `.Discarded`. A value-returning
 handler cannot be called through a mailbox view; the diagnostic names
 `fork target.m(..)` for concurrency.
 
+A completion call chooses its own admission through the other view:
+`policy(target, on_full: ...)` yields a view whose calls complete exactly as a
+call on the handle does, with the same `Result<R, ActorError<E>>`. `.Wait` is
+the bare-handle behaviour and parks the caller while the destination mailbox is
+full; `.Reject` refuses instead, and the call reports
+`ActorError.Rejected(SendError.Full)`. Rejection is the only outcome from which
+the same call may safely be made again: every other variant means the request
+was accepted or its fate is unknown. One view type per kind — `policy`
+completes, `mailbox` submits — and both are immutable.
+
 A rejected submission hands the whole unaccepted message back inside
 `SendFailure`, so a consumed payload is never lost on the failure path. That
 returned message has exactly two moves left, both yielding the same outcome

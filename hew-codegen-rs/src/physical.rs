@@ -3044,6 +3044,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalTerminator::ActorAsk {
                 actor,
                 message,
+                policy,
                 deadline_ns,
                 args,
                 result,
@@ -3053,6 +3054,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } => self.emit_actor_ask(
                 *actor,
                 *message,
+                *policy,
                 *deadline_ns,
                 args,
                 *result,

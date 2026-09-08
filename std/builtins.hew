@@ -63,6 +63,16 @@ pub type ActorMailbox<Target, Policy> {
     target: Target,
 }
 
+/// An immutable completion view choosing how its own calls are admitted.
+/// Construct one with `policy(target, on_full: ...)`. A call through the view
+/// waits for the handler exactly as a call on the actor handle does; the
+/// policy decides only what happens when the destination mailbox is full.
+/// `.Wait` is the bare-handle behaviour; `.Reject` yields
+/// `ActorError.Rejected(reason)` instead of parking the caller.
+pub type ActorPolicy<Target, Policy> {
+    target: Target,
+}
+
 /// An owned, addressed message description. Only the runtime rejection path
 /// hands one back, inside `SendFailure`. `message.retry()` resubmits it to the
 /// same target; `message.to(target)` readdresses it to a compatible actor and

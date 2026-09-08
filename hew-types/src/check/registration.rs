@@ -1138,14 +1138,16 @@ impl Checker {
             },
         );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
-        self.register_builtin_fn(
-            "mailbox",
-            vec![
+        for view in ["mailbox", "policy"] {
+            self.register_builtin_fn(
+                view,
+                vec![
+                    Ty::Var(TypeVar::fresh()),
+                    crate::actor_delivery::nominal(crate::actor_delivery::ON_FULL_TYPE, Vec::new()),
+                ],
                 Ty::Var(TypeVar::fresh()),
-                crate::actor_delivery::nominal(crate::actor_delivery::ON_FULL_TYPE, Vec::new()),
-            ],
-            Ty::Var(TypeVar::fresh()),
-        );
+            );
+        }
         self.register_builtin_fn(
             "sleep_until",
             vec![Ty::Named {

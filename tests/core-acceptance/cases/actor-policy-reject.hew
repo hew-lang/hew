@@ -1,0 +1,75 @@
+// `policy(target, on_full: ...)` is the completion view: a call through it
+// waits for the handler exactly as a call on the handle does, and the policy
+// decides only what happens when the destination mailbox is full. `.Reject`
+// refuses instead of parking and reports `Rejected(SendError.Full)`, which is
+// the one outcome from which the same call may safely be made again. `.Wait`
+// is the bare-handle behaviour and is the control here.
+actor Gate {
+    mailbox 1,
+    var done: i64 = 0,
+
+    receive fn hold(ms: i64) -> i64 {
+        sleep(ms * 1ms);
+        done = done + 1;
+        done
+    }
+}
+
+fn describe(problem: ActorError<Never>) -> string {
+    match problem {
+        ActorError.Rejected(reason) => match reason {
+            SendError.Full => "rejected: full",
+            _ => "rejected: other",
+        },
+        ActorError.Trapped => "trapped",
+        ActorError.Dead => "dead",
+        ActorError.Timeout => "timeout",
+        ActorError.NodeNotRunning => "node not running",
+        ActorError.RoutingFailed => "routing failed",
+        ActorError.EncodeFailed => "encode failed",
+        ActorError.ConnectionDropped => "connection dropped",
+        ActorError.Partition => "partition",
+    }
+}
+
+fn main() {
+    let gate = spawn Gate();
+    let refusing = policy(gate, on_full: .Reject);
+    let waiting = policy(gate, on_full: .Wait);
+    scope {
+        // One call occupies the actor's turn and a second fills its single
+        // mailbox seat, so a third has nowhere to go.
+        let busy = fork gate.hold(400);
+        let queued = fork gate.hold(0);
+        sleep(120ms);
+        match refusing.hold(0) {
+            .Ok(v) => println(v),
+            .Err(problem) => println(describe(problem)),
+        }
+        match await busy {
+            .Ok(v) => println(v),
+            .Err(problem) => println(describe(problem)),
+        }
+        match await queued {
+            .Ok(v) => println(v),
+            .Err(problem) => println(describe(problem)),
+        }
+    }
+    // Nothing was accepted, so the same call is safe to make again; the queue
+    // has drained, so it is admitted and the handler's own count continues.
+    match refusing.hold(0) {
+        .Ok(v) => println(v),
+        .Err(problem) => println(describe(problem)),
+    }
+    // A `.Wait` view completes exactly as the bare handle does.
+    match waiting.hold(0) {
+        .Ok(v) => println(v),
+        .Err(problem) => println(describe(problem)),
+    }
+    match gate.hold(0) {
+        .Ok(v) => println(v),
+        .Err(problem) => println(describe(problem)),
+    }
+    close(gate);
+    println("closed");
+}

@@ -387,12 +387,18 @@ impl Builder<'_, '_> {
             args,
             reply_ty: _,
             argument_order,
+            policy,
             deadline_ns,
         } = &expression.kind
         else {
             unreachable!()
         };
-        let target_ty = self.ty(&receiver.ty);
+        // A `policy(..)` view is a handle wrapper: the ask addresses the actor
+        // it names, and the view itself carries no runtime operand.
+        let target_ty =
+            hew_types::actor_delivery::policy_view_parts(&self.ty(&receiver.ty).to_ty())
+                .and_then(|(target, _)| ResolvedTy::from_ty(target).ok())
+                .unwrap_or_else(|| self.ty(&receiver.ty));
         let actor = self.service.require_actor(&target_ty)?;
         let descriptor = &self.service.actors[actor.0 as usize];
         let handler = descriptor
@@ -418,7 +424,15 @@ impl Builder<'_, '_> {
             return Err("ask must return its complete checked Result".into());
         }
         let mut inputs = Vec::new();
-        for source in std::iter::once(receiver.as_ref()).chain(args) {
+        let (target, _) = self.delivery_target(receiver)?;
+        if !self.is_open() {
+            return Ok(target);
+        }
+        inputs.push(crate::BoundaryOperand {
+            operand: Operand { value: target },
+            decision: crate::BoundaryDecision::Move,
+        });
+        for source in args {
             let value = lower_initial_value_transfer(
                 self,
                 source,
@@ -458,6 +472,7 @@ impl Builder<'_, '_> {
             kind: crate::SuspendKind::Ask {
                 actor,
                 message,
+                policy: *policy,
                 deadline_ns: *deadline_ns,
             },
             inputs,
@@ -834,7 +849,9 @@ impl Builder<'_, '_> {
         let ty = self.ty(&receiver.ty);
         let value =
             lower_initial_value_transfer(self, receiver, "sender target", OwnedBindingUse::Copy)?;
-        if hew_types::actor_delivery::sender_parts(&ty.to_ty()).is_none() {
+        if hew_types::actor_delivery::sender_parts(&ty.to_ty()).is_none()
+            && hew_types::actor_delivery::policy_view_parts(&ty.to_ty()).is_none()
+        {
             return Ok((value, ty));
         }
         let ResolvedTy::Named { args, .. } = &ty else {

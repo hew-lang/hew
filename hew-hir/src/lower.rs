@@ -26393,6 +26393,7 @@ impl LowerCtx {
                 ActorMethodKind::Ask {
                     method_id,
                     reply_ty,
+                    policy,
                     argument_order,
                 } => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
@@ -26431,6 +26432,7 @@ impl LowerCtx {
                                     args: lowered_args,
                                     argument_order,
                                     reply_ty: reply_ty.clone(),
+                                    policy,
                                     deadline_ns: None,
                                 },
                                 result_ty,

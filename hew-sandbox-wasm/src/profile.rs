@@ -570,16 +570,31 @@ impl<'a> ProfileChecker<'a> {
             // The sandbox VM's integer values are `i64`. Native admits the
             // full `u64` range (D421), so a literal outside `i64` is rejected
             // here rather than silently encoded as a negative `const.i64`.
+            //
+            // `-<literal>` is judged as one negated value, before the generic
+            // unary arm below recurses into the operand: `i64::MIN`'s magnitude
+            // does not fit `i64` on its own but the negated literal does, and
+            // the emitter folds the same shape.
+            Expr::Unary {
+                op: hew_parser::ast::UnaryOp::Negate,
+                operand,
+            } if matches!(
+                operand.0,
+                Expr::Literal(hew_parser::ast::Literal::Integer { .. })
+            ) =>
+            {
+                let Expr::Literal(hew_parser::ast::Literal::Integer { value, .. }) = operand.0
+                else {
+                    unreachable!("guarded to a negated integer literal")
+                };
+                if value.checked_neg().is_none_or(|v| i64::try_from(v).is_err()) {
+                    self.reject_out_of_range_literal(span.clone(), -value);
+                }
+            }
             Expr::Literal(hew_parser::ast::Literal::Integer { value, .. })
                 if i64::try_from(*value).is_err() =>
             {
-                self.reject(
-                    span.clone(),
-                    "sandbox_profile_rejected",
-                    format!(
-                        "integer literal `{value}` is outside the i64 range the browser                          sandbox admits"
-                    ),
-                );
+                self.reject_out_of_range_literal(span.clone(), *value);
             }
             Expr::Literal(_) | Expr::Identifier(_) | Expr::RegexLiteral(_) => {}
             Expr::ContextVariant(context) => {
@@ -1304,6 +1319,16 @@ impl<'a> ProfileChecker<'a> {
         if let Some((ty @ TypeExpr::Fallible { .. }, span)) = ty {
             self.check_type_expr(ty, span);
         }
+    }
+
+    fn reject_out_of_range_literal(&mut self, span: std::ops::Range<usize>, value: i128) {
+        self.reject(
+            span,
+            "sandbox_profile_rejected",
+            format!(
+                "integer literal `{value}` is outside the i64 range the browser sandbox admits"
+            ),
+        );
     }
 
     fn reject(

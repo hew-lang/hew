@@ -18,6 +18,46 @@ fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
 }
 
 #[test]
+fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
+    for (value_type, initializer, operation) in [
+        ("bytes", "bytes.new()", "push(7 as u8)"),
+        (
+            "json.Value",
+            "json.object()",
+            "set(\"answer\", json.null()).expect(\"set succeeds\")",
+        ),
+        ("Vec<i64>", "Vec.new()", "push(7)"),
+    ] {
+        for (binding, mutable) in [("var", true), ("let", false)] {
+            for (declaration, receiver) in [
+                (
+                    format!("{binding} owner: {value_type} = {initializer};"),
+                    "owner",
+                ),
+                (
+                    format!("{binding} owner = Box {{ value: {initializer} }};"),
+                    "owner.value",
+                ),
+            ] {
+                let source = format!(
+                    "import std.encoding.json;\n\
+                     type Box {{ value: {value_type} }}\n\
+                     fn main() {{ {declaration} {receiver}.{operation}; }}"
+                );
+                let output = check_source_with_stdlib(&source);
+                if mutable {
+                    assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+                } else {
+                    assert_eq!(output.errors.len(), 1, "{source}: {:?}", output.errors);
+                    assert_eq!(output.errors[0].kind, TypeErrorKind::MutabilityError);
+                    assert!(output.errors[0].message.contains("`var`"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn channel_new_result_preserves_endpoint_type_parameter() {
     for (element_source, element_type) in [("i64", Ty::I64), ("string", Ty::String)] {
         let source = format!(

@@ -7439,17 +7439,12 @@ impl Checker {
                 ..
             }) if matches!(
                 descriptor.family().semantic_contract().map(|contract| contract.result),
-                Some(crate::runtime_call::RuntimeResultEffect::UpdatedReceiver(_))
+                Some(
+                    crate::runtime_call::RuntimeResultEffect::UpdatedReceiver(_)
+                        | crate::runtime_call::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                )
             )
         );
-        if runtime_rewrite_updates_receiver {
-            if let Some((root, path)) = self.expr_place(&receiver.0) {
-                self.reject_borrowed_parameter_mutation(&root, &path, span);
-            }
-            if let Expr::Identifier(name) = &receiver.0 {
-                self.env.mark_written(name);
-            }
-        }
         let collection_updates_receiver = self
             .resolved_calls
             .get(&key)
@@ -7476,27 +7471,12 @@ impl Checker {
                     )
                 )
             });
-        if collection_updates_receiver {
-            let place = self.expr_place(&receiver.0);
-            let name = place.as_ref().map(|(name, _)| name.as_str());
-            if !name
-                .and_then(|name| self.env.lookup_ref(name))
-                .is_some_and(|binding| binding.is_mutable)
-            {
-                if let Some(error) =
-                    name.and_then(|name| self.private_capture_mutation_error(name, span))
-                {
-                    self.errors.push(error);
-                } else {
-                    self.report_error(TypeErrorKind::MutabilityError, span,
-                        format!("collection method `{method}` requires a mutable binding receiver declared with `var`"));
-                }
-            } else if let Some(name) = name {
-                self.env.mark_written(name);
-                if let Some((root, path)) = &place {
-                    self.reject_borrowed_parameter_mutation(root, path, span);
-                }
-            }
+        if runtime_rewrite_updates_receiver || collection_updates_receiver {
+            self.check_mutable_method_receiver(
+                receiver,
+                &format!("collection method `{method}`"),
+                span,
+            );
         }
 
         if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {

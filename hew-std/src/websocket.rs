@@ -2,15 +2,20 @@
 //! Hew runtime: `websocket` module.
 //!
 //! Provides synchronous WebSocket client functionality for compiled Hew programs.
-//! All returned data pointers are allocated with `libc::malloc` so callers can
-//! free them with the corresponding free function.
+//! Text arguments and results use managed UTF-8 strings. Raw message payloads
+//! retain their pointer-and-length storage, released with the message handle.
 
 use crate::bind_addr::normalize_bind_addr;
 use hew_cabi::cabi::{alloc_cstring, free_cstring, malloc_bytes};
-use std::ffi::{c_void, CStr};
+use hew_cabi::string::{string_as_str, string_from_str, string_from_utf8, HewString};
+use std::ffi::c_void;
+#[cfg(test)]
+use std::ffi::CStr;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::os::raw::{c_char, c_int};
+#[cfg(test)]
+use std::os::raw::c_char;
+use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -968,18 +973,19 @@ fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMess
 ///
 /// # Safety
 ///
-/// `url` must be a valid NUL-terminated C string.
+/// `url` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
+pub unsafe extern "C" fn hew_ws_connect(url: *const HewString) -> *mut HewWsConn {
     if url.is_null() {
         set_ws_last_error(-1, "websocket.connect: url is null".to_owned());
         return std::ptr::null_mut();
     }
-    // SAFETY: `url` is a valid NUL-terminated C string per caller contract.
-    let Ok(url_str) = unsafe { CStr::from_ptr(url) }.to_str() else {
-        set_ws_last_error(-1, "websocket.connect: url is not valid UTF-8".to_owned());
+    // SAFETY: the caller borrows a live managed string.
+    let url_str = unsafe { string_as_str(url) };
+    if url_str.contains('\0') {
+        set_ws_last_error(-1, "websocket.connect: url contains NUL".to_owned());
         return std::ptr::null_mut();
-    };
+    }
 
     let config = match websocket_config_from_env() {
         Ok(config) => config,
@@ -1146,18 +1152,16 @@ fn send_ws_message(
 /// # Safety
 ///
 /// * `ws` must be a valid pointer returned by [`hew_ws_connect`].
-/// * `msg` must be a valid NUL-terminated C string.
+/// * `msg` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_send_text(ws: *mut HewWsConn, msg: *const c_char) -> i32 {
-    if ws.is_null() || msg.is_null() {
+pub unsafe extern "C" fn hew_ws_send_text(ws: *mut HewWsConn, msg: *const HewString) -> i32 {
+    if ws.is_null() {
         return -1;
     }
     // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
     let inner = Arc::clone(&unsafe { &*ws }.inner);
-    // SAFETY: `msg` is a valid NUL-terminated C string per caller contract.
-    let Ok(text) = unsafe { CStr::from_ptr(msg) }.to_str() else {
-        return -1;
-    };
+    // SAFETY: the caller borrows a live managed string; null spells empty.
+    let text = unsafe { string_as_str(msg) };
 
     if inner.closed.load(Ordering::Acquire) {
         return -1;
@@ -1266,12 +1270,12 @@ pub extern "C" fn hew_ws_last_errno() -> i64 {
 /// `hew_ws_connect` or `hew_ws_server_new`, or the empty string when the last
 /// call succeeded.
 #[no_mangle]
-pub extern "C" fn hew_ws_last_error() -> *mut c_char {
+pub extern "C" fn hew_ws_last_error() -> *mut HewString {
     let detail = hew_runtime::parse_error_slot::get_error(
         hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
     )
     .unwrap_or_default();
-    hew_cabi::cabi::str_to_malloc(&detail)
+    string_from_str(&detail)
 }
 
 /// Report whether `ws` is backed by a live WebSocket connection.
@@ -1466,16 +1470,16 @@ pub unsafe extern "C" fn hew_ws_message_type(msg: *const HewWsMessage) -> i32 {
     (unsafe { &*msg }).msg_type
 }
 
-/// Extract the text content from a [`HewWsMessage`] as a NUL-terminated C string.
+/// Copy the UTF-8 text content from a [`HewWsMessage`] into a managed string.
 ///
-/// Returns a `malloc`-allocated string the caller must free, or null if the
-/// message is null or has no data.
+/// The caller owns the result and releases it with `string_release`. Invalid
+/// UTF-8 returns the empty string and records a WebSocket error.
 ///
 /// # Safety
 ///
 /// `msg` must be a valid pointer returned by [`hew_ws_recv`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_message_text(msg: *const HewWsMessage) -> *mut c_char {
+pub unsafe extern "C" fn hew_ws_message_text(msg: *const HewWsMessage) -> *mut HewString {
     if msg.is_null() {
         return std::ptr::null_mut();
     }
@@ -1484,13 +1488,17 @@ pub unsafe extern "C" fn hew_ws_message_text(msg: *const HewWsMessage) -> *mut c
     if m.data.is_null() || m.data_len == 0 {
         return std::ptr::null_mut();
     }
-    // Header-aware (S1): returned to Hew, dropped via hew_string_drop / free_cstring.
-    // SAFETY: m.data is valid for m.data_len bytes; alloc_cstring copies it.
-    let ptr = unsafe { alloc_cstring(m.data, m.data_len) }; // CSTRING-ALLOC: str-open (hew_ws_message_text — header-aware Hew string; dropped via hew_string_drop)
-    if ptr.is_null() {
-        return std::ptr::null_mut();
+    // SAFETY: the message owns data_len readable bytes until it is released.
+    let bytes = unsafe { std::slice::from_raw_parts(m.data, m.data_len) };
+    if let Ok(text) = string_from_utf8(bytes) {
+        text
+    } else {
+        set_ws_last_error(
+            -1,
+            "websocket.message.text: payload is not valid UTF-8".to_owned(),
+        );
+        std::ptr::null_mut()
     }
-    ptr
 }
 
 /// Free a [`HewWsMessage`] previously returned by [`hew_ws_recv`].
@@ -1850,21 +1858,19 @@ fn set_server_websocket_blocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) 
 ///
 /// # Safety
 ///
-/// `addr` must be a valid NUL-terminated C string.
+/// `addr` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsServer {
+pub unsafe extern "C" fn hew_ws_server_new(addr: *const HewString) -> *mut HewWsServer {
     if addr.is_null() {
         set_ws_last_error(-1, "websocket.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
-    // SAFETY: `addr` is a valid NUL-terminated C string per caller contract.
-    let Ok(addr_str) = (unsafe { CStr::from_ptr(addr) }).to_str() else {
-        set_ws_last_error(
-            -1,
-            "websocket.listen: address is not valid UTF-8".to_owned(),
-        );
+    // SAFETY: the caller borrows a live managed string.
+    let addr_str = unsafe { string_as_str(addr) };
+    if addr_str.contains('\0') {
+        set_ws_last_error(-1, "websocket.listen: address contains NUL".to_owned());
         return std::ptr::null_mut();
-    };
+    }
     let bind_addr = normalize_bind_addr(addr_str);
     match TcpListener::bind(bind_addr.as_ref()) {
         Ok(listener) => match HewWsServer::new(listener) {
@@ -1963,6 +1969,7 @@ mod tests {
 
     use super::*;
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
+    use crate::test_string::ManagedString;
     use hew_runtime::{actor, transport};
     use std::collections::HashMap;
     #[cfg(unix)]
@@ -1979,13 +1986,10 @@ mod tests {
 
     fn ws_last_error_text() -> String {
         let ptr = hew_ws_last_error();
-        assert!(!ptr.is_null());
-        // SAFETY: accessor returns a valid header-aware C string.
-        let text = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
+        // SAFETY: accessor returns an owned managed string.
+        let text = unsafe { string_as_str(ptr) }.to_owned();
         // SAFETY: pointer came from hew_ws_last_error.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) };
+        unsafe { hew_cabi::string::string_release(ptr) };
         text
     }
 
@@ -2267,7 +2271,7 @@ mod tests {
         tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
     ) {
         // SAFETY: valid C string literal for bind address.
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
         // SAFETY: `server` is valid.
         let port = unsafe { hew_ws_server_port(server) };
@@ -2493,9 +2497,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("claim loopback port");
         let port = listener.local_addr().expect("read loopback port").port();
         drop(listener);
-        let url =
-            std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).expect("URL contains no NUL");
-        // SAFETY: url is a valid C string.
+        let url = ManagedString::new(format!("ws://127.0.0.1:{port}/"));
+        // SAFETY: url is a live managed string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "expected null for unreachable address");
         let errno = hew_ws_last_errno();
@@ -2640,7 +2643,7 @@ mod tests {
     /// `hew_ws_send_text` with null ws returns -1.
     #[test]
     fn send_text_null_ws_returns_error() {
-        let msg = c"hello";
+        let msg = ManagedString::new("hello");
         assert_eq!(
             // SAFETY: null ws is explicitly handled.
             unsafe { hew_ws_send_text(std::ptr::null_mut(), msg.as_ptr()) },
@@ -2752,8 +2755,8 @@ mod tests {
     /// connect with an HTTP URL (not ws://) returns null.
     #[test]
     fn connect_http_url_returns_null() {
-        let url = c"http://127.0.0.1:1/path";
-        // SAFETY: url is a valid C string.
+        let url = ManagedString::new("http://127.0.0.1:1/path");
+        // SAFETY: url is a live managed string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "non-WebSocket URL should fail");
         assert_eq!(hew_ws_last_errno(), -1);
@@ -2766,8 +2769,8 @@ mod tests {
 
     #[test]
     fn connect_malformed_url_is_invalid_argument_not_other_zero() {
-        let url = c"not a url";
-        // SAFETY: url is a valid C string.
+        let url = ManagedString::new("not a url");
+        // SAFETY: url is a live managed string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "malformed URL should fail");
         assert_eq!(hew_ws_last_errno(), -1);
@@ -2781,8 +2784,8 @@ mod tests {
     /// connect with an empty string returns null.
     #[test]
     fn connect_empty_url_returns_null() {
-        let url = c"";
-        // SAFETY: url is a valid C string.
+        let url = ManagedString::new("");
+        // SAFETY: url is a live managed string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "empty URL should fail");
         assert_eq!(hew_ws_last_errno(), -1);
@@ -2794,8 +2797,8 @@ mod tests {
     /// Server listens, client connects, exchanges a message, closes.
     #[test]
     fn server_accept_and_echo() {
-        // SAFETY: Valid C string literal passed to FFI.
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        // SAFETY: the managed string temporary lives throughout this call.
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
 
         // SAFETY: server is a valid pointer just returned above.
@@ -2813,10 +2816,11 @@ mod tests {
                 3,
             )
             .expect("client connect");
-            ws.send(Message::text("hello from client"))
-                .expect("client send");
-            let reply = ws.read().expect("client read");
-            assert_eq!(reply, Message::Text("echo: hello from client".into()));
+            for text in ["", "café\0雪"] {
+                ws.send(Message::text(text)).expect("client send");
+                let reply = ws.read().expect("client read");
+                assert_eq!(reply, Message::Text(format!("echo: {text}").into()));
+            }
             ws.close(None).ok();
             // Drain remaining frames so close handshake completes.
             while ws.read().is_ok() {}
@@ -2826,27 +2830,27 @@ mod tests {
         let conn = unsafe { hew_ws_server_accept(server) };
         assert!(!conn.is_null(), "accept should succeed");
 
-        // SAFETY: conn is a valid pointer returned by hew_ws_server_accept.
-        let msg = unsafe { hew_ws_recv(conn) };
-        assert!(!msg.is_null(), "recv should succeed");
-        // SAFETY: msg is non-null, just verified above.
-        let msg_ref = unsafe { &*msg };
-        assert_eq!(msg_ref.msg_type, 0, "should be a text message");
-        // SAFETY: msg_ref.data is valid for msg_ref.data_len bytes (from build_message).
-        let text = unsafe {
-            std::str::from_utf8(std::slice::from_raw_parts(msg_ref.data, msg_ref.data_len))
-                .expect("valid utf8")
-        };
-        assert_eq!(text, "hello from client");
+        for expected in ["", "café\0雪"] {
+            // SAFETY: conn is a valid pointer returned by hew_ws_server_accept.
+            let msg = unsafe { hew_ws_recv(conn) };
+            assert!(!msg.is_null(), "recv should succeed");
+            // SAFETY: msg is live; the returned text owns a separate managed string.
+            let text_value = unsafe { hew_ws_message_text(msg) };
+            // SAFETY: the message is no longer needed; text_value survives its release.
+            unsafe { hew_ws_message_free(msg) };
+            // SAFETY: text_value remains owned until released after sending the echo.
+            let text = unsafe { string_as_str(text_value) };
+            assert_eq!(text, expected);
 
-        // Echo back.
-        let echo = std::ffi::CString::new(format!("echo: {text}")).unwrap();
-        // SAFETY: conn is valid; echo is a valid CString.
-        let rc = unsafe { hew_ws_send_text(conn, echo.as_ptr()) };
-        assert_eq!(rc, 0, "send should succeed");
+            // Echo back.
+            let echo = ManagedString::new(format!("echo: {text}"));
+            // SAFETY: conn is valid; echo is a live managed string.
+            let rc = unsafe { hew_ws_send_text(conn, echo.as_ptr()) };
+            assert_eq!(rc, 0, "send should succeed");
 
-        // SAFETY: msg was returned by hew_ws_recv and has not been freed.
-        unsafe { hew_ws_message_free(msg) };
+            // SAFETY: text_value is the outstanding managed string result.
+            unsafe { hew_cabi::string::string_release(text_value) };
+        }
         // SAFETY: conn was returned by hew_ws_server_accept and has not been closed.
         unsafe { hew_ws_close(conn) };
         // SAFETY: server was returned by hew_ws_server_new and has not been closed.
@@ -2868,8 +2872,9 @@ mod tests {
                 (WEBSOCKET_MAX_FRAME_SIZE_ENV, "65536"),
             ],
             || {
-                // SAFETY: Valid C string literal passed to FFI.
-                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                // SAFETY: the managed string temporary lives throughout this call.
+                let server =
+                    unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
                 assert!(!server.is_null(), "server should bind successfully");
                 // SAFETY: server is valid.
                 let port = unsafe { hew_ws_server_port(server) };
@@ -2950,8 +2955,9 @@ mod tests {
                 (WEBSOCKET_MAX_FRAME_SIZE_ENV, "65536"),
             ],
             || {
-                // SAFETY: Valid C string literal passed to FFI.
-                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                // SAFETY: the managed string temporary lives throughout this call.
+                let server =
+                    unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
                 assert!(!server.is_null(), "server should bind successfully");
                 // SAFETY: server is valid.
                 let port = unsafe { hew_ws_server_port(server) };
@@ -3012,8 +3018,9 @@ mod tests {
                 (WEBSOCKET_MAX_FRAME_SIZE_ENV, "65536"),
             ],
             || {
-                // SAFETY: Valid C string literal passed to FFI.
-                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                // SAFETY: the managed string temporary lives throughout this call.
+                let server =
+                    unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
                 assert!(!server.is_null(), "server should bind successfully");
                 // SAFETY: server is valid.
                 let port = unsafe { hew_ws_server_port(server) };
@@ -3083,7 +3090,7 @@ mod tests {
 
     #[test]
     fn server_accept_cancel_returns_cancelled() {
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
 
         // SAFETY: `server` stays live until hew_ws_server_close below sets cancel.
@@ -3110,7 +3117,7 @@ mod tests {
 
     #[test]
     fn server_close_cancels_peer_that_never_handshakes() {
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
         let port = unsafe { hew_ws_server_port(server) };
         let inner = unsafe { &*server }.inner.clone();
@@ -3145,7 +3152,7 @@ mod tests {
 
     #[test]
     fn stalled_handshake_expires_and_next_valid_peer_is_accepted() {
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
         let port = unsafe { hew_ws_server_port(server) };
         let inner = unsafe { &*server }.inner.clone();
@@ -3192,7 +3199,7 @@ mod tests {
 
     #[test]
     fn partial_and_invalid_handshakes_do_not_poison_next_accept() {
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
         let port = unsafe { hew_ws_server_port(server) };
         let inner = unsafe { &*server }.inner.clone();
@@ -3252,7 +3259,7 @@ mod tests {
 
     #[test]
     fn server_close_racing_completed_handshake_has_no_late_result() {
-        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
         let port = unsafe { hew_ws_server_port(server) };
         let inner = unsafe { &*server }.inner.clone();
@@ -3299,7 +3306,7 @@ mod tests {
     #[test]
     fn repeated_bind_accept_close_drains_all_accept_authority() {
         for _ in 0..64 {
-            let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+            let server = unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
             assert!(!server.is_null(), "server should bind successfully");
             let inner = unsafe { &*server }.inner.clone();
             let weak_inner = Arc::downgrade(&inner);
@@ -3374,7 +3381,8 @@ mod tests {
             "HEW_WS_ACCEPT_STOP_ISOLATED",
             || {
                 let _runtime = NetErrorSlotRuntimeGuard::new();
-                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                let server =
+                    unsafe { hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr()) };
                 assert!(!server.is_null(), "server should bind successfully");
 
                 // SAFETY: `server` stays live until the owner actor closes it.
@@ -3876,8 +3884,8 @@ mod tests {
 
     #[test]
     fn server_malformed_addr_is_invalid_argument_not_other_zero() {
-        let addr = c"not an address";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("not an address");
+        // SAFETY: addr is a live managed string.
         let server = unsafe { hew_ws_server_new(addr.as_ptr()) };
         assert!(server.is_null());
         assert_eq!(hew_ws_last_errno(), -1);

@@ -19,14 +19,6 @@
 //! `msgpack`) are driven through a public entry point instead. All of them are
 //! deterministic and free of I/O.
 //!
-//! `hew_http_last_error` has no reachable non-empty path from outside its own
-//! module — its slot is written only on an allocation failure the crate injects
-//! under `#[cfg(test)]` from inside that module — so it is probed on the
-//! empty-message path. That is not a weaker measurement of the question asked
-//! here: the export's single statement is
-//! `str_to_malloc(&get_http_last_error())`, so the empty path allocates through
-//! the identical call and R1/R2/R3 read the identical buffer.
-//!
 //! The three handle-scoped QUIC variants (`hew_quic_endpoint_last_error`,
 //! `hew_quic_conn_last_error`, `hew_quic_stream_last_error`) require live
 //! transport state, so their real loopback R1/R2/R3 proofs live in
@@ -277,15 +269,11 @@ fn msgpack_last_error_result_is_transferred() {
     );
 }
 
-/// `http` has no reachable non-empty path from outside its own module (see the
-/// module docs), so it is probed on the empty-message path — the same
-/// `str_to_malloc` call, the same buffer, the same three probes.
 #[test]
 fn http_last_error_result_is_transferred() {
-    assert_result_is_transferred(
-        "hew_http_last_error",
-        &|| {},
-        "",
+    assert_managed_error_is_transferred(
+        ErrorSlotKind::Http,
         crate::http::client::hew_http_last_error,
+        hew_runtime::string::hew_string_drop,
     );
 }

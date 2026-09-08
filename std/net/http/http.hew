@@ -44,13 +44,9 @@ pub type Server {
 /// method, path, headers, and body. Must be responded to with one of
 /// the `respond` methods. Requests close automatically at scope exit; call
 /// `close()` to release one early.
-#[opaque]
-type RequestHandle {
-}
-
 #[resource]
+#[opaque]
 pub type Request {
-    handle: RequestHandle,
 }
 
 // ── Server methods ────────────────────────────────────────────────────
@@ -67,7 +63,7 @@ impl ServerMethods for Server {
     /// Accept the next incoming HTTP request.
     fn accept(srv: Server) -> Request {
         unsafe {
-            Request { handle: hew_http_server_recv(srv) }
+            hew_http_server_recv(srv)
         }
     }
     /// Set the per-request body read deadline in milliseconds.
@@ -118,7 +114,8 @@ trait RequestMethods {
 
     /// Return the request body, decoded according to `encoding`.
     ///
-    /// Pass `"utf-8"` for text bodies, or `"raw"` for binary.
+    /// Text is decoded as UTF-8. The encoding argument is reserved; binary
+    /// data that is not UTF-8 cannot be returned as a string.
     fn body(self, encoding: string) -> string;
 
     /// Send a full HTTP response with status, content-type, and body.
@@ -181,38 +178,38 @@ impl RequestMethods for Request {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
     fn method(req: Request) -> string {
         unsafe {
-            hew_http_request_method(req.handle)
+            hew_http_request_method(req)
         }
     }
     /// Return the request path (e.g. `"/api/users"`).
     fn path(req: Request) -> string {
         unsafe {
-            hew_http_request_path(req.handle)
+            hew_http_request_path(req)
         }
     }
     /// Return the value of the named header, or an empty string.
     fn header(req: Request, name: string) -> string {
         unsafe {
-            hew_http_request_header(req.handle, name)
+            hew_http_request_header(req, name)
         }
     }
     /// Return all request headers as a list of `(name, value)` pairs.
     fn headers(req: Request) -> Vec<(string, string)> {
         unsafe {
-            hew_http_request_headers(req.handle)
+            hew_http_request_headers(req)
         }
     }
     /// Return the request body decoded according to `encoding`.
     fn body(req: Request, encoding: string) -> string {
         unsafe {
-            hew_http_request_body_string(req.handle, encoding)
+            hew_http_request_body_string(req, encoding)
         }
     }
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
             unsafe {
-                hew_http_respond_bridge(req.handle, status as i32, content_type, body)
+                hew_http_respond_bridge(req, status as i32, content_type, body)
             } as i64
         } else {
             -1
@@ -227,7 +224,7 @@ impl RequestMethods for Request {
     fn respond_text(req: Request, status: i64, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
             unsafe {
-                hew_http_respond_text(req.handle, status as i32, body)
+                hew_http_respond_text(req, status as i32, body)
             } as i64
         } else {
             -1
@@ -242,7 +239,7 @@ impl RequestMethods for Request {
     fn respond_json(req: Request, status: i64, json: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
             unsafe {
-                hew_http_respond_json(req.handle, status as i32, json)
+                hew_http_respond_json(req, status as i32, json)
             } as i64
         } else {
             -1
@@ -257,7 +254,7 @@ impl RequestMethods for Request {
     fn respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
         if valid_response_status(status) {
             let sink = unsafe {
-                hew_http_respond_stream(req.handle, status as i32, content_type)
+                hew_http_respond_stream(req, status as i32, content_type)
             };
             // HTTP has no errno channel; the runtime sets a message via set_last_error
             // on the two failure paths (null req, already-responded).  The errno side-
@@ -286,7 +283,7 @@ impl Request {
     /// Release this request early. Scope exit performs the same release.
     fn close(consume self) {
         unsafe {
-            hew_http_request_free(self.handle)
+            hew_http_request_free(self)
         };
     }
 }
@@ -376,19 +373,19 @@ extern "C" {
     fn hew_http_server_port(server: Server) -> i32;
     fn hew_http_last_listen_errno() -> i64;
     fn hew_http_last_error() -> string;
-    fn hew_http_server_recv(server: Server) -> RequestHandle;
+    fn hew_http_server_recv(server: Server) -> Request;
     fn hew_http_server_set_request_timeout_ms(server: Server, timeout_ms: i64) -> i32;
-    fn hew_http_request_method(req: RequestHandle) -> string;
-    fn hew_http_request_path(req: RequestHandle) -> string;
-    fn hew_http_request_body_string(req: RequestHandle, encoding: string) -> string;
-    fn hew_http_request_header(req: RequestHandle, name: string) -> string;
-    fn hew_http_request_headers(req: RequestHandle) -> Vec<(string, string)>;
-    fn hew_http_respond_bridge(req: RequestHandle, status: i32, content_type: string, body: string) -> i32;
-    fn hew_http_respond_text(req: RequestHandle, status: i32, body: string) -> i32;
-    fn hew_http_respond_json(req: RequestHandle, status: i32, json: string) -> i32;
-    fn hew_http_respond_stream(req: RequestHandle, status: i32, content_type: string) -> Sink<string>;
+    fn hew_http_request_method(req: Request) -> string;
+    fn hew_http_request_path(req: Request) -> string;
+    fn hew_http_request_body_string(req: Request, encoding: string) -> string;
+    fn hew_http_request_header(req: Request, name: string) -> string;
+    fn hew_http_request_headers(req: Request) -> Vec<(string, string)>;
+    fn hew_http_respond_bridge(req: Request, status: i32, content_type: string, body: string) -> i32;
+    fn hew_http_respond_text(req: Request, status: i32, body: string) -> i32;
+    fn hew_http_respond_json(req: Request, status: i32, json: string) -> i32;
+    fn hew_http_respond_stream(req: Request, status: i32, content_type: string) -> Sink<string>;
     fn hew_http_server_close(consume server: Server);
-    fn hew_http_request_free(req: RequestHandle);
+    fn hew_http_request_free(consume req: Request);
     fn hew_sink_is_valid(sink: Sink<string>) -> bool;
     fn hew_stream_last_error() -> string;
 }

@@ -41,13 +41,9 @@ import std.net;
 /// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
 /// `http_client.post(...)`. Responses close automatically at scope exit; call
 /// `close()` to release one early.
-#[opaque]
-type ResponseHandle {
-}
-
 #[resource]
+#[opaque]
 pub type Response {
-    handle: ResponseHandle,
 }
 
 // ── Response methods ──────────────────────────────────────────────────
@@ -81,31 +77,31 @@ impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
     fn status(resp: Response) -> i64 {
         unsafe {
-            hew_http_response_status(resp.handle) as i64
+            hew_http_response_status(resp) as i64
         }
     }
     /// Return a copy of the response body as a string.
     fn body(resp: Response) -> string {
         unsafe {
-            hew_http_response_body(resp.handle)
+            hew_http_response_body(resp)
         }
     }
     /// Look up a response header by name (case-insensitive).
     fn header(resp: Response, name: string) -> string {
         unsafe {
-            hew_http_response_header(resp.handle, name)
+            hew_http_response_header(resp, name)
         }
     }
     /// Return the `Content-Type` response header.
     fn content_type(resp: Response) -> string {
         unsafe {
-            hew_http_response_content_type(resp.handle)
+            hew_http_response_content_type(resp)
         }
     }
     /// Return all response headers as a list of `(name, value)` pairs.
     fn headers(resp: Response) -> Vec<(string, string)> {
         unsafe {
-            hew_http_response_headers(resp.handle)
+            hew_http_response_headers(resp)
         }
     }
 }
@@ -114,7 +110,7 @@ impl Response {
     /// Release this response early.
     fn close(consume self) {
         unsafe {
-            hew_http_response_free(self.handle)
+            hew_http_response_free(self)
         };
     }
 }
@@ -151,7 +147,7 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 /// ```
 pub fn request(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response {
     unsafe {
-        Response { handle: hew_http_request_hew(method, url, body, headers) }
+        hew_http_request_hew(method, url, body, headers)
     }
 }
 
@@ -303,13 +299,13 @@ pub fn post_string(url: string, content_type: string, body: string) -> Option<st
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_http_request_hew(method: string, url: string, body: string, headers: Vec<(string, string)>) -> ResponseHandle;
+    fn hew_http_request_hew(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response;
     fn hew_http_set_timeout(timeout_ms: i32);
     fn hew_http_last_error() -> string;
-    fn hew_http_response_free(resp: ResponseHandle);
-    fn hew_http_response_status(resp: ResponseHandle) -> i32;
-    fn hew_http_response_body(resp: ResponseHandle) -> string;
-    fn hew_http_response_header(resp: ResponseHandle, name: string) -> string;
-    fn hew_http_response_content_type(resp: ResponseHandle) -> string;
-    fn hew_http_response_headers(resp: ResponseHandle) -> Vec<(string, string)>;
+    fn hew_http_response_free(consume resp: Response);
+    fn hew_http_response_status(resp: Response) -> i32;
+    fn hew_http_response_body(resp: Response) -> string;
+    fn hew_http_response_header(resp: Response, name: string) -> string;
+    fn hew_http_response_content_type(resp: Response) -> string;
+    fn hew_http_response_headers(resp: Response) -> Vec<(string, string)>;
 }

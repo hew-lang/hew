@@ -1,0 +1,11 @@
+[[case]]
+id = "network-managed-strings-fault"
+intent = "Caller and callee listeners release during fault propagation."
+source = "cases/network-managed-strings-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

@@ -69,13 +69,9 @@ pub type Conn {
 ///
 /// Obtained from `conn.recv()`. Messages close automatically at scope exit;
 /// call `close()` to release one early.
-#[opaque]
-type MessageHandle {
-}
-
 #[resource]
+#[opaque]
 pub type Message {
-    handle: MessageHandle,
 }
 
 // ── Conn methods ──────────────────────────────────────────────────────
@@ -128,17 +124,16 @@ impl ConnMethods for Conn {
     }
     fn recv(conn: Conn) -> Message {
         unsafe {
-            Message { handle: hew_ws_recv(conn) }
+            hew_ws_recv(conn)
         }
     }
     fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, net.NetError> {
         let deadline = checked_recv_deadline(deadline_ms)?;
-        let handle = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
+        let msg = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
             hew_ws_recv_timeout(conn, deadline as i32)
         };
-        let msg = Message { handle: handle };
         let valid: bool = unsafe {
-            hew_ws_message_is_valid(msg.handle)
+            hew_ws_message_is_valid(msg)
         };
         let timed_out: i32 = unsafe { // INTERNAL-ABI: thread-local sentinel; 1=timeout, 0=ok-or-error
             hew_ws_recv_last_timed_out()
@@ -188,12 +183,12 @@ trait MessageMethods {
 impl MessageMethods for Message {
     fn msg_type(msg: Message) -> i32 { // INTERNAL-ABI: opaque frame-type enum; planned enum migration
         unsafe {
-            hew_ws_message_type(msg.handle)
+            hew_ws_message_type(msg)
         }
     }
     fn text(msg: Message) -> string {
         unsafe {
-            hew_ws_message_text(msg.handle)
+            hew_ws_message_text(msg)
         }
     }
 }
@@ -202,7 +197,7 @@ impl Message {
     /// Release this message early.
     fn close(consume self) {
         unsafe {
-            hew_ws_message_free(self.handle)
+            hew_ws_message_free(self)
         };
     }
 }
@@ -379,14 +374,14 @@ extern "C" {
     fn hew_ws_last_errno() -> i64;
     fn hew_ws_last_error() -> string;
     fn hew_ws_send_text(ws: Conn, msg: string) -> i32;
-    fn hew_ws_recv(ws: Conn) -> MessageHandle;
-    fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> MessageHandle;
+    fn hew_ws_recv(ws: Conn) -> Message;
+    fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> Message;
     fn hew_ws_recv_last_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
-    fn hew_ws_message_is_valid(msg: MessageHandle) -> bool;
+    fn hew_ws_message_is_valid(msg: Message) -> bool;
     fn hew_ws_close(consume ws: Conn);
-    fn hew_ws_message_type(msg: MessageHandle) -> i32;
-    fn hew_ws_message_text(msg: MessageHandle) -> string;
-    fn hew_ws_message_free(msg: MessageHandle);
+    fn hew_ws_message_type(msg: Message) -> i32;
+    fn hew_ws_message_text(msg: Message) -> string;
+    fn hew_ws_message_free(consume msg: Message);
     fn hew_ws_server_new(addr: string) -> Server;
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;

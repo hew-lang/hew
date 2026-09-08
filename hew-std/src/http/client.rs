@@ -1,15 +1,19 @@
 //! Hew runtime: `http_client` module.
 //!
 //! Provides basic HTTP client functionality for compiled Hew programs.
-//! All returned strings and response structs are allocated with `libc::malloc`
-//! / `Box` so callers can free them with the corresponding free function.
+//! Hew-facing strings use the managed UTF-8 ABI. Raw C request helpers and
+//! response-body buffers retain their explicit C allocation and release rules.
 
 // WASM-TODO(http-client): std::net::http outbound client requests remain native-only until
 // Hew has a browser/WASM networking bridge.
 
-use super::headers_vec::string_pair_elem_layout;
+use super::headers_vec::{string_pair_elem_layout, HewStringPair};
 use hew_cabi::{
-    cabi::{alloc_cstring, cstr_to_str, free_cstring, str_to_malloc},
+    cabi::{free_cstring, str_to_malloc},
+    string::{
+        string_as_bytes, string_as_str, string_from_str, string_from_utf8, string_release,
+        HewString,
+    },
     vec::{ElemKind, HewVec},
 };
 use std::ffi::{c_void, CStr};
@@ -85,23 +89,12 @@ fn raw_http_str_to_malloc(s: &str) -> *mut c_char {
     str_to_malloc(s)
 }
 
-unsafe fn raw_http_strdup(src: *const c_char) -> *mut c_char {
-    if should_fail_http_allocation() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: the caller guarantees `src` is a valid NUL-terminated C string.
-    let len = unsafe { libc::strlen(src) };
-    // SAFETY: src is valid for len bytes; alloc_cstring copies them header-aware
-    // so the result is released via hew_string_drop / free_cstring.
-    unsafe { alloc_cstring(src.cast::<u8>(), len) } // CSTRING-ALLOC: str-open (raw_http_strdup → header-aware Hew string; S1)
-}
-
 /// Return this actor's last HTTP client error.
 ///
 /// Returns an empty string when no HTTP client error has been recorded.
 #[no_mangle]
-pub extern "C" fn hew_http_last_error() -> *mut c_char {
-    str_to_malloc(&get_http_last_error())
+pub extern "C" fn hew_http_last_error() -> *mut HewString {
+    string_from_str(&get_http_last_error())
 }
 
 /// Response from an HTTP request.
@@ -200,7 +193,7 @@ unsafe fn parse_headers_from_c_array(
 ///
 /// Fails closed: returns an error if `headers` is not a Plain-kind vector with the
 /// expected element size for a `(String, String)` pair, or if any name or value
-/// pointer is null or contains invalid UTF-8.
+/// field contains an embedded NUL. Empty values use the canonical null handle.
 unsafe fn parse_headers_from_hew_tuple_vec(
     headers: *mut HewVec,
 ) -> Result<Vec<(String, String)>, String> {
@@ -231,17 +224,14 @@ unsafe fn parse_headers_from_hew_tuple_vec(
         // SAFETY: elem_ptr addresses one complete HewStringPair slot. The copied
         // raw pointers remain owned by the vector; we only borrow their strings.
         let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
-        if pair.name.is_null() || pair.value.is_null() {
-            return Err("malformed header pair: null name or value pointer".to_string());
+        // SAFETY: the checked tuple ABI contains borrowed managed strings.
+        let name = unsafe { string_as_str(pair.name) };
+        // SAFETY: the value remains owned by the caller's vector.
+        let value = unsafe { string_as_str(pair.value) };
+        if name.contains('\0') || value.contains('\0') {
+            return Err("request header name or value contains NUL".to_owned());
         }
-        // SAFETY: pair.name is a valid NUL-terminated C string owned by the vector.
-        let name = unsafe { cstr_to_str(pair.name) }
-            .map(str::to_owned)
-            .ok_or_else(|| "malformed header pair: invalid UTF-8 in name".to_string())?;
-        // SAFETY: pair.value is a valid NUL-terminated C string owned by the vector.
-        let value = unsafe { cstr_to_str(pair.value) }
-            .map(str::to_owned)
-            .ok_or_else(|| "malformed header pair: invalid UTF-8 in value".to_string())?;
+        let (name, value) = (name.to_owned(), value.to_owned());
         parsed_headers.push((name, value));
     }
 
@@ -473,23 +463,33 @@ pub unsafe extern "C" fn hew_http_request(
 ///
 /// # Safety
 ///
-/// `method`, `url`, and `body` follow the same string rules as
-/// [`hew_http_request`]. `headers` must be null or a valid `Vec<(String, String)>` handle
+/// `method`, `url`, and `body` borrow managed strings (null means empty).
+/// `headers` must be null or a valid `Vec<(String, String)>` handle
 /// (Plain-kind `HewVec` with element size matching two pointer-width fields).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_hew(
-    method: *const c_char,
-    url: *const c_char,
-    body: *const c_char,
+    method: *const HewString,
+    url: *const HewString,
+    body: *const HewString,
     headers: *mut HewVec,
 ) -> *mut HewHttpResponse {
-    // SAFETY: headers follows this function's documented Vec<(String, String)> ABI contract.
+    // SAFETY: headers follows this function's documented tuple vector ABI.
     let parsed_headers = match unsafe { parse_headers_from_hew_tuple_vec(headers) } {
-        Ok(parsed_headers) => parsed_headers,
+        Ok(headers) => headers,
         Err(message) => return error_response(&message),
     };
-    // SAFETY: method/url/body follow the same string ABI contract here.
-    unsafe { request_from_c_parts(method, url, body, &parsed_headers) }
+    // SAFETY: the caller borrows managed strings throughout this call.
+    let (method, url, body) = unsafe {
+        (
+            string_as_str(method),
+            string_as_str(url),
+            string_as_bytes(body),
+        )
+    };
+    if method.contains('\0') || url.contains('\0') {
+        return error_response("HTTP method or URL contains NUL");
+    }
+    send_request(method, url, Some(body), &parsed_headers)
 }
 
 /// Free a [`HewHttpResponse`] previously returned by [`hew_http_get`],
@@ -508,39 +508,13 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
     let response = unsafe { Box::from_raw(resp) };
     if !response.body.is_null() {
         // SAFETY: body was allocated with libc::malloc in str_to_malloc.
-        unsafe { free_cstring(response.body) }; // CSTRING-FREE: str-open (response.body via raw_http_strdup)
+        unsafe { free_cstring(response.body) }; // CSTRING-FREE: str-open (response.body via raw_http_str_to_malloc)
     }
     if !response.headers.is_null() {
         // SAFETY: headers was allocated with Box::into_raw in capture_headers.
         drop(unsafe { Box::from_raw(response.headers) });
     }
     // Box is dropped here, freeing the HewHttpResponse struct.
-}
-
-unsafe fn free_hew_string_pair(pair: &mut HewStringPair) {
-    if !pair.name.is_null() {
-        // SAFETY: `pair.name` was allocated with libc::malloc-compatible storage.
-        unsafe { free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
-        pair.name = std::ptr::null_mut();
-    }
-    if !pair.value.is_null() {
-        // SAFETY: `pair.value` was allocated with libc::malloc-compatible storage.
-        unsafe { free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
-        pair.value = std::ptr::null_mut();
-    }
-}
-
-unsafe fn free_hew_string_pair_vec(vec: *mut HewVec) {
-    if vec.is_null() {
-        return;
-    }
-    // The vec was constructed with `hew_vec_new_with_elem_layout` carrying a
-    // `string_pair_drop_thunk`.  `hew_vec_free_owned` calls that thunk on every
-    // live element (freeing both strings via `free_cstring`) then frees the
-    // buffer.  This replaces the manual loop + `hew_vec_free` that was needed
-    // when the vec was Plain-kind with no drop thunk.
-    // SAFETY: `vec` was allocated by `hew_vec_new_with_elem_layout`.
-    unsafe { hew_cabi::vec::hew_vec_free_owned(vec) };
 }
 
 // ── Response accessor functions ───────────────────────────────────────
@@ -561,109 +535,83 @@ pub unsafe extern "C" fn hew_http_response_status(resp: *const HewHttpResponse) 
     unsafe { (*resp).status_code }
 }
 
-/// Get a copy of the response body as a malloc-allocated C string.
+/// Get a copy of the response body as an owned managed string.
 ///
-/// The caller must free the returned string with `libc::free`. Returns null if
-/// `resp` is null.
+/// Release the returned owner with `string_release`. Null is the canonical
+/// empty string and is also returned for an invalid response.
 ///
 /// # Safety
 ///
 /// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_http_response_body(resp: *const HewHttpResponse) -> *mut c_char {
+pub unsafe extern "C" fn hew_http_response_body(resp: *const HewHttpResponse) -> *mut HewString {
     clear_http_last_error();
     if resp.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: resp is a valid HewHttpResponse per caller contract.
-    let r = unsafe { &*resp };
-    if r.body_allocation_failed || r.body.is_null() {
-        http_allocation_failed("hew_http_response_body", "copying response body");
+    // SAFETY: resp is a live HewHttpResponse borrowed by this call.
+    let response = unsafe { &*resp };
+    if response.body_allocation_failed || response.body.is_null() {
+        http_allocation_failed("hew_http_response_body", "reading response body");
         return std::ptr::null_mut();
     }
-    // SAFETY: body is a valid NUL-terminated C string from str_to_malloc.
-    let copy = unsafe { raw_http_strdup(r.body) };
-    if copy.is_null() {
-        http_allocation_failed("hew_http_response_body", "copying response body");
+    // SAFETY: the raw response owns body_len bytes independently of C terminators.
+    let bytes = unsafe { std::slice::from_raw_parts(response.body.cast(), response.body_len) };
+    if let Ok(text) = string_from_utf8(bytes) {
+        text
+    } else {
+        set_http_last_error("http.response.body: body is not valid UTF-8");
+        std::ptr::null_mut()
     }
-    copy
 }
 
 /// Look up a response header by name (case-insensitive).
 ///
-/// Returns a malloc-allocated C string. If the header is not present the
-/// returned string is empty (not null). Returns null if `resp` or `name` is
+/// Returns an owned managed string. If the header is not present the
+/// returned string is empty (canonical null). Returns null if `resp` or `name` is
 /// null.
 ///
 /// # Safety
 ///
 /// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
-/// `name` must be a valid NUL-terminated C string, or null.
+/// `name` must be a live managed string handle, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_response_header(
     resp: *const HewHttpResponse,
-    name: *const c_char,
-) -> *mut c_char {
+    name: *const HewString,
+) -> *mut HewString {
     clear_http_last_error();
+    // SAFETY: name is a borrowed managed string; null means empty.
+    let name = unsafe { string_as_str(name) };
+    if name.contains('\0') {
+        set_http_last_error("http.response.header: name contains NUL");
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the caller lends a live response or null.
+    unsafe { response_header(resp, name) }
+}
+
+unsafe fn response_header(resp: *const HewHttpResponse, name: &str) -> *mut HewString {
     if resp.is_null() {
-        let empty = raw_http_str_to_malloc("");
-        if empty.is_null() {
-            http_allocation_failed(
-                "hew_http_response_header",
-                "returning empty response header",
-            );
-        }
-        return empty;
+        return std::ptr::null_mut();
     }
-    // SAFETY: resp is a valid HewHttpResponse per caller contract.
-    let r = unsafe { &*resp };
-    // SAFETY: If non-null, name is a valid NUL-terminated C string per caller contract.
-    let Some(name_str) = (unsafe { cstr_to_str(name) }) else {
-        let empty = raw_http_str_to_malloc("");
-        if empty.is_null() {
-            http_allocation_failed(
-                "hew_http_response_header",
-                "returning empty response header",
-            );
-        }
-        return empty;
-    };
-    let name_lower = name_str.to_lowercase();
-    if r.headers.is_null() {
-        let empty = raw_http_str_to_malloc("");
-        if empty.is_null() {
-            http_allocation_failed(
-                "hew_http_response_header",
-                "returning empty response header",
-            );
-        }
-        return empty;
+    // SAFETY: the caller lends a live response and its captured headers.
+    let response = unsafe { &*resp };
+    if response.headers.is_null() {
+        return std::ptr::null_mut();
     }
-    // SAFETY: headers was allocated with Box::into_raw in capture_headers.
-    let headers = unsafe { &*r.headers };
-    for (k, v) in headers {
-        if k.to_lowercase() == name_lower {
-            let value = raw_http_str_to_malloc(v);
-            if value.is_null() {
-                http_allocation_failed("hew_http_response_header", "copying response header");
-            }
-            return value;
-        }
-    }
-    let empty = raw_http_str_to_malloc("");
-    if empty.is_null() {
-        http_allocation_failed(
-            "hew_http_response_header",
-            "returning empty response header",
-        );
-    }
-    empty
+    // SAFETY: headers are owned by the live response.
+    let headers = unsafe { &*response.headers };
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map_or(std::ptr::null_mut(), |(_, value)| string_from_str(value))
 }
 
 /// Get the `content-type` response header.
 ///
 /// Convenience shorthand for `hew_http_response_header(resp, "content-type")`.
-/// Returns a malloc-allocated C string (empty if not present). Returns null if
+/// Returns an owned managed string (empty if not present). Returns null if
 /// `resp` is null.
 ///
 /// # Safety
@@ -672,32 +620,22 @@ pub unsafe extern "C" fn hew_http_response_header(
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_response_content_type(
     resp: *const HewHttpResponse,
-) -> *mut c_char {
-    // SAFETY: name is a valid static NUL-terminated C string.
-    unsafe { hew_http_response_header(resp, c"content-type".as_ptr()) }
-}
-
-/// ABI layout for a `(String, String)` tuple element in a Hew `Vec<(String, String)>`.
-///
-/// Both pointers are header-aware heap strings owned by the descriptor-backed
-/// Vec. `hew_vec_free` and `hew_vec_free_owned` both release them recursively.
-#[repr(C)]
-struct HewStringPair {
-    name: *mut c_char,
-    value: *mut c_char,
+) -> *mut HewString {
+    clear_http_last_error();
+    // SAFETY: the caller lends a live response or null.
+    unsafe { response_header(resp, "content-type") }
 }
 
 /// Return a new `Vec<(String, String)>` containing all captured response headers.
 ///
-/// Each element is a `(name, value)` pair of header-aware heap strings.  The
+/// Each element is a `(name, value)` pair of managed strings.  The
 /// returned `HewVec` is backed by an owned-element descriptor
 /// (`string_pair_elem_layout`) so that Hew's compiled destructor can call
 /// `hew_vec_free_owned` when the binding goes out of scope — freeing both
 /// strings in every pair via `string_pair_drop_thunk`.
 ///
 /// Returns an empty vector if `resp` is null or no headers were captured.
-/// Returns null when copying the header list runs out of memory; call
-/// [`hew_http_last_error`] for details.
+/// Allocation failure follows the canonical managed-value abort contract.
 ///
 /// # Safety
 ///
@@ -730,19 +668,10 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
     // SAFETY: headers was allocated with Box::into_raw in capture_headers.
     let headers = unsafe { &*r.headers };
     for (name, value) in headers {
-        let mut pair = HewStringPair {
-            name: raw_http_str_to_malloc(name),
-            value: raw_http_str_to_malloc(value),
+        let pair = HewStringPair {
+            name: string_from_str(name),
+            value: string_from_str(value),
         };
-        if pair.name.is_null() || pair.value.is_null() {
-            // SAFETY: pair.name / pair.value are header-aware strings (or null).
-            unsafe { free_hew_string_pair(&mut pair) };
-            http_allocation_failed("hew_http_response_headers", "copying response header list");
-            // SAFETY: vec was allocated by `hew_vec_new_with_elem_layout`; every
-            // already-pushed element is dropped via the drop thunk.
-            unsafe { free_hew_string_pair_vec(vec) };
-            return std::ptr::null_mut();
-        }
         // push_owned: memcpy the pair into the slot, then `string_pair_clone_thunk`
         // bumps the refcount on both strings (rc: 1→2).
         // SAFETY: vec is a valid owned-layout HewVec; &pair is a HewStringPair.
@@ -750,10 +679,10 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
             hew_cabi::vec::hew_vec_push_owned(vec, std::ptr::addr_of!(pair).cast::<c_void>());
         }
         // Release the source copy (rc: 2→1).  The vec slot is now the sole owner.
-        // SAFETY: pair.name and pair.value are header-aware heap strings.
+        // SAFETY: pair.name and pair.value are managed strings.
         unsafe {
-            free_cstring(pair.name); // CSTRING-FREE: str-open (header name — release source after push_owned)
-            free_cstring(pair.value); // CSTRING-FREE: str-open (header value — release source after push_owned)
+            string_release(pair.name);
+            string_release(pair.value);
         }
     }
     vec
@@ -797,7 +726,7 @@ unsafe fn take_body_string(resp: *mut HewHttpResponse) -> *mut c_char {
 /// string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on transport or network failure.
+/// it with `hew_cabi::cabi::free_cstring`. Returns null on transport or network failure.
 /// Non-2xx HTTP responses still return a non-null string (the body may be
 /// empty); use [`hew_http_get`] to inspect the status code.
 ///
@@ -816,7 +745,7 @@ pub unsafe extern "C" fn hew_http_get_string(url: *const c_char) -> *mut c_char 
 /// body string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on transport or network failure
+/// it with `hew_cabi::cabi::free_cstring`. Returns null on transport or network failure
 /// (reported with a negative status code). Non-2xx HTTP responses still
 /// return a non-null string (the body may be empty); use [`hew_http_post`]
 /// to inspect the status code.
@@ -839,7 +768,7 @@ pub unsafe extern "C" fn hew_http_post_string(
 /// Convenience wrapper: make an HTTP request and return just the body string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on transport or network failure.
+/// it with `hew_cabi::cabi::free_cstring`. Returns null on transport or network failure.
 /// Non-2xx HTTP responses still return a non-null string (the body may be
 /// empty); use [`hew_http_request`] to inspect the status code.
 ///
@@ -868,20 +797,29 @@ pub unsafe extern "C" fn hew_http_request_string(
 /// This shares the same pointer contracts as [`hew_http_request_hew`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_string_hew(
-    method: *const c_char,
-    url: *const c_char,
-    body: *const c_char,
+    method: *const HewString,
+    url: *const HewString,
+    body: *const HewString,
     headers: *mut HewVec,
-) -> *mut c_char {
-    // SAFETY: all pointers are forwarded with the same contract to hew_http_request_hew.
-    let resp = unsafe { hew_http_request_hew(method, url, body, headers) };
-    // SAFETY: resp originates from hew_http_request_hew.
-    unsafe { take_body_string(resp) }
+) -> *mut HewString {
+    // SAFETY: all pointers are forwarded with the same managed ABI contract.
+    let response = unsafe { hew_http_request_hew(method, url, body, headers) };
+    // SAFETY: response is an owned result, valid until the release below.
+    let result = if unsafe { hew_http_response_status(response) } < 0 {
+        std::ptr::null_mut()
+    } else {
+        // SAFETY: response remains live while its body is copied.
+        unsafe { hew_http_response_body(response) }
+    };
+    // SAFETY: response was created above and is released exactly once.
+    unsafe { hew_http_response_free(response) };
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use std::ffi::CString;
     use std::ptr;
 
@@ -941,23 +879,15 @@ mod tests {
         let vec = unsafe { hew_cabi::vec::hew_vec_new_with_elem_layout(&raw const layout) };
         assert!(!vec.is_null(), "test setup must allocate a HewVec");
         for (name, value) in pairs {
-            let name_c = CString::new(*name).unwrap();
-            let value_c = CString::new(*value).unwrap();
             let pair = HewStringPair {
-                // SAFETY: `name_c` is a valid NUL-terminated string during the call.
-                name: unsafe { raw_http_strdup(name_c.as_ptr()) },
-                // SAFETY: `value_c` is a valid NUL-terminated string during the call.
-                value: unsafe { raw_http_strdup(value_c.as_ptr()) },
+                name: string_from_str(name),
+                value: string_from_str(value),
             };
-            assert!(
-                !(pair.name.is_null() || pair.value.is_null()),
-                "test setup must allocate header pairs"
-            );
             // SAFETY: vec is descriptor-backed and pair matches its element layout.
             unsafe {
                 hew_cabi::vec::hew_vec_push_owned(vec, std::ptr::addr_of!(pair).cast::<c_void>());
-                free_cstring(pair.name);
-                free_cstring(pair.value);
+                string_release(pair.name);
+                string_release(pair.value);
             };
         }
         vec
@@ -1060,44 +990,35 @@ mod tests {
         let resp = build_response(200, "hello", std::ptr::null_mut());
         // SAFETY: resp is a valid HewHttpResponse.
         let body_ptr = unsafe { hew_http_response_body(resp) };
-        assert!(!body_ptr.is_null());
-        // SAFETY: body_ptr is a valid malloc'd C string.
-        let body = unsafe { CStr::from_ptr(body_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        // SAFETY: body_ptr was malloc'd by hew_http_response_body (strdup).
-        unsafe { free_cstring(body_ptr) }; // CSTRING-FREE: str-open
-                                           // SAFETY: resp is still valid (body_ptr is a copy).
+        // SAFETY: body_ptr is an owned managed string.
+        let body = unsafe { string_as_str(body_ptr) }.to_owned();
+        // SAFETY: body_ptr is the outstanding managed string result.
+        unsafe { string_release(body_ptr) };
+        // SAFETY: resp is still valid (body_ptr is a copy).
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "hello");
         let err_ptr = hew_http_last_error();
-        assert!(!err_ptr.is_null());
         // SAFETY: `err_ptr` was allocated by `hew_http_last_error`.
-        let err = unsafe { CStr::from_ptr(err_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
+        let err = unsafe { string_as_str(err_ptr) }.to_owned();
         // SAFETY: `err_ptr` came from `hew_http_last_error`.
-        unsafe { free_cstring(err_ptr) }; // CSTRING-FREE: str-open
+        unsafe { string_release(err_ptr) };
         assert_eq!(err, "");
     }
 
     #[test]
     fn response_body_allocation_failure_sets_last_error() {
         clear_http_last_error();
-        let resp = build_response(200, "hello", std::ptr::null_mut());
         fail_http_allocations_after(0);
-        // SAFETY: resp is a valid HewHttpResponse.
-        let body_ptr = unsafe { hew_http_response_body(resp) };
+        let resp = build_response(200, "hello", std::ptr::null_mut());
         reset_http_allocation_failures();
+        // SAFETY: the response is valid but its raw body allocation failed.
+        let body_ptr = unsafe { hew_http_response_body(resp) };
         assert!(body_ptr.is_null());
         let err = hew_http_last_error();
-        assert!(!err.is_null());
         // SAFETY: `err` is a valid NUL-terminated error string.
-        let err_text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+        let err_text = unsafe { string_as_str(err) }.to_owned();
         // SAFETY: `err` was allocated by `hew_http_last_error`.
-        unsafe { free_cstring(err) }; // CSTRING-FREE: str-open
+        unsafe { string_release(err) };
         assert!(err_text.contains("hew_http_response_body"));
         assert!(err_text.contains("allocation failed"));
         // SAFETY: resp is still valid after the failed copy attempt.
@@ -1112,31 +1033,66 @@ mod tests {
             "application/json".to_string(),
         )]));
         let resp = build_response(200, "", headers);
-        let name = CString::new("content-type").unwrap();
+        let name = ManagedString::new("content-type");
         // SAFETY: resp and name are valid.
         let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
-        assert!(!h.is_null());
-        // SAFETY: h is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
-        // SAFETY: h was malloc'd.
-        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
-                                    // SAFETY: resp is still valid.
+        // SAFETY: h is an owned managed string.
+        let val = unsafe { string_as_str(h) }.to_owned();
+        // SAFETY: h is the outstanding managed string owner.
+        unsafe { string_release(h) };
+        // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "application/json");
     }
 
     #[test]
+    fn managed_header_fields_reject_nul_without_consuming_inputs() {
+        let method = ManagedString::new("GET");
+        let url = ManagedString::new("http://127.0.0.1:1/");
+        for fields in [[("X-Name\0Suffix", "value")], [("X-Name", "value\0tail")]] {
+            // SAFETY: the fixture returns an owned vector of managed string pairs.
+            let headers = unsafe { make_tuple_vec(&fields) };
+            // SAFETY: all arguments remain borrowed and live throughout the call.
+            let response = unsafe {
+                hew_http_request_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers)
+            };
+            // SAFETY: response is owned here; the rejected headers remain caller-owned.
+            let (status, detail) = unsafe { take_response(response) };
+            assert_eq!(status, -1);
+            assert!(detail.contains("contains NUL"));
+            // SAFETY: failed request admission did not consume or modify this vector.
+            let pair = unsafe { (*headers).data.cast::<HewStringPair>().read_unaligned() };
+            // SAFETY: both managed fields remain borrowed from the vector.
+            unsafe {
+                assert_eq!(string_as_str(pair.name), fields[0].0);
+                assert_eq!(string_as_str(pair.value), fields[0].1);
+                hew_cabi::vec::hew_vec_free(headers);
+            }
+        }
+        let response = build_response(200, "", ptr::null_mut());
+        let name = ManagedString::new("x-header\0suffix");
+        // SAFETY: the response and managed name remain live through the lookup.
+        let value = unsafe { hew_http_response_header(response, name.as_ptr()) };
+        assert!(value.is_null());
+        assert_eq!(
+            get_http_last_error(),
+            "http.response.header: name contains NUL"
+        );
+        // SAFETY: response is still the caller's outstanding owner.
+        unsafe { hew_http_response_free(response) };
+    }
+
+    #[test]
     fn response_header_missing_returns_empty_string() {
         let resp = build_response(200, "", std::ptr::null_mut());
-        let name = CString::new("x-missing").unwrap();
+        let name = ManagedString::new("x-missing");
         // SAFETY: resp and name are valid.
         let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
-        assert!(!h.is_null());
-        // SAFETY: h is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
-        // SAFETY: h was malloc'd.
-        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
-                                    // SAFETY: resp is still valid.
+        // SAFETY: h is an owned managed string.
+        let val = unsafe { string_as_str(h) }.to_owned();
+        // SAFETY: h is the outstanding managed string owner.
+        unsafe { string_release(h) };
+        // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "");
     }
@@ -1150,12 +1106,11 @@ mod tests {
         let resp = build_response(200, "", headers);
         // SAFETY: resp is a valid HewHttpResponse.
         let ct = unsafe { hew_http_response_content_type(resp) };
-        assert!(!ct.is_null());
-        // SAFETY: ct is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(ct) }.to_str().unwrap().to_owned();
-        // SAFETY: ct was malloc'd.
-        unsafe { free_cstring(ct) }; // CSTRING-FREE: str-open
-                                     // SAFETY: resp is still valid.
+        // SAFETY: ct is an owned managed string.
+        let val = unsafe { string_as_str(ct) }.to_owned();
+        // SAFETY: ct is the outstanding managed string owner.
+        unsafe { string_release(ct) };
+        // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "text/plain");
     }
@@ -1247,15 +1202,11 @@ mod tests {
         let resp = build_response(204, "", ptr::null_mut());
         // SAFETY: resp is a valid HewHttpResponse.
         let body_ptr = unsafe { hew_http_response_body(resp) };
-        assert!(!body_ptr.is_null());
-        // SAFETY: body_ptr is a valid malloc'd C string.
-        let body = unsafe { CStr::from_ptr(body_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        // SAFETY: body_ptr was malloc'd by strdup / str_to_malloc.
-        unsafe { free_cstring(body_ptr) }; // CSTRING-FREE: str-open
-                                           // SAFETY: resp is still valid (body_ptr was a copy).
+        // SAFETY: body_ptr is an owned managed string.
+        let body = unsafe { string_as_str(body_ptr) }.to_owned();
+        // SAFETY: body_ptr is the outstanding managed string result.
+        unsafe { string_release(body_ptr) };
+        // SAFETY: resp is still valid (body_ptr was a copy).
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "");
     }
@@ -1267,26 +1218,24 @@ mod tests {
         let resp = build_response(200, "", ptr::null_mut());
         // SAFETY: name is null (tested scenario); resp is valid.
         let h = unsafe { hew_http_response_header(resp, ptr::null()) };
-        assert!(!h.is_null());
-        // SAFETY: h is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
-        // SAFETY: h was malloc'd.
-        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
-                                    // SAFETY: resp is still valid.
+        // SAFETY: h is an owned managed string.
+        let val = unsafe { string_as_str(h) }.to_owned();
+        // SAFETY: h is the outstanding managed string owner.
+        unsafe { string_release(h) };
+        // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "");
     }
 
     #[test]
     fn response_header_null_resp_returns_empty() {
-        let name = CString::new("x-test").unwrap();
+        let name = ManagedString::new("x-test");
         // SAFETY: resp is null (tested scenario); name is valid.
         let h = unsafe { hew_http_response_header(ptr::null(), name.as_ptr()) };
-        assert!(!h.is_null());
-        // SAFETY: h is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
-        // SAFETY: h was malloc'd.
-        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
+        // SAFETY: h is an owned managed string.
+        let val = unsafe { string_as_str(h) }.to_owned();
+        // SAFETY: h is the outstanding managed string owner.
+        unsafe { string_release(h) };
         assert_eq!(val, "");
     }
 
@@ -1294,11 +1243,10 @@ mod tests {
     fn response_content_type_null_resp_returns_empty() {
         // SAFETY: resp is null (tested scenario).
         let ct = unsafe { hew_http_response_content_type(ptr::null()) };
-        assert!(!ct.is_null());
-        // SAFETY: ct is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(ct) }.to_str().unwrap().to_owned();
-        // SAFETY: ct was malloc'd.
-        unsafe { free_cstring(ct) }; // CSTRING-FREE: str-open
+        // SAFETY: ct is an owned managed string.
+        let val = unsafe { string_as_str(ct) }.to_owned();
+        // SAFETY: ct is the outstanding managed string owner.
+        unsafe { string_release(ct) };
         assert_eq!(val, "");
     }
 
@@ -1310,15 +1258,14 @@ mod tests {
             ("X-Rate-Limit".to_string(), "100".to_string()),
         ]));
         let resp = build_response(200, "", headers);
-        let name = CString::new("X-RATE-LIMIT").unwrap();
+        let name = ManagedString::new("X-RATE-LIMIT");
         // SAFETY: resp and name are valid.
         let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
-        assert!(!h.is_null());
-        // SAFETY: h is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
-        // SAFETY: h was malloc'd.
-        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
-                                    // SAFETY: resp is still valid.
+        // SAFETY: h is an owned managed string.
+        let val = unsafe { string_as_str(h) }.to_owned();
+        // SAFETY: h is the outstanding managed string owner.
+        unsafe { string_release(h) };
+        // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "100");
     }
@@ -1374,18 +1321,10 @@ mod tests {
             let elem_ptr = unsafe { (*vec).data.add(index * (*vec).elem_size) };
             // SAFETY: elem_ptr addresses one complete HewStringPair slot.
             let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
-            assert!(!pair.name.is_null());
-            assert!(!pair.value.is_null());
-            // SAFETY: name and value are valid malloc'd C strings from hew_http_response_headers.
-            let name = unsafe { CStr::from_ptr(pair.name) }
-                .to_str()
-                .unwrap()
-                .to_owned();
-            // SAFETY: pair.value is a valid malloc'd C string from hew_http_response_headers.
-            let value = unsafe { CStr::from_ptr(pair.value) }
-                .to_str()
-                .unwrap()
-                .to_owned();
+            // SAFETY: name and value are borrowed managed strings from hew_http_response_headers.
+            let name = unsafe { string_as_str(pair.name) }.to_owned();
+            // SAFETY: pair.value is an owned managed string from hew_http_response_headers.
+            let value = unsafe { string_as_str(pair.value) }.to_owned();
             if i == 0 {
                 assert_eq!(name, "content-type");
                 assert_eq!(value, "application/json");
@@ -1402,28 +1341,26 @@ mod tests {
     }
 
     #[test]
-    fn response_headers_allocation_failure_sets_last_error() {
-        clear_http_last_error();
-        let headers = Box::into_raw(Box::new(vec![(
-            "content-type".to_string(),
-            "application/json".to_string(),
-        )]));
-        let resp = build_response(200, "", headers);
-        fail_http_allocations_after(1);
-        // SAFETY: resp is a valid HewHttpResponse.
-        let vec = unsafe { hew_http_response_headers(resp) };
-        reset_http_allocation_failures();
-        assert!(vec.is_null());
-        let err = hew_http_last_error();
-        assert!(!err.is_null());
-        // SAFETY: `err` is a valid NUL-terminated error string.
-        let err_text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
-        // SAFETY: `err` was allocated by `hew_http_last_error`.
-        unsafe { free_cstring(err) }; // CSTRING-FREE: str-open
-        assert!(err_text.contains("hew_http_response_headers"));
-        assert!(err_text.contains("allocation failed"));
-        // SAFETY: resp remains valid after the failed header-copy attempt.
-        unsafe { hew_http_response_free(resp) };
+    fn response_headers_outlive_response_and_clone_release() {
+        let headers = Box::into_raw(Box::new(vec![("x-owner".into(), "kept".into())]));
+        let response = build_response(200, "body", headers);
+        // SAFETY: the response owns its captured headers until release below.
+        let values = unsafe { hew_http_response_headers(response) };
+        // SAFETY: values is an owned descriptor-backed vector; the clone is independent.
+        let cloned = unsafe { hew_cabi::vec::hew_vec_clone_owned(values) };
+        // SAFETY: each released object is an outstanding owner.
+        unsafe {
+            hew_http_response_free(response);
+            hew_cabi::vec::hew_vec_free(values);
+        }
+        // SAFETY: cloned still owns one live string pair.
+        let pair = unsafe { (*cloned).data.cast::<HewStringPair>().read_unaligned() };
+        // SAFETY: pair strings remain borrowed from cloned.
+        unsafe {
+            assert_eq!(string_as_str(pair.name), "x-owner");
+            assert_eq!(string_as_str(pair.value), "kept");
+            hew_cabi::vec::hew_vec_free(cloned);
+        }
     }
 
     #[test]
@@ -1443,16 +1380,10 @@ mod tests {
         let elem_ptr = unsafe { (*vec).data };
         // SAFETY: elem_ptr addresses one complete HewStringPair slot.
         let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
-        // SAFETY: pointers are valid malloc'd C strings from hew_http_response_headers.
-        let name = unsafe { CStr::from_ptr(pair.name) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        // SAFETY: pair.value is a valid malloc'd C string from hew_http_response_headers.
-        let value = unsafe { CStr::from_ptr(pair.value) }
-            .to_str()
-            .unwrap()
-            .to_owned();
+        // SAFETY: pointers are borrowed managed strings from hew_http_response_headers.
+        let name = unsafe { string_as_str(pair.name) }.to_owned();
+        // SAFETY: pair.value is an owned managed string from hew_http_response_headers.
+        let value = unsafe { string_as_str(pair.value) }.to_owned();
         assert_eq!(name, "x-custom");
         assert_eq!(value, "my-value");
 
@@ -1588,8 +1519,8 @@ mod tests {
 
     #[test]
     fn request_hew_rejects_wrong_elem_size_vec() {
-        let method = CString::new("GET").unwrap();
-        let url = CString::new("http://example.com").unwrap();
+        let method = ManagedString::new("GET");
+        let url = ManagedString::new("http://example.com");
         // hew_vec_new() produces a Plain-kind vec with elem_size=0, which is not a
         // valid Vec<(String, String)> (expected elem_size = 2 * size_of::<*mut c_char>()).
         // SAFETY: hew_vec_new allocates a valid HewVec handle for the tested failure path.
@@ -1856,8 +1787,8 @@ mod tests {
             let _ = req.respond(response);
         });
 
-        let method = CString::new("GET").unwrap();
-        let url = CString::new(format!("{addr}/hew-surface")).unwrap();
+        let method = ManagedString::new("GET");
+        let url = ManagedString::new(format!("{addr}/hew-surface"));
         // SAFETY: make_tuple_vec returns a live Vec<(String, String)> handle for this request.
         let headers = unsafe { make_tuple_vec(&[("X-Hew-Surface", "client")]) };
         // SAFETY: method/url are valid C strings and headers is a valid tuple vec.
@@ -1892,14 +1823,13 @@ mod tests {
         let resp = unsafe { hew_http_get(url.as_ptr()) };
         assert!(!resp.is_null());
 
-        let name = CString::new("X-Server-Id").unwrap();
+        let name = ManagedString::new("X-Server-Id");
         // SAFETY: resp and name are valid.
         let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
-        assert!(!h.is_null());
-        // SAFETY: h is a valid malloc'd C string.
-        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
-        // SAFETY: h was malloc'd.
-        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
+        // SAFETY: h is an owned managed string.
+        let val = unsafe { string_as_str(h) }.to_owned();
+        // SAFETY: h is the outstanding managed string owner.
+        unsafe { string_release(h) };
         assert_eq!(val, "srv-42");
 
         // SAFETY: resp is still valid.
@@ -1910,8 +1840,8 @@ mod tests {
     #[test]
     fn loopback_request_string_hew_returns_body_only() {
         let (addr, handle) = start_echo_server(200, "hew request string");
-        let method = CString::new("GET").unwrap();
-        let url = CString::new(format!("{addr}/hew-string")).unwrap();
+        let method = ManagedString::new("GET");
+        let url = ManagedString::new(format!("{addr}/hew-string"));
         // SAFETY: make_tuple_vec returns a live, empty Vec<(String, String)> handle.
         let headers = unsafe { make_tuple_vec(&[]) };
         // SAFETY: method/url are valid C strings and headers is a valid tuple vec.
@@ -1922,12 +1852,9 @@ mod tests {
         // SAFETY: headers was allocated by make_tuple_vec and its string fields are freed by hew_vec_free.
         unsafe { hew_cabi::vec::hew_vec_free(headers) };
         // SAFETY: result is a valid malloc'd C string.
-        let body = unsafe { CStr::from_ptr(result) }
-            .to_str()
-            .unwrap()
-            .to_owned();
+        let body = unsafe { string_as_str(result) }.to_owned();
         // SAFETY: result was malloc'd by hew_http_request_string_hew.
-        unsafe { free_cstring(result) }; // CSTRING-FREE: str-open
+        unsafe { string_release(result) };
         assert_eq!(body, "hew request string");
         handle.join().unwrap();
     }
@@ -1940,8 +1867,8 @@ mod tests {
         // hew_http_response_body → hew_http_response_free works end-to-end with a
         // successful 200 response, matching the logic of the Hew-level `request_string`.
         let (addr, handle) = start_echo_server(200, "primitive chain body");
-        let method = CString::new("GET").unwrap();
-        let url = CString::new(format!("{addr}/primitive-chain")).unwrap();
+        let method = ManagedString::new("GET");
+        let url = ManagedString::new(format!("{addr}/primitive-chain"));
         // SAFETY: make_tuple_vec returns a live, empty Vec<(String, String)> handle.
         let headers = unsafe { make_tuple_vec(&[]) };
         // SAFETY: method/url are valid C strings and headers is a valid tuple vec.
@@ -1955,15 +1882,11 @@ mod tests {
         assert!(status >= 0, "status must be ≥ 0 (Some path); got {status}");
         // SAFETY: resp is still valid.
         let body_ptr = unsafe { hew_http_response_body(resp) };
-        assert!(!body_ptr.is_null());
-        // SAFETY: body_ptr is a valid malloc'd C string from hew_http_response_body.
-        let body = unsafe { CStr::from_ptr(body_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        // SAFETY: body_ptr was malloc'd by hew_http_response_body.
-        unsafe { free_cstring(body_ptr) }; // CSTRING-FREE: str-open
-                                           // SAFETY: resp is still valid; free it last.
+        // SAFETY: body_ptr is an owned managed string from hew_http_response_body.
+        let body = unsafe { string_as_str(body_ptr) }.to_owned();
+        // SAFETY: body_ptr is the outstanding managed string result.
+        unsafe { string_release(body_ptr) };
+        // SAFETY: resp is still valid; free it last.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "primitive chain body");
         handle.join().unwrap();

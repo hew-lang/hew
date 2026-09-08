@@ -1,0 +1,12 @@
+import std.net.http;
+import std.net.websocket;
+
+fn fail(divisor: i64) -> i64 {
+    let _websocket = websocket.listen("127.0.0.1:0").expect("WebSocket listener binds");
+    7 / divisor
+}
+
+fn main() -> i64 {
+    let _http = http.listen("127.0.0.1:0").expect("HTTP listener binds");
+    fail(0)
+}

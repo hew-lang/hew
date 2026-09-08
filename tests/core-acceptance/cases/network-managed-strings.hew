@@ -1,0 +1,140 @@
+import std.net.http;
+import std.net.websocket;
+import std.process;
+import std.os;
+
+fn contains_header(headers: Vec<(string, string)>, name: string, value: string) -> bool {
+    for header in headers {
+        if header.0.to_lower() == name {
+            return header.1 == value;
+        }
+    }
+    false
+}
+
+fn check_http_listener_released(address: string) {
+    // tiny_http wakes its detached accept thread on close; socket release
+    // follows when that thread observes the close request.
+    for _ in 0..1000 {
+        match http.listen(address) {
+            .Ok(server) => {
+                server.close();
+                return;
+            },
+            .Err(_) => sleep(1ms),
+        }
+    }
+    panic("HTTP listener was not released");
+}
+
+fn check_invalid_address(address: string) {
+    match http.listen(address) {
+        .Ok(server) => {
+            server.close();
+            panic("invalid HTTP address accepted");
+        },
+        .Err(error) => match error {
+            .InvalidArgument(detail) => assert(!detail.is_empty()),
+            _ => panic("wrong HTTP address error"),
+        },
+    }
+    match websocket.listen(address) {
+        .Ok(server) => {
+            server.close();
+            panic("invalid WebSocket address accepted");
+        },
+        .Err(error) => match error {
+            .InvalidArgument(detail) => assert(!detail.is_empty()),
+            _ => panic("wrong WebSocket address error"),
+        },
+    }
+}
+
+fn http_client_run(url: string) -> i64 {
+    let response = http.request("POST", url, "café\0雪", [("X-Managed", "header value")]);
+    assert(response.status() == 201);
+    let body = response.body();
+    let content_type = response.content_type();
+    let headers = response.headers();
+    response.close();
+    assert(body == "reply\0雪");
+    assert(content_type == "text/plain");
+    assert(contains_header(headers, "content-type", "text/plain"));
+    0
+}
+
+fn websocket_client_run(url: string) -> i64 {
+    let connection = websocket.connect(url).expect("WebSocket client connects");
+    assert(connection.send_text("café\0雪") == 0);
+    let message = connection.recv_timeout(5000).expect("WebSocket reply arrives");
+    let text = message.text();
+    message.close();
+    assert(text == "reply\0雪");
+    connection.close();
+    0
+}
+
+fn http_exchange(executable: string) -> string {
+    let server = http.listen("127.0.0.1:0").expect("HTTP listener binds");
+    let address = f"127.0.0.1:{http.server_port(server)}";
+    let child = process.start_argv(executable, ["http", f"http://{address}/managed"]).expect("HTTP client starts");
+    let request = server.accept();
+    let method = request.method();
+    let path = request.path();
+    let header = request.header("x-managed");
+    let headers = request.headers();
+    let body = request.body("utf-8");
+    request.respond(201, "text/plain", "reply\0雪").expect("HTTP response succeeds");
+    request.close();
+    assert(method == "POST");
+    assert(path == "/managed");
+    assert(header == "header value");
+    assert(contains_header(headers, "x-managed", "header value"));
+    assert(body == "café\0雪");
+    assert(child.wait() == 0);
+    // Returning releases the listener without an explicit close.
+    address
+}
+
+fn websocket_exchange(executable: string) -> string {
+    let server = websocket.listen("127.0.0.1:0").expect("WebSocket listener binds");
+    let address = f"127.0.0.1:{server.port()}";
+    let child = process.start_argv(executable, ["websocket", f"ws://{address}/managed"]).expect("WebSocket client starts");
+    let connection = server.accept();
+    let message = connection.recv();
+    let text = message.text();
+    message.close();
+    assert(text == "café\0雪");
+    assert(connection.send_text("reply\0雪") == 0);
+    connection.close();
+    assert(child.wait() == 0);
+    // Connection, message and listener cleanup also compose with early return.
+    return address;
+}
+
+fn main() -> i64 {
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        match arguments[1] {
+            "http" => return http_client_run(arguments[2]),
+            "websocket" => return websocket_client_run(arguments[2]),
+            _ => panic("unexpected client mode"),
+        }
+    }
+    check_invalid_address("not an address");
+    check_invalid_address("127.0.0.1:0\0ignored");
+    let refused = http.request("GET", "http://127.0.0.1:1/", "", [("X-Managed", "bad\0value")]);
+    assert(refused.status() == -1);
+    let detail = refused.body();
+    refused.close();
+    assert(detail.contains("NUL"));
+    println("invalid addresses refused");
+    let http_address = http_exchange(arguments[0]);
+    check_http_listener_released(http_address);
+    println("HTTP managed strings and cleanup");
+    let websocket_address = websocket_exchange(arguments[0]);
+    let websocket_rebound = websocket.listen(websocket_address).expect("WebSocket listener was released");
+    websocket_rebound.close();
+    println("WebSocket managed strings and cleanup");
+    0
+}

@@ -4792,6 +4792,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_body_string"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.Request", ""]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4800,6 +4801,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.http.Request"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4807,6 +4809,7 @@ discharge-depth = "none"
 symbol = "hew_http_request_header"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.Request", ""]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4815,6 +4818,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_headers"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Request"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
 
@@ -4822,6 +4826,7 @@ discharge-depth = "deep"
 symbol = "hew_http_request_method"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Request"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4830,6 +4835,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_path"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Request"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4838,6 +4844,7 @@ result-retention = "transferred"
 symbol = "hew_http_respond_bridge"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.http.Request", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4845,6 +4852,7 @@ discharge-depth = "none"
 symbol = "hew_http_respond_json"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.http.Request", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4852,6 +4860,7 @@ discharge-depth = "none"
 symbol = "hew_http_respond_stream"
 result = "fresh"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.http.Request", "", ""]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
 
@@ -4859,6 +4868,7 @@ discharge-depth = "shallow"
 symbol = "hew_http_respond_text"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.http.Request", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4884,9 +4894,12 @@ result-retention-basis = "successful bind returns one fresh Box::into_raw(HewHtt
 symbol = "hew_http_server_recv"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.http.Request"
 resource-param-types = ["std.net.http.Server"]
 release-symbol = "hew_http_request_free"
-discharge-depth = "shallow"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "successful receive creates one Box::into_raw(HewHttpRequest); accessors borrow it and hew_http_request_free reclaims the box and remaining request"
 
 [[ownership.contracts]]
 symbol = "hew_http_server_set_request_timeout_ms"
@@ -4898,7 +4911,7 @@ discharge-depth = "none"
 
 # HTTP client — hew-std/src/http/client.rs. request_hew borrows its
 # Vec<(String,String)> headers and returns a Box'd HewHttpResponse whose free
-# releases the owned body (deep). Body/header getters strdup fresh strings;
+# releases the owned body (deep). Body/header getters copy managed strings;
 # response_headers builds a fresh owned-element Vec (hew_vec_free_owned deep).
 [[ownership.contracts]]
 symbol = "hew_http_last_error"
@@ -4912,13 +4925,17 @@ result-retention = "transferred"
 symbol = "hew_http_request_hew"
 result = "fresh"
 params = ["borrow", "borrow", "borrow", "borrow"]
+resource-result-type = "std.net.http.Response"
 release-symbol = "hew_http_response_free"
 discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "build_response returns one Box::into_raw(HewHttpResponse); getters copy managed values and hew_http_response_free reclaims the box, raw body and header storage"
 
 [[ownership.contracts]]
 symbol = "hew_http_response_body"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Response"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4927,6 +4944,7 @@ result-retention = "transferred"
 symbol = "hew_http_response_content_type"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Response"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4935,6 +4953,7 @@ result-retention = "transferred"
 symbol = "hew_http_response_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.http.Response"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4942,6 +4961,7 @@ discharge-depth = "none"
 symbol = "hew_http_response_header"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.Response", ""]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4950,6 +4970,7 @@ result-retention = "transferred"
 symbol = "hew_http_response_headers"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Response"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
 
@@ -4957,6 +4978,7 @@ discharge-depth = "deep"
 symbol = "hew_http_response_status"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Response"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5002,6 +5024,7 @@ result-retention-basis = "successful handshake returns one fresh Box::into_raw(H
 symbol = "hew_ws_message_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.websocket.Message"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5009,6 +5032,7 @@ discharge-depth = "none"
 symbol = "hew_ws_message_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Message"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5016,6 +5040,7 @@ discharge-depth = "none"
 symbol = "hew_ws_message_text"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Message"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5024,6 +5049,7 @@ result-retention = "transferred"
 symbol = "hew_ws_message_type"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Message"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5031,9 +5057,12 @@ discharge-depth = "none"
 symbol = "hew_ws_recv"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.websocket.Message"
 resource-param-types = ["std.net.websocket.Conn"]
 release-symbol = "hew_ws_message_free"
-discharge-depth = "shallow"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "build_message returns one Box::into_raw(HewWsMessage) owning its raw payload; text access copies a managed string and hew_ws_message_free reclaims both allocations"
 
 [[ownership.contracts]]
 symbol = "hew_ws_recv_last_timed_out"
@@ -5046,9 +5075,12 @@ discharge-depth = "none"
 symbol = "hew_ws_recv_timeout"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-result-type = "std.net.websocket.Message"
 resource-param-types = ["std.net.websocket.Conn", ""]
 release-symbol = "hew_ws_message_free"
-discharge-depth = "shallow"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "successful receive returns the same fresh build_message allocation as hew_ws_recv; timeout returns null and hew_ws_message_free reclaims any published message and payload"
 
 [[ownership.contracts]]
 symbol = "hew_ws_send_text"

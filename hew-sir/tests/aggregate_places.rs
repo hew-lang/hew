@@ -711,50 +711,19 @@ fn named_record_paths_preserve_siblings_and_reject_custom_cleanup_ancestors() {
     let outer_ty = probe(&mut module).params[0].ty.clone();
     let inner_ty = probe(&mut module).places[1].ty.clone();
     for ty in [outer_ty, inner_ty] {
-        let mut invalid = module.clone();
-        invalid
-            .aggregate_shapes
-            .iter_mut()
-            .find(|shape| shape.aggregate_ty == ty)
-            .unwrap()
-            .marker = hew_types::DeclarationMarker::Linear;
-        assert_projection_error(&mut invalid, "cannot traverse a linear ancestor");
-    }
-}
-
-/// A `#[resource]` record's fields are readable, and the owner is released
-/// whole: reading one field must not turn the owner into a field partition
-/// that could release the members while the owner itself goes unclosed.
-#[test]
-fn resource_ancestors_are_readable_and_keep_one_whole_release() {
-    let mut module = record_fixture();
-    probe(&mut module).blocks[0].ops = vec![
-        take(0, 2, 2, ResolvedTy::String),
-        destroy(1, 2),
-        copy(2, 0, 3, ResolvedTy::String),
-        destroy(3, 3),
-        destroy(4, 0),
-    ];
-    let outer_ty = probe(&mut module).params[0].ty.clone();
-    module
-        .aggregate_shapes
-        .iter_mut()
-        .find(|shape| shape.aggregate_ty == outer_ty)
-        .unwrap()
-        .marker = hew_types::DeclarationMarker::Resource;
-    let function = probe(&mut module).clone();
-    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
-    assert_eq!(
-        plan.leaves(OwnerRoot::Value(ValueId(0))),
-        None,
-        "a resource owner keeps no field partition"
-    );
-    for place in &function.places {
-        assert!(
-            plan.projection(place.id)
-                .is_none_or(|projection| projection.leaves.is_empty()),
-            "no place under a resource owner may claim its own content"
-        );
+        for marker in [
+            hew_types::DeclarationMarker::Resource,
+            hew_types::DeclarationMarker::Linear,
+        ] {
+            let mut invalid = module.clone();
+            invalid
+                .aggregate_shapes
+                .iter_mut()
+                .find(|shape| shape.aggregate_ty == ty)
+                .unwrap()
+                .marker = marker;
+            assert_projection_error(&mut invalid, "keeps one whole owner");
+        }
     }
 }
 

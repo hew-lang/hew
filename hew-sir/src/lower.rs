@@ -7128,20 +7128,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return self.emit(expr, SemOpKind::LoadCopy { place });
         }
         let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
-        let aggregate = self.lower_read_operand(object, "aggregate projection operand")?;
-        self.emit(
+        let mut loans = Vec::new();
+        let aggregate = self.lower_borrowed_read(object, &mut loans)?;
+        let value = self.emit(
             expr,
             SemOpKind::AggregateProjectCopy {
                 shape,
                 aggregate,
                 field,
             },
-        )
+        )?;
+        self.end_call_loans(&loans)?;
+        Ok(value)
     }
 
     /// These expressions cannot consume a prior argument's owner or branch to
-    /// cleanup while a call-local loan is open. Other evaluation needs an owned
-    /// snapshot of earlier arguments to preserve their source-order capture.
+    /// cleanup while a call-local loan is open. Other evaluation requires a
+    /// snapshot of copyable arguments or a protected loan of affine arguments.
     fn stable_argument_read(expr: &HirExpr) -> bool {
         match &expr.kind {
             HirExprKind::Literal(_) | HirExprKind::BindingRef { .. } => true,
@@ -7193,6 +7196,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Ok(Operand {
                     value: self.load_capture(*binding, Provenance::Site(expr.site), false)?,
                 });
+            }
+            if let BindingTarget::Value(value) = self.binding_target(*binding)? {
+                if self.ended_loans.contains(&value) {
+                    return Err("E_OWN_CONSUME_BORROWED: call argument names an ended loan".into());
+                }
+                return Ok(Operand { value });
             }
         }
         let (object, shape, field) = match &expr.kind {
@@ -7317,7 +7326,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     /// Capture an earlier value before a later argument can replace its owner.
-    /// Stable projected reads keep their ordinary call-local loans instead.
+    /// An affine argument cannot be snapshotted: its loan remains live during
+    /// later evaluation, which must not consume or replace the borrowed owner.
     fn lower_call_read(
         &mut self,
         expr: &HirExpr,
@@ -7327,7 +7337,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<Operand, String> {
         let scope_loan_floor = self.scope_loans.len();
         let call_loan_floor = loans.len();
-        let operand = if !later_arguments_are_stable {
+        let ty = self.ty(&expr.ty);
+        self.service.require_type_facts(&ty)?;
+        let affine = self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
+            == hew_types::CloneKind::None;
+        let operand = if !later_arguments_are_stable && !affine {
             Ok(Operand {
                 value: lower_initial_value_transfer(
                     self,
@@ -7336,8 +7350,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     OwnedBindingUse::Copy,
                 )?,
             })
-        } else if can_borrow_projection {
-            self.lower_borrowed_read(expr, loans)
+        } else if can_borrow_projection || affine {
+            let mut operand = self.lower_borrowed_read(expr, loans)?;
+            if affine && self.value_own_kind(operand.value) == Some(OwnKind::Owned) {
+                operand.value = self.emit(
+                    expr,
+                    SemOpKind::BeginBorrow {
+                        owner: operand.clone(),
+                    },
+                )?;
+                loans.push(operand.value);
+            }
+            Ok(operand)
         } else {
             self.lower_read_operand(expr, "call argument")
         }?;
@@ -7368,7 +7392,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
         let mut lowered_args = Vec::new();
+        let argument_loan_depth = self.argument_receiver_loans.len();
         for (index, arg) in args.iter().enumerate() {
+            let loan_floor = loans.len();
             let stable_tail = args[index + 1..]
                 .iter()
                 .all(|arg| Self::stable_argument_read(arg));
@@ -7377,7 +7403,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 operand,
                 decision: crate::BoundaryDecision::Borrow,
             });
+            self.argument_receiver_loans
+                .extend_from_slice(&loans[loan_floor..]);
         }
+        self.argument_receiver_loans.truncate(argument_loan_depth);
         let live_at_call = self.owned_live.clone();
         let argument_temporaries: Vec<_> = live_at_call
             .keys()
@@ -7893,6 +7922,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.argument_receiver_loans.extend(loans.iter().copied());
         let mut lowered_args = Vec::with_capacity(args.len());
         for (index, (arg, expected)) in args.iter().zip(params).enumerate() {
+            let loan_floor = loans.len();
             let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
             let operand = if expected.passing == SemParamPassing::Consume {
                 let value = self.lower_consuming_value(arg)?;
@@ -7936,6 +7966,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                 },
             });
+            self.argument_receiver_loans
+                .extend_from_slice(&loans[loan_floor..]);
         }
         self.argument_receiver_loans.truncate(receiver_loan_depth);
         Ok(lowered_args)
@@ -8283,7 +8315,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let read_only = effects
             .iter()
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
+        let argument_loan_depth = self.argument_receiver_loans.len();
         for (index, (&arg, effect)) in args.iter().zip(effects).enumerate() {
+            let loan_floor = loans.len();
             let (value, decision) = match effect {
                 RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
                 RuntimeArgumentEffect::Borrow => {
@@ -8332,7 +8366,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 operand: Operand { value },
                 decision,
             });
+            self.argument_receiver_loans
+                .extend_from_slice(&loans[loan_floor..]);
         }
+        self.argument_receiver_loans.truncate(argument_loan_depth);
 
         // Preserve arguments borrowing the receiver's owner before its take.
         // Alias identity comes from the same declared place paths as loans.
@@ -8799,7 +8836,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.keys().copied().collect();
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut loans = Vec::new();
+        let argument_loan_depth = self.argument_receiver_loans.len();
         for (index, (arg, decision)) in args.iter().zip(&decisions).enumerate() {
+            let loan_floor = loans.len();
             let value = if *decision == crate::BoundaryDecision::Move {
                 self.lower_consuming_value(arg)?
             } else {
@@ -8811,7 +8850,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 operand: Operand { value },
                 decision: *decision,
             });
+            self.argument_receiver_loans
+                .extend_from_slice(&loans[loan_floor..]);
         }
+        self.argument_receiver_loans.truncate(argument_loan_depth);
         let argument_temporaries: Vec<_> = self
             .owned_live
             .keys()

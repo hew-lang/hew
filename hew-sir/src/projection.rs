@@ -206,8 +206,8 @@ pub fn place_plan(
         }
         plan.projections.insert(place.id, projection);
     }
-    let (expanded, whole) = verify_partition_coverage(function, &plan, &values, shapes, facts)?;
-    install_partitions(&mut plan, &expanded, &whole);
+    let expanded = verify_partition_coverage(function, &plan, &values, shapes, facts)?;
+    install_partitions(&mut plan, &expanded);
     for block in &function.blocks {
         let mut failure = None;
         block.terminator.visit_successors(|edge| {
@@ -250,11 +250,11 @@ fn plain_field_recipes(
         if ty.nominal_instance().as_ref() != Some(&descriptor.instance) {
             return Err("aggregate ancestor descriptor has a different nominal identity".into());
         }
-        // A `#[resource]` record's fields are ordinary members: its own
-        // `close` reads them, and so does any other borrow. `#[linear]` has
-        // no admitted release, so nothing may see through it.
-        if descriptor.marker == hew_types::DeclarationMarker::Linear {
-            return Err("aggregate projection cannot traverse a linear ancestor".into());
+        if descriptor.marker != hew_types::DeclarationMarker::None {
+            return Err(
+                "an ownership-marked record keeps one whole owner; read its fields through aggregate borrows"
+                    .into(),
+            );
         }
     }
     Ok(recipes)
@@ -317,22 +317,14 @@ fn resolve_projection(
     })
 }
 
-/// Aggregate roots replaced by their field partition, and roots released
-/// whole because their declaration carries an ownership marker.
-type PartitionCoverage = (BTreeSet<(OwnerRoot, PlaceId)>, BTreeSet<OwnerRoot>);
-
 fn verify_partition_coverage(
     function: &SemFunction,
     plan: &PlacePlan,
     values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
-) -> Result<PartitionCoverage, String> {
+) -> Result<BTreeSet<(OwnerRoot, PlaceId)>, String> {
     let mut groups = BTreeMap::<_, (AggregateShapeRef, usize, BTreeSet<u32>)>::new();
-    // Roots released whole. A `#[resource]` record is closed by its own
-    // `close`, so its fields are reads through the owner, never an ownership
-    // partition that could release the members while the owner goes unclosed.
-    let mut whole = BTreeSet::new();
     for place in &function.places {
         let PlaceOrigin::Aggregate { base, shape, field } = place.origin else {
             continue;
@@ -349,10 +341,6 @@ fn verify_partition_coverage(
             }
             PlaceBase::Value(value) => &values[&value].1,
         };
-        if is_marked_record(ty, shapes) {
-            whole.insert(root);
-            continue;
-        }
         let count = plain_field_recipes(shape, ty, shapes, facts)?.len();
         let (previous_shape, expected, fields) = groups
             .entry((root, base))
@@ -374,37 +362,18 @@ fn verify_partition_coverage(
             expanded.insert((root, parent));
         }
     }
-    Ok((expanded, whole))
+    Ok(expanded)
 }
 
-/// A nominal record whose declaration carries an ownership marker.
-fn is_marked_record(ty: &ResolvedTy, shapes: &[SemAggregateShape]) -> bool {
-    shapes.iter().any(|shape| {
-        shape.aggregate_ty == *ty && shape.marker != hew_types::DeclarationMarker::None
-    })
-}
-
-fn install_partitions(
-    plan: &mut PlacePlan,
-    expanded: &BTreeSet<(OwnerRoot, PlaceId)>,
-    whole: &BTreeSet<OwnerRoot>,
-) {
+fn install_partitions(plan: &mut PlacePlan, expanded: &BTreeSet<(OwnerRoot, PlaceId)>) {
     let mut leaves: Vec<_> = plan
         .projections
         .values()
         .filter(|projection| !expanded.contains(&(projection.root, projection.place)))
-        .filter(|projection| !whole.contains(&projection.root) || projection.path.is_empty())
         .map(|projection| (projection.root, projection.path.clone(), projection.place))
         .collect();
     leaves.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     for projection in plan.projections.values_mut() {
-        // A root released whole owns nothing through its field places: each
-        // projection is its own content, and only the root's own entry
-        // carries the release.
-        if whole.contains(&projection.root) && !projection.path.is_empty() {
-            projection.leaves = Vec::new();
-            continue;
-        }
         projection.leaves = leaves
             .iter()
             .filter(|(root, path, _)| {
@@ -413,10 +382,7 @@ fn install_partitions(
             .map(|(_, _, id)| *id)
             .collect();
     }
-    for (root, path, place) in leaves {
-        if whole.contains(&root) && !path.is_empty() {
-            continue;
-        }
+    for (root, _, place) in leaves {
         plan.roots.entry(root).or_default().push(place);
     }
 }

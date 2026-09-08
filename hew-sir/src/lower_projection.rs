@@ -26,6 +26,17 @@ impl Builder<'_, '_> {
         &mut self,
         place: &BindingPlace,
     ) -> Result<Option<PlaceId>, String> {
+        // A resource's release owns its members as a whole. Reads through it
+        // use aggregate loans, rather than inventing independently owned field
+        // places beneath the resource. An enclosing ordinary record may still
+        // partition the resource itself alongside its other fields.
+        if place.projections.iter().any(|(_, shape, _)| {
+            matches!(shape, AggregateShapeRef::Record(id)
+                if self.service.aggregate_shapes[id.0 as usize].marker
+                    != hew_types::DeclarationMarker::None)
+        }) {
+            return Ok(None);
+        }
         let target = self.binding_target(place.binding)?;
         if self.target_ty(target)? != place.root_ty {
             return Err("aggregate projection changed its exact binding type".into());

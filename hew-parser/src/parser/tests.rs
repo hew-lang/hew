@@ -1203,6 +1203,7 @@ fn parse_async_fn_is_rejected() {
         result.errors[0].message
     );
     assert_eq!(result.errors[0].hint.as_deref(), Some("delete `async`"));
+    assert_eq!(result.errors[0].kind.as_kind_str(), "E_NO_ASYNC_FN");
 }
 
 #[test]
@@ -1214,6 +1215,7 @@ fn parse_async_gen_fn_is_rejected() {
         .iter()
         .any(|error| error.message.contains("E_NO_ASYNC_GEN")));
     assert_eq!(result.errors[0].hint.as_deref(), Some("delete `async`"));
+    assert_eq!(result.errors[0].kind.as_kind_str(), "E_NO_ASYNC_GEN");
 }
 
 #[test]

@@ -386,6 +386,22 @@ impl<'src> Parser<'src> {
         });
     }
 
+    pub(crate) fn error_at_with_kind_and_hint(
+        &mut self,
+        message: String,
+        span: Span,
+        hint: impl Into<String>,
+        kind: ParseDiagnosticKind,
+    ) {
+        self.errors.push(ParseError {
+            message,
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind,
+        });
+    }
+
     pub(crate) fn error_closure_pipe_syntax(
         &mut self,
         message: impl Into<String>,

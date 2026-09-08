@@ -273,17 +273,18 @@ impl Parser<'_> {
         }
 
         let span = self.peek_span();
-        let code = if is_generator {
-            "E_NO_ASYNC_GEN"
+        let (code, kind) = if is_generator {
+            ("E_NO_ASYNC_GEN", ParseDiagnosticKind::NoAsyncGen)
         } else {
-            "E_NO_ASYNC_FN"
+            ("E_NO_ASYNC_FN", ParseDiagnosticKind::NoAsyncFn)
         };
-        self.error_at_with_hint(
+        self.error_at_with_kind_and_hint(
             format!(
                 "{code}: `async` no longer marks a callable; suspension is inferred from its body"
             ),
             span,
             "delete `async`",
+            kind,
         );
         true
     }

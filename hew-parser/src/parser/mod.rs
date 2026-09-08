@@ -762,6 +762,10 @@ pub enum ParseDiagnosticKind {
     },
     /// Pipe-closure syntax is malformed or incomplete.
     ClosurePipeSyntax,
+    /// Retired `async fn` syntax; suspension is inferred from the body.
+    NoAsyncFn,
+    /// Retired `async gen fn` syntax; generators infer suspension too.
+    NoAsyncGen,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -780,6 +784,8 @@ impl ParseDiagnosticKind {
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
             Self::ClosurePipeSyntax => "ClosurePipeSyntax",
+            Self::NoAsyncFn => "E_NO_ASYNC_FN",
+            Self::NoAsyncGen => "E_NO_ASYNC_GEN",
             Self::Other => "Other",
         }
     }

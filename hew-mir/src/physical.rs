@@ -8431,19 +8431,6 @@ mod tests {
         target
     }
 
-    fn target_with_i64_pair() -> PhysicalTarget {
-        let mut target = target();
-        target.insert_layout(
-            ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
-            PhysicalLayout {
-                size: 16,
-                align: 8,
-                repr: PhysicalRepr::Struct(vec![i64_layout(), i64_layout()]),
-            },
-        );
-        target
-    }
-
     fn utf8_target(module: &SemModule) -> PhysicalTarget {
         // This fixture uses the existing fixed 64-bit test target. Its two
         // variants have an eight-byte-aligned payload following a one-byte tag.
@@ -8568,9 +8555,31 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixed test target realizes resource and composite layouts from one inventory"
+    )]
     pub(super) fn target_for_inventory(module: &SemModule) -> PhysicalTarget {
         let inventory = physical_type_inventory(module);
         let mut target = target();
+        // Source fixtures retain checked callable headers as well as bodies.
+        // Realize their resource carriers from the same inventory as codegen.
+        for resource in inventory.resources() {
+            let layout = match resource.release.carrier().unwrap() {
+                ResourceCarrier::Pointer => PhysicalLayout {
+                    size: 8,
+                    align: 8,
+                    repr: PhysicalRepr::Pointer,
+                },
+                ResourceCarrier::I32 => PhysicalLayout {
+                    size: 4,
+                    align: 4,
+                    repr: PhysicalRepr::Integer { bits: 32 },
+                },
+                ResourceCarrier::Record => continue,
+            };
+            target.insert_layout(resource.ty.clone(), layout);
+        }
         for ty in inventory
             .types()
             .filter(|ty| collection_type_arguments(ty).is_some())
@@ -9004,7 +9013,7 @@ mod tests {
             ",
         );
         let verified =
-            lower_physical_module(&module, target_with_i64_pair()).expect("physical tuple");
+            lower_physical_module(&module, target_for_inventory(&module)).expect("physical tuple");
         let operations = verified
             .module()
             .functions
@@ -9318,7 +9327,7 @@ mod tests {
             repr: PhysicalRepr::Struct(vec![]),
         };
         let target_with_carrier = |carrier: PhysicalLayout| {
-            let mut target = target();
+            let mut target = target_for_inventory(&module);
             let object = PhysicalLayout {
                 size: 24,
                 align: 8,
@@ -9447,7 +9456,7 @@ mod tests {
             ",
         );
 
-        let mut owned_tuple = lower_physical_module(&module, target_with_i64_pair())
+        let mut owned_tuple = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid physical tuple")
             .into_unverified();
         let tuple_dest = owned_tuple.functions[0]
@@ -9464,7 +9473,7 @@ mod tests {
             .expect_err("physical tuple must not infer aggregate ownership");
         assert!(error.message.contains("limited to no-drop values"));
 
-        let mut bad_index = lower_physical_module(&module, target_with_i64_pair())
+        let mut bad_index = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid physical tuple")
             .into_unverified();
         let index = bad_index.functions[0]
@@ -9506,7 +9515,8 @@ mod tests {
             }
             "#,
         );
-        let verified = lower_physical_module(&module, target()).expect("physical runtime calls");
+        let verified = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("physical runtime calls");
         let actions = verified
             .module()
             .functions
@@ -9535,7 +9545,8 @@ mod tests {
     #[test]
     fn scalar_print_lowers_to_the_exact_physical_runtime_action() {
         let module = lower_source("fn main() { println(1 + 2); }");
-        let verified = lower_physical_module(&module, target()).expect("physical scalar print");
+        let verified = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("physical scalar print");
         assert!(verified
             .module()
             .functions
@@ -9558,7 +9569,8 @@ mod tests {
         let module = lower_source(include_str!(
             "../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
         ));
-        let verified = lower_physical_module(&module, target()).expect("physical bytes calls");
+        let verified = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("physical bytes calls");
         let actions = verified
             .module()
             .functions
@@ -9580,7 +9592,7 @@ mod tests {
         let module = lower_source(include_str!(
             "../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
         ));
-        let mut wrong_transfer = lower_physical_module(&module, target())
+        let mut wrong_transfer = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid physical bytes module")
             .into_unverified();
         let push_args = wrong_transfer
@@ -9605,7 +9617,7 @@ mod tests {
             .expect_err("borrow must not replace the bytes owner move");
         assert!(error.message.contains("argument disagrees"));
 
-        let mut missing_failure = lower_physical_module(&module, target())
+        let mut missing_failure = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid physical bytes module")
             .into_unverified();
         let failure = missing_failure
@@ -9636,7 +9648,8 @@ mod tests {
             panic!("return fixture");
         };
         value.decision = BoundaryDecision::Copy;
-        let physical = lower_physical_module(&module, target()).expect("lower");
+        let physical =
+            lower_physical_module(&module, target_for_inventory(&module)).expect("lower");
         assert!(matches!(
             physical.module().functions[0].blocks[0].terminator,
             PhysicalTerminator::Return {
@@ -9751,7 +9764,7 @@ mod tests {
             }
             "#,
         );
-        let mut physical = lower_physical_module(&module, target())
+        let mut physical = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid assignment")
             .into_unverified();
         let operation = physical.functions[0]
@@ -9791,7 +9804,8 @@ mod tests {
             }
             ",
         );
-        let verified = lower_physical_module(&module, target()).expect("valid scalar operations");
+        let verified = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("valid scalar operations");
 
         let mut wrong_binary = verified.clone().into_unverified();
         let bool_dest = wrong_binary.functions[0]
@@ -9840,7 +9854,7 @@ mod tests {
     #[test]
     fn full_range_u64_literal_lowers_to_its_exact_bit_pattern() {
         let module = lower_source("fn main() { let value: u64 = 18446744073709551615; }");
-        let physical = lower_physical_module(&module, target())
+        let physical = lower_physical_module(&module, target_for_inventory(&module))
             .expect("full-range u64 literal")
             .into_unverified();
         let bits = physical.functions[0]
@@ -9861,7 +9875,7 @@ mod tests {
     #[test]
     fn negative_signed_literal_lowers_to_its_destination_width_twos_complement() {
         let module = lower_source("fn main() { let value: i8 = -128; }");
-        let physical = lower_physical_module(&module, target())
+        let physical = lower_physical_module(&module, target_for_inventory(&module))
             .expect("i8 minimum literal")
             .into_unverified();
         let bits = physical.functions[0]
@@ -9884,7 +9898,8 @@ mod tests {
     #[test]
     fn verifier_rejects_a_constant_with_bits_above_its_destination_width() {
         let module = lower_source("fn main() { let value: u8 = 7; }");
-        let verified = lower_physical_module(&module, target()).expect("u8 literal");
+        let verified =
+            lower_physical_module(&module, target_for_inventory(&module)).expect("u8 literal");
         let mut malformed = verified.into_unverified();
         let constant = malformed.functions[0]
             .blocks
@@ -9909,7 +9924,7 @@ mod tests {
     #[test]
     fn verifier_rejects_missing_physical_literal_pool_entries() {
         let module = lower_source(r#"fn main() { let value = "literal"; }"#);
-        let mut physical = lower_physical_module(&module, target())
+        let mut physical = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid string literal")
             .into_unverified();
         let literal = physical.functions[0]
@@ -9999,7 +10014,8 @@ mod tests {
             }
             ",
         );
-        lower_physical_module(&module, target()).expect("scalar loop should verify physically");
+        lower_physical_module(&module, target_for_inventory(&module))
+            .expect("scalar loop should verify physically");
     }
 
     #[test]
@@ -10016,7 +10032,8 @@ mod tests {
             }
             "#,
         );
-        lower_physical_module(&module, target()).expect("owned loop should verify physically");
+        lower_physical_module(&module, target_for_inventory(&module))
+            .expect("owned loop should verify physically");
     }
 
     #[test]

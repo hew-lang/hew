@@ -13,34 +13,8 @@ fn selected_calls(source: &str, triple: &str) -> PhysicalModule {
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let mut module = hew_sir::lower_module(&hir.module, &checked).module;
     assert!(hew_sir::verify_module(&module).is_empty());
-    // The source producer is a separate layer. Ask the real checker for exact
-    // selections over this fixture's inventory, then replace ordinary calls
-    // while retaining their verified operand loans and both cleanup paths.
-    let mut service = TypeFactService::new(checked.type_fact_context, checked.type_facts);
-    let inventory = hew_mir::physical::physical_type_inventory(&module);
-    for ty in inventory.types() {
-        for capability in [ValueCapability::Eq, ValueCapability::Hash] {
-            if module
-                .value_capabilities
-                .contains_key(&(ty.clone(), capability))
-            {
-                continue;
-            }
-            if let Some(selection) = service.capability_plan(ty, capability).unwrap() {
-                if *selection.plan() == ValueMethodPlan::Derived {
-                    service.require(ty).unwrap();
-                    module.value_capabilities.insert(
-                        (ty.clone(), capability),
-                        SemValueMethodPlan {
-                            selection,
-                            callable: None,
-                        },
-                    );
-                }
-            }
-        }
-    }
-    module.type_facts.extend(service.into_rows());
+    // Ask the real checker only for the operations selected by this source
+    // fixture. Unrelated callable parameter types do not demand Eq or Hash.
     let targets: BTreeMap<_, _> = module
         .functions
         .iter()
@@ -56,6 +30,29 @@ fn selected_calls(source: &str, triple: &str) -> PhysicalModule {
             Some((function.callable, (ty, capability)))
         })
         .collect();
+    let mut service = TypeFactService::new(checked.type_fact_context, checked.type_facts);
+    for (ty, capability) in targets.values() {
+        if module
+            .value_capabilities
+            .contains_key(&(ty.clone(), *capability))
+        {
+            continue;
+        }
+        let selection = service
+            .capability_plan(ty, *capability)
+            .unwrap()
+            .expect("fixture operation must have a checked capability");
+        assert_eq!(*selection.plan(), ValueMethodPlan::Derived);
+        service.require(ty).unwrap();
+        module.value_capabilities.insert(
+            (ty.clone(), *capability),
+            SemValueMethodPlan {
+                selection,
+                callable: None,
+            },
+        );
+    }
+    module.type_facts.extend(service.into_rows());
     let mut converted = 0;
     for function in &mut module.functions {
         for block in &mut function.blocks {

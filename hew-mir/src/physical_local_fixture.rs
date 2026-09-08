@@ -104,20 +104,21 @@ pub fn branch(flag: u32, yes: u32, no: u32) -> SemTerminator {
     }
 }
 pub fn normalize(module: &mut SemModule) {
-    for function in &mut module.functions {
-        let mut next = 0;
-        for block in &mut function.blocks {
-            for op in &mut block.ops {
-                op.id = OpId(next);
+    // Only probe's body was replaced. Preserve the producer's operation IDs
+    // in the untouched source functions and injected callable bodies.
+    let function = probe(module);
+    let mut next = 0;
+    for block in &mut function.blocks {
+        for op in &mut block.ops {
+            op.id = OpId(next);
+            next += 1;
+        }
+        match &mut block.terminator {
+            SemTerminator::IndirectCall { id, .. } | SemTerminator::RtCall { id, .. } => {
+                *id = OpId(next);
                 next += 1;
             }
-            match &mut block.terminator {
-                SemTerminator::IndirectCall { id, .. } | SemTerminator::RtCall { id, .. } => {
-                    *id = OpId(next);
-                    next += 1;
-                }
-                _ => {}
-            }
+            _ => {}
         }
     }
 }

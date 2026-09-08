@@ -330,23 +330,31 @@ impl ResolvedTy {
             Self::Named {
                 name,
                 args,
-                builtin:
-                    None
-                    | Some(
-                        crate::BuiltinType::CrashInfo
-                        | crate::BuiltinType::CrashAction
-                        | crate::BuiltinType::CrashNotification
-                        | crate::BuiltinType::CrashKind
-                        | crate::BuiltinType::MonitorId
-                        | crate::BuiltinType::DownTarget
-                        | crate::BuiltinType::DownReason
-                        | crate::BuiltinType::DownNotification,
-                    ),
+                builtin,
                 ..
-            } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id(name.clone()),
-                args: args.clone(),
-            }),
+            } if builtin.is_none()
+                || (matches!(
+                    builtin,
+                    Some(
+                        crate::BuiltinType::CrashInfo
+                            | crate::BuiltinType::CrashAction
+                            | crate::BuiltinType::CrashNotification
+                            | crate::BuiltinType::CrashKind
+                            | crate::BuiltinType::MonitorId
+                            | crate::BuiltinType::DownTarget
+                            | crate::BuiltinType::DownReason
+                            | crate::BuiltinType::DownNotification
+                            | crate::BuiltinType::MonitorRef
+                    )
+                ) && crate::builtin_type::has_exact_source_owned_lifecycle_identity(
+                    name, *builtin,
+                )) =>
+            {
+                Some(NominalInstance {
+                    nominal: crate::identity::mint_nominal_id(name.clone()),
+                    args: args.clone(),
+                })
+            }
             _ => None,
         }
     }

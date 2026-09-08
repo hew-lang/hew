@@ -865,7 +865,6 @@ pub unsafe extern "C" fn hew_actor_monitor(
     out_monitor_id: *mut u64,
 ) -> i32 {
     const INVALID_TARGET: i32 = 2;
-    const RESOURCE_EXHAUSTED: i32 = 11;
 
     if watcher.is_null() || target.is_null() || out_monitor_id.is_null() {
         return INVALID_TARGET;
@@ -876,20 +875,37 @@ pub unsafe extern "C" fn hew_actor_monitor(
     // SAFETY: Caller guarantees both pointers are valid.
     let target_ref = unsafe { &*target };
 
-    let target_id = target_ref.id;
+    // SAFETY: both borrowed actor allocations and the out pointer are valid.
+    unsafe {
+        register_local_monitor(
+            watcher_ref.id,
+            target_ref.id,
+            Some(target_ref),
+            out_monitor_id,
+        )
+    }
+}
 
+/// Register from the incarnation identity; a borrowed target is optional once
+/// retirement has published terminal state and reclaimed its allocation.
+unsafe fn register_local_monitor(
+    watcher_id: u64,
+    target_id: u64,
+    target: Option<&HewActor>,
+    out_monitor_id: *mut u64,
+) -> i32 {
     // Generate one shared local/remote observation ID.
     let state = monitor_state();
     let Some(ref_id) = state.next_observation_id() else {
         crate::set_last_error("hew_actor_monitor: monitor id space exhausted");
-        return RESOURCE_EXHAUSTED;
+        return 11;
     };
 
     let monitor_entry = MonitorEntry { ref_id };
     let observation = ObservationEntry {
         target: ObservationTarget::Local(target_id),
         action: WatcherAction::Monitor {
-            watcher_actor_id: watcher_ref.id,
+            watcher_actor_id: watcher_id,
         },
     };
 
@@ -897,9 +913,10 @@ pub unsafe extern "C" fn hew_actor_monitor(
     let terminal_reason = state.table[shard_index].access(|shard| {
         if let Some(&reason) = shard.terminal_reasons.get(&target_id) {
             Some(reason)
-        } else if let Some(reason) =
-            terminal_monitor_reason(target_ref.actor_state.load(Ordering::Acquire))
-        {
+        } else if let Some((target_ref, reason)) = target.and_then(|target| {
+            terminal_monitor_reason(target.actor_state.load(Ordering::Acquire))
+                .map(|reason| (target, reason))
+        }) {
             Some(TerminalMonitorReason {
                 state: reason,
                 crash_kind: if reason == HewActorState::Crashed as i32 {
@@ -910,6 +927,13 @@ pub unsafe extern "C" fn hew_actor_monitor(
                 } else {
                     0
                 },
+            })
+        } else if target.is_none() {
+            // A clean free can retire an incarnation without an earlier terminal
+            // sweep. Its identity still produces an immediate normal exit.
+            Some(TerminalMonitorReason {
+                state: HewActorState::Stopped as i32,
+                crash_kind: 0,
             })
         } else {
             shard
@@ -930,12 +954,51 @@ pub unsafe extern "C" fn hew_actor_monitor(
 
     if let Some(reason) = terminal_reason {
         let down = HewDownMessage::local(ref_id, target_id, reason.state, reason.crash_kind);
-        deliver_down_message(watcher_ref.id, down);
+        deliver_down_message(watcher_id, down);
     }
 
     // SAFETY: caller provided a writable out pointer; write only on success.
     unsafe { *out_monitor_id = ref_id };
     0
+}
+
+/// Monitor the current actor's local target, including a retired incarnation.
+/// Status zero initializes the owned monitor ID; three means `NoContext`.
+/// Negative statuses are logical fault codes, never `LinkError` discriminants.
+///
+/// # Safety
+/// `out_monitor_id` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_native_actor_monitor(
+    target: HewLocalPidId,
+    out_monitor_id: *mut u64,
+) -> i32 {
+    let watcher = crate::actor::hew_actor_self();
+    if watcher.is_null() {
+        return 3;
+    }
+    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    else {
+        return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
+    };
+    let target = pin_actor_by_id(target_id);
+    // SAFETY: the activation owns watcher; the optional pin protects target;
+    // the caller provides a writable output slot.
+    let status = unsafe {
+        register_local_monitor(
+            (*watcher).id,
+            target_id,
+            target
+                .as_ref()
+                .map(crate::lifetime::live_actors::ActorPin::actor),
+            out_monitor_id,
+        )
+    };
+    if status == 0 {
+        0
+    } else {
+        -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+    }
 }
 
 /// Create a monitor between two stable local actor identities.
@@ -1249,7 +1312,8 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, _actor_addr: *mut Hew
     // Remove any monitors-on-this-actor entry from its shard.
     let own_shard = get_shard_index(actor_id);
     let target_refs = state.table[own_shard].access(|shard| {
-        shard.terminal_reasons.remove(&actor_id);
+        // Incarnation identities never reuse within a runtime. Preserve the
+        // terminal cause for monitors created through a retired LocalPid.
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         for m in &monitors {
             shard.ref_to_monitor.remove(&m.ref_id);
@@ -1437,6 +1501,81 @@ mod tests {
 
         // SAFETY: watcher remains idle and owned by this test.
         assert_eq!(unsafe { crate::actor::hew_actor_free(watcher) }, 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_monitor_reclaimed_target_preserves_terminal_cause_and_context() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: empty actors are test-owned; no scheduler workers execute them.
+        unsafe {
+            let watcher =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            let target =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!watcher.is_null() && !target.is_null());
+            let target_id = (*target).id;
+            let token = (*target).local_pid_id;
+            let mut id = u64::MAX;
+            let previous = crate::execution_context::set_current_context(std::ptr::null_mut());
+            assert_eq!(hew_native_actor_monitor(token, &raw mut id), 3);
+            assert_eq!(id, u64::MAX, "NoContext must not initialize an owner");
+            assert_eq!(crate::link::hew_native_actor_link(token), 3);
+
+            let mut context = crate::execution_context::HewExecutionContext {
+                actor: watcher,
+                actor_id: (*watcher).id,
+                ..Default::default()
+            };
+            let _ = crate::execution_context::set_current_context(&raw mut context);
+            assert_eq!(hew_native_actor_monitor(token, &raw mut id), 0);
+            assert!(has_monitor_ref_in_any_index(id));
+            hew_actor_demonitor(id);
+            hew_actor_demonitor(id);
+            assert!(!has_monitor_ref_in_any_index(id));
+
+            let crash = crate::internal::types::HEW_TRAP_DIVIDE_BY_ZERO;
+            let crash_kind =
+                crate::internal::types::CrashKind::tag_from_error_code(crash).cast_unsigned();
+            (*target)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            (*target).error_code.store(crash, Ordering::Release);
+            notify_monitors_on_death(target_id, HewActorState::Crashed as i32, crash_kind);
+            assert_eq!(crate::actor::hew_actor_free(target), 0);
+            assert!(pin_actor_by_id(target_id).is_none());
+            assert_eq!(crate::link::hew_native_actor_link(token), 1);
+            (*watcher)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            for _ in 0..2 {
+                let previous_id = id;
+                assert_eq!(hew_native_actor_monitor(token, &raw mut id), 0);
+                assert_ne!(id, previous_id);
+                let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+                assert!(
+                    !node.is_null(),
+                    "retired monitor must immediately deliver DOWN"
+                );
+                let down = &*((*node).data.cast::<HewDownMessage>());
+                assert_eq!((*node).msg_type, HewSysMsg::Down.as_i32());
+                assert_eq!(down.monitor_id, id);
+                assert_eq!(down.target_kind, DOWN_TARGET_LOCAL);
+                assert_eq!(down.slot, crate::pid::hew_pid_serial(target_id));
+                assert_eq!(down.reason_kind, DOWN_REASON_CRASHED);
+                assert_eq!(down.crash_kind, crash_kind);
+                mailbox::hew_msg_node_free(node);
+                hew_actor_demonitor(id);
+                assert!(!has_monitor_ref_in_any_index(id));
+            }
+            assert!(mailbox::hew_mailbox_try_recv_sys(mailbox).is_null());
+            let _ = crate::execution_context::set_current_context(previous);
+            (*watcher)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            assert_eq!(crate::actor::hew_actor_free(watcher), 0);
+        }
     }
 
     fn local_pid_monitor_registration_race(free_watcher: bool) {

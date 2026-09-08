@@ -8266,6 +8266,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<Option<ValueId>, String> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
 
+        let observation = match family {
+            hew_types::RuntimeCallFamily::ActorLink => Some(crate::LocalObservationKind::Link),
+            hew_types::RuntimeCallFamily::ActorMonitor => {
+                Some(crate::LocalObservationKind::Monitor)
+            }
+            hew_types::RuntimeCallFamily::ActorUnlink => Some(crate::LocalObservationKind::Unlink),
+            hew_types::RuntimeCallFamily::ActorDemonitor => {
+                Some(crate::LocalObservationKind::Demonitor)
+            }
+            _ => None,
+        };
+        if let Some(kind) = observation {
+            let [target] = args else {
+                return Err("local observation takes one target".into());
+            };
+            let operation = crate::ActorOperation::LocalObservation {
+                kind,
+                target: self.ty(&target.ty),
+                result: self.ty(&expr.ty),
+            };
+            let signature = self.actor_signature(&operation)?;
+            self.service.require_type_facts(&signature.return_ty)?;
+            let value = self.lower_expr(target)?;
+            return self.emit_actor_call(operation, signature, vec![value]);
+        }
+
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             return self.lower_native_io(expr, operation, args);
         }

@@ -584,3 +584,22 @@ fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() 
         } if name == "std.channel.Receiver" && args.len() == 1
     ));
 }
+
+#[test]
+fn direct_main_observations_require_actor_context() {
+    for operation in ["link", "monitor"] {
+        let parsed = hew_parser::parse(&format!(
+            "actor Worker {{ receive fn ping() {{}} }} fn main() {{ let worker = spawn Worker; let _ = {operation}(worker); }}"
+        ));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("E_ACTOR_CONTEXT_REQUIRED")),
+            "{:?}",
+            output.errors
+        );
+    }
+}

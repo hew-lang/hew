@@ -199,8 +199,8 @@ pub(crate) fn record_resource_lifecycle<'a>(
     let ResolvedTy::Named {
         name,
         args,
-        builtin: None,
         is_opaque: false,
+        ..
     } = ty
     else {
         return None;
@@ -269,8 +269,8 @@ pub fn verify_resource_release(
         let ResolvedTy::Named {
             name,
             args,
-            builtin: None,
             is_opaque: false,
+            ..
         } = ty
         else {
             return Err("a record release requires an exact non-opaque nominal type".into());

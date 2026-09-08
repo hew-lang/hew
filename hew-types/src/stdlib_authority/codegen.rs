@@ -63,8 +63,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "LinkError",
-        variant_count: 10,
-        order_fingerprint: 0x3a85_b1f1_0849_9938,
+        variant_count: 3,
+        order_fingerprint: 0xd92a_6973_af1e_05dc,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {

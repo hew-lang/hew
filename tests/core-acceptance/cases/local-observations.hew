@@ -1,0 +1,35 @@
+import std.link_monitor.{MonitorRef};
+actor Target { receive fn ping() -> i64 { 42 } }
+actor Watcher {
+    receive fn observe(target: LocalPid<Target>) -> i64 {
+        link(target).expect("link live target");
+        link(target).expect("duplicate link is idempotent");
+        unlink(target);
+        unlink(target);
+        let first: MonitorRef = monitor(target).expect("monitor live target");
+        first.close();
+        let second = monitor(target).expect("independent monitor");
+        second.close();
+        let _scoped = monitor(target).expect("scope-owned registration");
+        1
+    }
+    receive fn observe_dead(target: LocalPid<Target>) -> i64 {
+        assert(match link(target) { .Err(LinkError.Dead) => true, _ => false });
+        unlink(target);
+        2
+    }
+}
+fn link_from_helper(target: LocalPid<Target>) -> Result<(), LinkError> { link(target) }
+fn monitor_from_helper(target: LocalPid<Target>) -> Result<MonitorRef, LinkError> { monitor(target) }
+
+fn main() {
+    let target = spawn Target;
+    assert(match link_from_helper(target) { .Err(LinkError.NoContext) => true, _ => false });
+    assert(match monitor_from_helper(target) { .Err(LinkError.NoContext) => true, _ => false });
+    let watcher = spawn Watcher;
+    assert(watcher.observe(target).expect("live observations") == 1);
+    close(target);
+    assert(watcher.observe_dead(target).expect("retired observations") == 2);
+    close(watcher);
+    println("local observations own subscriptions and report context");
+}

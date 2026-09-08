@@ -964,6 +964,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
+        if let ActorOperation::LocalObservation { kind, .. } = &operation {
+            return self.emit_local_observation(*kind, transfers, result, normal, unwind);
+        }
         match &operation {
             ActorOperation::CallStart(protocol) => {
                 let result = result.ok_or_else(|| {
@@ -1008,8 +1011,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             _ => {}
         }
         let id = match &operation {
-            ActorOperation::CallStart(_) | ActorOperation::CallTake(_) => {
-                unreachable!("completion returned above")
+            ActorOperation::LocalObservation { .. }
+            | ActorOperation::CallStart(_)
+            | ActorOperation::CallTake(_) => {
+                unreachable!("special boundary returned above")
             }
             ActorOperation::Spawn(id)
             | ActorOperation::SelfHandle(id)
@@ -1072,8 +1077,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("missing native actor descriptor".into())
             })?;
         let status = match operation {
-            ActorOperation::CallStart(_) | ActorOperation::CallTake(_) => {
-                unreachable!("completion returned above")
+            ActorOperation::LocalObservation { .. }
+            | ActorOperation::CallStart(_)
+            | ActorOperation::CallTake(_) => {
+                unreachable!("special boundary returned above")
             }
             ActorOperation::Close(_) => {
                 let [source] = sources.as_slice() else {
@@ -1165,6 +1172,172 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_store(self.active_status, status)
             .llvm_ctx("record actor boundary status")?;
         self.emit_call_outcome(status, result, Some(normal), unwind)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one native observation boundary owns fault routing and the checked Result construction"
+    )]
+    fn emit_local_observation(
+        &self,
+        kind: hew_mir::physical::LocalObservationKind,
+        transfers: &[ArgumentTransfer],
+        result: Option<StorageId>,
+        normal: &PhysicalEdge,
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        use hew_mir::physical::LocalObservationKind;
+        let [ArgumentTransfer::Move(target)] = transfers else {
+            return Err(CodegenError::FailClosed(
+                "local observation lacks its value target".into(),
+            ));
+        };
+        let target_value = self.load(*target, "observation.target")?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        // One scratch seat per invocation, even when an O0 loop registers
+        // repeatedly. An alloca in the loop body would accumulate stack space.
+        let id = if kind == LocalObservationKind::Monitor {
+            let scratch = self.ctx.create_builder();
+            let entry = self.value.get_first_basic_block().ok_or_else(|| {
+                CodegenError::FailClosed("monitor boundary lacks its callable entry".into())
+            })?;
+            if let Some(first) = entry.get_first_instruction() {
+                scratch.position_before(&first);
+            } else {
+                scratch.position_at_end(entry);
+            }
+            scratch
+                .build_alloca(self.ctx.i64_type(), "monitor.id")
+                .llvm_ctx("allocate monitor identity output")?
+        } else {
+            ptr.const_null()
+        };
+        let (symbol, return_type) = match kind {
+            LocalObservationKind::Link => ("hew_native_actor_link", Some(self.ctx.i32_type())),
+            LocalObservationKind::Monitor => {
+                ("hew_native_actor_monitor", Some(self.ctx.i32_type()))
+            }
+            LocalObservationKind::Unlink => ("hew_native_actor_unlink", None),
+            LocalObservationKind::Demonitor => ("hew_actor_demonitor", None),
+        };
+        let mut types = vec![target_value.get_type().into()];
+        let mut args = vec![target_value.into()];
+        if kind == LocalObservationKind::Monitor {
+            types.push(ptr.into());
+            args.push(id.into());
+        }
+        let function_type = return_type.map_or_else(
+            || self.ctx.void_type().fn_type(&types, false),
+            |ty| ty.fn_type(&types, false),
+        );
+        let function = coro::external(self.llvm, symbol, function_type)?;
+        if return_type.is_none() {
+            self.builder
+                .build_call(function, &args, "")
+                .llvm_ctx("remove local observation")?;
+            self.clear_owned(*target)?;
+            return self.emit_result_edge(None, normal);
+        }
+        let status =
+            call_value(&self.builder, function, &args, "observation.status")?.into_int_value();
+        self.clear_owned(*target)?;
+        let typed = self.ctx.append_basic_block(self.value, "observation.typed");
+        let fault = self.ctx.append_basic_block(self.value, "observation.fault");
+        let failed = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "observation.faulted",
+            )
+            .llvm_ctx("separate logical faults from typed refusal")?;
+        self.builder
+            .build_conditional_branch(failed, fault, typed)
+            .llvm_ctx("route observation fault")?;
+        self.builder.position_at_end(fault);
+        let code = self
+            .builder
+            .build_int_neg(status, "observation.fault.code")
+            .llvm_ctx("decode observation fault")?;
+        self.initialize_active_fault_value(code)?;
+        if let Some(unwind) = unwind {
+            self.emit_edge(unwind)?;
+        } else {
+            self.emit_propagate_fault()?;
+        }
+        self.builder.position_at_end(typed);
+        let result = result.ok_or_else(|| {
+            CodegenError::FailClosed("observation lacks its checked result".into())
+        })?;
+        let result_ty = &self.storage(result)?.ty;
+        let glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *result_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("observation result lacks its variant recipe".into())
+            })?;
+        let error_ty = &glue.variants[1].fields[0].ty;
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "observation.success");
+        let failure = self
+            .ctx
+            .append_basic_block(self.value, "observation.failure");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "observation.complete");
+        let ok = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "observation.ok",
+            )
+            .llvm_ctx("classify local observation")?;
+        self.builder
+            .build_conditional_branch(ok, success, failure)
+            .llvm_ctx("select observation result")?;
+        self.builder.position_at_end(success);
+        let fields = if kind == LocalObservationKind::Monitor {
+            let id = self
+                .builder
+                .build_load(self.ctx.i64_type(), id, "monitor.identity")
+                .llvm_ctx("take monitor identity")?;
+            vec![self.ask_record(&glue.variants[0].fields[0].ty, &[id])?]
+        } else {
+            let layout = self
+                .module
+                .target
+                .layout(&ResolvedTy::Unit)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("link success lacks its unit layout".into())
+                })?;
+            vec![llvm_type(self.ctx, &layout.repr)?.const_zero()]
+        };
+        self.write_variant_value(self.slots[result.0 as usize], 0, &fields, glue.id)?;
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("complete successful observation")?;
+        self.builder.position_at_end(failure);
+        let tag = self
+            .builder
+            .build_int_sub(
+                status,
+                self.ctx.i32_type().const_int(1, false),
+                "observation.error.tag",
+            )
+            .llvm_ctx("decode LinkError status")?;
+        let error = self.actor_unit_variant(error_ty, tag)?;
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[error], glue.id)?;
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("complete refused observation")?;
+        self.builder.position_at_end(complete);
+        self.emit_result_edge(Some(result), normal)
     }
 
     fn emit_actor_spawn(

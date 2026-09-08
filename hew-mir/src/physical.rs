@@ -6,9 +6,9 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorOperation, SemActor, SemActorHandler, SemActorOverflow, SemFailureDisplay,
-    SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor, SupervisorId,
-    TaskScopeJoinMode, TaskSelectionOrder,
+    ActorId, ActorOperation, LocalObservationKind, SemActor, SemActorHandler, SemActorOverflow,
+    SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor,
+    SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 

@@ -358,43 +358,20 @@ impl Display for TimeoutError {
     }
 }
 
-/// Error returned by the `link(handle)` builtin in value position
-/// (`link(actor) -> Result<(), LinkError>`).
-///
-/// Prelude-published — like `SendError` / `TimeoutError`, the variants are
-/// nameable in match arms without an explicit import, because `link()` is a
-/// compiler builtin. `std.link_monitor` re-exports the same surface for
-/// programs that name `MonitorRef` / `MonitorError` / `PartitionPolicy`.
-///
-/// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
-/// as `Ok(())`. `TargetDead` is returned when the target actor has already
-/// exited; the caller's exit handler will fire immediately.
+/// Failure to subscribe to an actor's exit through `link` or `monitor`.
+/// Both operations require a current actor to receive the notification.
 pub enum LinkError {
-    AlreadyLinked,
-    TargetDead,
-    NodeNotRunning,
-    NoCurrentActor,
-    InvalidTarget,
+    Dead,
     Partition,
-    StaleRef,
-    EncodeFailure,
-    LocalShutdown,
-    ResourceExhausted,
+    NoContext,
 }
 
 impl Display for LinkError {
     fn fmt(err: LinkError) -> string {
         match err {
-            LinkError.AlreadyLinked => "the target is already linked",
-            LinkError.TargetDead => "the target actor has already exited",
-            LinkError.NodeNotRunning => "the local node is not running",
-            LinkError.NoCurrentActor => "link() was called outside an actor context",
-            LinkError.InvalidTarget => "the target is not a linkable handle",
-            LinkError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
-            LinkError.StaleRef => "the target refers to an old session or actor incarnation",
-            LinkError.EncodeFailure => "the link request payload could not be encoded",
-            LinkError.LocalShutdown => "the local node is shutting down before the link could complete",
-            LinkError.ResourceExhausted => "the runtime has no capacity left to track this link",
+            LinkError.Dead => "the target actor has already exited",
+            LinkError.Partition => "the route to the peer is unavailable",
+            LinkError.NoContext => "the operation requires an actor context",
         }
     }
 }

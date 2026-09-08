@@ -1760,6 +1760,9 @@ non-declarable = [
   # registration produces no signal.
   "hew_local_pid_link",
   "hew_local_pid_monitor",
+  "hew_native_actor_link",
+  "hew_native_actor_monitor",
+  "hew_native_actor_unlink",
   # SYSTEM-LANE PROVENANCE BOUNDARY (every `hew_mailbox_*` entry below). The
   # system queue is a runtime-private lane: the only legitimate producers are
   # runtime paths that derive the signal from authenticated actor state (a real

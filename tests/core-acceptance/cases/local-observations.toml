@@ -1,0 +1,11 @@
+[[case]]
+id = "local-observations"
+intent = "Actor link and monitor registration use the checked native boundary; duplicate link/unlink are harmless, explicit and scope-owned MonitorRef cleanup remove subscriptions, and free helpers report NoContext while closed targets report Dead."
+source = "cases/local-observations.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "local observations own subscriptions and report context\n"
+stderr = ""
+exit = 0

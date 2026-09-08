@@ -577,9 +577,59 @@ impl ActorCallProtocol {
     }
 }
 
+/// Local observation boundary selected by the checked runtime family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalObservationKind {
+    Link,
+    Monitor,
+    Unlink,
+    Demonitor,
+}
+
+impl LocalObservationKind {
+    fn signature(
+        self,
+        target: &ResolvedTy,
+        result: &ResolvedTy,
+    ) -> Result<crate::SemSignature, String> {
+        let valid_target = match self {
+            LocalObservationKind::Demonitor => *target == ResolvedTy::U64,
+            _ => target.to_ty().as_local_pid().is_some(),
+        };
+        let valid_result = match self {
+            LocalObservationKind::Link | LocalObservationKind::Monitor => result_parts(result)
+                .is_some_and(|[ok, error]| {
+                    error.is_builtin(hew_types::BuiltinType::LinkError)
+                        && if self == LocalObservationKind::Link {
+                            *ok == ResolvedTy::Unit
+                        } else {
+                            ok.is_builtin(hew_types::BuiltinType::MonitorRef)
+                        }
+                }),
+            _ => *result == ResolvedTy::Unit,
+        };
+        if !valid_target || !valid_result {
+            return Err("local observation changes its checked signature".into());
+        }
+        Ok(crate::SemSignature {
+            params: vec![crate::SemAbiParam {
+                ty: target.clone(),
+                passing: crate::SemParamPassing::Consume,
+                caller_visible_projection: false,
+            }],
+            return_ty: result.clone(),
+        })
+    }
+}
+
 /// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
+    LocalObservation {
+        kind: LocalObservationKind,
+        target: ResolvedTy,
+        result: ResolvedTy,
+    },
     /// Start an owned completion operation without waiting for admission or reply.
     CallStart(ActorCallProtocol),
     /// Consume an operation selected as ready, materializing its checked result.
@@ -740,6 +790,10 @@ impl ActorOperation {
     ///
     /// # Errors
     /// Refuses missing actors, handlers, init bodies or incompatible sends.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the actor boundary match is the single signature authority for all actor operations"
+    )]
     pub fn signature(
         &self,
         actors: &[SemActor],
@@ -748,6 +802,14 @@ impl ActorOperation {
     ) -> Result<crate::SemSignature, String> {
         if matches!(self, Self::CallStart(_) | Self::CallTake(_)) {
             return self.completion_signature(actors);
+        }
+        if let Self::LocalObservation {
+            kind,
+            target,
+            result,
+        } = self
+        {
+            return kind.signature(target, result);
         }
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
             params: types
@@ -761,7 +823,9 @@ impl ActorOperation {
             return_ty,
         };
         let id = match self {
-            Self::CallStart(_) | Self::CallTake(_) => unreachable!("completion returned above"),
+            Self::LocalObservation { .. } | Self::CallStart(_) | Self::CallTake(_) => {
+                unreachable!("special boundary returned above")
+            }
             Self::Spawn(id)
             | Self::Close(id)
             | Self::AwaitClosed(id)
@@ -780,7 +844,9 @@ impl ActorOperation {
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
-            Self::CallStart(_) | Self::CallTake(_) => unreachable!("completion returned above"),
+            Self::LocalObservation { .. } | Self::CallStart(_) | Self::CallTake(_) => {
+                unreachable!("special boundary returned above")
+            }
             Self::StreamStart {
                 message, target, ..
             } => {

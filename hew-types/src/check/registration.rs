@@ -1173,10 +1173,8 @@ impl Checker {
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
 
-        // Actor link/monitor (Erlang-style fault propagation)
-        // `link` is idempotent on already-linked actors; `AlreadyLinked` and
-        // `TargetDead` are the error discriminants (declared in std/link_monitor.hew,
-        // B3 slice). `monitor` returns the handle the caller uses to stop watching.
+        // Link and monitor share the closed LinkError vocabulary. A monitor
+        // returns the owned handle used to end its registration.
         let link_t = TypeVar::fresh();
         self.register_builtin_fn(
             "link",
@@ -1189,7 +1187,7 @@ impl Checker {
         self.register_builtin_fn(
             "monitor",
             vec![Ty::local_pid(Ty::Var(monitor_t))],
-            Ty::result(Ty::monitor_ref(), Ty::monitor_error()),
+            Ty::result(Ty::monitor_ref(), Ty::link_error()),
         );
         // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
         // links a local actor to a remote actor so the remote's death fires the

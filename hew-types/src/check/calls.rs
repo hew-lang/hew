@@ -1759,6 +1759,18 @@ impl Checker {
             return result_ty;
         }
 
+        if matches!(func_name.as_str(), "link" | "monitor")
+            && self.current_function.as_deref() == Some("main")
+            && self.user_call_target_for_declared_fn(&func_name).is_none()
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("E_ACTOR_CONTEXT_REQUIRED: `{func_name}` requires an actor context; main cannot receive actor notifications"),
+            );
+            return Ty::Error;
+        }
+
         // Handle polymorphic constructors with fresh linked type vars
         match func_name.as_str() {
             // Turbofish constructor `Vec::<T>::new()` or `Vec::new::<T>()`.

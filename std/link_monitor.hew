@@ -1,24 +1,11 @@
-//! Actor monitor / link handle helpers.
+//! Actor monitor and link handle helpers.
 //!
-//! Import `std.link_monitor` when you want to name `MonitorRef`,
-//! `MonitorError`, or `PartitionPolicy` explicitly. `monitor(LocalPid)` and
-//! `monitor(RemotePid)` return `Result<MonitorRef, MonitorError>`; `link(actor)` returns
-//! `Result<(), LinkError>` — `LinkError` is prelude-published from
-//! `std/builtins.hew` (like `SendError`), so it needs no import.
-//!
-//! Link/monitor builtins return through the value-position composite-return
-//! spine: `link()` builds `Result<(), LinkError>`, while local and remote
-//! `monitor()` both build `Result<MonitorRef, MonitorError>` from explicit
-//! runtime setup statuses.
+//! Import `MonitorRef` from this module to name the owned registration returned
+//! by `monitor(LocalPid) -> Result<MonitorRef, LinkError>`. Its consuming close
+//! removes the subscription; ordinary resource cleanup closes it at scope exit.
+//! `LinkError` is available from the prelude. Remote monitor delivery failures
+//! use the `MonitorError` vocabulary below.
 
-// WASM-TODO(link-monitor): `MonitorRef` and `LinkError` depend on the native actor
-// monitor / link runtime. The checker rejects `monitor()` and `link()` on
-// wasm32 via the existing Link/monitor gate.
-//
-// `LinkError` is prelude-published from `std/builtins.hew` (the error type of
-// the `link()` builtin, like `SendError` for `.tell`), so it is NOT redeclared
-// here — that would collide with the always-loaded prelude on import. Programs
-// name `LinkError.AlreadyLinked` / `TargetDead` without importing this module.
 import std.failure.{CrashKind};
 
 /// Error returned when a monitor delivery cannot be completed.

@@ -109,6 +109,9 @@ pub(crate) enum RetireActorResult {
 struct LocalHandleState {
     routes: HashMap<HewLocalPidId, Route>,
     actor_tokens: HashMap<u64, HewLocalPidId>,
+    // A retired identity has no allocation ownership but still names the
+    // terminal incarnation for immediate DOWN delivery.
+    retired_actors: HashMap<HewLocalPidId, (RuntimeId, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -719,6 +722,24 @@ impl LocalHandles {
         })
     }
 
+    /// Resolve a live or retired incarnation without acquiring allocation ownership.
+    pub(crate) fn observation_actor(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> Option<u64> {
+        self.state.access(|state| match state.routes.get(&token) {
+            Some(Route::Actor {
+                runtime_id: owner,
+                actor_id,
+            }) if *owner == runtime_id => Some(*actor_id),
+            _ => state
+                .retired_actors
+                .get(&token)
+                .and_then(|(owner, id)| (*owner == runtime_id).then_some(*id)),
+        })
+    }
+
     /// Return the registered direct token for an `ActorId` in this runtime.
     #[cfg_attr(
         not(test),
@@ -762,7 +783,13 @@ impl LocalHandles {
             {
                 return RetireActorResult::Mismatch;
             }
-            state.routes.remove(&token);
+            if let Some(Route::Actor {
+                runtime_id,
+                actor_id,
+            }) = state.routes.remove(&token)
+            {
+                state.retired_actors.insert(token, (runtime_id, actor_id));
+            }
             state.actor_tokens.remove(&actor_id);
             RetireActorResult::Retired
         })
@@ -1155,6 +1182,15 @@ pub(crate) fn resolve_current_actor(token: HewLocalPidId) -> Option<u64> {
     current_handles()?.resolve_actor(runtime_id, token)
 }
 
+/// Resolve an observation target even after its allocation has been reclaimed.
+pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
+    #[cfg(target_arch = "wasm32")]
+    let runtime_id = RuntimeId::DEFAULT;
+    current_handles()?.observation_actor(runtime_id, token)
+}
+
 /// Return the direct token registered for an `ActorId` in the current runtime.
 #[allow(
     dead_code,
@@ -1208,6 +1244,7 @@ mod tests {
             RetireActorResult::AlreadyRetired
         );
         assert_eq!(handles.resolve_actor(runtime_id, old), None);
+        assert_eq!(handles.observation_actor(runtime_id, old), Some(41));
 
         // A replacement allocation may reuse the same storage address, but the
         // route contains semantic ActorId only. Its new token cannot revive the

@@ -1271,7 +1271,7 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let worker = spawn Worker;
                 let result = monitor(worker);
                 link(worker);
@@ -1291,9 +1291,9 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let worker = spawn Worker;
-                let _ok: Result<MonitorRef, MonitorError> = monitor(worker);
+                let _ok: Result<MonitorRef, LinkError> = monitor(worker);
                 let x: i64 = monitor(worker);
                 println(x);
             }
@@ -1306,7 +1306,7 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let worker = spawn Worker;
                 match monitor(worker) {
                     .Ok(m) => {
@@ -1325,7 +1325,7 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let remote: RemotePid<Worker>;
                 let result: Result<MonitorRef, MonitorError> = monitor(remote);
                 match result {

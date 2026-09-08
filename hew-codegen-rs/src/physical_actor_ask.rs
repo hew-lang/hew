@@ -490,7 +490,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.write_variant_value(self.slots[result.0 as usize], 1, &[envelope], glue.id)
     }
 
-    fn ask_record(
+    pub(super) fn ask_record(
         &self,
         ty: &ResolvedTy,
         fields: &[BasicValueEnum<'ctx>],

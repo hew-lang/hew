@@ -531,6 +531,11 @@ pub enum PhysicalVectorOp {
     /// A loan of the element the vector still owns: the slot bytes are read
     /// without a clone and the result carries no release obligation.
     IndexBorrow,
+    /// The consuming iterator's step: the first element moves out to the caller
+    /// and the vector shrinks by one.
+    TakeFirst {
+        result: PhysicalAggregateId,
+    },
     Slice,
     SliceFrom,
 }
@@ -547,6 +552,7 @@ impl PhysicalVectorOp {
             Self::Pop { .. } => VecValueOp::Pop,
             Self::Clear => VecValueOp::Clear,
             Self::IndexBorrow => VecValueOp::IndexBorrow,
+            Self::TakeFirst { .. } => VecValueOp::TakeFirst,
             Self::Slice => VecValueOp::Slice,
             Self::SliceFrom => VecValueOp::SliceFrom,
         }
@@ -3599,6 +3605,9 @@ impl FunctionLowerer<'_> {
                 },
                 VecValueOp::Clear => PhysicalVectorOp::Clear,
                 VecValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
+                VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
+                    result: self.aggregate_id(&value.ty)?,
+                },
                 VecValueOp::Slice => PhysicalVectorOp::Slice,
                 VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
             };
@@ -7409,7 +7418,7 @@ fn verify_vector_call(
                 ));
             }
         }
-        PhysicalVectorOp::Pop { result: tuple } => {
+        PhysicalVectorOp::Pop { result: tuple } | PhysicalVectorOp::TakeFirst { result: tuple } => {
             let tuple = aggregate_glue(module, tuple)?;
             if &tuple.ty != result
                 || tuple.own != OwnKind::Owned
@@ -7418,7 +7427,7 @@ fn verify_vector_call(
                 || tuple.fields[1] != glue.element
             {
                 return Err(PhysicalError::new(
-                    "physical vector pop result descriptor is not its exact (Vec<T>, T) value",
+                    "physical vector removal result descriptor is not its exact (Vec<T>, T) value",
                 ));
             }
         }

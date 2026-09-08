@@ -41,10 +41,9 @@ fn main() -> i64 {
     println(f"len={tokens.len()}");
     println(f"sum={total(tokens)}");
 
-    // The owning removal moves each element out; the borrowed passes above
-    // left every slot in place.
-    while !tokens.is_empty() {
-        let token = tokens.pop();
+    // The owning drain moves each element out; the borrowed passes above left
+    // every slot in place.
+    for token in tokens.into_iter() {
         token.show();
     }
     println("drained");

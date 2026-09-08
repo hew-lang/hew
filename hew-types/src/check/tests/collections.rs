@@ -4,6 +4,8 @@
 )]
 pub(super) use super::*;
 
+use crate::check::types::VecCursorMode;
+
 fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
     let parse_result = hew_parser::parse(source);
     assert!(
@@ -1689,10 +1691,6 @@ fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
             !checker.vec_owned_element_admissible(&root),
             "constructor admitted an inline cycle: {declarations}",
         );
-        assert!(
-            !checker.validate_vec_iter_element_clone_type(&root, &(0..0)),
-            "iterator admitted an inline cycle: {declarations}",
-        );
     }
 }
 
@@ -1821,17 +1819,11 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
         builtin: None,
     };
 
-    assert!(
-        !checker.validate_vec_iter_element_clone_type(&ty, &Span::from(0..0)),
-        "a qualified, diverging generic value cycle must reject without overflowing"
-    );
-    assert!(
-        checker
-            .errors
-            .iter()
-            .any(|error| error.message.contains("recursive")),
-        "the VecIter boundary must report the recursive layout: {:#?}",
-        checker.errors
+    assert_eq!(
+        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
+        Some(VecCursorMode::Take),
+        "a qualified, diverging generic value cycle has no clone, so the cursor \
+         moves each element out — and the walk terminates instead of overflowing"
     );
 }
 
@@ -2244,64 +2236,63 @@ fn vec_iter_borrows_direct_function_element() {
 }
 
 #[test]
-fn vec_iter_clone_totality_rejects_opaque_resource_element() {
+fn vec_iter_takes_an_opaque_resource_element() {
     let output = check_source(
         r"
         #[resource]
         #[opaque]
         type Handle {}
 
+        impl Handle {
+            fn close(consume self) {}
+        }
+
         fn scan(handles: Vec<Handle>) {
-            var it = handles.iter();
-            let _ = it.next();
+            var it = handles.into_iter();
+            let taken = it.next();
+            match taken {
+                Option.Some(handle) => handle.close(),
+                Option.None => {},
+            }
         }
         ",
     );
 
-    let matching: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error.message.contains("`VecIter<Handle>` is not supported")
-                && error.message.contains("resource/linear value `Handle`")
-                && error
-                    .message
-                    .contains("has no semantic clone/retain operation")
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "opaque/resource elements must fail once before VecIter clone-out lowering: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "an opaque/resource element is moved out by the cursor, not refused: {:#?}",
         output.errors
     );
 }
 
+/// A marked value has no clone, so the cursor moves it out instead of copying
+/// it — directly and through a record that carries one.
 #[test]
-fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
+fn vec_iter_drains_marked_resource_direct_and_wrapped() {
     let output = check_source(
         r"
         #[resource]
         type Tok { id: i64 }
+
+        impl Tok {
+            fn close(consume self) {}
+        }
+
         type Wrap { token: Tok }
+
         fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
-            let _ = xs.iter().next();
-            let _ = wrapped.iter().next();
+            for token in xs.into_iter() {
+                token.close();
+            }
+            for item in wrapped.into_iter() {
+                item.token.close();
+            }
         }
         ",
     );
-    let blockers: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error.message.contains("VecIter<")
-                && error.message.contains("resource/linear value `Tok`")
-        })
-        .collect();
-    assert_eq!(
-        blockers.len(),
-        2,
-        "direct and wrapped marked values must fail at VecIter: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "a clone-free element drains through the consuming iterator: {:#?}",
         output.errors
     );
 }
@@ -2337,43 +2328,31 @@ fn vec_clone_growing_recursive_generic_terminates_and_names_the_refusal() {
     );
 }
 
+/// A closure payload inside a positional record leaves the record without a
+/// clone, so the cursor drains it rather than copying each element out.
 #[test]
-fn vec_iter_clone_totality_rejects_function_inside_positional_record() {
+fn vec_iter_drains_a_function_inside_a_positional_record() {
     let output = check_source(
         r"
         type Callback(fn(i64) -> i64);
 
         fn scan(callbacks: Vec<Callback>) {
-            for callback in callbacks.iter() {
+            for callback in callbacks.into_iter() {
                 let _ = callback;
             }
         }
         ",
     );
 
-    let matching: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error
-                .message
-                .contains("`VecIter<Callback>` is not supported")
-                && error.message.contains("fn(i64) -> i64")
-                && error
-                    .message
-                    .contains("has no semantic clone/retain operation")
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "positional record constructor payloads must participate in clone-totality: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "a clone-free positional record drains through the consuming iterator: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
+fn vec_iter_cursor_takes_a_qualified_opaque_element() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker
         .user_opaque_type_names
@@ -2384,21 +2363,15 @@ fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
         builtin: None,
     };
 
-    assert!(
-        !checker.validate_vec_iter_element_clone_type(&ty, &Span::from(0..0)),
+    assert_eq!(
+        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
+        Some(VecCursorMode::Take),
         "a qualified use must resolve against the declaration-local opaque name"
     );
     assert_eq!(
         checker.errors.len(),
-        1,
-        "qualified opaque rejection must remain a single boundary diagnostic: {:#?}",
-        checker.errors
-    );
-    assert!(
-        checker.errors[0]
-            .message
-            .contains("opaque/resource handle `pkg.Handle`"),
-        "diagnostic must retain the resolved qualified identity: {:#?}",
+        0,
+        "an opaque element is drained, not refused: {:#?}",
         checker.errors
     );
 }

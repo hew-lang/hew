@@ -1946,7 +1946,7 @@ impl Checker {
                         ..
                     } if !args.is_empty() => {
                         let elem = args[0].clone();
-                        if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                        if self.record_vec_iter_element_mode(&elem, &iterable.1) {
                             elem
                         } else {
                             Ty::Error
@@ -2012,7 +2012,7 @@ impl Checker {
                         // a zero-length Vec).
                         let elem_ty = args[0].clone();
                         let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
-                        if self.validate_vec_iter_element_clone_type(&elem_ty, &iterable.1)
+                        if self.record_vec_iter_element_mode(&elem_ty, &iterable.1)
                             && self.validate_hashset_element_type(&elem_ty, &to_vec_span)
                         {
                             let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);

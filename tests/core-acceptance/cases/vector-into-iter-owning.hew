@@ -1,0 +1,59 @@
+// A Vec whose element type has no clone drains through `into_iter()`: each
+// step moves the element out of the vector the cursor owns, so the body is the
+// element's owner and a completed drain leaves the vector empty. An early
+// `break` releases the elements the drain never reached, exactly once each.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+fn make(label: string) -> Vec<Token> {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: label, id: 1 });
+    tokens.push(Token { label: label, id: 2 });
+    tokens.push(Token { label: label, id: 3 });
+    return tokens
+}
+
+fn main() -> i64 {
+    // A full drain hands each element to the body in order, and the body owns
+    // it: closing it here is the only release.
+    let all = make("a");
+    for token in all.into_iter() {
+        token.show();
+        token.close();
+    }
+    println("drained");
+
+    // An early exit leaves the untaken elements to the cursor, which releases
+    // them when it goes out of scope.
+    let some = make("b");
+    for token in some.into_iter() {
+        token.show();
+        if token.id == 2 {
+            break
+        }
+        token.close();
+    }
+    println("stopped");
+
+    // `pop()` is the other owning removal and still takes from the back.
+    var rest = make("c");
+    while !rest.is_empty() {
+        let token = rest.pop();
+        token.show();
+    }
+    println("popped");
+    0
+}

@@ -4784,27 +4784,47 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(result, sliced)?;
             }
-            PhysicalVectorOp::Pop { result: tuple } => {
+            PhysicalVectorOp::Pop { result: tuple }
+            | PhysicalVectorOp::TakeFirst { result: tuple } => {
                 values.aggregate_glue(tuple)?;
                 let layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
                     CodegenError::FailClosed("vector element lacks its target layout".into())
                 })?;
                 let element_ty = llvm_type(self.ctx, &layout.repr)?;
                 let output = values.entry_scratch(element_ty, "vector.pop.element")?;
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_vec_pop_owned",
-                    self.ctx
-                        .i32_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
-                )?;
-                let status = self
-                    .runtime_call_value(
+                // The consuming iterator drains from the front so it yields in
+                // order; `pop` takes the last element. Both move the element
+                // out and shrink the vector by one.
+                let take_first = matches!(operation, PhysicalVectorOp::TakeFirst { .. });
+                let status = if take_first {
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        "hew_vec_remove_at_owned",
+                        self.ctx
+                            .i32_type()
+                            .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                    )?;
+                    self.runtime_call_value(
+                        function,
+                        &[vector.into(), i64_ty.const_zero().into(), output.into()],
+                        "vector.take.status",
+                    )?
+                    .into_int_value()
+                } else {
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        "hew_vec_pop_owned",
+                        self.ctx
+                            .i32_type()
+                            .fn_type(&[pointer.into(), pointer.into()], false),
+                    )?;
+                    self.runtime_call_value(
                         function,
                         &[vector.into(), output.into()],
                         "vector.pop.status",
                     )?
-                    .into_int_value();
+                    .into_int_value()
+                };
                 let found = self
                     .builder
                     .build_int_compare(

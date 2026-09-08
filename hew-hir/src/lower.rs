@@ -7743,6 +7743,9 @@ struct LowerCtx {
     borrowed_element_for_loops: HashSet<SpanKey>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
     borrowed_element_index_reads: HashSet<SpanKey>,
+    /// `VecIter` cursor sites whose element has no semantic clone: `next()`
+    /// moves each element out instead of copying it.
+    owning_take_vec_cursors: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
@@ -8422,6 +8425,7 @@ impl LowerCtx {
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
+            owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -24723,6 +24727,19 @@ impl LowerCtx {
         let receiver_name = receiver_name.clone();
         let receiver_binding = *receiver_binding;
 
+        if self
+            .owning_take_vec_cursors
+            .contains(&SpanKey::in_module(&span, self.current_module_idx))
+        {
+            return self.lower_builtin_vec_iter_take_next(
+                receiver_name,
+                receiver_binding,
+                &iter_ty,
+                elem_ty,
+                span,
+            );
+        }
+
         self.push_scope();
         let iter_obj = self.make_binding_ref(
             receiver_name.clone(),
@@ -24901,6 +24918,114 @@ impl LowerCtx {
             option_ty.clone(),
             span.clone(),
         );
+        let else_expr = self.make_expr(
+            HirExprKind::Block(else_block),
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let if_expr = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr: Some(Box::new(else_expr)),
+            },
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let block = self.make_unit_block(Vec::new(), Some(if_expr), option_ty.clone(), span);
+        self.pop_scope();
+        (HirExprKind::Block(block), option_ty)
+    }
+
+    /// `VecIter.next()` for an element with no semantic clone: each step moves
+    /// the first element out of the vector the cursor owns.
+    ///
+    /// There is no index to advance — the removal shifts the tail down, so the
+    /// cursor is empty exactly when the vector is, and a completed drain leaves
+    /// it empty. An early exit drops the cursor, whose `vec` field releases
+    /// whatever the drain did not reach.
+    fn lower_builtin_vec_iter_take_next(
+        &mut self,
+        receiver_name: String,
+        receiver_binding: BindingId,
+        iter_ty: &ResolvedTy,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        self.push_scope();
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let vec_read_for_len = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "vec".to_string(),
+            },
+            Self::resolved_vec_ty(elem_ty.clone()),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let len_call = self.make_vec_len_call(vec_read_for_len, elem_ty, span.clone());
+        let zero = self.make_i64_literal(0, span.clone());
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: BinaryOp::LessEqual,
+                left: Box::new(len_call),
+                right: Box::new(zero),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let none_expr = self.make_option_ctor("None", None, elem_ty, span.clone());
+        let then_block =
+            self.make_unit_block(Vec::new(), Some(none_expr), option_ty.clone(), span.clone());
+        let then_expr = self.make_expr(
+            HirExprKind::Block(then_block),
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let iter_obj = self.make_binding_ref(
+            receiver_name,
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let vec_take_target = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "vec".to_string(),
+            },
+            Self::resolved_vec_ty(elem_ty.clone()),
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let take_kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::TakeFirst),
+            vec![vec_take_target],
+            elem_ty,
+            &span,
+        );
+        let take_expr = self.make_expr(
+            take_kind,
+            elem_ty.clone(),
+            IntentKind::Consume,
+            span.clone(),
+        );
+        let some_expr = self.make_option_ctor("Some", Some(take_expr), elem_ty, span.clone());
+        let else_block =
+            self.make_unit_block(Vec::new(), Some(some_expr), option_ty.clone(), span.clone());
         let else_expr = self.make_expr(
             HirExprKind::Block(else_block),
             option_ty.clone(),

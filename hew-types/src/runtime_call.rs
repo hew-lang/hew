@@ -553,6 +553,10 @@ pub enum VecValueOp {
     /// `v[i]` where the element has no clone: a loan of the element the vector
     /// still owns, readable for the length of the receiver's loan.
     IndexBorrow,
+    /// Remove the first element and hand its ownership to the caller. This is
+    /// the consuming iterator's step for an element with no clone: the vector
+    /// shrinks by one and ends empty when the drain runs to completion.
+    TakeFirst,
     /// `v[a..b]` - a fresh independent `Vec<T>` over the selected range.
     Slice,
     /// `v[a..]` - the open-ended form; the runtime supplies the end bound so
@@ -620,7 +624,10 @@ impl VecValueOp {
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
             Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(VECTOR), &[]),
-            Self::Pop => runtime_semantic_contract(
+            // Both removals hand one element to the caller and shrink the
+            // vector; only which end they take from differs, and that is a
+            // physical choice.
+            Self::Pop | Self::TakeFirst => runtime_semantic_contract(
                 &[WRITE],
                 UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
@@ -2950,6 +2957,7 @@ impl RuntimeCallFamily {
                 VecValueOp::Pop => "vec.value.pop",
                 VecValueOp::Clear => "vec.value.clear",
                 VecValueOp::IndexBorrow => "vec.value.index_borrow",
+                VecValueOp::TakeFirst => "vec.value.take_first",
                 VecValueOp::Slice => "vec.value.slice",
                 VecValueOp::SliceFrom => "vec.value.slice_from",
             },
@@ -3398,6 +3406,7 @@ impl RuntimeCallFamily {
             "vec.value.pop" => Self::Vector(VecValueOp::Pop),
             "vec.value.clear" => Self::Vector(VecValueOp::Clear),
             "vec.value.index_borrow" => Self::Vector(VecValueOp::IndexBorrow),
+            "vec.value.take_first" => Self::Vector(VecValueOp::TakeFirst),
             "vec.value.slice" => Self::Vector(VecValueOp::Slice),
             "vec.value.slice_from" => Self::Vector(VecValueOp::SliceFrom),
             "Vec::new" => Self::VecNew,
@@ -5600,6 +5609,7 @@ mod tests {
             "vec.value.push",
             "vec.value.set",
             "vec.value.pop",
+            "vec.value.take_first",
             "vec.value.clear",
             "map.value.insert",
             "map.value.remove",

@@ -256,7 +256,9 @@ stable = [
   "hew_channel_recv_cancel_cleanup",
   "hew_stream_recv_cancel_cleanup",
   "hew_channel_recv_layout",
+  "hew_channel_recv_native",
   "hew_channel_send_layout",
+  "hew_channel_send_native",
   "hew_channel_sender_clone",
   "hew_channel_sender_close",
   "hew_channel_try_recv_layout",
@@ -3399,6 +3401,20 @@ params = ["borrow"]
 resource-param-types = ["std.channel.ChannelPair"]
 release-symbol = "hew_channel_sender_close"
 discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_channel_recv_native"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_channel_send_native"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_channel_receiver_close"

@@ -28,6 +28,8 @@ mod coro;
 mod generators;
 #[path = "physical_io.rs"]
 mod io;
+#[path = "physical_channel.rs"]
+mod physical_channel;
 #[path = "physical_select.rs"]
 mod select;
 #[path = "physical_stream.rs"]
@@ -1727,6 +1729,7 @@ fn build_module_with_host<'ctx>(
     emitter.emit_task_descriptors()?;
     emitter.emit_generator_descriptors()?;
     emitter.emit_stream_descriptors()?;
+    emitter.emit_channel_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_vtables()?;
     emitter.emit_callable_descriptors()?;
@@ -3103,6 +3106,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_stream_next(stream, *result, normal, cancel, unwind),
+            PhysicalTerminator::ChannelRecv { .. } => self.emit_channel_recv(block),
+            PhysicalTerminator::ChannelSend { .. } => self.emit_channel_send(block),
             PhysicalTerminator::StreamSend {
                 sink,
                 value,

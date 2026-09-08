@@ -171,6 +171,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { .. }
                 | PhysicalTerminator::StreamSend { .. }
+                | PhysicalTerminator::ChannelRecv { .. }
+                | PhysicalTerminator::ChannelSend { .. }
                 | PhysicalTerminator::ValueClose { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }

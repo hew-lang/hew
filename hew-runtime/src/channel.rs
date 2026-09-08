@@ -365,6 +365,87 @@ pub unsafe extern "C" fn hew_channel_recv_layout(
     }
 }
 
+/// Take the next element for a checked coroutine consumer, parking the
+/// coroutine (not the OS thread) when the channel is empty with live senders.
+///
+/// Returns 0 after retaining `waker`, 1 with the element decoded into `out`,
+/// 2 at end of channel, and 3 after a producer fault. A malformed envelope
+/// reports through the ordinary last-error channel and returns 2, matching the
+/// blocking entry's "no value" discipline.
+///
+/// # Safety
+///
+/// `receiver` and `waker` must be valid. `out` must point to one writable
+/// element slot of the witness's type. `layout` must be a valid witness.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_recv_native(
+    receiver: *mut HewChannelReceiver,
+    waker: *const crate::wake::HewWaker,
+    out: *mut c_void,
+    layout: *const crate::vec::HewValueLayout,
+) -> i32 {
+    cabi_guard!(receiver.is_null() || waker.is_null() || out.is_null(), 2);
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_channel_recv_native") };
+    // SAFETY: receiver and waker are valid per caller contract.
+    let (status, item) = unsafe { (*receiver).core.poll_recv_envelope(&*waker) };
+    if status != 1 {
+        return status;
+    }
+    // SAFETY: out points to one writable element slot per caller contract.
+    let wrote = unsafe {
+        crate::channel_common::decode_elem_envelope(item, out, layout, "hew_channel_recv_native")
+    };
+    if wrote == 1 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Deposit one element for a checked coroutine producer, parking the coroutine
+/// when a bounded channel is full.
+///
+/// Returns 0 after retaining `waker`, 1 after the transfer, and 2 when the
+/// channel is closed. The caller keeps its value on every outcome: the
+/// envelope is an independent deep copy.
+///
+/// # Safety
+///
+/// `sender` and `waker` must be valid. `data` must point to one live element
+/// of the witness's type. `layout` must be a valid witness.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_send_native(
+    sender: *mut HewChannelSender,
+    waker: *const crate::wake::HewWaker,
+    data: *const c_void,
+    layout: *const crate::vec::HewValueLayout,
+) -> i32 {
+    cabi_guard!(sender.is_null() || waker.is_null() || data.is_null(), 2);
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_channel_send_native") };
+    // SAFETY: sender is valid per caller contract.
+    let core = unsafe { &(*sender).core };
+    // SAFETY: data points to one live element per caller contract.
+    let env = unsafe {
+        crate::channel_common::encode_elem_envelope(data, layout, "hew_channel_send_native")
+    };
+    if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+        // Stamp BEFORE enqueue so every later discard exit can release the
+        // envelope's owned heap.
+        core.stamp_elem_layout(layout);
+    }
+    // SAFETY: waker is valid per caller contract.
+    let (status, unsent) = unsafe { core.poll_send_envelope(&*waker, env) };
+    if let Some(unsent) = unsent {
+        // The deep copy never reached the queue; release whatever it owns.
+        crate::channel_common::drop_elem_envelope(Some(layout), unsent, "hew_channel_send_native");
+    }
+    status
+}
+
 /// Try to receive an element without blocking.
 ///
 /// Returns 1 when an element was written to `out` (ownership transfers to the

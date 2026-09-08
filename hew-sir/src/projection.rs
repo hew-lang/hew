@@ -466,7 +466,7 @@ pub(crate) fn verify_operation(
         let [result] = operation.results.as_slice() else {
             return Err("aggregate place load requires exactly one result".into());
         };
-        if result.ty != place.ty {
+        if !crate::call_boundary_types_match(&result.ty, &place.ty) {
             return Err("aggregate place load changes its field type".into());
         }
         if borrowed {

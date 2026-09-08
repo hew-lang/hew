@@ -3744,7 +3744,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let source = self
             .value_ty(value)
             .ok_or_else(|| "coercion has no typed source value".to_string())?;
-        if source == *target {
+        if crate::call_boundary_types_match(&source, target) {
             return Ok(value);
         }
         self.service.require_type_facts(target)?;
@@ -6863,7 +6863,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })?;
         let expected_ty = descriptor.fields[index].ty.clone();
         let result_ty = self.ty(&expr.ty);
-        if result_ty != expected_ty {
+        if !crate::call_boundary_types_match(&result_ty, &expected_ty) {
             return Err(format!(
                 "field `{field}` from `{}` has `{}`, expected `{}`",
                 aggregate_ty.user_facing(),
@@ -7912,6 +7912,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Err("stream receive takes exactly one stream".into());
             };
             return self.lower_stream_next(expr, stream).map(Some);
+        }
+        if family == hew_types::RuntimeCallFamily::ChannelRecvLayout {
+            let [channel] = args else {
+                return Err("channel receive takes exactly one receiver".into());
+            };
+            return self.lower_channel_recv(expr, channel).map(Some);
+        }
+        if family == hew_types::RuntimeCallFamily::ChannelSendLayout {
+            let [channel, value] = args else {
+                return Err("channel send takes exactly one sender and one element".into());
+            };
+            self.lower_channel_send(channel, value)?;
+            return Ok(None);
         }
 
         let contract = family.semantic_contract().ok_or_else(|| {

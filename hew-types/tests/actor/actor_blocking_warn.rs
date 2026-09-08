@@ -1,7 +1,7 @@
 //! Tests for the `BlockingCallInReceiveFn` warning.
 //!
 //! Actor receive functions run synchronously on scheduler worker threads.
-//! Blocking operations inside them (`Receiver.recv`, `net.Connection.read`,
+//! Blocking operations inside them (`net.Connection.read`,
 //! `net.Listener.accept`, `http.Server.accept`) can stall the thread and
 //! prevent other actors from being scheduled, potentially deadlocking the
 //! program.  The type-checker emits a `BlockingCallInReceiveFn` warning for
@@ -29,25 +29,6 @@ fn assert_single_blocking_warning(output: &hew_types::TypeCheckOutput, operation
         "warning message should name the operation, got: {:?}",
         blocking_warnings[0].message
     );
-}
-
-/// `Receiver.recv` inside a receive function triggers a warning.
-#[test]
-fn warn_receiver_recv_inside_receive_fn() {
-    let output = typecheck(
-        r"
-        import std.channel;
-
-        actor Worker {
-            receive fn process(rx: channel.Receiver<string>) {
-                let msg = rx.recv();
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    assert_single_blocking_warning(&output, "Receiver.recv");
 }
 
 /// `net.Connection.read` inside a receive function triggers a warning.
@@ -92,15 +73,15 @@ fn warn_net_listener_accept_inside_receive_fn() {
 // Negative cases: no spurious warnings outside receive fns
 // ---------------------------------------------------------------------------
 
-/// `Receiver.recv` in a plain function must NOT trigger the warning.
+/// `net.Connection.read` in a plain function must NOT trigger the warning.
 #[test]
-fn no_warn_receiver_recv_outside_actor() {
+fn no_warn_connection_read_outside_actor() {
     let output = typecheck(
         r"
-        import std.channel;
+        import std.net;
 
-        fn process(rx: channel.Receiver<string>) -> Option<string> {
-            rx.recv()
+        fn process(conn: net.Connection) -> bytes {
+            conn.read()
         }
 
         fn main() {}
@@ -113,20 +94,20 @@ fn no_warn_receiver_recv_outside_actor() {
         .collect();
     assert!(
         blocking_warnings.is_empty(),
-        "Receiver.recv outside receive fn must not produce BlockingCallInReceiveFn, got: {blocking_warnings:#?}",
+        "Connection.read outside receive fn must not produce BlockingCallInReceiveFn, got: {blocking_warnings:#?}",
     );
 }
 
-/// `Receiver::try_recv` (non-blocking) inside a receive function must NOT warn.
+/// Configuring a connection timeout inside a receive function must NOT warn.
 #[test]
-fn no_warn_try_recv_inside_receive_fn() {
+fn no_warn_connection_timeout_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std.channel;
+        import std.net;
 
         actor Worker {
-            receive fn poll(rx: channel.Receiver<string>) {
-                let msg = rx.try_recv();
+            receive fn configure(conn: net.Connection) {
+                let _result = conn.set_read_timeout(100);
             }
         }
 
@@ -140,21 +121,20 @@ fn no_warn_try_recv_inside_receive_fn() {
         .collect();
     assert!(
         blocking_warnings.is_empty(),
-        "try_recv is non-blocking and must not warn, got: {blocking_warnings:#?}",
+        "set_read_timeout is non-blocking and must not warn, got: {blocking_warnings:#?}",
     );
 }
 
-/// Multiple blocking calls in the same receive fn produce one warning each.
+// Multiple blocking calls in the same receive fn produce one warning each.
 #[test]
 fn multiple_blocking_calls_each_warned() {
     let output = typecheck(
         r"
-        import std.channel;
         import std.net;
 
         actor Combo {
-            receive fn handle(rx: channel.Receiver<string>, conn: net.Connection) {
-                let msg = rx.recv();
+            receive fn handle(listener: net.Listener, conn: net.Connection) {
+                let accepted = listener.accept();
                 let data = conn.read();
             }
         }
@@ -180,11 +160,11 @@ fn multiple_blocking_calls_each_warned() {
 fn warning_message_mentions_scheduler_with_suggestion() {
     let output = typecheck(
         r"
-        import std.channel;
+        import std.net;
 
         actor Worker {
-            receive fn process(rx: channel.Receiver<string>) {
-                let _ = rx.recv();
+            receive fn process(conn: net.Connection) {
+                let _ = conn.read();
             }
         }
 
@@ -237,18 +217,17 @@ fn warn_http_server_accept_inside_receive_fn() {
 fn no_blocking_suggestion_names_await() {
     let output = typecheck(
         r"
-        import std.channel;
         import std.net;
 
         actor Mixed {
             receive fn serve(
-                rx: channel.Receiver<string>,
                 listener: net.Listener,
                 conn: net.Connection,
+                second: net.Connection,
             ) {
-                let msg = rx.recv();
                 let accepted = listener.accept();
                 let data = conn.read();
+                let other = second.read();
             }
         }
 

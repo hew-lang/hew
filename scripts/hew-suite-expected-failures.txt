@@ -568,11 +568,6 @@ tests/hew/hex_test.hew::test_round_trip_all_256_byte_values runtime
 tests/hew/hex_test.hew::test_round_trip_empty runtime
 tests/hew/hex_test.hew::test_round_trip_multi_byte_64 runtime
 tests/hew/hex_test.hew::test_round_trip_nonempty runtime
-tests/hew/url_test.hew::test_decode_query_decodes_form_pairs_in_order runtime
-tests/hew/url_test.hew::test_decode_query_preserves_nul_and_rejects_invalid_utf8 runtime
-tests/hew/url_test.hew::test_decode_query_skips_entries_without_equals runtime
-tests/hew/url_test.hew::test_port_returns_none_when_absent runtime
-tests/hew/url_test.hew::test_port_returns_some_when_explicit runtime
 
 # runtime: hew-runtime panics inside the metrics registry
 tests/hew/metrics_test.hew::test_counter_add_accumulates runtime
@@ -625,6 +620,13 @@ tests/hew/uuid_test.hew::test_v4_produces_correct_length runtime
 tests/hew/uuid_test.hew::test_v7_produces_correct_length runtime
 tests/hew/xml_test.hew::test_parse_rejects_a_close_tag_that_does_not_match runtime
 tests/hew/xml_test.hew::test_parse_rejects_non_whitespace_outside_the_root runtime
+
+# runtime: url.parse rejects valid URLs and decode crashes (std.net.url builds bytes through push in a function)
+tests/hew/url_test.hew::test_decode_query_decodes_form_pairs_in_order runtime
+tests/hew/url_test.hew::test_decode_query_preserves_nul_and_rejects_invalid_utf8 runtime
+tests/hew/url_test.hew::test_decode_query_skips_entries_without_equals runtime
+tests/hew/url_test.hew::test_port_returns_none_when_absent runtime
+tests/hew/url_test.hew::test_port_returns_some_when_explicit runtime
 
 # runtime: wrong result from datetime_test
 tests/hew/datetime_test.hew::test_try_format_rejects_invalid_directive_with_error runtime

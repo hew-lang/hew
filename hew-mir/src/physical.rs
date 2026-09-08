@@ -22,6 +22,9 @@ use hew_parser::ast::{BinaryOp, UnaryOp};
 mod callable;
 #[path = "physical_defer.rs"]
 mod defer;
+#[path = "physical_extern.rs"]
+mod extern_abi;
+pub use extern_abi::PhysicalExternResultAbi;
 #[cfg(test)]
 #[path = "physical_defer_tests.rs"]
 mod defer_tests;
@@ -1253,6 +1256,7 @@ pub enum PhysicalTerminator {
         symbol: String,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
+        result_abi: PhysicalExternResultAbi,
         normal: PhysicalEdge,
     },
     /// A closed no-unwind runtime operation. Logical failures are explicit
@@ -3146,6 +3150,7 @@ impl FunctionLowerer<'_> {
             } => Ok(PhysicalTerminator::ExternCall {
                 symbol: signature.symbol.clone(),
                 args: self.argument_transfers(args)?,
+                result_abi: self.target.extern_result_abi(&signature.result)?,
                 result: match result {
                     CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
@@ -7457,11 +7462,11 @@ fn verify_terminator(
             symbol,
             args,
             result,
+            result_abi,
             normal,
         } => {
-            // Types and ownership were proven against the `extern`
-            // declaration in SIR; the physical form only has to keep its
-            // transfers and edges well formed.
+            // SIR proved types and ownership against the declaration. Verify
+            // the transfer/edge structure and the target's C result carrier.
             for argument in args {
                 let id = match argument {
                     ArgumentTransfer::Borrow(id)
@@ -7474,8 +7479,14 @@ fn verify_terminator(
             if symbol.is_empty() {
                 return Err(PhysicalError::new("extern call has no linker symbol"));
             }
-            if let Some(result) = result {
-                slot(*result)?;
+            let result_ty = match result {
+                Some(result) => &slot(*result)?.ty,
+                None => &ResolvedTy::Unit,
+            };
+            if *result_abi != module.target.extern_result_abi(result_ty)? {
+                return Err(PhysicalError::new(
+                    "extern result ABI differs from its target classification",
+                ));
             }
             edge(normal)
         }
@@ -8472,6 +8483,32 @@ mod tests {
             "source fixture must exercise a lowered function"
         );
         lowered.module
+    }
+
+    #[test]
+    fn extern_byte_result_rejects_storage_aggregate_return() {
+        let semantic = borrow_fixture::lower_source(
+            r#"
+            extern "C" { fn make_bytes() -> bytes; }
+            fn main() { println(unsafe { make_bytes() }.len()); }
+            "#,
+        );
+        let mut physical = lower_physical_module(&semantic, target())
+            .expect("declared byte result must have a C return ABI")
+            .into_unverified();
+        let call = physical
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator {
+                PhysicalTerminator::ExternCall { result_abi, .. } => Some(result_abi),
+                _ => None,
+            })
+            .expect("source must reach its declared byte producer");
+        *call = PhysicalExternResultAbi::Direct;
+        let error = verify_physical_module(&physical)
+            .expect_err("a byte storage aggregate is not the C return ABI");
+        assert!(error.message.contains("extern result ABI"), "{error:?}");
     }
 
     fn module_with_return() -> SemModule {

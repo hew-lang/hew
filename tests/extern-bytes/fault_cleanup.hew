@@ -1,0 +1,21 @@
+extern "C" {
+    fn oracle_expect(count: i32);
+    fn oracle_make(seed: i32) -> bytes;
+}
+
+fn fault_after_result(divisor: i64) -> i64 {
+    let value = unsafe {
+        oracle_make(7)
+    };
+    let quotient = 10 / divisor;
+    // Keep the returned owner live across the checked failure.
+    assert(value[2] == 7);
+    quotient
+}
+
+fn main() {
+    unsafe {
+        oracle_expect(1);
+    };
+    println(fault_after_result(0));
+}

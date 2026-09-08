@@ -95,7 +95,7 @@ const SYMBOLS: &[&str] = &[
     "hew_path_absolute",
     "hew_dns_lookup_host",
     "hew_dns_lookup_host_timed",
-    "hew_compress_last_error",
+    "hew_compress_last_error_hew",
 ];
 
 /// Final owner slots for fresh strings which the witness keeps live across

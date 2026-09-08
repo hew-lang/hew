@@ -1003,6 +1003,7 @@ stable-stdlib = [
   "hew_ed25519_verify_hew",
   "hew_encrypt_last_open_error_code",
   "hew_compress_last_error",
+  "hew_compress_last_error_hew",
   "hew_encrypt_last_seal_error_code",
   "hew_encrypt_open_hew",
   "hew_encrypt_must_open_hew",
@@ -4250,7 +4251,7 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_compress_last_error"
+symbol = "hew_compress_last_error_hew"
 result = "fresh"
 params = []
 release-symbol = "hew_string_drop"

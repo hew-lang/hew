@@ -40,7 +40,7 @@ pub fn gzip_compress(data: bytes) -> Result<bytes, string> {
         hew_gzip_compress_hew(data)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -55,7 +55,7 @@ pub fn gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         hew_gzip_decompress_hew(data, max_output_len)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -70,7 +70,7 @@ pub fn deflate_compress(data: bytes) -> Result<bytes, string> {
         hew_deflate_compress_hew(data)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -85,7 +85,7 @@ pub fn deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes, str
         hew_deflate_decompress_hew(data, max_output_len)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -100,7 +100,7 @@ pub fn zlib_compress(data: bytes) -> Result<bytes, string> {
         hew_zlib_compress_hew(data)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -115,7 +115,7 @@ pub fn zlib_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         hew_zlib_decompress_hew(data, max_output_len)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -132,5 +132,5 @@ extern "C" {
     fn hew_deflate_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
     fn hew_zlib_compress_hew(data: bytes) -> bytes;
     fn hew_zlib_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
-    fn hew_compress_last_error() -> string;
+    fn hew_compress_last_error_hew() -> string;
 }

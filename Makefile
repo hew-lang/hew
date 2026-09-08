@@ -1123,6 +1123,17 @@ core-acceptance: hew-native ## Test: run audited native core acceptance cases
 	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
 HOST_CLIENT_ARGS ?=
+EXTERN_BYTES_ARGS ?=
+.PHONY: test-extern-bytes test-extern-bytes-safety
+test-extern-bytes: hew-native ## Test: compare C byte return ABIs and execute owned results
+	python3 tests/extern-bytes/run.py --hew-bin "$(abspath $(DEBUG_HEW))" \
+		--out-dir "$(abspath $(DEBUG_DIR))/extern-bytes" $(EXTERN_BYTES_ARGS)
+
+test-extern-bytes-safety: core-safety-build ## Test: instrument C and Hew extern byte ownership
+	python3 tests/extern-bytes/run.py \
+		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" \
+		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/extern-bytes" --sanitize $(EXTERN_BYTES_ARGS)
+
 .PHONY: test-host-client
 test-host-client: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
 	python3 tests/host/run.py --hew-bin "$(abspath $(DEBUG_HEW))" --hew-lib "$(abspath $(LIBHEW))" \

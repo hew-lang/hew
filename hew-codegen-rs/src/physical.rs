@@ -3298,8 +3298,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 symbol,
                 args,
                 result,
+                result_abi,
                 normal,
-            } => self.emit_extern_call(symbol, args, *result, normal),
+            } => self.emit_extern_call(symbol, args, *result, result_abi, normal),
             PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
             PhysicalTerminator::Trap(kind) => {
                 let code = trap_code(*kind);
@@ -8035,5 +8036,48 @@ mod tests {
         module.add_function("hew_fault_drop", ctx.i32_type().fn_type(&[], false), None);
         let error = external_fault_drop(&ctx, &module).expect_err("ABI mismatch must refuse");
         assert!(error.to_string().contains("hew_fault_drop"));
+    }
+
+    #[test]
+    fn extern_byte_calls_reuse_entry_storage() {
+        use inkwell::values::InstructionOpcode;
+
+        let semantic = lower_source(
+            r#"
+            extern "C" {
+                fn make_bytes(seed: i32) -> bytes;
+                fn relay_bytes(consume value: bytes) -> bytes;
+            }
+            fn main() {
+                for i in 0..10 {
+                    let value = unsafe { relay_bytes(make_bytes(i)) };
+                    println(value.len());
+                }
+            }
+            "#,
+        );
+        let triple = native_emission_triple();
+        let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+        let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+        let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+        let ctx = Context::create();
+        let machine =
+            crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+        let module = build_module(&ctx, verified.module(), "extern_bytes", &machine).unwrap();
+        for function in module.get_functions() {
+            for block in function.get_basic_blocks() {
+                let mut instruction = block.get_first_instruction();
+                while let Some(current) = instruction {
+                    if current.get_opcode() == InstructionOpcode::Alloca {
+                        assert_eq!(
+                            Some(block),
+                            function.get_first_basic_block(),
+                            "extern calls in loops must not grow scratch storage"
+                        );
+                    }
+                    instruction = current.get_next_instruction();
+                }
+            }
+        }
     }
 }

@@ -32,6 +32,27 @@ fn lower(source: &str) -> SemModule {
     lowered.module
 }
 
+fn cleanup_region(
+    function: &hew_sir::SemFunction,
+    start: hew_sir::BlockId,
+) -> Vec<&hew_sir::SemBlock> {
+    let mut pending = vec![start];
+    let mut seen = Vec::new();
+    let mut blocks = Vec::new();
+    while let Some(target) = pending.pop() {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target);
+        let block = &function.blocks[target.0 as usize];
+        block
+            .terminator
+            .visit_successors(|edge| pending.push(edge.target));
+        blocks.push(block);
+    }
+    blocks
+}
+
 #[test]
 fn scalar_record_method_returns_its_result_and_updated_receiver() {
     lower(
@@ -145,11 +166,13 @@ fn argument_alias_and_nested_mutation_precede_the_receiver_take() {
         assert!(normal.ops.iter().any(
             |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == receiver)
         ));
-        let cleanup = &main.blocks[unwind.target.0 as usize];
-        assert!(matches!(cleanup.terminator, SemTerminator::ResumeUnwind));
-        assert!(!cleanup
-            .ops
+        let cleanup = cleanup_region(main, unwind.target);
+        assert!(cleanup
             .iter()
+            .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind)));
+        assert!(!cleanup
+            .iter()
+            .flat_map(|block| &block.ops)
             .any(|op| matches!(op.kind, SemOpKind::StoreAssign { .. })));
     }
     assert_eq!(

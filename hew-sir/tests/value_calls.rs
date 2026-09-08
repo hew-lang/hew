@@ -104,6 +104,27 @@ fn value_call(module: &mut SemModule) -> &mut SemTerminator {
         .terminator
 }
 
+fn cleanup_region(
+    function: &hew_sir::SemFunction,
+    start: hew_sir::BlockId,
+) -> Vec<&hew_sir::SemBlock> {
+    let mut pending = vec![start];
+    let mut seen = Vec::new();
+    let mut blocks = Vec::new();
+    while let Some(target) = pending.pop() {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target);
+        let block = &function.blocks[target.0 as usize];
+        block
+            .terminator
+            .visit_successors(|edge| pending.push(edge.target));
+        blocks.push(block);
+    }
+    blocks
+}
+
 #[test]
 fn selected_methods_share_verified_call_control_flow() {
     for capability in [ValueCapability::Hash, ValueCapability::Eq] {
@@ -321,8 +342,10 @@ fn selected_equality_keeps_user_method_fault_cleanup() {
             _ => None,
         })
         .unwrap();
-    let cleanup = &main.blocks[failure.0 as usize];
-    assert!(matches!(cleanup.terminator, SemTerminator::ResumeUnwind));
+    let cleanup_blocks = cleanup_region(main, failure);
+    assert!(cleanup_blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind)));
     for name in ["left", "right"] {
         let hew_sir::BindingTarget::Place(owner) = main
             .bindings
@@ -333,7 +356,14 @@ fn selected_equality_keeps_user_method_fault_cleanup() {
         else {
             panic!("equality input must have local storage")
         };
-        assert_eq!(cleanup.ops.iter().filter(|op| matches!(op.kind, hew_sir::SemOpKind::EndLifetime { place } if place == owner)).count(), 1);
+        assert_eq!(
+            cleanup_blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .filter(|op| matches!(op.kind, hew_sir::SemOpKind::EndLifetime { place } if place == owner))
+                .count(),
+            1
+        );
     }
 }
 

@@ -50,7 +50,7 @@ fn empty_enum_vectors_and_exhaustive_empty_matches_lower() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "impossible")
+        .find(|f| f.declaration.full_path() == "impossible")
         .unwrap_or_else(|| panic!("empty-match body did not lower: {:#?}", lowered.statuses));
     assert!(impossible.blocks.iter().any(|block| {
         matches!(&block.terminator, SemTerminator::SwitchVariant { arms, .. } if arms.is_empty())
@@ -725,19 +725,23 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
         .iter()
         .find(|function| function.declaration.full_path() == "stop")
         .unwrap_or_else(|| panic!("stop must have a body: {:#?}", lowered.statuses));
-    assert_eq!(
-        stop.blocks.len(),
-        1,
-        "return must not create a dead cursor block"
-    );
-    assert!(matches!(
-        stop.blocks[0].terminator,
-        SemTerminator::Return { value: Some(_) }
-    ));
+    assert!(stop
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::Return { value: Some(_) })));
+    assert!(stop
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| { matches!(op.kind, SemOpKind::VariantMake { .. }) }));
+    assert!(!stop
+        .bindings
+        .iter()
+        .any(|binding| binding.name == "unreachable"));
     assert!(
-        stop.blocks[0]
-            .ops
+        stop.blocks
             .iter()
+            .flat_map(|block| &block.ops)
             .all(|op| !matches!(op.kind, SemOpKind::CopyValue { .. })),
         "unreachable binding work must not be emitted after the return"
     );

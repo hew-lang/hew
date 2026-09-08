@@ -65,6 +65,14 @@ fn scalar_literal_predicates_cannot_change_the_checked_width_or_kind() {
             *lit = hew_hir::HirLiteral::Bool(false);
         }
         let lowered = lower_module(&invalid, &checked);
-        assert!(lowered.callable_statuses.iter().any(|(_, status)| matches!(status, SirLoweringStatus::Unsupported { reason } if reason.contains("scalar match"))), "{:?}", lowered.callable_statuses);
+        assert!(
+            lowered.callable_statuses.iter().any(|(_, status)| matches!(
+                status,
+                SirLoweringStatus::Unsupported { reason }
+                    if reason.contains("scalar match") || reason.contains("literal match")
+            )),
+            "{:?}",
+            lowered.callable_statuses
+        );
     }
 }

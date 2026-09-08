@@ -41,6 +41,22 @@ fn lower_source(source: &str) -> SemModule {
     lowered.module
 }
 
+fn cleanup_path(
+    function: &hew_sir::SemFunction,
+    mut target: hew_sir::BlockId,
+) -> Vec<&hew_sir::SemBlock> {
+    let mut path = Vec::new();
+    loop {
+        let block = &function.blocks[target.0 as usize];
+        path.push(block);
+        match &block.terminator {
+            SemTerminator::Goto(edge) => target = edge.target,
+            _ => break,
+        }
+    }
+    path
+}
+
 fn operation_families(module: &SemModule) -> Vec<RuntimeCallFamily> {
     module
         .functions
@@ -353,10 +369,11 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     assert!(
         matches!(fault.ops[0].kind, SemOpKind::EndBorrow { ref borrow } if borrow.value == borrowed)
     );
+    let cleanup = cleanup_path(main, fault.id);
     assert_eq!(
-        fault
-            .ops
+        cleanup
             .iter()
+            .flat_map(|block| &block.ops)
             .filter(
                 |op| matches!(&op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(*place) == parent)
             )
@@ -364,7 +381,10 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
         1,
         "the failure edge must destroy the containing owner after ending its loan"
     );
-    assert!(matches!(fault.terminator, SemTerminator::ResumeUnwind));
+    assert!(matches!(
+        cleanup.last().unwrap().terminator,
+        SemTerminator::ResumeUnwind
+    ));
 
     let fault_id = fault.id;
     let mut replaced = module.clone();

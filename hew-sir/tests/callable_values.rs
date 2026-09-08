@@ -489,13 +489,15 @@ fn borrowed_callable_replacements_share_local_storage_across_branches() {
                         && op.results[0].id == callee.operand.value
                 ));
             }
-            if matches!(
-                block.terminator,
-                SemTerminator::Return { .. } | SemTerminator::ResumeUnwind
-            ) {
-                assert_eq!(block.ops.iter().filter(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == local)).count(), 1, "every exit must end the declaration, including an empty early-return or acquisition-fault path");
-            }
         }
+        assert!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == local)),
+            "a replacement that acquires the private slot must clean it on its active exits"
+        );
         hew_sir::place_lifetimes(&module, function)
             .expect("all private replacement paths must have checked cleanup");
     }

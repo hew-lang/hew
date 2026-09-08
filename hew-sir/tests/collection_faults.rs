@@ -47,6 +47,19 @@ fn collection_calls() -> SemModule {
     lowered.module
 }
 
+fn cleanup_terminal(
+    function: &hew_sir::SemFunction,
+    mut target: hew_sir::BlockId,
+) -> &hew_sir::SemBlock {
+    loop {
+        let block = &function.blocks[target.0 as usize];
+        match &block.terminator {
+            SemTerminator::Goto(edge) => target = edge.target,
+            _ => return block,
+        }
+    }
+}
+
 #[test]
 fn collection_callback_failures_end_in_existing_fault_propagation() {
     use hew_types::{
@@ -68,7 +81,7 @@ fn collection_callback_failures_end_in_existing_fault_propagation() {
             };
             assert!(
                 matches!(
-                    function.blocks[edge.target.0 as usize].terminator,
+                    cleanup_terminal(function, edge.target).terminator,
                     SemTerminator::ResumeUnwind
                 ),
                 "{family:?}"

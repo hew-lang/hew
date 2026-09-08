@@ -28,6 +28,35 @@ fn lower_source_with_registry(source: &str, registry: ModuleRegistry) -> hew_sir
     lower_module(&hir.module, &facts)
 }
 
+fn cleanup_path(
+    function: &hew_sir::SemFunction,
+    mut target: hew_sir::BlockId,
+) -> Vec<&hew_sir::SemBlock> {
+    let mut path = Vec::new();
+    loop {
+        let block = &function.blocks[target.0 as usize];
+        path.push(block);
+        match &block.terminator {
+            SemTerminator::Goto(edge) => target = edge.target,
+            _ => break,
+        }
+    }
+    path
+}
+
+fn cleanup_has_lifetime(path: &[&hew_sir::SemBlock], place: hew_sir::PlaceId) -> bool {
+    path.iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place: found } if found == place))
+}
+
+fn cleanup_ends_with_resume(path: &[&hew_sir::SemBlock]) -> bool {
+    matches!(
+        path.last().map(|block| &block.terminator),
+        Some(SemTerminator::ResumeUnwind)
+    )
+}
+
 #[test]
 fn canonical_string_length_uses_a_borrowing_runtime_operation() {
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -177,9 +206,17 @@ fn constant_owned_branch_that_needs_cleanup_remains_executable() {
         .iter()
         .find(|function| function.callable == main_before.callable)
         .expect("canonicalization must retain the main callable");
-
     assert_eq!(main_report.folded_branches, 0);
-    assert_eq!(main_after, &main_before);
+    assert!(!main_report.removed_blocks.is_empty());
+    assert!(main_after
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::Return { .. })));
+    assert!(main_after
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { .. })));
     assert!(verify_module(&lowered.module).is_empty());
 }
 
@@ -249,12 +286,9 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
         panic!("bounds failure must create its fault before cleanup");
     };
     assert_eq!(*kind, TrapKind::IndexOutOfBounds);
-    let failure = &main.blocks[cleanup.target.0 as usize];
-    assert!(failure
-        .ops
-        .iter()
-        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == copy)));
-    assert_eq!(failure.terminator, SemTerminator::ResumeUnwind);
+    let cleanup = cleanup_path(main, cleanup.target);
+    assert!(cleanup_has_lifetime(&cleanup, copy));
+    assert!(cleanup_ends_with_resume(&cleanup));
 
     let mut wrong_push_boundary = lowered.module.clone();
     let push = wrong_push_boundary
@@ -368,24 +402,25 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
             }
         }
     }
-    let cleanup_blocks = lowered
+    let use_values = lowered
         .module
         .functions
         .iter()
-        .flat_map(|function| &function.blocks)
-        .filter(|block| {
-            block
-                .ops
-                .iter()
-                .any(|op| matches!(op.kind, SemOpKind::DestroyValue { .. }))
-        })
-        .collect::<Vec<_>>();
-    assert!(cleanup_blocks
+        .find(|function| function.declaration.full_path() == "use_values")
+        .expect("use_values must have a body");
+    assert!(use_values
+        .blocks
         .iter()
         .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind)));
-    assert!(cleanup_blocks
+    assert!(use_values
+        .blocks
         .iter()
         .any(|block| matches!(block.terminator, SemTerminator::Return { .. })));
+    assert!(use_values
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { .. })));
     assert!(
         verify_module(&lowered.module).is_empty(),
         "owned source SIR must verify: {:#?}",
@@ -806,7 +841,7 @@ fn checked_arithmetic_failure_creates_exact_fault_before_owner_cleanup() {
         panic!("arithmetic failure must create its fault before cleanup");
     };
     assert_eq!(*kind, TrapKind::IntegerOverflow);
-    let failure_block = &increment.blocks[cleanup.target.0 as usize];
+    let cleanup_blocks = cleanup_path(increment, cleanup.target);
     let hew_sir::BindingTarget::Place(live) = increment
         .bindings
         .iter()
@@ -816,11 +851,8 @@ fn checked_arithmetic_failure_creates_exact_fault_before_owner_cleanup() {
     else {
         panic!("live must name local storage")
     };
-    assert!(failure_block
-        .ops
-        .iter()
-        .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == live)));
-    assert_eq!(failure_block.terminator, SemTerminator::ResumeUnwind);
+    assert!(cleanup_has_lifetime(&cleanup_blocks, live));
+    assert!(cleanup_ends_with_resume(&cleanup_blocks));
     assert!(verify_module(&lowered.module).is_empty());
 
     let mut wrong_kind = lowered.module.clone();

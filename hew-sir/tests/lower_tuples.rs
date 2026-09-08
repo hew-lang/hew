@@ -91,7 +91,11 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
             "    %1 = const 42\n",
             "    %2 = tuple.make(%0, %1)\n",
             "    %3 = tuple.get %2, 0\n",
+            "    goto bb1\n",
+            "bb1:\n",
             "    return move %3\n",
+            "bb2:\n",
+            "    resume_unwind\n",
             "}\n"
         )
     );

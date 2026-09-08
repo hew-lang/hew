@@ -52,6 +52,15 @@ fn direct_calls(
     })
 }
 
+fn cleanup_terminal(function: &SemFunction, mut target: hew_sir::BlockId) -> hew_sir::BlockId {
+    loop {
+        match &function.blocks[target.0 as usize].terminator {
+            SemTerminator::Goto(edge) => target = edge.target,
+            _ => return target,
+        }
+    }
+}
+
 #[test]
 fn returning_calls_require_a_successful_edge() {
     for source in [
@@ -254,8 +263,9 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
     let CallUnwind::Cleanup(cleanup) = unwind else {
         panic!("ordinary direct call must publish its unwind cleanup edge");
     };
+    let cleanup_target = cleanup_terminal(main, cleanup.target);
     assert!(matches!(
-        main.blocks[cleanup.target.0 as usize].terminator,
+        main.blocks[cleanup_target.0 as usize].terminator,
         SemTerminator::ResumeUnwind
     ));
 }

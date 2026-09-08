@@ -369,9 +369,9 @@ pub unsafe extern "C" fn hew_channel_recv_layout(
 /// coroutine (not the OS thread) when the channel is empty with live senders.
 ///
 /// Returns 0 after retaining `waker`, 1 with the element decoded into `out`,
-/// 2 at end of channel, and 3 after a producer fault. A malformed envelope
-/// reports through the ordinary last-error channel and returns 2, matching the
-/// blocking entry's "no value" discipline.
+/// 2 at end of channel, and 3 after a producer fault. A malformed envelope is
+/// a fault, not an end of channel: the element was consumed and cannot be
+/// re-delivered, so ending the drain silently would lose it.
 ///
 /// # Safety
 ///
@@ -400,7 +400,7 @@ pub unsafe extern "C" fn hew_channel_recv_native(
     if wrote == 1 {
         1
     } else {
-        2
+        3
     }
 }
 

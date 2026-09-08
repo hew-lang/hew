@@ -5813,6 +5813,7 @@ mod tests {
             "hew_sink_close",
             "hew_channel_sender_close",
             "hew_channel_receiver_close",
+            "hew_channel_pair_free",
             "hew_duplex_close",
             "hew_duplex_close_half",
             "hew_duplex_send_half",

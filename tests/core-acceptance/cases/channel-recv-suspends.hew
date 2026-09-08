@@ -1,31 +1,31 @@
 import std.channel.channel;
 
+/// Fills a capacity-2 channel with six owned strings, so the producer parks on
+/// capacity while the consumer parks on the empty queue.
+fn feed(consume tx: channel.Sender<string>, count: i64) -> i64 {
+    for index in 0..count {
+        tx.send(f"item-{index}-payload");
+    }
+    tx.close();
+    count
+}
+
 fn main() {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    // Two sends into a capacity-2 channel, then the close the consumer sees
-    // as end of channel after the queue drains in order.
-    tx.send("first");
-    tx.send("second");
-    tx.close();
-    match rx.recv() {
-        .Some(value) => println(value),
-        .None => println("closed"),
+    let producer = fork feed(tx, 6);
+    var drained = 0;
+    for item in rx {
+        println(item);
+        drained = drained + 1;
     }
-    match rx.recv() {
-        .Some(value) => println(value),
-        .None => println("closed"),
-    }
-    match rx.recv() {
-        .Some(value) => println(value),
-        .None => println("closed"),
-    }
-    rx.close();
+    println(f"sent {await producer}");
+    println(f"drained {drained}");
 
     // A bytes element with an embedded NUL: the envelope decode carries the
-    // content length, so nothing stops at the terminator.
+    // element's own content length, so nothing stops at the terminator.
     let (btx, brx): (channel.Sender<bytes>, channel.Receiver<bytes>) = match channel.new(2) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),

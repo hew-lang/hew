@@ -10,15 +10,14 @@
 //!
 //! ## Receiving
 //!
-//! - `rx.recv()` from an actor handler / closure / task entry
-//!   SUSPENDS the calling coroutine worker-free when the channel is empty
-//!   with live senders, and resumes when a sender deposits a value or the
-//!   last sender closes (`None`). From a plain `main`/free function it
-//!   blocks the foreign thread instead (there is no parkable continuation).
+//! - `rx.recv()` SUSPENDS the calling coroutine worker-free when the channel
+//!   is empty with live senders, and resumes when a sender deposits a value or
+//!   the last sender closes (`None`). Every calling context is a resumable
+//!   frame, `main` included.
 //! - `rx.try_recv()` never suspends: it returns `Some(value)` if an item is
 //!   immediately available, else `None`.
-//! - A channel receive arm may also participate in `select { pat from
-//!   rx.recv() => ... }`.
+//! - Draining with `for item in rx` consumes the receiver: it closes the read
+//!   half when the loop ends, so do not close it again.
 //!
 //! Supported element types: primitives (`i64`, `f64`, `bool`, `char`, ...),
 //! `string`, `bytes`, value records/enums/tuples, and monomorphic machine
@@ -71,8 +70,10 @@ pub type Receiver {
 trait SenderMethods {
     /// Send a message through the channel.
     ///
-    /// Blocks if the channel is full (backpressure). On wasm32, a full send
-    /// traps because blocking is pending cooperative scheduler yield/resume.
+    /// SUSPENDS the calling coroutine worker-free while a bounded channel is
+    /// full (backpressure), and resumes when the consumer frees capacity. On
+    /// wasm32, a full send traps because blocking is pending cooperative
+    /// scheduler yield/resume.
     fn send(self, data: string);
 
     /// Clone this sender for multi-producer use.
@@ -113,10 +114,8 @@ impl SenderMethods for Sender {
 trait ReceiverMethods {
     /// Receive the next message, suspending if necessary.
     ///
-    /// `rx.recv()` from an actor handler / closure / task entry
-    /// suspends the calling coroutine worker-free until a message arrives
-    /// or the channel closes; from `main`/a free function it blocks the
-    /// foreign thread. Returns `Some(value)` on a message, or `None` when
+    /// Suspends the calling coroutine worker-free until a message arrives or
+    /// the channel closes. Returns `Some(value)` on a message, or `None` when
     /// the channel is closed (all senders dropped).
     fn recv(self) -> Option<string>;
 

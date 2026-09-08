@@ -3403,20 +3403,6 @@ release-symbol = "hew_channel_sender_close"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
-symbol = "hew_channel_recv_native"
-result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_channel_send_native"
-result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
 symbol = "hew_channel_receiver_close"
 result = "none"
 params = ["consume"]

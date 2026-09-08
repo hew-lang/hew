@@ -73,10 +73,13 @@ pub struct HirModule {
     /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub monomorphisations: Vec<MonomorphizedFn>,
-    /// Type arguments observed at generic function calls and function values.
+    /// Type arguments observed at generic calls and function values.
     /// Keyed by the `SiteId` of the `HirExpr`: `Call` identifies an invocation;
     /// `BindingRef` with `ResolvedRef::Item` identifies a function value.
-    /// Both retain the generic declaration as their origin.
+    /// Both retain the generic declaration as their origin. Static trait
+    /// calls (including mutable receiver calls) record the method's arguments
+    /// here; SIR binds the selected impl's parameters from the receiver and
+    /// prepends them when it requests the concrete method instance.
     ///
     /// The recorded `ResolvedTy`s mirror the checker's `call_type_args`
     /// side-table, with one important nuance: when a call appears

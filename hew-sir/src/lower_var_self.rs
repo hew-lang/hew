@@ -37,9 +37,13 @@ impl Builder<'_, '_> {
             CallTarget::StaticTraitMethod {
                 declaring_trait,
                 method,
-            } => self
-                .service
-                .resolve_static_trait_call(declaring_trait, method, &receiver_ty)?,
+            } => self.service.resolve_static_trait_call(
+                declaring_trait,
+                method,
+                &receiver_ty,
+                expr.site,
+                &self.substitution,
+            )?,
             _ => {
                 return Err(
                     "mutable method requires a resolved direct or static-trait declaration".into(),

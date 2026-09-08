@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-trait-method-values"
+intent = "Bound-driven methods combine receiver-bound impl parameters with checker-selected method arguments, preserving independent instantiations, mutable receivers and owned results."
+source = "cases/generic-trait-method-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "released\ngeneric trait method values ok\n"
+exit = 0

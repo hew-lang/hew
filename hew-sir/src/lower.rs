@@ -1865,6 +1865,8 @@ impl<'a> InstanceService<'a> {
         declaring_trait: &DefId,
         method: &DefId,
         receiver_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+        substitution: &TypeSubstitution,
     ) -> Result<SemCallable, String> {
         let self_type = hew_hir::dispatch::receiver_self_type_for_impl_lookup_instance(receiver_ty)
             .ok_or_else(|| {
@@ -1888,7 +1890,7 @@ impl<'a> InstanceService<'a> {
                 method.full_path()
             )
         })?;
-        if entry.impl_type_params.is_empty() {
+        if !self.table.templates.contains_key(&entry.method) {
             let id = self
                 .table
                 .monomorphic_by_declaration
@@ -1909,7 +1911,7 @@ impl<'a> InstanceService<'a> {
                 format!("SIR callable {id:?} is absent from its deterministic table")
             });
         }
-        let type_args = self.static_trait_instance_args(&entry.method, &self_type)?;
+        let type_args = self.static_trait_instance_args(&entry, &self_type, site, substitution)?;
         let id = self.request_instance(&entry.method, type_args)?;
         self.callable(id).cloned().ok_or_else(|| {
             format!(
@@ -1919,8 +1921,8 @@ impl<'a> InstanceService<'a> {
         })
     }
 
-    /// Bind a generic implementation's type parameters from the concrete
-    /// receiver, in the order the implementation declares them.
+    /// Bind impl parameters from the concrete receiver and append the method
+    /// parameters selected by the checker at this call site.
     ///
     /// `impl<A, B> Trait for Pair<B, A>` spells its self-type arguments in the
     /// opposite order to its parameter list, so the receiver's arguments are
@@ -1928,9 +1930,12 @@ impl<'a> InstanceService<'a> {
     /// handed to the instance positionally.
     fn static_trait_instance_args(
         &self,
-        method: &DefId,
+        entry: &hew_hir::dispatch::TraitImplMethodEntry,
         self_type: &hew_types::NominalInstance,
+        site: hew_hir::SiteId,
+        substitution: &TypeSubstitution,
     ) -> Result<Vec<ResolvedTy>, String> {
+        let method = &entry.method;
         let function = self
             .table
             .templates
@@ -1942,6 +1947,30 @@ impl<'a> InstanceService<'a> {
                 )
             })?
             .function;
+        let impl_param_count = entry.impl_type_params.len();
+        if !function.type_params.starts_with(&entry.impl_type_params) {
+            return Err(format!(
+                "generic implementation `{}` has inconsistent impl parameter declarations",
+                method.full_path()
+            ));
+        }
+        let method_param_count = function.type_params.len() - impl_param_count;
+        let method_args = self.module.call_site_type_args.get(&site);
+        if method_args.map_or(0, Vec::len) != method_param_count {
+            return Err(format!(
+                "static trait call to `{}` requires {method_param_count} checker-resolved method type argument(s) at SIR site {}, found {}",
+                method.full_path(),
+                site.0,
+                method_args.map_or(0, Vec::len),
+            ));
+        }
+        let method_args = method_args
+            .into_iter()
+            .flatten()
+            .map(|argument| substitution.apply(argument));
+        if impl_param_count == 0 {
+            return Ok(method_args.collect());
+        }
         let Some(ResolvedTy::Named {
             args: pattern_args, ..
         }) = function.params.first().map(|param| &param.ty)
@@ -1961,7 +1990,7 @@ impl<'a> InstanceService<'a> {
         }
         let mut bindings: HashMap<&str, &ResolvedTy> = HashMap::new();
         for (pattern, concrete) in pattern_args.iter().zip(&self_type.args) {
-            let name = declared_type_param_name(pattern, &function.type_params).ok_or_else(|| {
+            let name = declared_type_param_name(pattern, &entry.impl_type_params).ok_or_else(|| {
                 format!(
                     "generic implementation `{}` receives `{}` in a position SIR cannot bind to a type parameter",
                     method.full_path(),
@@ -1978,8 +2007,8 @@ impl<'a> InstanceService<'a> {
                 ));
             }
         }
-        function
-            .type_params
+        let mut arguments = entry
+            .impl_type_params
             .iter()
             .map(|param| {
                 bindings.get(param.as_str()).map_or_else(
@@ -1992,7 +2021,9 @@ impl<'a> InstanceService<'a> {
                     |ty| Ok((*ty).clone()),
                 )
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        arguments.extend(method_args);
+        Ok(arguments)
     }
 
     fn request_closure(
@@ -7816,9 +7847,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return Err("static trait call requires a checker-selected trait method".to_string());
         };
         let receiver_ty = self.ty(&receiver.ty);
-        let callee =
-            self.service
-                .resolve_static_trait_call(declaring_trait, method, &receiver_ty)?;
+        let callee = self.service.resolve_static_trait_call(
+            declaring_trait,
+            method,
+            &receiver_ty,
+            expr.site,
+            &self.substitution,
+        )?;
         let signature = callee.signature.clone();
         let result_ty = self.ty(&expr.ty);
         let arguments: Vec<HirExpr> = std::iter::once((**receiver).clone())
@@ -8000,12 +8035,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         };
         self.current = normal_block;
         self.owned_live = live_at_call;
+        // A successful result already owns its value before argument cleanup.
+        // Cooperative cleanup may fail, so its unwind edge must release that
+        // result along with the caller's other live values.
+        if let Some((value, OwnKind::Owned)) = continuation {
+            self.owned_live.insert(value, return_ty);
+        }
         self.end_call_loans(loans)?;
         for value in temporaries.into_iter().rev() {
             self.emit_destroy(value)?;
-        }
-        if let Some((value, OwnKind::Owned)) = continuation {
-            self.owned_live.insert(value, return_ty);
         }
         Ok(continuation.map(|(value, _)| value))
     }

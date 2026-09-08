@@ -11863,6 +11863,35 @@ impl LowerCtx {
         }
     }
 
+    /// Preserve method-level instantiation facts until SIR selects the impl
+    /// from the concrete receiver. Impl parameters are bound there separately;
+    /// the checker recorded only the method's parameters at this call site.
+    fn record_static_trait_type_args(&mut self, span: &Span, site: SiteId) {
+        let Some(arguments) = self.call_type_args.get(&self.mk_key(span)).cloned() else {
+            return;
+        };
+        let mut resolved = Vec::with_capacity(arguments.len());
+        for argument in &arguments {
+            match ResolvedTy::from_ty(argument) {
+                Ok(argument) => {
+                    resolved.push(self.qualify_current_module_record_ty(argument));
+                }
+                Err(error) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "static trait method type arguments".to_string(),
+                            reason: error.to_string(),
+                        },
+                        span.clone(),
+                        "static trait method requires checker-resolved type arguments",
+                    ));
+                    return;
+                }
+            }
+        }
+        self.call_site_type_args.insert(site, resolved);
+    }
+
     /// Emit a `Display::fmt` static trait-dispatch over an abstract type
     /// parameter `type_param_name` (#1565). `bound_trait` and
     /// `declaring_trait` are both the `Display` lang-item trait; the concrete
@@ -27960,6 +27989,8 @@ impl LowerCtx {
                         }
                     }
                 }
+
+                self.record_static_trait_type_args(&span, site);
 
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);

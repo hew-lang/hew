@@ -2462,6 +2462,18 @@ expect_check_fail_contains_without \
     "on_down_hook_missing_import"
 [[ "${fail_count}" == "${_fcb}" ]] && mark_pass "on_down_hook_missing_import (reject)"
 
+# Native lifecycle adapters must not invoke the blocking process-root driver
+# from an actor worker. Resumable hook scheduling remains an implementation gap.
+for hook_kind in crash exit down; do
+    if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/native_${hook_kind}_hook_suspend.hew" >"${reject_output}" 2>&1; then
+        record_failure "native_${hook_kind}_hook_suspend" "expected unsupported lifecycle suspension"
+    elif grep -qF 'native actor init and lifecycle suspension is not implemented' "${reject_output}"; then
+        mark_pass "native_${hook_kind}_hook_suspend (reject)"
+    else
+        record_failure "native_${hook_kind}_hook_suspend" "unexpected compiler diagnostic"
+    fi
+done
+
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
 #      proving the annotation propagated from HIR through MIR.

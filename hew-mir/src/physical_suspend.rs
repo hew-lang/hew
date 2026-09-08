@@ -226,10 +226,13 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             .iter()
             .chain(&actor.start)
             .chain(&actor.stop)
+            .chain(&actor.crash)
+            .chain(&actor.exit)
+            .chain(&actor.down)
             .any(|body| expected.contains(body))
         {
             return Err(PhysicalError::new(
-                "actor init and lifecycle hooks cannot suspend",
+                "native actor init and lifecycle suspension is not implemented",
             ));
         }
     }

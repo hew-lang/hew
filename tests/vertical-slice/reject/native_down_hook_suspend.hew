@@ -1,0 +1,16 @@
+// Native limitation: lifecycle adapters need actor-owned coroutine scheduling.
+import std.link_monitor;
+actor Peer { receive fn ping() {} }
+actor Watcher {
+    let peer: LocalPid<Peer>,
+    #[on(down)] fn notified(note: link_monitor.DownNotification) {
+        peer.ping().expect("peer");
+        
+    }
+}
+fn main() {
+    let peer = spawn Peer;
+    let watcher = spawn Watcher(peer: peer);
+    close(watcher);
+    close(peer);
+}

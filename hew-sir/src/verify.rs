@@ -3026,7 +3026,10 @@ fn verify_operation_shape(
                 );
             }
             for (index, (field, recipe)) in fields.iter().zip(recipes).enumerate() {
-                if types.get(&field.value) != Some(&recipe.ty) {
+                if !types
+                    .get(&field.value)
+                    .is_some_and(|ty| crate::call_boundary_types_match(ty, &recipe.ty))
+                {
                     let actual = types
                         .get(&field.value)
                         .map_or("<undefined>".to_string(), |ty| ty.user_facing().to_string());
@@ -4973,6 +4976,32 @@ fn verify_terminator_shape(
                             .is_some_and(|element| matches!(result, crate::CallResult::Value(value)
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![element.clone()])
                                     && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))))
+                }
+                crate::SuspendKind::ChannelRecv => {
+                    // The receiver may be spelled bare inside `std.channel`,
+                    // in which case it imposes no element; the result's
+                    // `Option<T>` is the message-type authority either way.
+                    resumes.len() == 1
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::BorrowMut
+                        && matches!(result, crate::CallResult::Value(value)
+                            if matches!(&value.ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
+                                if args.len() == 1
+                                    && types.get(&input.operand.value)
+                                        .and_then(crate::receiver_element)
+                                        .is_none_or(|element| *element == args[0]))
+                                && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own)))
+                }
+                crate::SuspendKind::ChannelSend => {
+                    // The queue deep-copies, so the element is read, not moved.
+                    resumes.len() == 1
+                        && matches!(result, crate::CallResult::Unit)
+                        && matches!(inputs.as_slice(), [channel, value]
+                            if channel.decision == crate::BoundaryDecision::BorrowMut
+                            && value.decision == crate::BoundaryDecision::Borrow
+                            && types.get(&channel.operand.value)
+                                .and_then(crate::sender_element)
+                                .is_none_or(|element| types.get(&value.operand.value) == Some(element)))
                 }
                 crate::SuspendKind::StreamSend => {
                     // Only a stream producer body sends: its owned sink is

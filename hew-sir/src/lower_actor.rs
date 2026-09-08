@@ -284,7 +284,13 @@ impl InstanceService<'_> {
             } else {
                 handler.return_ty.clone()
             };
-            if params != row.param_tys || checked_return != row.return_ty {
+            if params.len() != row.param_tys.len()
+                || params
+                    .iter()
+                    .zip(&row.param_tys)
+                    .any(|(param, row)| !crate::call_boundary_types_match(param, row))
+                || !crate::call_boundary_types_match(&checked_return, &row.return_ty)
+            {
                 return Err(format!(
                     "actor protocol member `{}` ({:?} -> {}) differs from its checked body ({:?} -> {})",
                     handler.name,

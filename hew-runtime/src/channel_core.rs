@@ -329,6 +329,92 @@ impl ChannelCore {
         1
     }
 
+    /// Take the next queue envelope for a checked coroutine consumer,
+    /// retaining `waker` when nothing is available yet.
+    ///
+    /// Returns `(1, Some(envelope))` with an element, `(2, None)` at end of
+    /// stream, `(3, None)` after a producer fault, and `(0, None)` after
+    /// parking. The envelope is opaque here: its typed decode belongs to the
+    /// caller's element witness, which is the only authority on whether the
+    /// bytes are a slot image or content (`decode_elem_envelope`).
+    ///
+    /// # Safety
+    /// `waker` obeys the [`HewWaker`] contract.
+    pub unsafe fn poll_recv_envelope(&self, waker: &HewWaker) -> (i32, Option<Vec<u8>>) {
+        let item;
+        let producer_wake;
+        let native_producers;
+        {
+            let mut inner = self.locked();
+            match inner.queue.pop_front() {
+                Some(bytes) => {
+                    item = bytes;
+                    producer_wake = Self::drain_one_producer(&mut inner);
+                    native_producers = std::mem::take(&mut inner.native_producers);
+                }
+                None if inner.sink_fault => return (3, None),
+                None if inner.sink_closed => return (2, None),
+                None => {
+                    // SAFETY: the caller keeps the descriptor live during retain.
+                    inner.native_consumer = Some(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                    return (0, None);
+                }
+            }
+        }
+        if let Some(w) = producer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        for producer in native_producers {
+            producer.wake();
+        }
+        self.cv.notify_all();
+        (1, Some(item))
+    }
+
+    /// Deposit one already-encoded envelope for a checked coroutine producer,
+    /// retaining `waker` when the ring is full.
+    ///
+    /// Returns 1 after the transfer, 2 when either half is closed or faulted,
+    /// and 0 after parking. On 0 and 2 the envelope is returned so the caller
+    /// keeps ownership of whatever it holds.
+    ///
+    /// # Safety
+    /// `waker` obeys the [`HewWaker`] contract.
+    pub unsafe fn poll_send_envelope(
+        &self,
+        waker: &HewWaker,
+        envelope: Vec<u8>,
+    ) -> (i32, Option<Vec<u8>>) {
+        let consumer_wake;
+        let native_consumer;
+        {
+            let mut inner = self.locked();
+            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                return (2, Some(envelope));
+            }
+            if inner.queue.len() >= inner.capacity {
+                // SAFETY: the caller keeps the descriptor live during retain.
+                inner
+                    .native_producers
+                    .push(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                return (0, Some(envelope));
+            }
+            inner.queue.push_back(envelope);
+            consumer_wake = inner.consumer.take();
+            native_consumer = inner.native_consumer.take();
+        }
+        if let Some(w) = consumer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
+        }
+        self.cv.notify_all();
+        (1, None)
+    }
+
     /// Move one element into the ring. Returns 1 after the transfer, 2 when
     /// either half is closed or faulted, or 0 after retaining `waker` until the
     /// consumer frees capacity or closes.

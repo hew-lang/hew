@@ -1018,6 +1018,26 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// Park until the exclusively borrowed channel yields an element or every
+    /// sender closes. The element carries its typed envelope recipe.
+    ChannelRecv {
+        channel: ArgumentTransfer,
+        element: PhysicalValueRecipe,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    /// Deep-copy one element into the borrowed channel, parking on capacity.
+    /// The producer keeps its value on every exit.
+    ChannelSend {
+        channel: ArgumentTransfer,
+        value: ArgumentTransfer,
+        element: PhysicalValueRecipe,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     /// Transfer one element into the borrowed sink, parking on capacity. The
     /// element is consumed on every exit; `closed` resumes after the consumer
     /// closed its half.
@@ -3310,6 +3330,56 @@ impl FunctionLowerer<'_> {
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::ChannelRecv,
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => {
+                let shape = self
+                    .module
+                    .variant_shape_for_type(&result.ty)
+                    .ok_or_else(|| {
+                        PhysicalError::new("channel receive lacks its Option descriptor")
+                    })?;
+                let element = shape
+                    .variants
+                    .first()
+                    .and_then(|variant| variant.fields.first())
+                    .map(|field| field.ty.clone())
+                    .ok_or_else(|| PhysicalError::new("channel receive lacks its element type"))?;
+                Ok(PhysicalTerminator::ChannelRecv {
+                    channel: self.argument_transfers(inputs)?[0],
+                    element: physical_value_recipe(self.module, self.glue_ids, &element)?,
+                    result: self.value(result.id)?,
+                    normal: self.lower_edge(&resumes[0])?,
+                    cancel: self.lower_edge(cancel)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::ChannelSend,
+                inputs,
+                resumes,
+                cancel,
+                unwind,
+                ..
+            } => {
+                let transfers = self.argument_transfers(inputs)?;
+                let element = self.storage[self.value(inputs[1].operand.value)?.0 as usize]
+                    .ty
+                    .clone();
+                Ok(PhysicalTerminator::ChannelSend {
+                    channel: transfers[0],
+                    value: transfers[1],
+                    element: physical_value_recipe(self.module, self.glue_ids, &element)?,
+                    normal: self.lower_edge(&resumes[0])?,
+                    cancel: self.lower_edge(cancel)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::StreamSend,
                 inputs,
@@ -6035,6 +6105,67 @@ fn terminator_successors(
             successors.push(apply_edge(function, unwind, state, block)?);
             Ok(successors)
         }
+        PhysicalTerminator::ChannelRecv {
+            channel,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let ArgumentTransfer::BorrowMut(channel) = channel else {
+                return Err(PhysicalError::new(
+                    "channel receive requires an exclusive receiver",
+                ));
+            };
+            initialized(function, &state, *channel, block, "received channel")?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "channel receive cannot replace an active fault",
+                ));
+            }
+            let mut completed = state.clone();
+            define(function, &mut completed, *result, block, "received element")?;
+            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
+        PhysicalTerminator::ChannelSend {
+            channel,
+            value,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let (ArgumentTransfer::BorrowMut(channel), ArgumentTransfer::Borrow(value)) =
+                (channel, value)
+            else {
+                return Err(PhysicalError::new(
+                    "channel send borrows its sender exclusively and reads its element",
+                ));
+            };
+            initialized(function, &state, *channel, block, "sending channel")?;
+            initialized(function, &state, *value, block, "sent element")?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "channel send cannot replace an active fault",
+                ));
+            }
+            let mut successors = vec![apply_edge(function, normal, state.clone(), block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
         PhysicalTerminator::StreamSend {
             sink,
             value,
@@ -6699,6 +6830,66 @@ fn verify_terminator(
                     "stream receive changes its element type",
                 ));
             }
+            for successor in defer::edges(terminator) {
+                edge(successor)?;
+            }
+            Ok(())
+        }
+        PhysicalTerminator::ChannelRecv {
+            channel,
+            element,
+            result,
+            ..
+        } => {
+            let ArgumentTransfer::BorrowMut(channel) = channel else {
+                return Err(PhysicalError::new(
+                    "channel receive requires an exclusive receiver",
+                ));
+            };
+            // The message type is a caller-side fact: `std.channel` declares
+            // the endpoint bare, so a receiver spelled with its element must
+            // agree and a bare one imposes nothing.
+            if hew_sir::receiver_element(&slot(*channel)?.ty)
+                .is_some_and(|message| *message != element.ty)
+                || slot(*result)?.ty
+                    != ResolvedTy::named_builtin(
+                        "Option",
+                        BuiltinType::Option,
+                        vec![element.ty.clone()],
+                    )
+            {
+                return Err(PhysicalError::new(
+                    "channel receive changes its element type",
+                ));
+            }
+            verify_value_recipe(module, element)?;
+            for successor in defer::edges(terminator) {
+                edge(successor)?;
+            }
+            Ok(())
+        }
+        PhysicalTerminator::ChannelSend {
+            channel,
+            value,
+            element,
+            ..
+        } => {
+            let (ArgumentTransfer::BorrowMut(channel), ArgumentTransfer::Borrow(value)) =
+                (channel, value)
+            else {
+                return Err(PhysicalError::new(
+                    "channel send borrows its sender exclusively and reads its element",
+                ));
+            };
+            if hew_sir::sender_element(&slot(*channel)?.ty)
+                .is_some_and(|message| *message != element.ty)
+                || slot(*value)?.ty != element.ty
+            {
+                return Err(PhysicalError::new(
+                    "channel send element differs from its sender",
+                ));
+            }
+            verify_value_recipe(module, element)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
             }

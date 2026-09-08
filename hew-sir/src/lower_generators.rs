@@ -268,6 +268,106 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
+    /// A channel consumer parks on the queue. The element arrives decoded into
+    /// the resume value exactly as a stream item does; the message type comes
+    /// from the call's `Option<T>` result, never from the symbol.
+    pub(super) fn lower_channel_recv(
+        &mut self,
+        expression: &HirExpr,
+        receiver: &HirExpr,
+    ) -> Result<ValueId, String> {
+        let mut loans = Vec::new();
+        let channel = self.lower_borrowed_read(receiver, &mut loans)?;
+        let output = self.ty(&expression.ty);
+        self.service.require_type_facts(&output)?;
+        self.service.require_variant_shape(&output)?;
+        let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
+        let raw = self.fresh_value();
+        let value = self.fresh_value();
+        let resumed = self.new_block(vec![BlockArg {
+            value,
+            ty: output.clone(),
+            own,
+        }]);
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        let live = self.owned_live.clone();
+        self.set_terminator(SemTerminator::Suspend {
+            kind: SuspendKind::ChannelRecv,
+            inputs: vec![BoundaryOperand {
+                operand: channel,
+                decision: BoundaryDecision::BorrowMut,
+            }],
+            result: CallResult::Value(ValueDef {
+                id: raw,
+                ty: output.clone(),
+                own,
+            }),
+            resumes: vec![Edge {
+                target: resumed,
+                args: vec![Operand { value: raw }],
+            }],
+            cancel: edge(cancel),
+            unwind: edge(unwind),
+        })?;
+        for cleanup in [cancel, unwind] {
+            self.current = cleanup;
+            self.owned_live = live.clone();
+            self.end_call_loans(&loans)?;
+            self.finish_fault_exit()?;
+        }
+        self.current = resumed;
+        self.owned_live = live;
+        self.end_call_loans(&loans)?;
+        if own == OwnKind::Owned {
+            self.owned_live.insert(value, output);
+        }
+        Ok(value)
+    }
+
+    /// A channel producer parks on a bounded channel's capacity. The queue
+    /// takes an independent deep copy, so the producer's element is borrowed
+    /// and stays its own; a closed channel resumes normally.
+    pub(super) fn lower_channel_send(
+        &mut self,
+        sender: &HirExpr,
+        value: &HirExpr,
+    ) -> Result<(), String> {
+        let mut loans = Vec::new();
+        let channel = self.lower_borrowed_read(sender, &mut loans)?;
+        let element = self.lower_borrowed_read(value, &mut loans)?;
+        let live = self.owned_live.clone();
+        let normal = self.new_block(Vec::new());
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Suspend {
+            kind: SuspendKind::ChannelSend,
+            inputs: vec![
+                BoundaryOperand {
+                    operand: channel,
+                    decision: BoundaryDecision::BorrowMut,
+                },
+                BoundaryOperand {
+                    operand: element,
+                    decision: BoundaryDecision::Borrow,
+                },
+            ],
+            result: CallResult::Unit,
+            resumes: vec![edge(normal)],
+            cancel: edge(cancel),
+            unwind: edge(unwind),
+        })?;
+        for cleanup in [cancel, unwind] {
+            self.current = cleanup;
+            self.owned_live = live.clone();
+            self.end_call_loans(&loans)?;
+            self.finish_fault_exit()?;
+        }
+        self.current = normal;
+        self.owned_live = live;
+        self.end_call_loans(&loans)
+    }
+
     pub(super) fn lower_generator_next(
         &mut self,
         expression: &HirExpr,

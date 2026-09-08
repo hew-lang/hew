@@ -1,0 +1,40 @@
+import std.channel.channel;
+
+fn main() {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    // Two sends into a capacity-2 channel, then the close the consumer sees
+    // as end of channel after the queue drains in order.
+    tx.send("first");
+    tx.send("second");
+    tx.close();
+    match rx.recv() {
+        .Some(value) => println(value),
+        .None => println("closed"),
+    }
+    match rx.recv() {
+        .Some(value) => println(value),
+        .None => println("closed"),
+    }
+    match rx.recv() {
+        .Some(value) => println(value),
+        .None => println("closed"),
+    }
+    rx.close();
+
+    // A bytes element with an embedded NUL: the envelope decode carries the
+    // content length, so nothing stops at the terminator.
+    let (btx, brx): (channel.Sender<bytes>, channel.Receiver<bytes>) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    btx.send(b"a\x00bc");
+    btx.close();
+    match brx.recv() {
+        .Some(payload) => println(f"bytes {payload.len()}"),
+        .None => println("bytes closed"),
+    }
+    brx.close();
+}

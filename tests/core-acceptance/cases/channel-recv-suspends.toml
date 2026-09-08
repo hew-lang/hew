@@ -1,0 +1,10 @@
+[[case]]
+id = "channel-recv-suspends"
+intent = "A bounded channel carries its elements in order and reports the sender's close as end of channel; a bytes element with an embedded NUL proves the envelope decode uses the element's own content length, and both halves are released."
+source = "cases/channel-recv-suspends.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "first\nsecond\nclosed\nbytes 4\n"
+exit = 0

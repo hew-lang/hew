@@ -1665,7 +1665,9 @@ impl<'a> Flow<'a> {
                     SemTerminator::Suspend {
                         kind: crate::SuspendKind::GeneratorNext
                             | crate::SuspendKind::StreamNext
-                            | crate::SuspendKind::StreamSend,
+                            | crate::SuspendKind::StreamSend
+                            | crate::SuspendKind::ChannelRecv
+                            | crate::SuspendKind::ChannelSend,
                         ..
                     } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }

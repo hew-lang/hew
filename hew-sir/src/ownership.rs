@@ -478,6 +478,9 @@ pub enum SuspendKind {
     Read,
     Accept,
     ChannelRecv,
+    /// A channel producer parks on a bounded channel's capacity. The element
+    /// is deep-copied into the queue, so the producer keeps its value.
+    ChannelSend,
     StreamNext,
     StreamSend,
     CallClosure,
@@ -663,21 +666,36 @@ pub fn receiver_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 /// `new<T>` and the checker's two channel special cases
 /// (`instantiate_channel_constructor_return`, the bare-handle auto-parameter
 /// in type resolution) are deleted. WHAT THE REAL FIX IS: that declaration.
+/// The endpoint identity and message arguments of a channel handle.
+fn channel_endpoint(ty: &ResolvedTy) -> Option<(hew_types::BuiltinType, &[ResolvedTy])> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(kind),
+            args,
+            ..
+        } if kind.is_channel_handle() => Some((*kind, args.as_slice())),
+        _ => None,
+    }
+}
+
 #[must_use]
 pub fn call_boundary_types_match(left: &ResolvedTy, right: &ResolvedTy) -> bool {
     if left == right {
         return true;
     }
-    let endpoint = |ty: &ResolvedTy| match ty {
-        ResolvedTy::Named {
-            builtin: Some(kind),
-            args,
-            ..
-        } if kind.is_channel_handle() => Some(args.len()),
-        _ => None,
-    };
-    match (endpoint(left), endpoint(right)) {
-        (Some(0), Some(_)) | (Some(_), Some(0)) => true,
+    // `builtin` is the identity fact for an endpoint; the module-qualified
+    // spelling and the opacity flag differ between the checker's annotation
+    // and inference paths and say nothing about the value.
+    match (channel_endpoint(left), channel_endpoint(right)) {
+        (Some((left_kind, left_args)), Some((right_kind, right_args))) => {
+            left_kind == right_kind
+                && (left_args.is_empty()
+                    || right_args.is_empty()
+                    || left_args
+                        .iter()
+                        .zip(right_args)
+                        .all(|(left, right)| call_boundary_types_match(left, right)))
+        }
         _ => match (left, right) {
             (ResolvedTy::Tuple(left), ResolvedTy::Tuple(right)) => {
                 left.len() == right.len()

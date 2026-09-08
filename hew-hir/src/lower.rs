@@ -35002,7 +35002,7 @@ impl Widget {
             type Handle {}
 
             impl Handle {
-                fn close(handle: Handle) {}
+                fn close(consume self) {}
             }
 
             extern "C" {

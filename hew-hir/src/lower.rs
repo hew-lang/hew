@@ -20932,6 +20932,9 @@ impl LowerCtx {
         checked: Option<&hew_types::check::CheckedSelectSource>,
     ) -> HirSelectArmKind {
         use hew_types::check::CheckedSelectSource;
+        // The checker refuses `await` in an arm source; a malformed arm still
+        // reaches here behind an error type, so unwrap the operand rather than
+        // key on a span the checker never recorded.
         let operand = match &source.0 {
             Expr::Await(inner) => inner.as_ref(),
             _ => source,
@@ -20940,7 +20943,7 @@ impl LowerCtx {
         match checked {
             Some(CheckedSelectSource::TaskAwait {
                 operand: checked_key,
-            }) if checked_key == &key && matches!(source.0, Expr::Await(_)) => {
+            }) if checked_key == &key => {
                 return HirSelectArmKind::TaskAwait {
                     task: Box::new(self.lower_expr(operand, IntentKind::Read)),
                 };

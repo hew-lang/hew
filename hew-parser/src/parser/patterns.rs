@@ -414,9 +414,19 @@ impl Parser<'_> {
         })
     }
 
+    /// `<pattern> from <source> => <body>` (spec 4.11.1). The source clause is
+    /// spelled `from`, a contextual identifier rather than a keyword, so `from`
+    /// stays usable as an ordinary name everywhere else.
     pub(crate) fn parse_select_arm(&mut self) -> Option<SelectArm> {
         let binding = self.parse_pattern()?;
-        self.expect(&Token::Equal)?;
+        if matches!(self.peek(), Some(Token::Identifier(word)) if *word == "from") {
+            self.advance();
+        } else {
+            self.error(
+                "a select arm binds its source with `from`: `name from source => body`".to_string(),
+            );
+            return None;
+        }
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;

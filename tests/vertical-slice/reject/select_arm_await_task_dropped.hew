@@ -11,7 +11,7 @@
 // explicit.
 //
 // Harness verb: hew check (must fail)
-// Expected diagnostic substring: "select arm source must await a Task or invoke an actor ask or channel receive"
+// Expected diagnostic substring: "a select arm source is a task, an actor call, or a channel receive"
 fn compute() -> i64 {
     7
 }
@@ -20,7 +20,7 @@ actor Driver {
     #[on(start)]
     fn start() {
         select {
-            done = await compute() => println(f"done:{done}"),
+            done from compute() => println(f"done:{done}"),
             after 1s => println("timeout"),
         };
     }

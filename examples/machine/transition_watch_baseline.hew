@@ -27,7 +27,7 @@ actor Combined {
         }
         tx.close();
         select {
-            t = rx.recv() => {
+            t from rx.recv() => {
                 match t {
                     .Some(tr) => println(tr),
                     .None => println("watch closed"),

@@ -9,7 +9,7 @@
 // aggregate-extraction fail-closed.
 //
 // Harness verb: hew check (must fail)
-// Expected diagnostic substring: "select arm source must await a Task or invoke an actor ask or channel receive"
+// Expected diagnostic substring: "a select arm source is a task, an actor call, or a channel receive"
 import std.stream;
 
 actor Driver {
@@ -17,7 +17,7 @@ actor Driver {
     fn start() {
         let (_sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
         select {
-            item = input.recv() => println("item"),
+            item from input.recv() => println("item"),
             after 1s => println("timeout"),
         };
     }

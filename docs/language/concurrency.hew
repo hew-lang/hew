@@ -13,8 +13,8 @@
 //!     receive fn combined() -> i64 {
 //!         var total = 0;
 //!         scope {
-//!             fork left = left_half();
-//!             fork right = right_half();
+//!             let left = fork left_half();
+//!             let right = fork right_half();
 //!             let a = await left;
 //!             let b = await right;
 //!             total = a + b;
@@ -52,7 +52,7 @@
 //! scope joins, as above.
 //!
 //! A value-producing `fork` currently takes no arguments; an argument-bearing
-//! `fork name = f(args)` requires a unit-returning `f`. Value propagation out
+//! `let name = fork f(args)` requires a unit-returning `f`. Value propagation out
 //! of argument-bearing spawns is fail-closed rather than silently dropped.
 //!
 //! Batch `fork` is the fan-out form for waiting on every branch. It issues

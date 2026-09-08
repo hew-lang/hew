@@ -17,9 +17,17 @@ fn main() {
     let fast = spawn FastWorker;
     let slow = spawn SlowWorker;
     // Test select - fast should win
+    // An actor call completes with `Result<R, ActorError<E>>`, so each arm
+    // unwraps its own outcome to the common `i32` the select produces.
     let result = select {
-        r = fast.compute(5) => r,
-        r = slow.compute(5) => r,
+        r from fast.compute(5) => match r {
+            .Ok(value) => value,
+            .Err(_) => -1 as i32,
+        },
+        r from slow.compute(5) => match r {
+            .Ok(value) => value,
+            .Err(_) => -1 as i32,
+        },
         after 2s => -1 as i32,
     };
     println("select result:");

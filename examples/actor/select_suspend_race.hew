@@ -35,8 +35,14 @@ actor Coordinator {
     let slow: LocalPid<Slow>,
     receive fn race_two(n: i64) -> i64 {
         let winner = select {
-            reply = fast.compute(n) => reply,
-            reply = slow.compute(99) => reply,
+            reply from fast.compute(n) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
+            reply from slow.compute(99) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
             after 500ms => -7,
         };
         winner

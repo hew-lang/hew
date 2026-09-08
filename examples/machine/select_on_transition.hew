@@ -46,7 +46,7 @@ actor Observer {
         var waiting = true;
         while waiting {
             select {
-                t = rx.recv() => {
+                t from rx.recv() => {
                     match t {
                         .Some(tr) => {
                             println(f"{tr.from_state} -> {tr.to_state}");

@@ -16,7 +16,7 @@ machine M {
     state Idle {
         entry {
             scope {
-                fork child = worker(42);
+                let child = fork worker(42);
                 await child;
             }
         }

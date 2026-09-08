@@ -4398,6 +4398,10 @@ HIR lowering:
 - `<receiver-expr>.recv()` — a std/channel receive on a `Receiver<T>`.
 - `after <duration-expr>` — the timer arm; carries no binding.
 
+An arm source never writes `await`: the `select` is what waits (§4.0). The
+spelling is refused at check time with a fix-it that deletes it, and a
+`select` with no arms at all is refused the same way.
+
 > A stream-next arm (`<id> from <stream>.recv()` over a `Stream<T>`) and a
 > task-await arm (`<id> from await <task>`) are **not** part of edition 2026's
 > sealed set: neither has a usable first-class substrate today (no `Stream<T>`
@@ -4415,7 +4419,7 @@ cleanup columns; the difference is which side initiates the teardown.
 
 | Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
+| `<id> from <actor>.<method>(<args>)` | `id: Result<R, ActorError<E>>` for a reply type `R` | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Receiver<T>` | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                              | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.                                             |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
@@ -4445,17 +4449,18 @@ cleanup columns; the difference is which side initiates the teardown.
 
 ```
 select {
-    p1 from act.call(x)      => r1,         where act.call(x): B, r1: T
+    p1 from act.call(x)      => r1,         where p1: Result<B, ActorError<E>>, r1: T
     p2 from rx.recv()        => r2,         where rx: Receiver<D>, r2: T
     after d                  => r3,         where d: Duration, r3: T
 } : T
 ```
 
 The bound identifiers are in scope only inside their own `=>`
-expression. Their static types follow the table above: `p1: B` for the
-actor-ask arm, `p2: Option<D>` for the channel receive arm (so `None` is
-a legitimate winning value indicating the channel observed EOF on that
-call), and no binding for `after`.
+expression. Their static types follow the table above: `p1:
+Result<B, ActorError<E>>` for the actor-call arm, because an actor call
+completes with a `Result` whatever else happens; `p2: Option<D>` for the
+channel receive arm (so `None` is a legitimate winning value indicating
+the channel observed EOF on that call); and no binding for `after`.
 
 **Why sealed?**
 
@@ -4467,18 +4472,15 @@ surface may land in a future edition once trait lowering and generator
 cancellation are proven; see HEW-FUTURE.md.
 
 **Implementation status (informative, not normative).** Edition 2026's
-surface is the construct's contract. The three sealed arm forms — actor
-ask, channel `recv()`, and `after` — type-check, lower, and reach live
-codegen: the runtime substrate that decides the winner and runs each
-form's loser-cleanup is wired (see the channel-receive and actor-ask
-`select` vertical-slice fixtures, which compile and run). The arm set is
-restricted by the **type checker**, not by codegen: a stream-next arm
-(`<stream>.recv()` over `Stream<T>`) or a task-await arm
-(`await <task>`) is rejected at check time with a structural diagnostic
-("select arm source must be actor.method(args)"), because neither has a
-usable first-class substrate in edition 2026 (see the note under
-"Canonical syntax" above). They are not silently lowered and they never
-reach codegen.
+surface is the construct's contract. The arm set is restricted by the
+**type checker**, not by codegen: a stream-next arm (`<stream>.recv()`
+over `Stream<T>`) is rejected at check time with a structural
+diagnostic, because it has no usable first-class substrate in edition
+2026 (see the note under "Canonical syntax" above). It is never silently
+lowered and never reaches codegen. On the final lowering path the
+semantic IR arms only task and timer sources today, so an actor-call or
+channel-receive arm fails closed with `E_SIR_UNSUPPORTED` rather than
+compiling to a wrong selection.
 
 #### 4.11.2 `race` Expression
 

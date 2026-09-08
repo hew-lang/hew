@@ -121,7 +121,7 @@ impl Response {
 
 // ── Module-level helpers ──────────────────────────────────────────────
 fn empty_headers() -> Vec<(string, string)> {
-    let headers: Vec<(string, string)> = Vec.new();
+    var headers: Vec<(string, string)> = Vec.new();
     headers
 }
 

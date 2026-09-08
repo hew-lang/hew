@@ -2730,10 +2730,21 @@ struct ControlState {
     scopes: Vec<Vec<BindingId>>,
     scope_loans: Vec<ValueId>,
     scope_loan_floors: Vec<usize>,
+    ended_loans: std::collections::HashSet<ValueId>,
     defers: Vec<deferred::PendingDefer>,
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,
+}
+
+/// The scope loans one `let` binding holds on a borrowed collection.
+struct BindingLoans {
+    root: crate::OwnerRoot,
+    loans: Vec<ValueId>,
+    /// The loop nesting the binding was declared in. A loan taken inside a
+    /// loop is defined by ops that do not dominate the code after it, so it
+    /// only ends early at the same loop depth.
+    loop_depth: usize,
 }
 
 struct MatchExit {
@@ -2881,6 +2892,13 @@ struct Builder<'hir, 'service> {
     /// opened. A loan taken inside the scope ends at every exit from it,
     /// including a loop back-edge, `break` and `return`.
     scope_loan_floors: Vec<usize>,
+    /// Scope loans a `let` binding names. Such a loan ends at the binding's
+    /// last use rather than at the scope's exit: the point where the borrowed
+    /// collection is next taken is past that last use, so the loan ends there
+    /// and a later read of the binding is refused by name.
+    binding_loans: Vec<BindingLoans>,
+    /// Scope loans already ended ahead of their scope's exit.
+    ended_loans: std::collections::HashSet<ValueId>,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -3018,6 +3036,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             borrow_parents: HashMap::new(),
             scope_loans: Vec::new(),
             scope_loan_floors: vec![0],
+            binding_loans: Vec::new(),
+            ended_loans: std::collections::HashSet::new(),
             scopes: vec![Vec::new()],
             source_bindings,
             params,
@@ -3350,6 +3370,37 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })
     }
 
+    /// A binding whose value has no copy operation. `Some` is the loan the
+    /// binding names, read through that loan rather than transferred out of
+    /// it; `None` means the binding owns its value and transfers normally.
+    fn read_bound_loan(
+        &mut self,
+        binding: BindingId,
+        source: ValueId,
+        binding_use: OwnedBindingUse,
+    ) -> Result<Option<ValueId>, String> {
+        self.require_selected_binding(binding, source)?;
+        let name = self.source_bindings[self.binding_declarations[&binding]]
+            .name
+            .clone();
+        if binding_use == OwnedBindingUse::Copy
+            && self.value_own_kind(source) == Some(OwnKind::Guaranteed)
+        {
+            if self.ended_loans.contains(&source) {
+                return Err(format!(
+                    "E_OWN_CONSUME_BORROWED: `{name}` borrows a collection that was since mutated or drained; the loan ended there and cannot be read again"
+                ));
+            }
+            return Ok(Some(source));
+        }
+        if self.value_own_kind(source) != Some(OwnKind::Owned) {
+            return Err(format!(
+                "E_OWN_CONSUME_BORROWED: `{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
+            ));
+        }
+        Ok(None)
+    }
+
     fn lower_owned_transfer(
         &mut self,
         expr: &HirExpr,
@@ -3418,13 +3469,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                     BindingTarget::Value(source) => {
                         if movable {
-                            self.require_selected_binding(*binding, source)?;
-                            if self.value_own_kind(source) != Some(OwnKind::Owned) {
-                                let name =
-                                    &self.source_bindings[self.binding_declarations[binding]].name;
-                                return Err(format!(
-                                    "E_OWN_CONSUME_BORROWED: `{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
-                                ));
+                            if let Some(loan) =
+                                self.read_bound_loan(*binding, source, binding_use)?
+                            {
+                                return Ok(loan);
                             }
                         }
                         return self.emit(
@@ -3767,6 +3815,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             scopes: self.scopes.clone(),
             scope_loans: self.scope_loans.clone(),
             scope_loan_floors: self.scope_loan_floors.clone(),
+            ended_loans: self.ended_loans.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
             cleanup_may_fail: self.cleanup_may_fail,
@@ -3784,6 +3833,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.scopes.clone_from(&state.scopes);
         self.scope_loans.clone_from(&state.scope_loans);
         self.scope_loan_floors.clone_from(&state.scope_loan_floors);
+        self.ended_loans.clone_from(&state.ended_loans);
         self.defers.clone_from(&state.defers);
         self.task_scopes.clone_from(&state.task_scopes);
         self.cleanup_may_fail = state.cleanup_may_fail;
@@ -3937,6 +3987,63 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    /// Lower one `let` statement: evaluate its initializer, name the value and
+    /// record any loan the initializer took on a collection.
+    fn lower_let_statement(
+        &mut self,
+        binding: &hew_hir::HirBinding,
+        value: Option<&HirExpr>,
+    ) -> Result<(), String> {
+        if let Some(expr) = value.filter(|expr| self.ty(&expr.ty) == ResolvedTy::Never) {
+            self.lower_discarded_expr(expr)?;
+            if self.is_open() {
+                return Err(
+                    "Never-typed binding initializer did not terminate its SIR block".to_string(),
+                );
+            }
+            return Ok(());
+        }
+        let loan_floor = self.scope_loans.len();
+        let value = value
+            .map(|expr| {
+                lower_initial_value_transfer(
+                    self,
+                    expr,
+                    "binding initializer",
+                    if binding.is_consume {
+                        OwnedBindingUse::Move
+                    } else {
+                        OwnedBindingUse::Copy
+                    },
+                )
+            })
+            .transpose()?
+            .ok_or_else(|| {
+                "uninitialised bindings are not in the initial SIR subset".to_string()
+            })?;
+        // §1.6: the value a binding names carries the binding's name, span and
+        // mutability, so a rule 2, 3, 4 or 6 violation rooted in it renders its
+        // `E_OWN_*` code rather than `E_SIR_ICE`, and rule 6a has a mutability
+        // bit to read. A `let` aliases the SSA value its initializer produced
+        // rather than defining one of its own, so the provenance lands on that
+        // definition — and only when it has none, because `let y = x` must not
+        // rename the parameter `x` already named.
+        let value = self.coerce_value(value, &self.ty(&binding.ty), Provenance::Synthesized)?;
+        // The binding names the initializer's loans: they end at its last use
+        // rather than at this scope's exit. Their root is the collection the
+        // read borrowed.
+        if self.scope_loans.len() > loan_floor {
+            let loans = self.scope_loans[loan_floor..].to_vec();
+            let root = self.value_borrow_root(loans[0])?;
+            self.binding_loans.push(BindingLoans {
+                root,
+                loans,
+                loop_depth: self.loops.len(),
+            });
+        }
+        self.bind_source_value(binding, value)
+    }
+
     fn lower_block(
         &mut self,
         block: &HirBlock,
@@ -3948,49 +4055,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             match &statement.kind {
                 HirStmtKind::Let(binding, value) => {
-                    if let Some(expr) = value
-                        .as_ref()
-                        .filter(|expr| self.ty(&expr.ty) == ResolvedTy::Never)
-                    {
-                        self.lower_discarded_expr(expr)?;
-                        if self.is_open() {
-                            return Err(
-                                "Never-typed binding initializer did not terminate its SIR block"
-                                    .to_string(),
-                            );
-                        }
-                        continue;
-                    }
-                    let value = value
-                        .as_ref()
-                        .map(|expr| {
-                            lower_initial_value_transfer(
-                                self,
-                                expr,
-                                "binding initializer",
-                                if binding.is_consume {
-                                    OwnedBindingUse::Move
-                                } else {
-                                    OwnedBindingUse::Copy
-                                },
-                            )
-                        })
-                        .transpose()?
-                        .ok_or_else(|| {
-                            "uninitialised bindings are not in the initial SIR subset".to_string()
-                        })?;
-                    // §1.6: the value a binding names carries the binding's
-                    // name, span and mutability, so a rule 2, 3, 4 or 6
-                    // violation rooted in it renders its `E_OWN_*` code rather
-                    // than `E_SIR_ICE`, and rule 6a has a mutability bit to
-                    // read. A `let` aliases the SSA value its initializer
-                    // produced rather than defining one of its own, so the
-                    // provenance lands on that definition — and only when it
-                    // has none, because `let y = x` must not rename the
-                    // parameter `x` already named.
-                    let value =
-                        self.coerce_value(value, &self.ty(&binding.ty), Provenance::Synthesized)?;
-                    self.bind_source_value(binding, value)?;
+                    self.lower_let_statement(binding, value.as_ref())?;
                 }
                 HirStmtKind::Expr(expr) => {
                     self.lower_discarded_expr(expr)?;
@@ -6827,8 +6892,31 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(Operand { value })
     }
 
+    /// End the loans a `let` binding holds on `root` before the collection
+    /// they borrow is taken. The take is past the binding's last use, so the
+    /// loan ends here; a read of the binding afterwards is refused by name.
+    fn end_binding_loans_on(&mut self, root: crate::OwnerRoot) -> Result<(), String> {
+        let ending: Vec<ValueId> = self
+            .binding_loans
+            .iter()
+            .filter(|group| group.root == root && group.loop_depth == self.loops.len())
+            .flat_map(|group| group.loans.iter().copied())
+            .filter(|loan| !self.ended_loans.contains(loan))
+            .collect();
+        if ending.is_empty() {
+            return Ok(());
+        }
+        self.end_call_loans(&ending)?;
+        self.ended_loans.extend(ending);
+        Ok(())
+    }
+
     fn end_call_loans(&mut self, loans: &[ValueId]) -> Result<(), String> {
         for &value in loans.iter().rev() {
+            // A binding's loan may have ended at its last use already.
+            if self.ended_loans.contains(&value) {
+                continue;
+            }
             let op = SemOp {
                 id: OpId(self.ops),
                 results: Vec::new(),
@@ -7783,7 +7871,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             // same owner forbids. Refusing here names the source construct
             // instead of leaving it to the ownership verifier.
             let (root, _) = crate::projection::place_path(&self.places, projected)?;
+            self.end_binding_loans_on(root)?;
             for loan in self.scope_loans.clone() {
+                if self.ended_loans.contains(&loan) {
+                    continue;
+                }
                 if self.value_borrow_root(loan)? == root {
                     return Err(
                         "E_OWN_CONSUME_BORROWED: this collection is borrowed by a live element \
@@ -8505,6 +8597,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         result_ty: &ResolvedTy,
         kind: SemOpKind,
     ) -> Result<ValueId, String> {
+        if let SemOpKind::LoadTake { place } = &kind {
+            // Only a local or projected owner can carry a binding's loan; a
+            // capture or state place has no path here and none to end.
+            if let Ok((root, _)) = crate::projection::place_path(&self.places, *place) {
+                self.end_binding_loans_on(root)?;
+            }
+        }
         let value = self.fresh_value();
         self.service.require_type_facts(result_ty)?;
         let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;

@@ -1,0 +1,27 @@
+// A `let` that binds a borrowed `get` holds the vector's loan until its last
+// use. Pushing before that use ends the loan at the push, so reading the
+// binding afterwards is refused by name.
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    var v: Vec<Tok> = Vec.new();
+    v.push(Tok { id: 1 });
+    let first = v.get(0);
+    v.push(Tok { id: 2 });
+    match first {
+        Option.Some(e) => println(e.id),
+        Option.None => println("none"),
+    }
+    for e in v.into_iter() {
+        e.close();
+    }
+}

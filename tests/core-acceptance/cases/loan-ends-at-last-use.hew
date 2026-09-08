@@ -1,0 +1,47 @@
+// A `let` that binds a borrowed `get` holds the collection's loan only until
+// the binding's last use. The match reads the loan, and the owning drain that
+// follows takes the vector back: the loan ends at the drain, not at the
+// enclosing scope's exit, so every element is still released exactly once.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+fn main() -> i64 {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "t", id: 1 });
+    tokens.push(Token { label: "t", id: 2 });
+
+    let first = tokens.get(0);
+    match first {
+        Option.Some(token) => {
+            println(token.id);
+            token.show();
+        },
+        Option.None => println("missing"),
+    }
+
+    let past_end = tokens.get(9);
+    match past_end {
+        Option.Some(token) => println(token.id),
+        Option.None => println("missing"),
+    }
+    println(f"len={tokens.len()}");
+
+    for token in tokens.into_iter() {
+        token.close();
+    }
+    println("drained");
+    0
+}

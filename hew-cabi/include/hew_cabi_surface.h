@@ -3075,8 +3075,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "unclassified-stdlib", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_last_error",
-     "{\"native\": \"fn hew_http_last_error() -> *mut c_char\"}", "native",
-     "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "{\"native\": \"fn hew_http_last_error() -> *mut HewString\"}", "native",
+     "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_last_listen_errno",
      "{\"native\": \"fn hew_http_last_listen_errno() -> i64\"}", "native",
@@ -3104,8 +3104,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_body_string",
      "{\"native\": \"fn hew_http_request_body_string( *mut HewHttpRequest, "
-     "*const c_char, ) -> *mut c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*const HewString, ) -> *mut HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_free",
      "{\"native\": \"fn hew_http_request_free( *mut HewHttpRequest)\"}",
@@ -3113,8 +3113,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_header",
      "{\"native\": \"fn hew_http_request_header( *const HewHttpRequest, *const "
-     "c_char, ) -> *mut c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "HewString, ) -> *mut HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_headers",
      "{\"native\": \"fn hew_http_request_headers( *const HewHttpRequest) -> "
@@ -3122,19 +3122,19 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_hew",
-     "{\"native\": \"fn hew_http_request_hew( *const c_char, *const c_char, "
-     "*const c_char, *mut HewVec, ) -> *mut HewHttpResponse\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "{\"native\": \"fn hew_http_request_hew( *const HewString, *const "
+     "HewString, *const HewString, *mut HewVec, ) -> *mut HewHttpResponse\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_method",
      "{\"native\": \"fn hew_http_request_method( *const HewHttpRequest) -> "
-     "*mut c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*mut HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_path",
      "{\"native\": \"fn hew_http_request_path( *const HewHttpRequest) -> *mut "
-     "c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_string",
      "{\"native\": \"fn hew_http_request_string( *const c_char, *const c_char, "
@@ -3142,9 +3142,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "unclassified-stdlib", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_string_hew",
-     "{\"native\": \"fn hew_http_request_string_hew( *const c_char, *const "
-     "c_char, *const c_char, *mut HewVec, ) -> *mut c_char\"}",
-     "native", "unclassified-stdlib", "nul-terminated",
+     "{\"native\": \"fn hew_http_request_string_hew( *const HewString, *const "
+     "HewString, *const HewString, *mut HewVec, ) -> *mut HewString\"}",
+     "native", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_respond",
      "{\"native\": \"fn hew_http_respond( *mut HewHttpRequest, i32, *const u8, "
@@ -3153,33 +3153,33 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_respond_bridge",
      "{\"native\": \"fn hew_http_respond_bridge( *mut HewHttpRequest, i32, "
-     "*const c_char, *const c_char, ) -> i32\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*const HewString, *const HewString, ) -> i32\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_respond_json",
      "{\"native\": \"fn hew_http_respond_json( *mut HewHttpRequest, i32, "
-     "*const c_char, ) -> i32\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*const HewString, ) -> i32\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_respond_stream",
      "{\"native\": \"fn hew_http_respond_stream( *mut HewHttpRequest, i32, "
-     "*const c_char, ) -> *mut HewSink\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*const HewString, ) -> *mut HewSink\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_respond_text",
      "{\"native\": \"fn hew_http_respond_text( *mut HewHttpRequest, i32, "
-     "*const c_char, ) -> i32\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*const HewString, ) -> i32\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_body",
      "{\"native\": \"fn hew_http_response_body( *const HewHttpResponse) -> "
-     "*mut c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*mut HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_content_type",
      "{\"native\": \"fn hew_http_response_content_type( *const "
-     "HewHttpResponse, ) -> *mut c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "HewHttpResponse, ) -> *mut HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_free",
      "{\"native\": \"fn hew_http_response_free( *mut HewHttpResponse)\"}",
@@ -3187,8 +3187,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_header",
      "{\"native\": \"fn hew_http_response_header( *const HewHttpResponse, "
-     "*const c_char, ) -> *mut c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "*const HewString, ) -> *mut HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_headers",
      "{\"native\": \"fn hew_http_response_headers( *const HewHttpResponse) -> "
@@ -3210,9 +3210,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_server_new",
-     "{\"native\": \"fn hew_http_server_new( *const c_char) -> *mut "
+     "{\"native\": \"fn hew_http_server_new( *const HewString) -> *mut "
      "HewHttpServer\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_server_port",
      "{\"native\": \"fn hew_http_server_port( *const HewHttpServer) -> i32\"}",
@@ -7854,15 +7854,15 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_connect",
-     "{\"native\": \"fn hew_ws_connect( *const c_char) -> *mut HewWsConn\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "{\"native\": \"fn hew_ws_connect( *const HewString) -> *mut HewWsConn\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_last_errno", "{\"native\": \"fn hew_ws_last_errno() -> i64\"}",
      "native", "stable-stdlib", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_last_error",
-     "{\"native\": \"fn hew_ws_last_error() -> *mut c_char\"}", "native",
-     "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "{\"native\": \"fn hew_ws_last_error() -> *mut HewString\"}", "native",
+     "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_message_free",
      "{\"native\": \"fn hew_ws_message_free( *mut HewWsMessage)\"}", "native",
@@ -7875,8 +7875,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_message_text",
      "{\"native\": \"fn hew_ws_message_text( *const HewWsMessage) -> *mut "
-     "c_char\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "HewString\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_message_type",
      "{\"native\": \"fn hew_ws_message_type( *const HewWsMessage) -> i32\"}",
@@ -7901,9 +7901,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "unclassified-stdlib", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_send_text",
-     "{\"native\": \"fn hew_ws_send_text( *mut HewWsConn, *const c_char) -> "
+     "{\"native\": \"fn hew_ws_send_text( *mut HewWsConn, *const HewString) -> "
      "i32\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_server_accept",
      "{\"native\": \"fn hew_ws_server_accept( *mut HewWsServer) -> *mut "
@@ -7919,9 +7919,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_server_new",
-     "{\"native\": \"fn hew_ws_server_new( *const c_char) -> *mut "
+     "{\"native\": \"fn hew_ws_server_new( *const HewString) -> *mut "
      "HewWsServer\"}",
-     "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_server_port",
      "{\"native\": \"fn hew_ws_server_port( *const HewWsServer) -> i32\"}",

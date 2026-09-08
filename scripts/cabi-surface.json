@@ -8248,10 +8248,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_last_error() -> *mut c_char"
+        "native": "fn hew_http_last_error() -> *mut HewString"
       },
       "symbol": "hew_http_last_error"
     },
@@ -8326,10 +8326,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_request_body_string( *mut HewHttpRequest, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_http_request_body_string( *mut HewHttpRequest, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_http_request_body_string"
     },
@@ -8352,10 +8352,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_request_header( *const HewHttpRequest, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_http_request_header( *const HewHttpRequest, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_http_request_header"
     },
@@ -8378,10 +8378,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_request_hew( *const c_char, *const c_char, *const c_char, *mut HewVec, ) -> *mut HewHttpResponse"
+        "native": "fn hew_http_request_hew( *const HewString, *const HewString, *const HewString, *mut HewVec, ) -> *mut HewHttpResponse"
       },
       "symbol": "hew_http_request_hew"
     },
@@ -8391,10 +8391,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_request_method( *const HewHttpRequest) -> *mut c_char"
+        "native": "fn hew_http_request_method( *const HewHttpRequest) -> *mut HewString"
       },
       "symbol": "hew_http_request_method"
     },
@@ -8404,10 +8404,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_request_path( *const HewHttpRequest) -> *mut c_char"
+        "native": "fn hew_http_request_path( *const HewHttpRequest) -> *mut HewString"
       },
       "symbol": "hew_http_request_path"
     },
@@ -8430,10 +8430,10 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_request_string_hew( *const c_char, *const c_char, *const c_char, *mut HewVec, ) -> *mut c_char"
+        "native": "fn hew_http_request_string_hew( *const HewString, *const HewString, *const HewString, *mut HewVec, ) -> *mut HewString"
       },
       "symbol": "hew_http_request_string_hew"
     },
@@ -8456,10 +8456,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_respond_bridge( *mut HewHttpRequest, i32, *const c_char, *const c_char, ) -> i32"
+        "native": "fn hew_http_respond_bridge( *mut HewHttpRequest, i32, *const HewString, *const HewString, ) -> i32"
       },
       "symbol": "hew_http_respond_bridge"
     },
@@ -8469,10 +8469,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_respond_json( *mut HewHttpRequest, i32, *const c_char, ) -> i32"
+        "native": "fn hew_http_respond_json( *mut HewHttpRequest, i32, *const HewString, ) -> i32"
       },
       "symbol": "hew_http_respond_json"
     },
@@ -8482,10 +8482,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_respond_stream( *mut HewHttpRequest, i32, *const c_char, ) -> *mut HewSink"
+        "native": "fn hew_http_respond_stream( *mut HewHttpRequest, i32, *const HewString, ) -> *mut HewSink"
       },
       "symbol": "hew_http_respond_stream"
     },
@@ -8495,10 +8495,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_respond_text( *mut HewHttpRequest, i32, *const c_char, ) -> i32"
+        "native": "fn hew_http_respond_text( *mut HewHttpRequest, i32, *const HewString, ) -> i32"
       },
       "symbol": "hew_http_respond_text"
     },
@@ -8508,10 +8508,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_response_body( *const HewHttpResponse) -> *mut c_char"
+        "native": "fn hew_http_response_body( *const HewHttpResponse) -> *mut HewString"
       },
       "symbol": "hew_http_response_body"
     },
@@ -8521,10 +8521,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_response_content_type( *const HewHttpResponse, ) -> *mut c_char"
+        "native": "fn hew_http_response_content_type( *const HewHttpResponse, ) -> *mut HewString"
       },
       "symbol": "hew_http_response_content_type"
     },
@@ -8547,10 +8547,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_response_header( *const HewHttpResponse, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_http_response_header( *const HewHttpResponse, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_http_response_header"
     },
@@ -8612,10 +8612,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_http_server_new( *const c_char) -> *mut HewHttpServer"
+        "native": "fn hew_http_server_new( *const HewString) -> *mut HewHttpServer"
       },
       "symbol": "hew_http_server_new"
     },
@@ -21824,10 +21824,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ws_connect( *const c_char) -> *mut HewWsConn"
+        "native": "fn hew_ws_connect( *const HewString) -> *mut HewWsConn"
       },
       "symbol": "hew_ws_connect"
     },
@@ -21850,10 +21850,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ws_last_error() -> *mut c_char"
+        "native": "fn hew_ws_last_error() -> *mut HewString"
       },
       "symbol": "hew_ws_last_error"
     },
@@ -21889,10 +21889,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ws_message_text( *const HewWsMessage) -> *mut c_char"
+        "native": "fn hew_ws_message_text( *const HewWsMessage) -> *mut HewString"
       },
       "symbol": "hew_ws_message_text"
     },
@@ -21967,10 +21967,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ws_send_text( *mut HewWsConn, *const c_char) -> i32"
+        "native": "fn hew_ws_send_text( *mut HewWsConn, *const HewString) -> i32"
       },
       "symbol": "hew_ws_send_text"
     },
@@ -22019,10 +22019,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ws_server_new( *const c_char) -> *mut HewWsServer"
+        "native": "fn hew_ws_server_new( *const HewString) -> *mut HewWsServer"
       },
       "symbol": "hew_ws_server_new"
     },

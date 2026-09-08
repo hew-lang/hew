@@ -32,14 +32,17 @@ impl Builder<'_, '_> {
         }
         let base = match target {
             super::BindingTarget::Place(root) => {
-                // A capture belongs to its environment, not to this body's
-                // local aggregate partition. Projected reads must borrow
-                // through that owner instead of declaring independently
-                // initialized aggregate places beneath its field.
+                // A capture belongs to its environment and a state field to
+                // its actor, not to this body's local aggregate partition.
+                // Projected reads must borrow through that owner instead of
+                // declaring independently initialized aggregate places
+                // beneath its field.
                 if !place.projections.is_empty()
                     && matches!(
                         self.places[root.0 as usize].origin,
-                        PlaceOrigin::Capture { .. } | PlaceOrigin::Runtime
+                        PlaceOrigin::Capture { .. }
+                            | PlaceOrigin::Runtime
+                            | PlaceOrigin::ActorState { .. }
                     )
                 {
                     return Ok(None);
@@ -75,6 +78,44 @@ impl Builder<'_, '_> {
             self.service.checked_facts.rows(),
         )
         .map(Some)
+    }
+
+    /// Assign into a field of a place this body does not own — an actor's
+    /// state seat or a closure capture. The whole field is materialized as an
+    /// SSA value, the leaf is replaced inside it, and the result is published
+    /// back through the owner's store, which releases the previous contents.
+    pub(super) fn assign_through_owned_place(
+        &mut self,
+        root: PlaceId,
+        place: &BindingPlace,
+        replacement: ValueId,
+        provenance: Provenance,
+    ) -> Result<(), String> {
+        let root_ty = place.root_ty.clone();
+        let value = self.emit_typed(
+            provenance.clone(),
+            &root_ty,
+            SemOpKind::LoadCopy { place: root },
+        )?;
+        let path = place
+            .projections
+            .iter()
+            .map(|(_, shape, field)| {
+                u32::try_from(*field)
+                    .map(|field| (*shape, field))
+                    .map_err(|_| "aggregate field exceeds u32".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let leaf = declare_path(
+            &mut self.places,
+            PlaceBase::Value(value),
+            &root_ty,
+            &path,
+            &self.service.aggregate_shapes,
+            self.service.checked_facts.rows(),
+        )?;
+        self.store_projected(leaf, replacement, provenance.clone())?;
+        self.store_projected(root, value, provenance)
     }
 
     pub(super) fn store_projected(

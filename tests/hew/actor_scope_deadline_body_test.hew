@@ -23,13 +23,12 @@ actor Deadliner {
     // exercises only the `SuspendingScopeDeadline` carrier, not the value-task
     // await path.
     receive fn run_timeout_wins() -> i64 {
-        scope {
+        scope within 20ms {
             fork {
                 nap_long();
             };
-            after(20ms) {
-                fired = 7;
-            };
+        } handle failure {
+            fired = 7;
         };
         return fired;
     }
@@ -37,13 +36,12 @@ actor Deadliner {
     // The scoped child sleeps a short duration and the deadline is long, so the
     // scope completes before the deadline and the body is skipped (fired = 0).
     receive fn run_work_wins() -> i64 {
-        scope {
+        scope within 200ms {
             fork {
                 nap_short();
             };
-            after(200ms) {
-                fired = 7;
-            };
+        } handle failure {
+            fired = 7;
         };
         return fired;
     }
@@ -56,21 +54,19 @@ actor Deadliner {
     // handler, then the outer scope's own join/deadline race runs independently.
     receive fn run_nested() -> i64 {
         var acc: i64 = 0;
-        scope {
+        scope within 200ms {
             fork {
                 nap_short();
             };
-            after(200ms) {
-                acc = acc + 100;
-            };
-            scope {
+            scope within 20ms {
                 fork {
                     nap_long();
                 };
-                after(20ms) {
-                    acc = acc + 1;
-                };
+            } handle failure {
+                acc = acc + 1;
             };
+        } handle failure {
+            acc = acc + 100;
         };
         return acc;
     }
@@ -88,7 +84,7 @@ fn nap_short() {
 fn deadline_body_runs_when_timeout_wins() {
     let d = spawn Deadliner(fired: 0);
     // Work takes 100ms, deadline is 20ms → the deadline wins and the body runs.
-    match await d.run_timeout_wins() {
+    match d.run_timeout_wins() {
         .Ok(v) => testing.assert_eq(v, 7),
         .Err(_) => testing.assert_true(false),
     }
@@ -99,7 +95,7 @@ fn deadline_body_skipped_when_work_finishes_first() {
     let d = spawn Deadliner(fired: 0);
     // Work takes 10ms, deadline is 200ms → the scope completes first and the
     // body is skipped, so `fired` stays 0.
-    match await d.run_work_wins() {
+    match d.run_work_wins() {
         .Ok(v) => testing.assert_eq(v, 0),
         .Err(_) => testing.assert_true(false),
     }
@@ -112,7 +108,7 @@ fn nested_scope_deadlines_each_take_their_own_branch() {
     // Outer work (10ms) wins over its 200ms deadline → outer body skipped.
     // Exactly 1 proves the inner timeout fired and the outer skipped — a swapped
     // branch (101, 100, or 0) would fail.
-    match await d.run_nested() {
+    match d.run_nested() {
         .Ok(v) => testing.assert_eq(v, 1),
         .Err(_) => testing.assert_true(false),
     }

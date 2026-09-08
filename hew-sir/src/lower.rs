@@ -4089,6 +4089,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let Some(projected) = self.owned_projection(&place)? {
             return self.store_projected(projected, replacement, provenance);
         }
+        if let BindingTarget::Place(root) = self.binding_target(place.binding)? {
+            if !place.projections.is_empty() {
+                return self.assign_through_owned_place(root, &place, replacement, provenance);
+            }
+        }
         let (_, parents) = self.take_scalar_place(&place, &provenance)?;
         self.replace_scalar_aggregate_leaf(place.binding, replacement, parents, &provenance)
     }
@@ -8400,7 +8405,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.emit_typed(Provenance::Site(expr.site), &self.ty(&expr.ty), kind)
     }
 
-    fn emit_typed(
+    pub(super) fn emit_typed(
         &mut self,
         provenance: Provenance,
         result_ty: &ResolvedTy,

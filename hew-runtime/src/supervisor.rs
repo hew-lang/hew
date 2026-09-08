@@ -3585,6 +3585,7 @@ unsafe fn restart_child_supervisor_with_budget(
             .get(failed_index)
             .and_then(Option::as_ref)
         else {
+            drop(roster);
             return stop_and_maybe_escalate(sup, record);
         };
         RestartChildRole::Supervisor {

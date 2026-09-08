@@ -62,7 +62,7 @@ const keywordGroups = {
     ...kw.control_flow,
     // Actor keywords that serve as control flow. `cooperate` is deliberately
     // NOT here — syntax-data.json classifies it under reserved_unused (a
-    // compiler-internal safepoint token, not a source expression). It is not
+    // compiler-internal safepoint token, not a source expression).
     'select', 'race', 'after', 'from', 'await', 'await_restart', 'scope',
   ])],
 

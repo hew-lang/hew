@@ -536,14 +536,19 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
 }
 
 fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
-    for key in module.type_facts.keys().filter(|key| {
+    for (key, _) in module.type_facts.iter().filter(|(key, facts)| {
         matches!(key.0, ResolvedTy::Task(_))
             || crate::generator_parts(&key.0).is_some()
             || key.0.is_builtin(hew_types::BuiltinType::Stream)
             || key.0.is_builtin(hew_types::BuiltinType::Sink)
-            || key.0 == hew_types::runtime_call::actor_request_owner_ty()
-            || (hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
-                || hew_types::runtime_call::IoHandleKind::of_ty(&key.0).is_some())
+            || (matches!(
+                key.0,
+                ResolvedTy::Named {
+                    builtin: None,
+                    is_opaque: true,
+                    ..
+                }
+            ) && facts.class == hew_types::ValueClass::AffineResource)
     }) {
         if !module.resources.contains_key(&key.0) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
@@ -2511,11 +2516,6 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
-    if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
-        || hew_types::runtime_call::IoHandleKind::of_ty(ty).is_some()
-    {
-        return true;
-    }
     crate::generator_parts(ty).is_some()
         || is_initial_scalar(ty)
         // A lambda actor handle is an addressable pid like `LocalPid`: it has
@@ -2542,6 +2542,7 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || module.resources.contains_key(ty)
         || (matches!(
             ty,
             ResolvedTy::Named {
@@ -2558,8 +2559,6 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Sender)
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || ty.is_builtin(hew_types::BuiltinType::ActorCall)
-        || hew_types::runtime_call::is_channel_pair_ty(ty)
-        || *ty == hew_types::runtime_call::actor_request_owner_ty()
         || module.actors.iter().any(|actor| actor.admits_target(ty))
         || module
             .supervisors

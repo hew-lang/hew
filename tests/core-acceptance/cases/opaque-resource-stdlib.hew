@@ -1,0 +1,59 @@
+import std.process;
+import std.stream;
+import std.os;
+import std.io;
+
+fn text_pipe() -> (Sink<string>, Stream<string>) {
+    match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(_) => panic("text pipe allocation failed"),
+    }
+}
+
+fn early_return() -> i64 {
+    let _pair = match stream.bytes_pipe(1) {
+        .Ok(pair) => pair,
+        .Err(_) => panic("bytes pipe allocation failed"),
+    };
+    return 7;
+}
+
+fn main() -> i64 {
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        match arguments[1] {
+            "capture" => {
+                println(arguments[2]);
+                io.write_err("owned stderr\n");
+                return 23;
+            },
+            "silent" => return 0,
+            _ => panic("unexpected child mode"),
+        }
+    }
+    let output = match process.run_argv(arguments[0], ["capture", "opaque resource"]) {
+        .Ok(output) => output,
+        .Err(_) => panic("command failed"),
+    };
+    println(output.stdout.trim());
+    println(output.stderr.trim());
+    println(output.exit_code);
+    {
+        let child = match process.start_argv(arguments[0], ["silent"]) {
+            .Ok(child) => child,
+            .Err(_) => panic("child launch failed"),
+        };
+        println(child.wait());
+    }
+    match process.run_argv("hew-missing-opaque-resource-command", Vec.new()) {
+        .Ok(_) => panic("missing command unexpectedly ran"),
+        .Err(_) => println("launch refused"),
+    }
+    {
+        let _pair = text_pipe();
+    }
+    println("text pipe released");
+    println(early_return());
+    println("bytes pipe released");
+    0
+}

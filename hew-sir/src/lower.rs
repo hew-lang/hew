@@ -2666,8 +2666,6 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
-        || (hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
-            || hew_types::runtime_call::IoHandleKind::of_ty(ty).is_some())
         || matches!(
             ty,
             ResolvedTy::String
@@ -2684,8 +2682,6 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Sender)
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || ty.is_builtin(hew_types::BuiltinType::ActorCall)
-        || hew_types::runtime_call::is_channel_pair_ty(ty)
-        || *ty == hew_types::runtime_call::actor_request_owner_ty()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
@@ -2723,8 +2719,19 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
         .is_some_and(|row| row.class == hew_types::ValueClass::BitCopy)
 }
 
+/// Opaque owners enter ordinary value flow only through an audited lifecycle.
+fn is_checked_opaque_resource(module: &HirModule, ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Named { builtin: None, is_opaque: true, args, .. } if args.is_empty())
+        && module
+            .type_classes
+            .lifecycle_registry()
+            .opaque_resource_for_ty(ty)
+            .is_some_and(|lifecycle| !lifecycle.producer_declarations.is_empty())
+}
+
 fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || is_checked_opaque_resource(module, ty)
         || is_opaque_handle(facts, ty)
         || actor::declaration(module, ty).is_some()
         || supervisor::declaration(module, ty).is_some()
@@ -2840,7 +2847,10 @@ fn lower_initial_value_transfer(
         ));
     }
     builder.service.require_type_facts(&ty)?;
-    if !is_initial_call_value(&ty) && !is_opaque_handle(&builder.service.checked_facts, &ty) {
+    if !is_initial_call_value(&ty)
+        && !is_checked_opaque_resource(builder.service.module, &ty)
+        && !is_opaque_handle(&builder.service.checked_facts, &ty)
+    {
         if is_concrete_variant_type(builder.service.module, &ty) {
             builder
                 .service
@@ -8150,42 +8160,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             CallTarget::Builtin { endpoint } if endpoint == "sleep_until" => {
                 self.lower_sleep_until(expr, args)?;
                 Ok(None)
-            }
-            CallTarget::Extern {
-                declaration,
-                endpoint,
-                trusted_compiled_stdlib: true,
-            } if args.first().is_some_and(|argument| {
-                hew_types::runtime_call::FileReadHandleKind::Nominal.matches(&argument.ty)
-                    || hew_types::runtime_call::IoHandleKind::of_ty(&argument.ty).is_some()
-                    || argument.ty == hew_types::runtime_call::actor_request_owner_ty()
-            }) =>
-            {
-                let ty = &args.first().ok_or("resource release has no owner")?.ty;
-                let release = crate::resource::resource_release_from_hir(self.service.module, ty)
-                    .ok_or("extern call has no checked resource release")?;
-                let crate::ResourceRelease::Nominal { lifecycle, .. } = &release else {
-                    return Err("extern call lacks nominal release identity".into());
-                };
-                if &lifecycle.release_declaration != declaration
-                    || &lifecycle.release_symbol != endpoint
-                {
-                    return Err(
-                        "extern call does not name its owner's exact checked release".into(),
-                    );
-                }
-                self.service.require_type_facts(ty)?;
-                crate::verify_resource_release(
-                    ty,
-                    &release,
-                    &self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())],
-                )?;
-                self.lower_runtime_operation(
-                    expr,
-                    release.runtime_family()?,
-                    &args.iter().collect::<Vec<_>>(),
-                    value_required,
-                )
             }
             CallTarget::Extern {
                 declaration,

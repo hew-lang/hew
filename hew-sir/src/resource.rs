@@ -3,10 +3,7 @@
 use hew_types::ffi_contracts::{
     extern_owned_resource_result, extern_ownership_contract, ExternParamOwnership,
 };
-use hew_types::runtime_call::FileReadOp;
-use hew_types::{
-    CloneKind, ResolvedTy, RuntimeCallFamily, RuntimeResultEffect, TypeFacts, ValueClass,
-};
+use hew_types::{CloneKind, ResolvedTy, RuntimeCallFamily, TypeFacts, ValueClass};
 
 /// One exact release authority transported from the checked source boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,65 +71,59 @@ impl ResourceRelease {
     /// Return the scalar carrier of the admitted release protocol.
     ///
     /// # Errors
-    /// Refuses a release without an executable runtime contract.
+    /// Refuses a nominal release without one exact owner parameter.
     pub fn carrier(&self) -> Result<ResourceCarrier, String> {
-        if matches!(self, Self::RecordClose { .. }) {
-            return Ok(ResourceCarrier::Record);
+        match self {
+            Self::RecordClose { .. } => Ok(ResourceCarrier::Record),
+            Self::Nominal { release, .. } => {
+                let [owner] = release.params.as_slice() else {
+                    return Err("nominal release must take one exact owner".into());
+                };
+                // Opaque extern values use the pointer ABI. Native I/O's
+                // existing table-token contract is the exact i32 exception.
+                Ok(
+                    if hew_types::runtime_call::IoHandleKind::of_ty(owner).is_some() {
+                        ResourceCarrier::I32
+                    } else {
+                        ResourceCarrier::Pointer
+                    },
+                )
+            }
+            _ => Ok(ResourceCarrier::Pointer),
         }
-        Ok(
-            if matches!(self.runtime_family()?, RuntimeCallFamily::Tcp(_)) {
-                ResourceCarrier::I32
-            } else {
-                ResourceCarrier::Pointer
-            },
-        )
     }
 
     /// Return the release ABI result, discarded by ordinary destruction.
-    ///
-    /// # Errors
-    /// Refuses a release without an executable runtime contract.
-    pub fn release_result(&self) -> Result<ResolvedTy, String> {
-        if matches!(self, Self::RecordClose { .. }) {
-            return Ok(ResolvedTy::Unit);
-        }
-        Ok(
-            if matches!(self.runtime_family()?, RuntimeCallFamily::Tcp(_)) {
-                ResolvedTy::I32
-            } else {
-                ResolvedTy::Unit
-            },
-        )
-    }
-    /// Select only an executable release from the retained semantic authority.
-    ///
-    /// # Errors
-    /// Refuses releases outside the admitted synchronous resource contracts.
-    pub fn runtime_family(&self) -> Result<RuntimeCallFamily, String> {
+    #[must_use]
+    pub fn release_result(&self) -> ResolvedTy {
         match self {
-            Self::Task => Ok(RuntimeCallFamily::TaskFree),
-            Self::ActorCall => Ok(RuntimeCallFamily::ActorCallFree),
-            Self::Generator => Ok(RuntimeCallFamily::GeneratorFree),
-            Self::Nominal { lifecycle, .. } => {
-                RuntimeCallFamily::from_c_symbol(&lifecycle.release_symbol)
-                    .filter(|family| {
-                        *family == RuntimeCallFamily::FileRead(FileReadOp::Close)
-                            || *family == RuntimeCallFamily::ChannelPairFree
-                            || *family == RuntimeCallFamily::ActorRequestRelease
-                            || matches!(family, RuntimeCallFamily::Tcp(op) if op.is_release())
-                    })
-                    .ok_or_else(|| {
-                        "nominal resource release has no synchronous runtime contract".into()
-                    })
-            }
-            Self::Stream => Ok(RuntimeCallFamily::StreamClose),
-            Self::Sink => Ok(RuntimeCallFamily::SinkClose),
-            Self::Sender => Ok(RuntimeCallFamily::ChannelSenderClose),
-            Self::Receiver => Ok(RuntimeCallFamily::ChannelReceiverClose),
-            Self::RecordClose { .. } => Err(
-                "a record resource is released by its own close body, not a runtime call".into(),
-            ),
+            Self::Nominal { release, .. } => release.result.clone(),
+            _ => ResolvedTy::Unit,
         }
+    }
+
+    /// The exact C endpoint selected by the checked release authority.
+    ///
+    /// # Errors
+    /// Record close executes a semantic callable rather than a C endpoint.
+    pub fn release_symbol(&self) -> Result<&str, String> {
+        let family = match self {
+            Self::Nominal { release, .. } => return Ok(&release.symbol),
+            Self::Task => RuntimeCallFamily::TaskFree,
+            Self::ActorCall => RuntimeCallFamily::ActorCallFree,
+            Self::Generator => RuntimeCallFamily::GeneratorFree,
+            Self::Stream => RuntimeCallFamily::StreamClose,
+            Self::Sink => RuntimeCallFamily::SinkClose,
+            Self::Sender => RuntimeCallFamily::ChannelSenderClose,
+            Self::Receiver => RuntimeCallFamily::ChannelReceiverClose,
+            Self::RecordClose { .. } => {
+                return Err(
+                    "a record resource is released by its own close body, not an extern call"
+                        .into(),
+                )
+            }
+        };
+        Ok(family.c_symbol())
     }
 }
 
@@ -293,23 +284,6 @@ pub fn verify_resource_release(
             Err("record release declaration does not match its nominal owner".into())
         };
     }
-    let family = release.runtime_family()?;
-    let contract = family
-        .semantic_contract()
-        .ok_or("resource release lacks semantic argument effects")?;
-    let release_result = release.release_result()?;
-    if !matches!(
-        contract.result,
-        RuntimeResultEffect::Unit | RuntimeResultEffect::BitCopy(hew_types::RuntimeValueKind::I32)
-    ) || !contract.matches_signature(std::slice::from_ref(ty), &release_result)
-        || contract.arguments.len() != 1
-        || contract.arguments[0].effect != hew_types::RuntimeArgumentEffect::Move
-        || !contract.failures.is_empty()
-    {
-        return Err(
-            "resource release must synchronously consume one exact owner and return its scalar status".into(),
-        );
-    }
     match release {
         ResourceRelease::Generator
         | ResourceRelease::ActorCall
@@ -325,7 +299,7 @@ pub fn verify_resource_release(
             lifecycle,
             release,
             producers,
-        } => verify_nominal_release(ty, lifecycle, release, producers, family),
+        } => verify_nominal_release(ty, lifecycle, release, producers),
     }
 }
 
@@ -334,15 +308,21 @@ fn verify_nominal_release(
     lifecycle: &hew_hir::OpaqueResourceLifecycle,
     release: &ResourceExtern,
     producers: &[ResourceExtern],
-    family: RuntimeCallFamily,
 ) -> Result<(), String> {
     if release.declaration != lifecycle.release_declaration
         || release.symbol != lifecycle.release_symbol
         || release.params != [ty.clone()]
         || release.consumes != [true]
-        || !family
-            .semantic_contract()
-            .is_some_and(|contract| contract.matches_signature(&release.params, &release.result))
+        || !(release.result.is_integer()
+            || matches!(
+                release.result,
+                ResolvedTy::Unit
+                    | ResolvedTy::Bool
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Char
+                    | ResolvedTy::Duration
+            ))
     {
         return Err("release declaration or signature disagrees with checked lifecycle".into());
     }
@@ -358,15 +338,14 @@ fn verify_nominal_release(
         || symbols != lifecycle.producer_symbols
         || producers.iter().any(|producer| {
             producer.result != *ty
-                || !RuntimeCallFamily::from_c_symbol(&producer.symbol)
-                    .and_then(RuntimeCallFamily::semantic_contract)
+                || producer.params.len() != producer.consumes.len()
+                || !extern_ownership_contract(&producer.symbol)
+                    .contract()
                     .is_some_and(|contract| {
-                        contract.matches_signature(&producer.params, &producer.result)
-                            && producer.consumes.len() == contract.arguments.len()
-                            && producer.consumes.iter().zip(contract.arguments).all(
-                                |(consume, arg)| {
-                                    *consume
-                                        == (arg.effect == hew_types::RuntimeArgumentEffect::Move)
+                        contract.params.len() == producer.params.len()
+                            && producer.consumes.iter().zip(contract.params).all(
+                                |(consume, ownership)| {
+                                    *consume == (*ownership == ExternParamOwnership::Consume)
                                 },
                             )
                     })
@@ -389,11 +368,12 @@ fn verify_nominal_release(
     if lifecycle.producer_declarations.is_empty() || lifecycle.producer_symbols.is_empty() {
         return Err("nominal resource release has no checked producer authority".into());
     }
-    let release_row = extern_ownership_contract(family.c_symbol())
+    let release_row = extern_ownership_contract(&release.symbol)
         .contract()
         .ok_or("nominal resource release has no generated ownership row")?;
     if release_row.params != [ExternParamOwnership::Consume]
         || release_row.resource_param_types != [name.as_str()]
+        || release_row.result != hew_types::ffi_contracts::ExternResultOwnership::None
     {
         return Err("nominal release row does not consume its exact declared resource".into());
     }

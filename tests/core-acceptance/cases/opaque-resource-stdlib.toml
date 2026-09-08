@@ -1,0 +1,11 @@
+[[case]]
+id = "opaque-resource-stdlib"
+intent = "Process output strings survive result-handle release, child wait and cleanup compose, and stream-pair lifecycles cover failed production and early return."
+source = "cases/opaque-resource-stdlib.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "opaque resource\nowned stderr\n23\n0\nlaunch refused\ntext pipe released\n7\nbytes pipe released\n"
+stderr = ""
+exit = 0

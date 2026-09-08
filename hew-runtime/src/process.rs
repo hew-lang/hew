@@ -11,7 +11,7 @@
 )]
 
 use crate::util::cstr_to_str;
-use crate::vec::{ElemKind, HewVec};
+use crate::vec::{ElemKind, HewTypeOwnershipKind, HewVec};
 use hew_cabi::string::{
     string_from_str, string_release, string_retain, string_to_cstring, HewString,
 };
@@ -147,25 +147,33 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
 
     // SAFETY: caller guarantees arg_vec is a valid HewVec pointer.
     let args_ref = unsafe { &*arg_vec };
-    if args_ref.elem_kind != ElemKind::String {
+    let pointer_size = core::mem::size_of::<*const HewString>();
+    let strings = if args_ref.layout.is_null() {
+        args_ref.elem_kind == ElemKind::String
+    } else {
+        // SAFETY: a descriptor-backed vector owns its live layout storage.
+        let layout = unsafe { &*args_ref.layout };
+        layout.ownership_kind == HewTypeOwnershipKind::String
+            && layout.size == pointer_size
+            && layout.align == core::mem::align_of::<*const HewString>()
+    };
+    if !strings || args_ref.elem_size != pointer_size {
         crate::set_last_error(format!("{context}: args must be Vec<String>"));
         return None;
     }
 
     let mut owned_args = Vec::with_capacity(args_ref.len);
     for index in 0..args_ref.len {
-        let Ok(index_i64) = i64::try_from(index) else {
-            crate::set_last_error(format!("{context}: args length exceeds Hew index range"));
-            return None;
-        };
-        // SAFETY: index_i64 was derived from an in-bounds usize index; get_str
-        // returns a retained header-aware String owner for this slot.
-        let raw_arg = unsafe { crate::vec::hew_vec_get_str(arg_vec, index_i64) };
-        // SAFETY: raw_arg is the retained managed owner returned by get_str.
-        let arg = unsafe { process_input(raw_arg, context) };
-        // SAFETY: raw_arg is a retained owner and must be released here.
-        unsafe { string_release(raw_arg.cast_mut()) };
-        owned_args.push(arg?);
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "validated string vector storage preserves pointer alignment"
+        )]
+        // SAFETY: the exact string tag and geometry describe live managed
+        // handle slots. This call borrows the vector throughout conversion;
+        // no retain or release is needed to copy each string into Rust.
+        let raw_arg = unsafe { args_ref.data.cast::<*const HewString>().add(index).read() };
+        // SAFETY: raw_arg is borrowed from this live string vector.
+        owned_args.push(unsafe { process_input(raw_arg, context) }?);
     }
 
     Some(owned_args)
@@ -600,6 +608,38 @@ mod tests {
             assert!(hew_process_spawn_argv(cmd.as_ptr(), argv).is_null());
             assert!(read_last_error().contains("interior NUL"));
             crate::vec::hew_vec_free(argv);
+        }
+    }
+
+    #[test]
+    fn descriptor_argv_borrows_strings_and_rejects_interior_nul() {
+        let spaced = ManagedString::new("hello world");
+        let empty = ManagedString::new("");
+        let nul = ManagedString::new("a\0b");
+        let layout = crate::vec::HewTypeLayout {
+            size: core::mem::size_of::<*const HewString>(),
+            align: core::mem::align_of::<*const HewString>(),
+            ownership_kind: HewTypeOwnershipKind::String,
+        };
+        // SAFETY: the String descriptor creates managed handle slots, and
+        // each pushed value remains live while its vector owner is retained.
+        unsafe {
+            let argv = crate::vec::hew_vec_new_with_layout(&raw const layout);
+            for value in [spaced.as_ptr(), empty.as_ptr()] {
+                crate::vec::hew_vec_push_owned(argv, (&raw const value).cast());
+            }
+            assert_eq!(
+                hewvec_string_args(argv, "test").unwrap(),
+                ["hello world", ""]
+            );
+            let value = nul.as_ptr();
+            crate::vec::hew_vec_push_owned(argv, (&raw const value).cast());
+            assert!(hewvec_string_args(argv, "test").is_none());
+            assert!(read_last_error().contains("interior NUL"));
+            crate::vec::hew_vec_free_owned(argv);
+            assert_eq!(string_as_str(spaced.as_ptr()), "hello world");
+            assert_eq!(string_as_str(nul.as_ptr()), "a\0b");
+            crate::hew_clear_error();
         }
     }
 

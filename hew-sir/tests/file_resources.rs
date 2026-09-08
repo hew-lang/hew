@@ -91,7 +91,7 @@ fn resource_release_rejects_missing_identity_signature_discharge_and_copy_author
                 .then(|| ty.clone())
         })
         .expect("file resource authority");
-    for mutation in 0..7 {
+    for mutation in 0..9 {
         let mut module = original.clone();
         if mutation == 0 {
             module.resources.remove(&file_ty);
@@ -120,6 +120,8 @@ fn resource_release_rejects_missing_identity_signature_discharge_and_copy_author
                 }
                 5 => producers.clear(),
                 6 => lifecycle.resource_declaration = DefId::for_test("impostor.FileReadStream"),
+                7 => release.result = hew_types::ResolvedTy::String,
+                8 => producers[0].consumes[0] = true,
                 _ => unreachable!(),
             }
         }
@@ -137,23 +139,17 @@ fn resource_release_rejects_missing_identity_signature_discharge_and_copy_author
 #[test]
 fn resource_consume_cannot_be_changed_into_a_borrow() {
     let mut module = resource_module();
-    let call =
-        module
-            .functions
-            .iter_mut()
-            .flat_map(|function| &mut function.blocks)
-            .find_map(|block| match &mut block.terminator {
-                hew_sir::SemTerminator::RtCall {
-                    family:
-                        hew_types::RuntimeCallFamily::FileRead(
-                            hew_types::runtime_call::FileReadOp::Close,
-                        ),
-                    args,
-                    ..
-                } => Some(args),
-                _ => None,
-            })
-            .unwrap();
+    let call = module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            hew_sir::SemTerminator::ExternCall {
+                signature, args, ..
+            } if signature.symbol == "hew_file_read_stream_close" => Some(args),
+            _ => None,
+        })
+        .unwrap();
     call[0].decision = hew_sir::BoundaryDecision::Borrow;
     assert!(hew_sir::check_module(&module).is_err());
 }

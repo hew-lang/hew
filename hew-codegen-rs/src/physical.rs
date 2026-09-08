@@ -1225,24 +1225,23 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 {
                     return self.emit_record_close(value, *close);
                 }
-                let family = resource
+                let symbol = resource
                     .release
-                    .runtime_family()
+                    .release_symbol()
                     .map_err(CodegenError::FailClosed)?;
-                let result = resource
-                    .release
-                    .release_result()
-                    .map_err(CodegenError::FailClosed)?;
-                let signature = if result == ResolvedTy::I32 {
-                    self.ctx
-                        .i32_type()
-                        .fn_type(&[value.get_type().into()], false)
+                let result = resource.release.release_result();
+                let parameters = [value.get_type().into()];
+                let signature = if result == ResolvedTy::Unit {
+                    self.ctx.void_type().fn_type(&parameters, false)
                 } else {
-                    self.ctx
-                        .void_type()
-                        .fn_type(&[value.get_type().into()], false)
+                    let result_layout = self.module.target.layout(&result).ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "resource release result lacks its ABI layout".into(),
+                        )
+                    })?;
+                    llvm_type(self.ctx, &result_layout.repr)?.fn_type(&parameters, false)
                 };
-                let function = get_or_declare_external(self.llvm, family.c_symbol(), signature)?;
+                let function = get_or_declare_external(self.llvm, symbol, signature)?;
                 self.builder
                     .build_call(function, &[value.into()], "")
                     .llvm_ctx("release resource owner")?;
@@ -1842,6 +1841,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         };
         let ownership = if recipe.own == OwnKind::None {
             HewTypeOwnershipKind::Plain
+        } else if recipe.ty == ResolvedTy::String {
+            HewTypeOwnershipKind::String
         } else {
             HewTypeOwnershipKind::LayoutManaged
         };
@@ -6886,6 +6887,10 @@ fn get_or_declare_external<'ctx>(
     }
     Ok(module.add_function(symbol, expected, Some(Linkage::External)))
 }
+
+#[cfg(test)]
+#[path = "physical_resource_tests.rs"]
+mod resource_tests;
 
 #[cfg(test)]
 mod tests {

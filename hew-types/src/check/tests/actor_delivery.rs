@@ -406,3 +406,51 @@ fn a_completion_call_chain_without_a_cycle_is_accepted() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
+
+/// `policy(..)` is the completion view: its calls wait for the handler exactly
+/// as a bare-handle call does, and the view only chooses the call's admission.
+#[test]
+fn a_policy_view_completes_and_carries_its_admission_policy() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = policy(spawn Worker(), on_full: .Reject); \
+           match w.total() { .Ok(_) => {}, .Err(_) => {} } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .actor_method_dispatch
+        .values()
+        .any(|dispatch| matches!(
+            dispatch,
+            crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Reject
+        )));
+    // The call completes with the handler's own reply, not a delivery outcome.
+    let completion = output
+        .expr_types
+        .values()
+        .filter_map(|ty| ty.as_result())
+        .find(|(success, _)| **success == crate::Ty::I64)
+        .expect("completion call type");
+    assert_eq!(
+        completion.1,
+        &crate::Ty::actor_error(crate::Ty::never_type())
+    );
+}
+
+/// A bare handle completes under `.Wait`: a full mailbox parks the caller
+/// rather than refusing the call.
+#[test]
+fn a_bare_handle_completion_waits_for_admission() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = spawn Worker(); match w.total() { .Ok(_) => {}, .Err(_) => {} } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .actor_method_dispatch
+        .values()
+        .any(|dispatch| matches!(
+            dispatch,
+            crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Wait
+        )));
+}

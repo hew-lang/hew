@@ -12,6 +12,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         actor: ActorId,
         message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
         deadline_ns: Option<i64>,
         args: &[ArgumentTransfer],
         result: StorageId,
@@ -206,6 +207,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let admit_cancelled = self
             .ctx
             .append_basic_block(self.value, "ask.admit.cancelled");
+        let admit_refused = self.ctx.append_basic_block(self.value, "ask.admit.refused");
         let admit_destroyed = self.ctx.append_basic_block(self.value, "ask.admit.destroy");
         self.builder
             .build_unconditional_branch(admit_poll)
@@ -236,9 +238,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "ask.admit.full",
             )
             .llvm_ctx("inspect mailbox capacity")?;
+        // `.Wait` parks the caller until the mailbox has room; `.Reject`
+        // refuses the call outright and hands back the reason, which is the
+        // only outcome from which the caller may safely make the call again.
+        let refuses = policy == hew_types::actor_delivery::SendPolicy::Reject;
         self.builder
-            .build_conditional_branch(full, admit_pending, admit_done)
+            .build_conditional_branch(
+                full,
+                if refuses {
+                    admit_refused
+                } else {
+                    admit_pending
+                },
+                admit_done,
+            )
             .llvm_ctx("select mailbox capacity")?;
+        self.builder.position_at_end(admit_refused);
+        self.free_handle("hew_actor_ask_wait_free", admission)?;
+        self.close_ask(channel, timer, wait_edge)?;
+        self.emit_ask_refused(result)?;
+        self.emit_result_edge(Some(result), normal)?;
         self.builder.position_at_end(admit_pending);
         self.check_actor_wait_cycle(wait_edge, cycle)?;
         frame.suspend(
@@ -419,6 +438,55 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         self.free_handle("hew_reply_channel_cancel", channel)?;
         self.free_handle("hew_reply_channel_free", channel)
+    }
+
+    /// A `policy(target, on_full: .Reject)` call whose destination mailbox is
+    /// full: nothing was accepted, so the envelope is
+    /// `ActorError.Rejected(SendError.Full)` and the caller may make the same
+    /// call again. This is the only refusal a completion call reports; every
+    /// other outcome means the request was accepted or its fate is unknown.
+    fn emit_ask_refused(&self, result: StorageId) -> CodegenResult<()> {
+        let glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == self.storage(result).unwrap().ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("refused call lacks its exact variant recipe".into())
+            })?;
+        let error_ty = &glue.variants[1].fields[0].ty;
+        let error_glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|candidate| candidate.ty == *error_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("the call envelope lacks its variant recipe".into())
+            })?;
+        let reason_ty = error_glue
+            .variants
+            .first()
+            .and_then(|rejected| rejected.fields.first())
+            .map(|field| field.ty.clone())
+            .ok_or_else(|| {
+                CodegenError::FailClosed("`Rejected` lacks its refusal reason seat".into())
+            })?;
+        let reason = self.actor_unit_variant(&reason_ty, self.ctx.i32_type().const_zero())?;
+        let object_ty = llvm_type(
+            self.ctx,
+            &self.value_emitter().variant_layout(error_ty)?.object.repr,
+        )?
+        .into_struct_type();
+        let scratch = self
+            .builder
+            .build_alloca(object_ty, "ask.refused")
+            .llvm_ctx("allocate the refusal envelope")?;
+        self.write_variant_value(scratch, 0, &[reason], error_glue.id)?;
+        let envelope = self
+            .builder
+            .build_load(object_ty, scratch, "ask.refused.value")
+            .llvm_ctx("take the refusal envelope")?;
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[envelope], glue.id)
     }
 
     fn emit_ask_result(

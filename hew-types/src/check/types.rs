@@ -2145,10 +2145,14 @@ pub enum ActorMethodKind {
         policy: crate::actor_delivery::SendPolicy,
         argument_order: Vec<usize>,
     },
-    /// Request/reply dispatch to an actor receive handler with a non-unit reply.
+    /// A completion call: dispatch to an actor receive handler and wait for
+    /// its outcome. `policy` is how the call's own admission behaves when the
+    /// destination mailbox is full — `Wait` for a bare handle, whatever the
+    /// `policy(..)` view carries when the call goes through one.
     Ask {
         method_id: String,
         reply_ty: Ty,
+        policy: crate::actor_delivery::SendPolicy,
         argument_order: Vec<usize>,
     },
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed

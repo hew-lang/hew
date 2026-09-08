@@ -7,42 +7,55 @@ use super::{
 use crate::actor_delivery::{self as delivery, ActorDeliveryCall, SendPolicy};
 
 impl Checker {
-    pub(super) fn is_actor_mailbox_builtin(&self, expr: &Expr) -> bool {
+    /// `mailbox(..)` and `policy(..)` are the two delivery views: one submits,
+    /// one completes. Both are compiler builtins unless the program declares
+    /// its own binding of that name.
+    pub(super) fn actor_delivery_view_builtin(&self, expr: &Expr) -> Option<&'static str> {
         let Expr::Identifier(name) = expr else {
-            return false;
+            return None;
         };
-        name == "mailbox"
-            && self.env.lookup_ref(name).is_none()
+        let view = ["mailbox", "policy"]
+            .into_iter()
+            .find(|view| *view == name.as_str())?;
+        (self.env.lookup_ref(name).is_none()
             && !self.fn_def_spans.contains_key(name)
             && !scoped_module_item_name(self.canonical_fn_owner(), name)
                 .is_some_and(|owner| self.fn_def_spans.contains_key(&owner))
-            && matches!(self.builtin_call_targets.get(name), Some(CallTarget::Builtin { endpoint }) if endpoint == "mailbox")
+            && matches!(self.builtin_call_targets.get(name), Some(CallTarget::Builtin { endpoint }) if endpoint == view))
+        .then_some(view)
     }
 
-    pub(super) fn check_actor_mailbox(&mut self, args: &[CallArg], span: &Span) -> Ty {
+    pub(super) fn check_actor_delivery_view(
+        &mut self,
+        view: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let completes = view == "policy";
         let [CallArg::Positional(target), CallArg::Named { name, value }] = args else {
             self.report_error(TypeErrorKind::InvalidOperation, span,
-                "a mailbox view requires `mailbox(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)`".to_string());
+                format!("a delivery view requires `{view}(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)`"));
             return Ty::Error;
         };
         if name != "on_full" {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "the mailbox view option is named `on_full`".to_string(),
+                "the delivery view option is named `on_full`".to_string(),
             );
             return Ty::Error;
         }
         let target_ty = self.synthesize(&target.0, &target.1);
         let target_ty = self.subst.resolve(&target_ty);
         let target_ty = delivery::sender_parts(&target_ty)
+            .or_else(|| delivery::policy_view_parts(&target_ty))
             .map_or(&target_ty, |(target, _)| target)
             .clone();
         let Some(actor_ty) = target_ty.as_local_actor_ref() else {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &target.1,
-                "a mailbox view requires a local actor reference".to_string(),
+                "a delivery view requires a local actor reference".to_string(),
             );
             return Ty::Error;
         };
@@ -64,7 +77,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &value.1,
-                "a mailbox view's `on_full` must be a constant `OnFull` variant".to_string(),
+                "a delivery view's `on_full` must be a constant `OnFull` variant".to_string(),
             );
             return Ty::Error;
         };
@@ -85,7 +98,11 @@ impl Checker {
             ActorDeliveryCall::Policy { policy },
         );
         self.record_submission_suspension(span, false);
-        delivery::sender_type(target_ty, policy)
+        if completes {
+            delivery::policy_view_type(target_ty, policy)
+        } else {
+            delivery::sender_type(target_ty, policy)
+        }
     }
 
     pub(super) fn check_actor_delivery_method(
@@ -96,10 +113,12 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Option<Ty> {
-        if let Some((target, _)) = delivery::sender_parts(ty) {
+        if let Some((target, _)) =
+            delivery::sender_parts(ty).or_else(|| delivery::policy_view_parts(ty))
+        {
             let actor = target
                 .as_local_actor_ref()
-                .expect("checked sender protocol")
+                .expect("checked view protocol")
                 .clone();
             return Some(self.check_named_method_fallback(
                 &actor,
@@ -215,12 +234,16 @@ impl Checker {
             return Ty::Error;
         };
         let receiver_ty = self.subst.resolve(receiver_ty);
-        let (target, policy) =
-            delivery::sender_parts(&receiver_ty).unwrap_or((&receiver_ty, SendPolicy::Reject));
+        let submitting_view = delivery::sender_parts(&receiver_ty);
+        let (target, policy) = submitting_view.unwrap_or((&receiver_ty, SendPolicy::Reject));
         let Some(argument_order) = self.receive_argument_order(&method_id, args, span) else {
             return Ty::Error;
         };
-        let through_view = delivery::sender_parts(&receiver_ty).is_some();
+        let through_view = submitting_view.is_some();
+        // A `policy(..)` view completes like a bare handle; only its admission
+        // behaviour differs, so it selects the call's own policy.
+        let completion_policy = delivery::policy_view_parts(&receiver_ty)
+            .map_or(SendPolicy::Wait, |(_, policy)| policy);
         let payload = argument_order
             .iter()
             .map(|index| {
@@ -244,6 +267,7 @@ impl Checker {
                 ActorMethodKind::Ask {
                     method_id,
                     reply_ty,
+                    policy: completion_policy,
                     argument_order,
                 },
             );
@@ -260,6 +284,7 @@ impl Checker {
                 ActorMethodKind::Ask {
                     method_id,
                     reply_ty: Ty::Unit,
+                    policy: completion_policy,
                     argument_order,
                 },
             );
@@ -375,10 +400,10 @@ impl Checker {
     }
 
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {
-        if matches!(ty, Ty::Named { name, builtin: None, .. } if matches!(name.as_str(), delivery::MESSAGE_TYPE | delivery::SENDER_TYPE))
+        if matches!(ty, Ty::Named { name, builtin: None, .. } if matches!(name.as_str(), delivery::MESSAGE_TYPE | delivery::SENDER_TYPE | delivery::POLICY_VIEW_TYPE))
         {
             self.report_error(TypeErrorKind::InvalidOperation, span,
-                "actor message and sender fields are sealed; use receive calls, `policy`, `.retry` and `.to`".to_string());
+                "actor message and view fields are sealed; use receive calls, `mailbox`, `policy`, `.retry` and `.to`".to_string());
             true
         } else {
             false

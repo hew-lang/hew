@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-policy-reject"
+intent = "A `policy(target, on_full: .Reject)` view completes like a bare-handle call but refuses a full mailbox with `Rejected(SendError.Full)` instead of parking, and the same call succeeds once the queue drains; `.Wait` matches the bare handle."
+source = "cases/actor-policy-reject.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "rejected: full\n1\n2\n3\n4\n5\nclosed\n"
+exit = 0

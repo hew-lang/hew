@@ -467,9 +467,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("finish exit hook")?;
         } else {
             builder.position_at_end(exit);
-            builder
-                .build_unconditional_branch(done)
-                .llvm_ctx("ignore unhandled exit")?;
+            self.emit_unhandled_actor_exit(&builder, function, data, data_size, done)?;
         }
         if let Some(hook) = actor.down {
             builder.position_at_end(down);
@@ -487,6 +485,90 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(None)
             .llvm_ctx("return from actor lifecycle signal")?;
+        Ok(())
+    }
+
+    /// Publish the default linked failure through the checked activation.
+    /// The callback has the C ABI, so it must never call an unwinding trap.
+    fn emit_unhandled_actor_exit(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        data: PointerValue<'ctx>,
+        data_size: IntValue<'ctx>,
+        done: BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let present = builder
+            .build_is_not_null(data, "exit.present")
+            .llvm_ctx("check EXIT payload pointer")?;
+        let sized = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                data_size,
+                data_size.get_type().const_int(
+                    std::mem::size_of::<hew_runtime::link::ExitMessage>() as u64,
+                    false,
+                ),
+                "exit.sized",
+            )
+            .llvm_ctx("check EXIT payload size")?;
+        let valid = builder
+            .build_and(present, sized, "exit.valid")
+            .llvm_ctx("validate default EXIT payload")?;
+        let fail = self.ctx.append_basic_block(function, "exit.unhandled");
+        builder
+            .build_conditional_branch(valid, fail, done)
+            .llvm_ctx("guard default EXIT decoding")?;
+        builder.position_at_end(fail);
+        let reason = self.lifecycle_word(
+            builder,
+            data,
+            std::mem::offset_of!(hew_runtime::link::ExitMessage, reason),
+            32,
+        )?;
+        let clean = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                reason,
+                self.ctx.i32_type().const_zero(),
+                "exit.clean",
+            )
+            .llvm_ctx("classify linked terminal reason")?;
+        let code = builder
+            .build_select(
+                clean,
+                self.ctx.i32_type().const_int(
+                    hew_runtime::internal::types::HewActorState::Crashed as u64,
+                    false,
+                ),
+                reason,
+                "exit.crash.code",
+            )
+            .llvm_ctx("make an unhandled clean EXIT a crash")?;
+        let new_fault = get_or_declare_external(
+            &self.llvm,
+            "hew_fault_new",
+            ptr.fn_type(&[self.ctx.i32_type().into()], false),
+        )?;
+        let fault = call_value(builder, new_fault, &[code.into()], "exit.fault")?;
+        let publish = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_dispatch_set_fault",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
+        )?;
+        builder
+            .build_call(
+                publish,
+                &[function.get_nth_param(0).unwrap().into(), fault.into()],
+                "",
+            )
+            .llvm_ctx("transfer unhandled EXIT fault to checked dispatch")?;
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish unhandled EXIT")?;
         Ok(())
     }
 

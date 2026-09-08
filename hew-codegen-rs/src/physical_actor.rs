@@ -427,9 +427,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             if actor.crash.is_some() {
                 self.emit_actor_crash(actor)?;
             }
-            if actor.exit.is_some() || actor.down.is_some() {
-                self.emit_actor_sys_dispatch(actor)?;
-            }
+            self.emit_actor_sys_dispatch(actor)?;
             if !actor.stop.is_empty() {
                 self.emit_actor_terminate(actor)?;
             }
@@ -1553,12 +1551,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .into(),
                     periodic_table.into(),
                     size_ty.const_int(u64::from(periodic_count), false).into(),
-                    if actor.exit.is_some() || actor.down.is_some() {
-                        callback("sys_dispatch")?
-                    } else {
-                        ptr.const_null()
-                    }
-                    .into(),
+                    callback("sys_dispatch")?.into(),
                     if actor.crash.is_some() {
                         callback("on_crash")?
                     } else {

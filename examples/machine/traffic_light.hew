@@ -15,7 +15,7 @@ machine TrafficLight {
     }
 
     emits {
-        Signal { label: string },
+        Signal { label: string, },
     }
 
     state Red {

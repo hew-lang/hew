@@ -66,6 +66,7 @@ trait SuiteMethods {
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
     fn add(var self, name: string, iterations: i64, f: fn()) {
+
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
         if warmup < 1 {

@@ -24,7 +24,7 @@ machine TcpHandshake {
 
     emits {
         AckReceive,
-        Log { message: string },
+        Log { message: string, },
     }
 
     state Closed,

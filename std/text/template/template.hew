@@ -576,7 +576,6 @@ impl Ctx {
         self.skeys.push(key);
         self.svals.push(val);
     }
-
     /// Bind `key` to the integer `val` (stored as its decimal representation).
     ///
     /// # Examples
@@ -593,7 +592,6 @@ impl Ctx {
         self.skeys.push(key);
         self.svals.push(f"{val}");
     }
-
     /// Bind `key` to the boolean `val` (`"true"` or `"false"`).
     ///
     /// # Examples
@@ -614,7 +612,6 @@ impl Ctx {
             "false"
         });
     }
-
     /// Bind `key` to the list of strings `items`.
     ///
     /// Inside a `{{range .key}}...{{end}}` block, each element is bound to `{{.}}`.

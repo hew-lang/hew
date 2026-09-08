@@ -81,6 +81,19 @@ impl Checker {
             );
             return Ty::Error;
         };
+        // A completion call waits for its own handler, so it cannot discard or
+        // displace its own request and still have an outcome to report.
+        if completes && matches!(policy, SendPolicy::DropNewest | SendPolicy::ReplaceLatest) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &value.1,
+                "a completion view admits `.Wait` and `.Reject` only; a call cannot wait for a \
+                 request it discards. Use `.Reject` to refuse a full mailbox, or `mailbox(..)` \
+                 for a submission that may be discarded"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
         if policy == SendPolicy::ReplaceLatest {
             let permits_replacement = matches!(actor_ty, Ty::Named { name, .. }
                 if matches!(self.actor_overflow_policies.get(name), Some(hew_parser::ast::OverflowPolicy::Coalesce { .. })));

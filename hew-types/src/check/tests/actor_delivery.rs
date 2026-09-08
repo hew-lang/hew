@@ -454,3 +454,24 @@ fn a_bare_handle_completion_waits_for_admission() {
             crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Wait
         )));
 }
+
+/// A completion view admits only the two policies a waiting call can honour:
+/// it cannot discard or displace the request it is waiting for.
+#[test]
+fn a_policy_view_refuses_the_discarding_policies() {
+    for option in [".DropNewest", ".ReplaceLatest"] {
+        let output = check_source(&format!(
+            "actor Worker {{ mailbox 1, receive fn total() -> i64 {{ 1 }} }} \
+             fn main() {{ let w = policy(spawn Worker(), on_full: {option}); \
+               match w.total() {{ .Ok(_) => {{}}, .Err(_) => {{}} }} }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("completion view admits")),
+            "{option}: {:?}",
+            output.errors
+        );
+    }
+}

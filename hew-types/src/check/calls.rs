@@ -2589,14 +2589,21 @@ impl Checker {
                         }
                     }
                 }
-                // Return type depends on reply direction:
-                //   tell-shaped (Reply = ()) → Result<(), SendError>
-                //   ask-shaped  (Reply = R)  → Result<R, ActorError>
-                if matches!(reply_ty, Ty::Unit) {
-                    Ty::result(Ty::Unit, Ty::send_error())
-                } else {
-                    Ty::result(reply_ty, Ty::actor_error(Ty::never_type()))
-                }
+                // `handle(msg)` is the completion call: it waits for the
+                // handler exactly as a call on a named actor's handle does, so
+                // it yields the same envelope whether or not the reply is unit.
+                // A one-way submission goes through `mailbox(handle, ..)`.
+                let argument_order = (0..args.len()).collect();
+                self.actor_method_dispatch.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    ActorMethodKind::Ask {
+                        method_id: crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string(),
+                        reply_ty: reply_ty.clone(),
+                        policy: crate::actor_delivery::SendPolicy::Wait,
+                        argument_order,
+                    },
+                );
+                Ty::result(reply_ty, Ty::actor_error(Ty::never_type()))
             }
             _ => {
                 // Synthesize args even when the callee type is already an error/var so that

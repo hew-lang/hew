@@ -334,6 +334,22 @@ mod tests {
     }
 }
 
+/// The message id of a lambda actor's one receive handler.
+///
+/// A lambda actor has exactly one handler and no wire identity to keep stable
+/// across builds, so its id is fixed rather than hashed from a name. A call
+/// site reaches a lambda through its `LambdaPid<M, R>` type, which names no
+/// particular lambda, so the id it addresses cannot depend on which one.
+pub const LAMBDA_ACTOR_MESSAGE_ID: u32 = 0;
+
+/// The dispatch id a lambda actor's completion call carries.
+///
+/// A call site reaches a lambda through its `LambdaPid<M, R>` type, which
+/// names no particular lambda, so it cannot name that lambda's handler
+/// declaration. Every lambda actor declares exactly one handler, so the
+/// target selects it structurally rather than by path.
+pub const LAMBDA_ACTOR_METHOD_ID: &str = "#lambda::call";
+
 /// The resolver-minted identities of one lambda actor (`actor |msg| { .. }`).
 ///
 /// A lambda actor has no source name, so the checker mints its declaration

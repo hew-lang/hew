@@ -616,7 +616,12 @@ fn primitive_repr(
             pointer_layout(ctx, target)?,
             pointer_layout(ctx, target)?,
         ]),
-        actor if actor.is_builtin(hew_types::BuiltinType::LocalPid) => {
+        // A lambda actor's handle addresses an ordinary actor; only its
+        // spelling differs, because it names no source nominal.
+        actor
+            if actor.is_builtin(hew_types::BuiltinType::LocalPid)
+                || actor.is_builtin(hew_types::BuiltinType::LambdaPid) =>
+        {
             PhysicalRepr::Integer { bits: pointer_bits }
         }
         // A supervised role addresses its actor through the supervisor that

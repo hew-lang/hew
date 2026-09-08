@@ -18199,6 +18199,41 @@ impl LowerCtx {
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
                 let rewrite_key = self.mk_key(&span);
+                // `handle(msg)` on a lambda actor is a completion call, not a
+                // callable-value invocation: the checker records it as an ask.
+                if let Some(ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty,
+                    policy,
+                    argument_order,
+                }) = self
+                    .actor_method_dispatch
+                    .get(&rewrite_key)
+                    .filter(|dispatch| {
+                        matches!(dispatch, ActorMethodKind::Ask { method_id, .. }
+                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                    })
+                    .cloned()
+                {
+                    let (kind, ty) = self.lower_lambda_actor_call(
+                        function,
+                        args,
+                        &method_id,
+                        &reply_ty,
+                        policy,
+                        argument_order,
+                        &span,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 if let Some(MethodCallRewrite::GenericWireCodec {
                     direction,
                     value_ty,
@@ -20677,14 +20712,17 @@ impl LowerCtx {
 
         let param_tys: Vec<ResolvedTy> = params.iter().map(|param| param.ty.clone()).collect();
         let handler_name = LAMBDA_ACTOR_HANDLER.to_string();
-        let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers(
+        let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers_with_ids(
             identity.path.clone(),
-            &[hew_types::actor_protocol::ActorHandlerSpec {
-                name: handler_name.clone(),
-                param_tys,
-                return_ty: reply_ty.clone(),
-                symbol: format!("{}__{handler_name}", identity.path),
-            }],
+            &[(
+                hew_types::actor_protocol::ActorHandlerSpec {
+                    name: handler_name.clone(),
+                    param_tys,
+                    return_ty: reply_ty.clone(),
+                    symbol: format!("{}__{handler_name}", identity.path),
+                },
+                hew_types::actor_protocol::LAMBDA_ACTOR_MESSAGE_ID,
+            )],
         )
         .ok();
 
@@ -20728,6 +20766,57 @@ impl LowerCtx {
             lambda_handle_ty: Some(Box::new(handle_ty.clone())),
             span: span.clone(),
         });
+    }
+
+    /// Lower `handle(msg)` on a lambda actor to the completion call it is.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the checker's recorded ask facts travel together"
+    )]
+    fn lower_lambda_actor_call(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: &[CallArg],
+        method_id: &str,
+        reply_ty: &hew_types::Ty,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let receiver = self.lower_expr(function, IntentKind::Read);
+        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
+        let Ok(reply_ty) = ResolvedTy::from_ty(reply_ty) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "lambda actor call".to_string(),
+                    reason: "the recorded reply type is not concrete".to_string(),
+                },
+                span.clone(),
+                "a completion call needs its checked reply type",
+            ));
+            return (
+                HirExprKind::Unsupported("lambda actor call has no reply type".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some(result_ty) = self.checked_actor_ask_result_ty(span, method_id) else {
+            return (
+                HirExprKind::Unsupported("lambda actor call has no checked result".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
+        (
+            HirExprKind::ActorAsk {
+                receiver: Box::new(receiver),
+                method_id: method_id.to_string(),
+                args: lowered_args,
+                argument_order,
+                reply_ty,
+                policy,
+                deadline_ns: None,
+            },
+            result_ty,
+        )
     }
 
     /// Turn one lowered lambda actor into an ordinary actor declaration plus

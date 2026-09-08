@@ -7468,16 +7468,17 @@ impl Checker {
             impl_type_params.map(Vec::as_slice),
         );
         self.publish_impl_method_declaration_id(&keys, &declaration_id);
-        for mangled_key in &keys.mangled {
-            // Register the full sig under the mangled key.  A previous
+        for key in keys.canonical.iter().chain(&keys.mangled) {
+            // Publish the signature under the same module-owned identity as
+            // the declaration, including imported non-generic methods. A previous
             // concrete-impl registration may already be present; overwriting is
             // correct because each impl block processes its own concrete args
             // in sequence.
-            self.fn_sigs.insert(mangled_key.clone(), sig.clone());
-            // Propagate consume-receiver membership to the mangled key
+            self.fn_sigs.insert(key.clone(), sig.clone());
+            // Propagate consume-receiver membership to the same key
             // so HIR dispatch does not lose the move contract.
             if method.consumes_self {
-                self.consume_receiver_methods.insert(mangled_key.clone());
+                self.consume_receiver_methods.insert(key.clone());
             }
         }
 

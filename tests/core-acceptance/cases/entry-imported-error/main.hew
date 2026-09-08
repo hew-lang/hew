@@ -1,0 +1,7 @@
+import text_error;
+import number_error;
+
+fn main() -> Result<(), number_error.Problem> {
+    println(text_error.Problem.Bad("auxiliary"));
+    Err(number_error.Problem.Bad(42))
+}

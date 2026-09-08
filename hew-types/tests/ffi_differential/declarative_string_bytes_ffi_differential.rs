@@ -86,7 +86,8 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
 #[test]
 fn bytes_methods_resolve_through_std_io_extern_symbols() {
     let source = r"
-        fn exercise(buf: bytes, other: bytes) {
+        fn exercise(input: bytes, other: bytes) {
+            var buf = input;
             buf.push(65);
             let _: u8 = buf.pop();
             let _: i64 = buf.len();

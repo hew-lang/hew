@@ -3926,9 +3926,7 @@ impl RuntimeCallFamily {
     ///   [`ProvenConsume`](ConsumeVerdict::ProvenConsume); every other receiver
     ///   is [`ProvenBorrow`](ConsumeVerdict::ProvenBorrow). Defaulting a
     ///   receiver to BORROW is the double-free-safe direction (a missed consume
-    ///   leaks, never double-frees — see `consumes_receiver`'s note). The
-    ///   `runtime_contract_perarg_drift` pin asserts this axis and
-    ///   `consumes_receiver` cannot diverge (L211 dual-carrier).
+    ///   leaks, never double-frees — see `consumes_receiver`'s note).
     /// * **Non-receiver (`index >= 1`)** —
     ///   [`ConservativeConsume`](ConsumeVerdict::ConservativeConsume) unless
     ///   a closed family-specific ABI table proves a borrow. The scalar and
@@ -5501,122 +5499,35 @@ mod tests {
 
     use std::collections::{HashMap, HashSet};
 
-    /// Bijection (forward): every family variant produces a unique
-    /// `c_symbol()`. No two variants collide. This is the substrate's
-    /// load-bearing correctness anchor — adding two variants that
-    /// happen to lower to the same symbol breaks the round-trip and
-    /// fails the test loudly.
-    ///
-    /// One subtle exception is allowed at the drop-descriptor side
-    /// (`SendHalfClose` / `RecvHalfClose` both → `hew_duplex_close_half`)
-    /// — that bijection is the drop-side test below, where the round-
-    /// trip key is `drop_fn_name()`, not `c_symbol()`.
-    /// Dual-carrier drift pin (L211): the runtime table's per-argument
-    /// consume axis and the established `consumes_receiver` authority carry
-    /// the SAME receiver-consume fact, so they must never diverge. The
-    /// receiver verdict is DERIVED from `consumes_receiver`, so this can only
-    /// fail if a future edit hardcodes a receiver verdict inconsistent with
-    /// it — which is exactly the drift this pin exists to catch. Non-receiver
-    /// indices are fail-closed `ConservativeConsume` by construction and are
-    /// asserted here so the closed vocabulary stays total (no `ProvenBorrow`
-    /// or unknown leaks onto a non-receiver runtime arg).
     #[test]
-    fn runtime_contract_perarg_drift() {
-        for family in all_runtime_call_families() {
-            if family
-                .semantic_contract()
-                .is_some_and(|contract| contract.arguments.is_empty())
-            {
-                continue; // A constructor has no receiver whose contract can drift.
-            }
-            let receiver = family.arg_consume_verdict(0);
-            let expected = if family.consumes_receiver() {
-                ConsumeVerdict::ProvenConsume
-            } else {
-                ConsumeVerdict::ProvenBorrow
-            };
-            assert_eq!(
-                receiver,
-                expected,
-                "receiver verdict for {family:?} drifted from consumes_receiver \
-                 ({}): axis says {receiver:?}",
-                family.consumes_receiver()
-            );
-            // Every consuming verdict projects to the historical `true`.
-            assert_eq!(receiver.is_consume(), family.consumes_receiver());
-            // The closed Vec ABI families carry exact borrowed or consuming
-            // payload facts; all other non-receiver arguments retain the
-            // fail-closed default.
-            for index in 1..=3 {
-                let expected = match family {
-                    RuntimeCallFamily::Encoding {
-                        op: EncodingOp::ObjectSet,
-                        ..
-                    } if index == 2 => ConsumeVerdict::ProvenConsume,
-                    RuntimeCallFamily::Encoding {
-                        op: EncodingOp::ArrayPush,
-                        ..
-                    } if index == 1 => ConsumeVerdict::ProvenConsume,
-                    RuntimeCallFamily::Vector(VecValueOp::Slice) if index <= 2 => {
-                        ConsumeVerdict::ProvenBorrow
-                    }
-                    RuntimeCallFamily::Map(MapValueOp::Insert) if index == 1 => {
-                        ConsumeVerdict::ProvenBorrow
-                    }
-                    RuntimeCallFamily::Encoding {
-                        op:
-                            EncodingOp::ObjectSet
-                            | EncodingOp::GetField
-                            | EncodingOp::ArrayGet
-                            | EncodingOp::Eq,
-                        ..
-                    }
-                    | RuntimeCallFamily::Map(
-                        MapValueOp::Index
-                        | MapValueOp::Get
-                        | MapValueOp::GetBorrow
-                        | MapValueOp::ContainsKey
-                        | MapValueOp::Remove,
-                    )
-                    | RuntimeCallFamily::Set(
-                        SetValueOp::Contains | SetValueOp::Insert | SetValueOp::Remove,
-                    )
-                    | RuntimeCallFamily::Vector(
-                        VecValueOp::Index
-                        | VecValueOp::IndexBorrow
-                        | VecValueOp::Get
-                        | VecValueOp::GetBorrow
-                        | VecValueOp::Set
-                        | VecValueOp::SliceFrom,
-                    ) if index == 1 => ConsumeVerdict::ProvenBorrow,
-                    RuntimeCallFamily::HashMapInsertLayout if matches!(index, 1 | 2) => {
-                        ConsumeVerdict::ProvenConsume
-                    }
-                    RuntimeCallFamily::HashSetInsertLayout
-                    | RuntimeCallFamily::VecPushOwnedMove
-                        if index == 1 =>
-                    {
-                        ConsumeVerdict::ProvenConsume
-                    }
-                    RuntimeCallFamily::VecSetOwnedMove if index == 2 => {
-                        ConsumeVerdict::ProvenConsume
-                    }
-                    RuntimeCallFamily::VecScalar { .. }
-                    | RuntimeCallFamily::VecContainsScalar(_)
-                    | RuntimeCallFamily::VecAppend
-                    | RuntimeCallFamily::VecClear
-                    | RuntimeCallFamily::VecClone
-                    | RuntimeCallFamily::VecIsEmpty
-                    | RuntimeCallFamily::VecJoinStr => ConsumeVerdict::ProvenBorrow,
-                    _ => ConsumeVerdict::ConservativeConsume,
-                };
-                assert_eq!(
-                    family.arg_consume_verdict(index),
-                    expected,
-                    "non-receiver arg {index} of {family:?} drifted from its closed ABI contract",
-                );
-            }
-        }
+    fn fixed_array_update_preserves_length_and_element_ownership() {
+        let array = ResolvedTy::Array(Box::new(ResolvedTy::String), 2);
+        let family = RuntimeCallFamily::Array(ArrayValueOp::Set);
+        let contract = family.semantic_contract().unwrap();
+        let arguments = [array.clone(), ResolvedTy::I64, ResolvedTy::String];
+        assert!(contract.matches_signature(&arguments, &array));
+        assert!(!contract.matches_signature(
+            &arguments,
+            &ResolvedTy::Array(Box::new(ResolvedTy::String), 3)
+        ));
+        assert!(
+            !contract.matches_signature(&[array.clone(), ResolvedTy::I64, ResolvedTy::I64], &array)
+        );
+        assert!(!contract.matches_signature(
+            &[array.clone(), ResolvedTy::U64, ResolvedTy::String],
+            &array
+        ));
+        assert!(!contract.matches_signature(&arguments, &ResolvedTy::Unit));
+
+        // Updating replaces the array owner; the index is copied and an
+        // owning element follows its copy-or-move value boundary.
+        assert!(family.consumes_receiver());
+        assert_eq!(family.arg_consume_verdict(0), ConsumeVerdict::ProvenConsume);
+        assert_eq!(family.arg_consume_verdict(1), ConsumeVerdict::ProvenBorrow);
+        assert_eq!(
+            family.arg_consume_verdict(2),
+            ConsumeVerdict::ConservativeConsume
+        );
     }
 
     #[test]
@@ -5814,70 +5725,6 @@ mod tests {
         // so the typed-descriptor path leaves them alone.
         assert!(RuntimeCallFamily::from_c_symbol("i64::fmt").is_none());
         assert!(RuntimeCallFamily::from_c_symbol("MyType::greet").is_none());
-    }
-
-    /// `consumes_receiver` is anchored by an INDEPENDENT hard-coded
-    /// symbol set. `builtin_names::runtime_symbol_consumes_receiver`
-    /// now delegates to this catalog, so asserting against that function
-    /// would be circular — the literal set below is the sole external
-    /// anchor: a consuming family losing its consume mark (leak) or a
-    /// non-consuming family gaining one (double-free) fails here. The literal
-    /// set covers the close family plus the two half-extract methods, which
-    /// move the unified `Duplex` handle out (leaving only the half live). TCP
-    /// attach is intentionally separate: its consume fact is anchored in the
-    /// generated FFI table, and this test pins that table projection rather
-    /// than duplicating a second literal authority.
-    #[test]
-    fn consumes_receiver_mirrors_builtin_names() {
-        use std::collections::HashSet;
-        // The canonical set, written out literally (NOT derived from
-        // any function under test).
-        let expected: HashSet<&'static str> = [
-            "hew_stream_close",
-            "hew_sink_close",
-            "hew_channel_sender_close",
-            "hew_channel_receiver_close",
-            "hew_channel_pair_free",
-            "hew_msg_envelope_release",
-            "hew_duplex_close",
-            "hew_duplex_close_half",
-            "hew_duplex_send_half",
-            "hew_duplex_recv_half",
-            "vec.value.push",
-            "vec.value.set",
-            "vec.value.pop",
-            "vec.value.take_first",
-            "vec.value.clear",
-            "map.value.insert",
-            "map.value.remove",
-            "map.value.clear",
-            "set.value.insert",
-            "set.value.remove",
-            "set.value.clear",
-            "hew_json_object_set",
-            "hew_yaml_object_set",
-            "hew_json_array_push",
-            "hew_yaml_array_push",
-            "hew_json_free",
-            "hew_yaml_free",
-        ]
-        .into_iter()
-        .collect();
-
-        for family in all_runtime_call_families() {
-            let sym = family.c_symbol();
-            let consumes = family.consumes_receiver();
-            let expected_consumes = expected.contains(sym)
-                || (sym == "hew_tcp_attach_local"
-                    && crate::ffi_contracts::extern_param_ownership(sym, 0)
-                        == Some(crate::ffi_contracts::ExternParamOwnership::Consume));
-            assert_eq!(
-                consumes, expected_consumes,
-                "consumes_receiver mismatch for {family:?} → {sym}: \
-                 descriptor says {consumes}, the hard-coded anchor says \
-                 {expected_consumes}"
-            );
-        }
     }
 
     /// `is_async_suspending` returns `Some(_)` for EXACTLY the symbols

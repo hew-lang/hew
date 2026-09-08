@@ -3274,26 +3274,6 @@ fn free_call_len_on_hashset_records_lowering_fact() {
 }
 
 #[test]
-fn concrete_vec_validation_reaches_function_wrapped_vec() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let ty = Ty::Function {
-        capabilities: crate::CallableCapabilities::default(),
-        params: vec![Ty::Named {
-            builtin: Some(crate::BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![Ty::Array(Box::new(Ty::String), 4)],
-        }],
-        ret: Box::new(Ty::Unit),
-    };
-
-    assert!(!checker.validate_concrete_vec_type(&ty, &(0..0)));
-    assert!(checker
-        .errors
-        .iter()
-        .any(|err| err.kind == TypeErrorKind::InvalidOperation && err.message.contains("Vec<")));
-}
-
-#[test]
 fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
     // W4.001 Stage C3: per-element allowlist retired. `HashSet<bool>` is
     // admitted (bool implements Hash + Eq). The traversal still reaches

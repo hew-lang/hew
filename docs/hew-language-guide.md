@@ -273,7 +273,7 @@ fn main() {
 ```hew
 fn main() {
     var total: i64 = 0;
-    let items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new();
     items.push("a");
     items.push("b");
     for s in items { total += s.len() as i64; }
@@ -456,7 +456,7 @@ Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -472,7 +472,7 @@ Annotate the binding type so the element type is inferred. `.len()` returns `i64
 ```hew
 type Point { x: i64, y: i64, }
 fn main() {
-    let v: Vec<Point> = Vec.new();
+    var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let p = v[1];
@@ -482,7 +482,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let names: Vec<string> = Vec.new();
+    var names: Vec<string> = Vec.new();
     names.push("ada");
     names.push("alan");
     let who = names[1];        // fresh owned string (a clone)
@@ -501,7 +501,7 @@ v.len()` already holds). A `Vec<string>` index returns a fresh owned `string`
 
 ```hew
 fn main() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("a");
     v.push("b");
     match v.get(0) {
@@ -520,7 +520,7 @@ the trapping read). Use `.get(i)` whenever the index may be invalid.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30); v.push(40);
     let s = v[1..3];
     println(s.len());    // 2
@@ -537,7 +537,7 @@ longer required for that.)
 
 ```hew
 fn main() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     for s in v {
@@ -554,7 +554,7 @@ Prefer for-in for read-only traversal of any element type, including
 ```hew
 enum Colour { Red, Green, Blue, }
 fn main() {
-    let v: Vec<Colour> = Vec.new();
+    var v: Vec<Colour> = Vec.new();
     v.push(Colour.Red);
     v.push(Colour.Blue);
     let c = v[1];
@@ -575,7 +575,7 @@ v.len()` before a `for i in 0 .. n` loop.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     let last = v.pop();   // i64 — the removed element, returned directly
@@ -591,7 +591,7 @@ check `.len()` before `.pop()`), or use `.get(i)` for the non-trapping read.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     v.set(1, 99);
     println(v[0]);   // 10
@@ -606,12 +606,12 @@ fn main() {
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1); v.push(2); v.push(3);
     println(v.contains(2));   // true
     println(v.contains(9));   // false
 
-    let v2: Vec<i64> = Vec.new();
+    var v2: Vec<i64> = Vec.new();
     v2.push(4); v2.push(5);
     v.append(v2);             // v is now [1, 2, 3, 4, 5]
     println(v.len());         // 5
@@ -627,12 +627,12 @@ fn main() {
 
 ```hew
 fn main() {
-    let matrix: Vec<Vec<i64>> = Vec.new();
+    var matrix: Vec<Vec<i64>> = Vec.new();
 
-    let row0: Vec<i64> = Vec.new();
+    var row0: Vec<i64> = Vec.new();
     row0.push(1); row0.push(2); row0.push(3);
 
-    let row1: Vec<i64> = Vec.new();
+    var row1: Vec<i64> = Vec.new();
     row1.push(4); row1.push(5); row1.push(6);
 
     matrix.push(row0);
@@ -712,7 +712,7 @@ fn main() {
 
     // Vec<T> also works as a value
     let tags: HashMap<string, Vec<string>> = HashMap.new();
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("admin");
     tags.insert("alice", v);
 }
@@ -874,7 +874,7 @@ Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for
 ```hew
 fn fill(v: Vec<i64>) { v.push(1); v.push(2); v.push(3); }
 fn main() {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     fill(xs);
     println(xs.len());   // 3
 }
@@ -892,7 +892,7 @@ fn total(v: Vec<i64>) -> i64 {
     sum
 }
 fn main() {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(10); xs.push(20);
     println(total(xs));
     println(total(xs));   // still valid; no move within a fn/actor
@@ -910,9 +910,9 @@ you need to keep using the original after such an insert, pass `clone x` (or
 
 ```hew
 fn main() {
-    let a: Vec<i64> = Vec.new();
+    var a: Vec<i64> = Vec.new();
     a.push(1); a.push(2);
-    let b = a.clone();
+    var b = a.clone();
     b.push(99);
     println(a.len());   // 2
     println(b.len());   // 3
@@ -925,9 +925,9 @@ Use `.clone()` only when you need a second independent copy — e.g. keeping the
 
 ```hew
 fn main() {
-    let a: Vec<i64> = Vec.new();
+    var a: Vec<i64> = Vec.new();
     a.push(1); a.push(2);
-    let b = clone a;    // independent copy — same effect as `a.clone()`
+    var b = clone a;    // independent copy — same effect as `a.clone()`
     b.push(99);
     println(a.len());   // 2
     println(b.len());   // 3
@@ -1900,7 +1900,7 @@ machine Log {
     state Empty,
     state Filled { items: Vec<i64>, },
     on Append(item): Empty => Filled {
-        let v: Vec<i64> = Vec.new(); v.push(item); Filled { items: v }
+        var v: Vec<i64> = Vec.new(); v.push(item); Filled { items: v }
     }
     on Append(item): Filled => Filled reenter {
         let v = self.items; v.push(item); Filled { items: v }
@@ -2075,7 +2075,7 @@ A generic record instantiation may carry owned fields (`string`, `Vec<T>`, neste
 ```hew
 fn count<T>(items: Vec<T>) -> i64 { items.len() }
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     println(count(v));   // 3
 }
@@ -2088,7 +2088,7 @@ Accept `Vec<T>` in a generic function and use `.len()`/`v[i]`.
 ```hew
 enum Shape { Circle(f64), Named(string), }
 fn main() {
-    let v: Vec<Shape> = Vec.new();
+    var v: Vec<Shape> = Vec.new();
     v.push(Shape.Circle(1.5));
     v.push(Shape.Named("square"));
     println(v.len());   // 2
@@ -2102,7 +2102,7 @@ A monomorphic enum, even one carrying a string payload, is a valid Vec element. 
 ```hew
 type Point { x: i64, y: i64, }
 fn main() {
-    let v: Vec<Point> = Vec.new();
+    var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let got = v[1];
@@ -2122,7 +2122,7 @@ fn make_vec<T>() -> Vec<T> {
     Vec.new()
 }
 fn main() {
-    let v = make_vec<i64>();
+    var v = make_vec<i64>();
     v.push(10);
     v.push(20);
     println(v.len());   // 2
@@ -2760,19 +2760,19 @@ When the receiver is a `Vec` field in actor state, `into_iter()` DRAINS the fiel
 ```hew
 import std.sort;
 fn main() {
-    let nums: Vec<i64> = Vec.new();
+    var nums: Vec<i64> = Vec.new();
     nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
     let sorted   = sort.sort(nums);            // returns new Vec — original unchanged
     let reversed = sort.reverse(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
 
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("banana"); words.push("apple"); words.push("cherry");
     let sw = sort.sort(words);
     println(sw[0]);        // apple
 
-    let floats: Vec<f64> = Vec.new();
+    var floats: Vec<f64> = Vec.new();
     floats.push(3.14); floats.push(1.41); floats.push(2.72);
     let sf = sort.sort(floats);
     println(sf[0]);        // 1.41
@@ -3138,25 +3138,25 @@ enum Tag { A, B(i64), }
 
 fn main() {
     // Primitive and string elements
-    let nums: Vec<i64> = Vec.new();
+    var nums: Vec<i64> = Vec.new();
     nums.push(10); nums.push(20); nums.push(30);
     println(nums.contains(20));   // true
     println(nums.contains(99));   // false
 
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("hello"); words.push("world");
     println(words.contains("hello"));   // true
     println(words.contains("bye"));     // false
 
     // Record elements
-    let pts: Vec<Point> = Vec.new();
+    var pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
     println(pts.contains(Point { x: 1, y: 2 }));   // true
     println(pts.contains(Point { x: 5, y: 6 }));   // false
 
     // Payload enum elements
-    let tags: Vec<Tag> = Vec.new();
+    var tags: Vec<Tag> = Vec.new();
     tags.push(Tag.A);
     tags.push(Tag.B(7));
     println(tags.contains(Tag.A));      // true
@@ -3538,7 +3538,7 @@ import std.text.template;
 fn main() {
     let ctx = template.new_ctx();
     template.ctx_set_str(ctx, "name", "Hew");
-    let xs: Vec<string> = Vec.new();
+    var xs: Vec<string> = Vec.new();
     xs.push("a");
     xs.push("b");
     template.ctx_set_list(ctx, "xs", xs);
@@ -3904,7 +3904,7 @@ fn main() {
     let out = process.run("echo shell-form").expect("run succeeds");
     println(out.stdout.trim());
 
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("no-shell-form");
     let result = process.run_argv("echo", args).expect("run_argv succeeds");
     println(result.stdout.trim());

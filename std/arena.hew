@@ -88,7 +88,7 @@ pub fn new<T>() -> Arena<T> {
     if arena_id == 0 {
         panic("arena.new: arena identity space exhausted");
     }
-    let slots: Vec<Slot<T>> = Vec.new();
+    var slots: Vec<Slot<T>> = Vec.new();
     let free: Vec<i64> = Vec.new();
     let generation_counter: Vec<i64> = [1];
     let clone_guard = ArenaCloneGuard { marker: 0 };

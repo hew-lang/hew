@@ -760,7 +760,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 `bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
 
 ```hew
-let buf: bytes = bytes.new();
+var buf: bytes = bytes.new();
 buf.push(0x48);    // push a byte value (i64)
 buf.push(72);      // same as 'H' in ASCII
 let n = buf.len(); // i64

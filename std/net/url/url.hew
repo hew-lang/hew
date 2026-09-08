@@ -215,7 +215,7 @@ pub fn decode(s: string) -> string {
 
 fn decode_impl(s: string) -> string {
     let data = s.to_bytes();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];
@@ -260,7 +260,7 @@ pub fn decode_query(params: string) -> Vec<(string, string)> {
 }
 
 fn decode_query_impl(params: string) -> Vec<(string, string)> {
-    let decoded: Vec<(string, string)> = Vec.new();
+    var decoded: Vec<(string, string)> = Vec.new();
     if string.is_empty(params) {
         return decoded;
     }
@@ -281,7 +281,7 @@ fn decode_query_impl(params: string) -> Vec<(string, string)> {
 
 fn decode_form_component(s: string) -> string {
     let data = s.to_bytes();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];
@@ -328,7 +328,7 @@ pub fn encode_query(params: string) -> string {
 }
 
 fn encode_query_impl(params: string) -> string {
-    let encoded: Vec<string> = Vec.new();
+    var encoded: Vec<string> = Vec.new();
     let lines = string.lines(params);
     for i in 0 .. lines.len() {
         let line = lines[i];

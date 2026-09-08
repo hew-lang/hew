@@ -1109,7 +1109,10 @@ statements and bodyless function declarations end with semicolons.
 ```hew
 type Point { x: i64, y: i64, }
 enum Colour { Red, Green, Blue, }
-let point = Point { x: 1, y: 2 };
+
+fn main() {
+    let point = Point { x: 1, y: 2 };
+}
 ```
 
 ### Enum with unit, tuple, and record variants

@@ -432,12 +432,22 @@ that addresses it.
 **Spawning:**
 
 ```hew
-// Spawn a named actor
-let counter = spawn Counter(count: 0);
+actor Counter {
+    var count: i64,
+    receive fn value() -> i64 { count }
+}
 
-// Lambda actor expression returns LambdaPid<M, R>
-let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // unit reply
-let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // value reply
+fn main() {
+    // Spawn a named actor
+    let counter = spawn Counter(count: 0);
+
+    // Lambda actor expression returns LambdaPid<M, R>
+    let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // unit reply
+    let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // value reply
+    close(counter);
+    close(worker);
+    close(adder);
+}
 ```
 
 **Capture semantics:**
@@ -451,10 +461,12 @@ string or another ordinary value.
 **Operations:**
 
 ```hew
-let worker = actor |msg: i64| { println(msg); };
-let _ = worker(42);                              // wait for completion
-let _ = mailbox(worker, on_full: .Reject)(43);    // observe submission
-close(worker);                                  // wait for terminal cleanup
+fn main() {
+    let worker = actor |msg: i64| { println(msg); };
+    let _ = worker(42);                              // wait for completion
+    let _ = mailbox(worker, on_full: .Reject)(43);    // observe submission
+    close(worker);                                  // wait for terminal cleanup
+}
 ```
 
 **Interaction with `scope`:**
@@ -1025,13 +1037,15 @@ explicit `move` requests transfer. The parent cannot reuse a transferred
 resource, and no capture creates shared mutable actor state.
 
 ```hew
-let prefix = "received: ";
-let worker = actor |message: string| {
-    println(prefix + message);
-};
-println(prefix);                 // the ordinary value remains usable
-let _ = worker("hello");
-close(worker);
+fn main() {
+    let prefix = "received: ";
+    let worker = actor |message: string| {
+        println(prefix + message);
+    };
+    println(prefix);                 // the ordinary value remains usable
+    let _ = worker("hello");
+    close(worker);
+}
 ```
 
 Captured types must satisfy the actor boundary's sendability rules. A borrowed
@@ -1146,20 +1160,22 @@ import std.fs;            // Available as "fs"
 import std.io;            // Available as "io"
 import std.text.regex;   // Available as "regex"
 
-// Call module functions with dot-syntax: module.function(args)
-match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
-    .Ok(server) => {
-        println(f"HTTP server listening on port {http.server_port(server)}");
-        server.close(); // Explicitly release the listener on every success path.
-    },
-    .Err(error) => println(error),
+fn main() {
+    // Call module functions with dot-syntax: module.function(args)
+    match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
+        .Ok(server) => {
+            println(f"HTTP server listening on port {http.server_port(server)}");
+            server.close(); // Explicitly release the listener on every success path.
+        },
+        .Err(error) => println(error),
+    }
+    let content = fs.read("config.toml").expect("config.toml must be readable");
+    let exists = fs.exists("output.txt");       // Returns bool
+    let line = io.read_line();                  // Preferred stdin surface
+    let re = regex.new("[a-z]+");
+    let matched = re.is_match("example");      // Returns bool
+    re.close();
 }
-let content = fs.read("config.toml").expect("config.toml must be readable");
-let exists = fs.exists("output.txt");       // Returns bool
-let line = io.read_line();                  // Preferred stdin surface
-let re = regex.new("[a-z]+");
-let matched = re.is_match("example");      // Returns bool
-re.close();
 ```
 
 This provides clean, namespaced access to stdlib functionality. The module name acts as a qualifier, avoiding verbose function names like `hew_http_server_new()`.
@@ -3085,15 +3101,17 @@ import std.math;
 import std.sort;
 import std.testing;
 
-let ints: Vec<i64> = Vec.new();
-let set: HashSet<i64> = HashSet.new();
-let dq = deque.new();
+fn main() {
+    let ints: Vec<i64> = Vec.new();
+    let set: HashSet<i64> = HashSet.new();
+    let dq = deque.new();
 
-println(math.abs(-5));
-println(fmt.to_hex(255));
-println(iter.sum(ints.into_iter()));
-testing.assert(true, "the set starts empty");
-println(io.read_all());
+    println(math.abs(-5));
+    println(fmt.to_hex(255));
+    println(iter.sum(ints.into_iter()));
+    testing.assert_true(set.len() == 0);
+    println(io.read_all());
+}
 ```
 
 Important current details:
@@ -3188,7 +3206,7 @@ per-iteration independent copy, so existing loops are unchanged.
 
 The following are automatically available in every Hew module:
 
-```hew
+```text
 // Types
 Option, Some, None
 Result, Ok, Err
@@ -4237,6 +4255,17 @@ incarnation rather than preserving a stale child address.
 The shape is:
 
 ```hew
+actor Worker {
+    let id: i64,
+    var count: i64,
+    receive fn tick() { count += 1; }
+}
+
+actor CacheActor {
+    let capacity: i64,
+    receive fn size_limit() -> i64 { capacity }
+}
+
 supervisor Inner {
     strategy: one_for_one,
     intensity: 3 within 60s,
@@ -4543,16 +4572,20 @@ Both handle types are `Send` (safe to pass to other actors), opaque (backed by a
 
 ```hew
 import std.stream;
+import std.fs;
 
-// Canonical in-memory bounded bytes pipe
-let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+fn main() -> Result<(), fs.IoError> {
+    // Canonical in-memory bounded bytes pipe
+    let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
-// Convenience text pipe
-let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    // Convenience text pipe
+    let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
-// Current file helpers remain text-only in this slice
-let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, fs.IoError>
-let file_out = stream.to_file("out.txt")?;      // Result<Sink<string>, fs.IoError>
+    // Current file helpers remain text-only in this slice
+    let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, fs.IoError>
+    let file_out = stream.to_file("out.txt")?;      // Result<Sink<string>, fs.IoError>
+    Ok(())
+}
 ```
 
 `from_file()` and `to_file()` currently return text endpoints. Their open
@@ -5641,10 +5674,12 @@ Duration literals have source type `duration`; their native carrier stores
 nanoseconds in an `i64`:
 
 ```hew
-let timeout = 100ms;     // duration: 100_000_000 nanoseconds
-let interval = 5s;       // duration: 5_000_000_000 nanoseconds
-let period = 1m;         // duration: 60_000_000_000 nanoseconds
-let precise = 500us;     // duration: 500_000 nanoseconds
+fn main() {
+    let timeout = 100ms;     // duration: 100_000_000 nanoseconds
+    let interval = 5s;       // duration: 5_000_000_000 nanoseconds
+    let period = 1m;         // duration: 60_000_000_000 nanoseconds
+    let precise = 500us;     // duration: 500_000 nanoseconds
+}
 ```
 
 **Supported suffixes:**

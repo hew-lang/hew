@@ -1,0 +1,17 @@
+// Reject: the drain loop consumes the read half, so a later `rx.close()` is a
+// use of a moved value. The checker owns this wall; without it the program
+// reached SIR and failed there as an unbalanced place lifetime.
+import std.channel.channel;
+
+fn main() {
+    let (tx, rx) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
+    tx.send("only");
+    tx.close();
+    for item in rx {
+        println(item);
+    }
+    rx.close();
+}

@@ -3158,6 +3158,16 @@ run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 # worked.
 run_accept_expect_stdout "channel_recv_match_result_survives"
 
+# Accept + run: `for item in rx` drains the channel and closes the read half
+# at loop end, and the negative control pins the checker as the wall: closing
+# the receiver after the loop is a use of a moved value, not an unbalanced
+# place lifetime discovered in SIR.
+run_accept_expect_stdout "channel_for_loop_drains_receiver"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/channel_for_loop_consumes_receiver.hew" \
+    "use of moved value \`rx\`" \
+    "channel_for_loop_consumes_receiver"
+
 # Accept + run: the ASan gate's recv-frame balance fixture also has an ordinary
 # stdout oracle. Every shape - the drain loop, the early return, the forwarded
 # frame, the record payload and the direct `match rx.recv()` result - releases

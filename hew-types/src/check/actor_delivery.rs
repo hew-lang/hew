@@ -157,7 +157,27 @@ impl Checker {
                 &actor.user_facing().to_string(),
             ));
         }
-        let (target, payload, old_policy) = delivery::message_parts(ty)?;
+        let message_ty = match ty {
+            Ty::Named { name, args, .. }
+                if args.len() == 1
+                    && (name == delivery::FAILURE_TYPE
+                        || self.published_bare_type_qualified(name).as_deref()
+                            == Some(delivery::FAILURE_TYPE)) =>
+            {
+                &args[0]
+            }
+            _ => ty,
+        };
+        let (target, payload, old_policy) = delivery::message_parts(message_ty)?;
+        if let Some((method_id, params, success, failure)) = delivery::request_parts(payload) {
+            return Some(self.check_request_recovery(
+                receiver, message_ty, target, old_policy, method_id, params, success, failure,
+                method, args, span,
+            ));
+        }
+        if message_ty != ty {
+            return None;
+        }
         // A returned message has exactly two moves left: resubmit it as it
         // stands, or readdress it to a compatible actor and resubmit. Both
         // yield the same delivery outcome an ordinary call does.
@@ -239,6 +259,10 @@ impl Checker {
         order
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one receive boundary records argument order, admission and completion"
+    )]
     pub(super) fn finish_actor_receive_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -311,7 +335,13 @@ impl Checker {
                     return Ty::Error;
                 }
             } else {
-                let completion = self.completion_call_type(&method_id, &reply_ty);
+                let completion = self.completion_request_type(
+                    &method_id,
+                    &reply_ty,
+                    &receiver_ty,
+                    completion_policy,
+                    &payload,
+                );
                 self.record_completion_call_edge(&method_id, span);
                 self.actor_method_dispatch.insert(
                     key,
@@ -329,7 +359,13 @@ impl Checker {
             // The call on an actor handle is a completion call: it waits for
             // the handler to finish and yields its unit reply, exactly as a
             // value-returning handler yields its own.
-            let completion = self.completion_call_type(&method_id, &Ty::Unit);
+            let completion = self.completion_request_type(
+                &method_id,
+                &Ty::Unit,
+                &receiver_ty,
+                completion_policy,
+                &payload,
+            );
             self.record_completion_call_edge(&method_id, span);
             self.actor_method_dispatch.insert(
                 key,
@@ -447,8 +483,189 @@ impl Checker {
         Ty::result(success, Ty::actor_error(failure))
     }
 
+    pub(super) fn completion_request_type(
+        &mut self,
+        method_id: &str,
+        reply: &Ty,
+        receiver: &Ty,
+        policy: SendPolicy,
+        params: &[Ty],
+    ) -> Ty {
+        let completion = self.completion_call_type(method_id, reply);
+        if policy != SendPolicy::Reject {
+            return completion;
+        }
+        self.register_request_protocol(method_id);
+        let (success, error) = completion.as_result().unwrap();
+        let Ty::Named { args, .. } = error else {
+            unreachable!()
+        };
+        let failure = args[0].clone();
+        let target = delivery::policy_view_parts(receiver).map_or(receiver, |(target, _)| target);
+        let params = if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+            params.to_vec()
+        } else {
+            let Some((params, _)) = self.request_signature(method_id, target) else {
+                return Ty::Error;
+            };
+            params
+        };
+        let request = delivery::message_type(
+            target.clone(),
+            delivery::request_type(
+                method_id,
+                Ty::Tuple(params),
+                success.clone(),
+                failure.clone(),
+            ),
+            policy,
+        );
+        Ty::result(
+            success.clone(),
+            Ty::actor_error_with_request(failure, request),
+        )
+    }
+
+    /// Specialize the declaration's protocol, never the argument expression's
+    /// pre-coercion type, before sealing the runtime wrapper.
+    fn request_signature(&self, method: &str, target: &Ty) -> Option<(Vec<Ty>, Ty)> {
+        let signature = self.fn_sigs.get(method)?;
+        let Ty::Named { name, args, .. } = target.as_local_actor_ref()? else {
+            return None;
+        };
+        let declaration = self.type_defs.get(name)?;
+        let substitutions = declaration
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect::<std::collections::HashMap<_, _>>();
+        let resolve = |ty: &Ty| {
+            self.subst
+                .resolve(&ty.substitute_named_params_parallel(&substitutions))
+        };
+        Some((
+            signature.params.iter().map(resolve).collect(),
+            resolve(&signature.return_type),
+        ))
+    }
+
+    /// A protocol witness has no runtime fields. Its identity is the checked
+    /// receive declaration; its parameters preserve the concrete signature.
+    /// Register it here so later specialization consumes checker facts even
+    /// when the request has crossed a binding or generic function boundary.
+    fn register_request_protocol(&mut self, method_id: &str) {
+        self.type_defs
+            .entry(method_id.to_string())
+            .or_insert_with(|| super::TypeDef {
+                kind: super::TypeDefKind::Struct,
+                name: method_id.to_string(),
+                type_params: vec!["Params".into(), "Reply".into(), "Failure".into()],
+                bounds: std::collections::HashMap::new(),
+                fields: std::collections::HashMap::new(),
+                field_order: Vec::new(),
+                variants: std::collections::HashMap::new(),
+                methods: std::collections::HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            });
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the sealed protocol supplies the complete recovery contract"
+    )]
+    fn check_request_recovery(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        message: &Ty,
+        target: &Ty,
+        policy: SendPolicy,
+        method_id: &str,
+        params: &Ty,
+        success: &Ty,
+        failure: &Ty,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let redirect = match (method, args) {
+            ("retry", []) => false,
+            ("to", [arg]) if arg.name().is_none() => true,
+            _ => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "a returned request supports `.retry()` and `.to(actor)`".into(),
+                );
+                return Ty::Error;
+            }
+        };
+        let mut destination = target.clone();
+        let mut destination_method = method_id.to_string();
+        if redirect {
+            let argument = args[0].expr();
+            let ty = self.synthesize(&argument.0, &argument.1);
+            destination = self.subst.resolve(&ty);
+            if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+                self.expect_type(target, &destination, &argument.1);
+            } else {
+                let Some(Ty::Named { name, .. }) = destination.as_local_actor_ref() else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &argument.1,
+                        "request redirection requires a compatible actor handle".into(),
+                    );
+                    return Ty::Error;
+                };
+                let handler = method_id.rsplit("::").next().unwrap_or(method_id);
+                destination_method = format!("{name}::{handler}");
+                let signature = self.request_signature(&destination_method, &destination);
+                let compatible = signature.is_some_and(|(parameters, reply)| {
+                    Ty::Tuple(parameters) == *params
+                        && self.completion_call_type(&destination_method, &reply)
+                            == Ty::result(success.clone(), Ty::actor_error(failure.clone()))
+                });
+                if !compatible {
+                    self.report_error(TypeErrorKind::InvalidOperation, &argument.1,
+                    format!("request for `{method_id}` cannot be redirected to `{destination_method}`: the handler name, parameters and reply must agree"));
+                    return Ty::Error;
+                }
+            }
+        }
+        self.mark_expr_moved(&receiver.0, &receiver.1);
+        self.register_request_protocol(&destination_method);
+        self.actor_delivery_calls.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            ActorDeliveryCall::Resume {
+                policy,
+                method_id: destination_method.clone(),
+                redirect,
+            },
+        );
+        self.record_submission_suspension(span, true);
+        let request = if redirect {
+            delivery::message_type(
+                destination,
+                delivery::request_type(
+                    &destination_method,
+                    params.clone(),
+                    success.clone(),
+                    failure.clone(),
+                ),
+                policy,
+            )
+        } else {
+            message.clone()
+        };
+        Ty::result(
+            success.clone(),
+            Ty::actor_error_with_request(failure.clone(), request),
+        )
+    }
+
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {
-        if matches!(ty, Ty::Named { name, builtin: None, .. } if matches!(name.as_str(), delivery::MESSAGE_TYPE | delivery::SENDER_TYPE | delivery::POLICY_VIEW_TYPE))
+        if matches!(ty, Ty::Named { name, builtin: None, .. } if matches!(name.as_str(), delivery::MESSAGE_TYPE | delivery::SENDER_TYPE | delivery::POLICY_VIEW_TYPE | delivery::REQUEST_TYPE))
         {
             self.report_error(TypeErrorKind::InvalidOperation, span,
                 "actor message and view fields are sealed; use receive calls, `mailbox`, `policy`, `.retry` and `.to`".to_string());

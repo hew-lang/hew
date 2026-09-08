@@ -12,6 +12,7 @@ pub const DELIVERY_TYPE: &str = "std.builtins.Delivery";
 pub const ON_FULL_TYPE: &str = "std.builtins.OnFull";
 pub const ACTOR_ERROR_TYPE: &str = "std.builtins.ActorError";
 pub const NEVER_TYPE: &str = "std.builtins.Never";
+pub const REQUEST_TYPE: &str = "std.builtins.ActorRequest";
 
 /// These declarations have one source owner in `std/builtins.hew`.
 pub const DECLARATIONS: &[&str] = &[
@@ -27,6 +28,9 @@ pub const DECLARATIONS: &[&str] = &[
     "WaitSend",
     "DropNewestSend",
     "ReplaceLatestSend",
+    "ActorRequest",
+    "ActorRequestOwner",
+    "ActorRequestAdmission",
 ];
 
 /// A view's policy is immutable and determines its submission effect.
@@ -100,7 +104,7 @@ pub fn dropped_delivery_outcome(ty: &Ty) -> Option<&'static str> {
 }
 
 /// Selected operations carried independently of source and linker spellings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActorDeliveryCall {
     Close,
     AwaitClosed,
@@ -114,6 +118,40 @@ pub enum ActorDeliveryCall {
     Submit {
         policy: SendPolicy,
     },
+    Resume {
+        policy: SendPolicy,
+        method_id: String,
+        redirect: bool,
+    },
+}
+
+/// The method declaration identifies a sealed protocol; its arguments retain
+/// the concrete request tuple, success and declared failure after binding.
+#[must_use]
+pub fn request_type(method_id: &str, params: Ty, success: Ty, failure: Ty) -> Ty {
+    nominal(
+        REQUEST_TYPE,
+        vec![nominal(method_id, vec![params, success, failure])],
+    )
+}
+
+#[must_use]
+pub fn request_parts(ty: &Ty) -> Option<(&str, &Ty, &Ty, &Ty)> {
+    let Ty::Named { name, args, .. } = ty else {
+        return None;
+    };
+    let [Ty::Named {
+        name: method,
+        args: protocol,
+        ..
+    }] = args.as_slice()
+    else {
+        return None;
+    };
+    let [params, success, failure] = protocol.as_slice() else {
+        return None;
+    };
+    (name == REQUEST_TYPE).then_some((method, params, success, failure))
 }
 
 #[must_use]

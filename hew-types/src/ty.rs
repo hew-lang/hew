@@ -1039,7 +1039,16 @@ impl Ty {
     /// call cannot produce that variant.
     #[must_use]
     pub fn actor_error(error: Ty) -> Ty {
-        crate::actor_delivery::nominal(crate::actor_delivery::ACTOR_ERROR_TYPE, vec![error])
+        Self::actor_error_with_request(error, Self::never_type())
+    }
+
+    /// Construct the completion envelope with its inferred sealed request.
+    #[must_use]
+    pub fn actor_error_with_request(error: Ty, request: Ty) -> Ty {
+        crate::actor_delivery::nominal(
+            crate::actor_delivery::ACTOR_ERROR_TYPE,
+            vec![error, request],
+        )
     }
 
     /// Construct `Never` — the uninhabited stdlib enum that stands in for an

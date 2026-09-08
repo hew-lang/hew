@@ -561,7 +561,7 @@ fn checked_module_retains_the_local_plan_and_cleanup_for_each_body() {
                 analysis.place_lifetimes().cleanup(end.id),
                 Some(CleanupMode::Ordinary)
             );
-        } else {
+        } else if function.declaration.full_path() == "main" {
             assert!(analysis.place_plan().roots().next().is_none());
         }
     }

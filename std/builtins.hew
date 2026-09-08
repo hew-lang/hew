@@ -71,20 +71,43 @@ pub type ActorMailbox<Target, Policy> {
 /// Construct one with `policy(target, on_full: ...)`. A call through the view
 /// waits for the handler exactly as a call on the actor handle does; the
 /// policy decides only what happens when the destination mailbox is full.
-/// `.Wait` is the bare-handle behaviour; `.Reject` reports rejection instead
-/// of parking the caller. See `ActorError` for the pending typed-request change.
+/// `.Wait` is the bare-handle behaviour; `.Reject` yields
+/// `ActorError.Rejected(failure)` instead of parking the caller.
 pub type ActorPolicy<Target, Policy> {
     target: Target,
 }
 
-/// Intended owned, sealed request description for rejection recovery.
-/// The decided `retry()` and `to(target)` operations retain request typing
-/// without exposing the payload. Full sealed-message recovery remains pending;
-/// see the implementation gap documented on `ActorError`.
+/// Owned request description for one-way submission recovery.
+/// Consuming `retry()` and `to(target)` retain the request's typing.
 pub type Message<Target, Payload, Policy> {
     target: Target,
     message_id: u32,
     payload: Payload,
+}
+
+/// Internal owner of an unaccepted completion request.
+#[resource]
+#[opaque]
+pub type ActorRequestOwner {}
+
+#[opaque]
+pub type ActorRequestAdmission {}
+
+impl ActorRequestOwner {
+    fn close(consume self) {
+        unsafe { hew_msg_envelope_release(self) };
+    }
+}
+
+extern "C" {
+    fn hew_msg_envelope_release(consume request: ActorRequestOwner);
+    fn hew_actor_ask_wait_take_request(admission: ActorRequestAdmission) -> ActorRequestOwner;
+}
+
+/// The request protocol is a sealed, inferred type parameter. The original
+/// payload stays inside its runtime owner until admission or cleanup.
+pub type ActorRequest<Protocol> {
+    owner: ActorRequestOwner,
 }
 
 /// A rejected submission retains its complete unaccepted message.
@@ -237,20 +260,16 @@ impl Display for Never {
 /// Error of a completion call on an actor handle.
 ///
 /// `E` is the handler's declared `fails` type — `Never` when the handler
-/// cannot fail. Written bare, `ActorError` means `ActorError<Never>`.
+/// cannot fail. `Req` carries an unaccepted request when admission may reject it.
+/// Omitted parameters default to `Never`.
 ///
-/// `Rejected` means nothing was accepted. Other outcomes do not provide a
-/// safe retry guarantee: repeating the call may duplicate work.
-///
-/// Implementation gap: the decided contract is
-/// `ActorError<E = Never, Req = Never>` with `Rejected(SendFailure<Req>)`.
-/// The rejected failure retains the typed request for `retry()` or `to(target)`.
-/// This declaration still carries only `SendError`; typed request recovery
-/// is pending. Do not rely on reason-only rejection matching as the final API.
-pub enum ActorError<E> {
-    /// Nothing was accepted. Currently carries only the reason; typed
-    /// request recovery is pending as described above.
-    Rejected(SendError),
+/// Only `Rejected` is safely retryable: nothing was accepted, so the caller
+/// may make the same call again. Every other variant means the request was
+/// accepted or its fate is unknown, so repeating it would duplicate work.
+pub enum ActorError<E, Req> {
+    /// Nothing was accepted. `failure.reason` explains why;
+    /// `failure.message.retry()` or `.to(target)` consumes the sealed request.
+    Rejected(SendFailure<Req>),
     /// The handler ran and returned its declared error.
     Failed(E),
     /// The handler faulted; its actor retains ownership of the fault.
@@ -271,8 +290,8 @@ pub enum ActorError<E> {
     Partition,
 }
 
-impl<E> Display for ActorError<E> {
-    fn fmt(err: ActorError<E>) -> string {
+impl<E, Req> Display for ActorError<E, Req> {
+    fn fmt(err: ActorError<E, Req>) -> string {
         match err {
             ActorError.Rejected(_) => "the request was refused and nothing was accepted",
             ActorError.Failed(_) => "the handler returned its declared error",
@@ -469,7 +488,7 @@ impl<T: ActorMsg> RemotePid<T> {
     /// Ask this remote actor for a reply, failing with `ActorError` if the
     /// caller-supplied timeout elapses or routing/reply delivery fails. A
     /// remote call carries no sealed message, so it never reports `Rejected`.
-    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never>> {
+    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
         Err(ActorError.NodeNotRunning)
     }
 }

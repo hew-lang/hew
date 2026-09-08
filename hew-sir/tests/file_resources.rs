@@ -80,13 +80,23 @@ fn resource_module() -> hew_sir::SemModule {
 #[test]
 fn resource_release_rejects_missing_identity_signature_discharge_and_copy_authority() {
     let original = resource_module();
-    assert_eq!(original.resources.len(), 1);
+    let file_ty = original
+        .resources
+        .iter()
+        .find_map(|(ty, resource)| {
+            let ResourceRelease::Nominal { lifecycle, .. } = resource else {
+                return None;
+            };
+            (lifecycle.resource_declaration == DefId::for_test("std.fs.FileReadStream"))
+                .then(|| ty.clone())
+        })
+        .expect("file resource authority");
     for mutation in 0..7 {
         let mut module = original.clone();
         if mutation == 0 {
-            module.resources.clear();
+            module.resources.remove(&file_ty);
         } else if mutation == 1 {
-            let ty = module.resources.keys().next().unwrap().clone();
+            let ty = file_ty.clone();
             module
                 .type_facts
                 .get_mut(&hew_types::TypeInstanceKey(ty))
@@ -97,7 +107,7 @@ fn resource_release_rejects_missing_identity_signature_discharge_and_copy_author
                 lifecycle,
                 release,
                 producers,
-            } = module.resources.values_mut().next().unwrap()
+            } = module.resources.get_mut(&file_ty).unwrap()
             else {
                 panic!("nominal authority");
             };

@@ -160,6 +160,7 @@ impl SemActor {
         message: u32,
         target: &ResolvedTy,
         result_ty: ResolvedTy,
+        sealed: bool,
     ) -> Result<crate::SemSignature, String> {
         let handler = self
             .handlers
@@ -174,7 +175,15 @@ impl SemActor {
             passing: crate::SemParamPassing::Consume,
             caller_visible_projection: false,
         }];
-        params.extend(handler.params.iter().map(|ty| crate::SemAbiParam {
+        let request_params = if sealed {
+            vec![ResolvedTy::named_opaque(
+                "std.builtins.ActorRequestOwner",
+                Vec::new(),
+            )]
+        } else {
+            handler.params.clone()
+        };
+        params.extend(request_params.iter().map(|ty| crate::SemAbiParam {
             ty: ty.clone(),
             passing: crate::SemParamPassing::Consume,
             caller_visible_projection: false,
@@ -193,6 +202,36 @@ impl SemActor {
                 .is_some_and(|[ok, err]| ok == reply && Some(err) == declared_failure);
         if !matches_protocol {
             return Err("ask reply differs from its receive protocol".into());
+        }
+        let ResolvedTy::Named { name, args, .. } = error else {
+            return Err("ask lacks its completion envelope".into());
+        };
+        let [failure, request] = args.as_slice() else {
+            return Err("ask envelope lacks its failure and request parameters".into());
+        };
+        if name != hew_types::actor_delivery::ACTOR_ERROR_TYPE {
+            return Err("ask must return the checked ActorError envelope".into());
+        }
+        if request.to_ty() != hew_types::Ty::never_type() {
+            let request = request.to_ty();
+            let (request_target, payload, policy) =
+                hew_types::actor_delivery::message_parts(&request)
+                    .ok_or("ask rejection lacks its addressed request type")?;
+            let (method, parameters, success, request_failure) =
+                hew_types::actor_delivery::request_parts(payload)
+                    .ok_or("ask rejection lacks its sealed handler protocol")?;
+            if *request_target != target.to_ty()
+                || policy != hew_types::actor_delivery::SendPolicy::Reject
+                || (method != handler.declaration.full_path()
+                    && !(self.is_lambda()
+                        && method == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
+                || *parameters
+                    != hew_types::Ty::Tuple(handler.params.iter().map(ResolvedTy::to_ty).collect())
+                || *success != reply.to_ty()
+                || *request_failure != failure.to_ty()
+            {
+                return Err("sealed request differs from the admitted handler protocol".into());
+            }
         }
         Ok(crate::SemSignature {
             params,

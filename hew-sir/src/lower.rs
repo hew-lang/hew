@@ -2650,6 +2650,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Sender)
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || hew_types::runtime_call::is_channel_pair_ty(ty)
+        || *ty == hew_types::runtime_call::actor_request_owner_ty()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
@@ -5508,7 +5509,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             for field in &variant.fields {
                 self.service.require_type_facts(&field.ty)?;
                 let mut own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
-                if borrowed && own == OwnKind::Owned {
+                if borrowed {
                     own = OwnKind::Guaranteed;
                 }
                 let field_value = self.fresh_value();
@@ -7945,6 +7946,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if args.first().is_some_and(|argument| {
                 hew_types::runtime_call::FileReadHandleKind::Nominal.matches(&argument.ty)
                     || hew_types::runtime_call::IoHandleKind::of_ty(&argument.ty).is_some()
+                    || argument.ty == hew_types::runtime_call::actor_request_owner_ty()
             }) =>
             {
                 let ty = &args.first().ok_or("resource release has no owner")?.ty;

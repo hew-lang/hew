@@ -104,12 +104,7 @@ pub unsafe extern "C" fn hew_actor_ask_wait_new(
     waker: *const HewWaker,
 ) -> *mut HewNativeAsk {
     // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
-    let (envelope, waker) = unsafe {
-        (
-            super::hew_msg_envelope_new(payload, size, Some(drop_payload)),
-            Arc::new(OwnedWaker::retain(&*waker)),
-        )
-    };
+    let envelope = unsafe { super::hew_msg_envelope_new(payload, size, Some(drop_payload)) };
     if envelope.is_null() {
         // SAFETY: allocation failed; the wrapper still owns the typed fields.
         unsafe {
@@ -118,16 +113,8 @@ pub unsafe extern "C" fn hew_actor_ask_wait_new(
         }
         return std::ptr::null_mut();
     }
-    // SAFETY: the request holds one reference for the duration of admission.
-    unsafe { crate::reply_channel::hew_reply_channel_retain(channel.cast()) };
-    crate::actor::register_native_capacity(token, &waker);
-    Box::into_raw(Box::new(HewNativeAsk {
-        token,
-        message,
-        envelope,
-        channel,
-        _waker: waker,
-    }))
+    // SAFETY: the fresh envelope owns the request and all references are live.
+    unsafe { hew_actor_ask_wait_resume(token, message, envelope, channel, waker) }
 }
 
 /// Return -1 while full, 0 after admitting the request, or the `AskError` code
@@ -174,6 +161,63 @@ pub unsafe extern "C" fn hew_actor_ask_wait_free(wait: *mut HewNativeAsk) {
         // SAFETY: the caller relinquishes its unique handle.
         drop(unsafe { Box::from_raw(wait) });
     }
+}
+
+/// Detach an unadmitted request without copying or destroying its payload.
+/// The returned envelope owns the original wrapper and its typed destructor.
+///
+/// # Safety
+/// `wait` is null or uniquely borrowed before admission. After detaching its
+/// request, the caller must release the wait without polling it again.
+/// The caller must release or resubmit the returned envelope exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_wait_take_request(
+    wait: *mut HewNativeAsk,
+) -> *mut super::HewMsgEnvelope {
+    // SAFETY: the caller exclusively owns this admission operation.
+    let Some(wait) = (unsafe { wait.as_mut() }) else {
+        return std::ptr::null_mut();
+    };
+    let envelope = std::mem::replace(&mut wait.envelope, std::ptr::null_mut());
+    if !envelope.is_null() {
+        // SAFETY: the unadmitted request owns one channel reference. A later
+        // resubmission creates its own channel; the old reply cannot escape.
+        unsafe { crate::reply_channel::hew_reply_channel_free(wait.channel.cast()) };
+        wait.channel = std::ptr::null_mut();
+    }
+    envelope
+}
+
+/// Resume admission using the original sealed request, without repacking it.
+///
+/// # Safety
+/// `envelope` uniquely owns an unadmitted request and its typed destructor.
+/// The checked target and message have the same request and reply protocol.
+/// The channel and waker are valid for the new completion call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_wait_resume(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut super::HewMsgEnvelope,
+    channel: *mut std::ffi::c_void,
+    waker: *const HewWaker,
+) -> *mut HewNativeAsk {
+    if envelope.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the completion call supplies live channel and waker references.
+    let waker = unsafe {
+        crate::reply_channel::hew_reply_channel_retain(channel.cast());
+        Arc::new(OwnedWaker::retain(&*waker))
+    };
+    crate::actor::register_native_capacity(token, &waker);
+    Box::into_raw(Box::new(HewNativeAsk {
+        token,
+        message,
+        envelope,
+        channel,
+        _waker: waker,
+    }))
 }
 
 /// Return -1 while full, 0 after transferring the message, 2 when closed, or 3
@@ -274,6 +318,69 @@ mod tests {
         // SAFETY: the wrapper contains one raw Arc reference owned by its source.
         let count = unsafe { Arc::from_raw(*payload.cast::<*const AtomicUsize>()) };
         count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn sealed_request_detach_resume_and_drop_preserve_one_owner() {
+        for resubmit in [false, true] {
+            let (ready, waker) = Readiness::new();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let source = Arc::into_raw(drops.clone());
+            // SAFETY: each operation receives the unique request envelope;
+            // channel references remain live until their owners release them.
+            unsafe {
+                let payload = libc::malloc(size_of_val(&source)).cast::<*const AtomicUsize>();
+                payload.write(source);
+                let channel = crate::reply_channel::native::hew_reply_channel_new_native(
+                    waker.descriptor(),
+                    None,
+                );
+                let wait = hew_actor_ask_wait_new(
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                    7,
+                    payload.cast(),
+                    size_of_val(&source),
+                    drop_owned,
+                    channel.cast(),
+                    waker.descriptor(),
+                );
+                let request = hew_actor_ask_wait_take_request(wait);
+                assert!(!request.is_null());
+                assert!(hew_actor_ask_wait_take_request(wait).is_null());
+                hew_actor_ask_wait_free(wait);
+                crate::reply_channel::hew_reply_channel_free(channel);
+                assert_eq!(drops.load(Ordering::SeqCst), 0);
+                assert_eq!(
+                    super::super::hew_msg_envelope_payload_ptr(request),
+                    payload.cast()
+                );
+                if resubmit {
+                    let channel = crate::reply_channel::native::hew_reply_channel_new_native(
+                        waker.descriptor(),
+                        None,
+                    );
+                    let wait = hew_actor_ask_wait_resume(
+                        crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                        7,
+                        request,
+                        channel.cast(),
+                        waker.descriptor(),
+                    );
+                    assert_eq!(
+                        hew_actor_ask_wait_poll(wait),
+                        crate::internal::types::AskError::ActorStopped as i32
+                    );
+                    hew_actor_ask_wait_free(wait);
+                    crate::reply_channel::hew_reply_channel_free(channel);
+                } else {
+                    super::super::hew_msg_envelope_release(request);
+                }
+                assert_eq!(drops.load(Ordering::SeqCst), 1);
+                assert_eq!(Arc::strong_count(&drops), 1);
+            }
+            drop(waker);
+            assert_eq!(Arc::strong_count(&ready), 1);
+        }
     }
 
     #[test]

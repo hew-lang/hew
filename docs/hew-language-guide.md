@@ -1349,16 +1349,7 @@ value-returning handler is refused on this view; use `fork target.m(..)` for a
 concurrent completion call. If a submitted `fails` handler returns an error,
 the actor faults with that error's Display text and its supervisor decides.
 
-`policy(target, on_full: .Wait)` or the `.Reject` policy controls admission for completion
-calls. A bare handle waits for admission. `.Reject` refuses a full mailbox;
-other call failures do not establish that retrying is safe.
-
-**Pending request recovery:** the intended envelope is
-`ActorError<E = Never, Req = Never>` with `Rejected(SendFailure<Req>)`.
-The sealed request will support `retry()` and `to(target)` without losing a
-consumed payload. This build still has `ActorError<E>` with a reason-only
-`Rejected` payload. Typed request recovery is not implemented; do not rely on
-resubmitting a consumed argument or copy a reason-only match as the final API.
+`policy(target, on_full: ...)` is the other view: its calls still complete — the handler result wrapped in `Result<R, ActorError<E, Req>>`, with `Req` inferred for rejected requests — and the policy chooses only what happens when the destination mailbox is full. `.Wait` is what a bare handle does. `.Reject` refuses instead of parking and reports `ActorError.Rejected(failure)`. Read `failure.reason` for the refusal reason. The owned request remains in `failure.message`: `.retry()` consumes it and resubmits to the original actor; `.to(other)` consumes it and resubmits to a compatible handler. Both wait for completion. Dropping the request releases its payload. Only a rejection is safely retryable. `policy` completes, `mailbox` submits.
 
 Use a mailbox view when submission must not wait for handler completion.
 Admission may still wait under `.Wait`. A callback into an actor whose handler

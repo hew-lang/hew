@@ -897,6 +897,8 @@ pub enum PhysicalRuntimeAction {
     ChannelReceiverClose,
     ChannelPairNew,
     ChannelPairFree,
+    ActorRequestRelease,
+    ActorRequestTake,
     ChannelPairIsValid,
     ChannelPairSender,
     ChannelPairReceiver,
@@ -981,6 +983,8 @@ impl PhysicalRuntimeAction {
             Self::ChannelReceiverClose => RuntimeCallFamily::ChannelReceiverClose,
             Self::ChannelPairNew => RuntimeCallFamily::ChannelPairNew,
             Self::ChannelPairFree => RuntimeCallFamily::ChannelPairFree,
+            Self::ActorRequestRelease => RuntimeCallFamily::ActorRequestRelease,
+            Self::ActorRequestTake => RuntimeCallFamily::ActorRequestTake,
             Self::ChannelPairIsValid => RuntimeCallFamily::ChannelPairIsValid,
             Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
             Self::ChannelPairReceiver => RuntimeCallFamily::ChannelPairReceiver,
@@ -1083,6 +1087,7 @@ pub enum PhysicalTerminator {
         /// parks the caller, `Reject` refuses the call.
         policy: hew_types::actor_delivery::SendPolicy,
         deadline_ns: Option<i64>,
+        sealed: bool,
         args: Vec<ArgumentTransfer>,
         result: StorageId,
         normal: PhysicalEdge,
@@ -2436,6 +2441,8 @@ fn physical_runtime_action(
         RuntimeCallFamily::ChannelReceiverClose => PhysicalRuntimeAction::ChannelReceiverClose,
         RuntimeCallFamily::ChannelPairNew => PhysicalRuntimeAction::ChannelPairNew,
         RuntimeCallFamily::ChannelPairFree => PhysicalRuntimeAction::ChannelPairFree,
+        RuntimeCallFamily::ActorRequestRelease => PhysicalRuntimeAction::ActorRequestRelease,
+        RuntimeCallFamily::ActorRequestTake => PhysicalRuntimeAction::ActorRequestTake,
         RuntimeCallFamily::ChannelPairIsValid => PhysicalRuntimeAction::ChannelPairIsValid,
         RuntimeCallFamily::ChannelPairSender => PhysicalRuntimeAction::ChannelPairSender,
         RuntimeCallFamily::ChannelPairReceiver => PhysicalRuntimeAction::ChannelPairReceiver,
@@ -3342,6 +3349,7 @@ impl FunctionLowerer<'_> {
                         message,
                         policy,
                         deadline_ns,
+                        sealed,
                     },
                 inputs,
                 result: CallResult::Value(result),
@@ -3353,6 +3361,7 @@ impl FunctionLowerer<'_> {
                 message: *message,
                 policy: *policy,
                 deadline_ns: *deadline_ns,
+                sealed: *sealed,
                 args: self.argument_transfers(inputs)?,
                 result: self.value(result.id)?,
                 normal: self.lower_edge(&resumes[0])?,
@@ -6778,6 +6787,7 @@ fn verify_terminator(
         PhysicalTerminator::ActorAsk {
             actor,
             message,
+            sealed,
             args,
             result,
             normal,
@@ -6794,7 +6804,7 @@ fn verify_terminator(
                 .get(actor.0 as usize)
                 .filter(|descriptor| descriptor.id == *actor)
                 .ok_or_else(|| PhysicalError::new("ask requires its exact actor descriptor"))?
-                .ask_signature(*message, &target, slot(*result)?.ty.clone())
+                .ask_signature(*message, &target, slot(*result)?.ty.clone(), *sealed)
                 .map_err(PhysicalError::new)?;
             if args.len() != signature.params.len() || slot(*result)?.ty != signature.return_ty {
                 return Err(PhysicalError::new(
@@ -7966,6 +7976,15 @@ fn actor_value_recipes(
     }
     for actor in &module.actors {
         types.push(actor.state_ty.clone());
+        // A rejected completion returns its addressed target with the request.
+        // Include the exact handle/role instances already admitted by SIR.
+        types.extend(
+            module
+                .type_facts
+                .keys()
+                .filter(|key| actor.admits_target(&key.0))
+                .map(|key| key.0.clone()),
+        );
         types.extend(actor.fields.iter().map(|field| field.ty.clone()));
         for handler in &actor.handlers {
             types.extend(handler.params.iter().cloned());

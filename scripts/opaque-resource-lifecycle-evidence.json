@@ -240,6 +240,22 @@
         "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_stream_pair_free"
+    },
+    {
+      "source_path": "std/builtins.hew",
+      "resource": "ActorRequestOwner",
+      "runtime": {
+        "path": "hew-runtime/src/mailbox_native.rs",
+        "test": "sealed_request_detach_resume_and_drop_preserve_one_owner",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_msg_envelope_release"
     }
   ]
 }

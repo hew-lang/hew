@@ -35,7 +35,7 @@ fn lookup_error_id(err: LookupError) -> i64 {
 }
 
 // `AskError` (a flat ~20-variant taxonomy) has been retired in favour of
-// `ActorError<E>` (D437, D443): completion outcomes are `Rejected(SendError)`,
+// Completion outcomes include `Rejected(SendFailure<Req>)`,
 // `Failed(E)`, or one of a small set of terminal transport/lifecycle
 // variants. `ActorError` bare means `ActorError<Never>`.
 fn ask_error_id(err: ActorError) -> i64 {
@@ -109,7 +109,8 @@ fn test_lookup_error_taxonomy_variants() {
 
 #[test]
 fn test_ask_error_taxonomy_variants() {
-    testing.assert_eq(ask_error_id(ActorError.Rejected(SendError.Full)), 1);
+    // Rejected owns a sealed request supplied by runtime admission; it cannot
+    // be fabricated for this transport-only envelope.
     testing.assert_eq(ask_error_id(ActorError.Trapped), 3);
     testing.assert_eq(ask_error_id(ActorError.Dead), 4);
     testing.assert_eq(ask_error_id(ActorError.Timeout), 5);

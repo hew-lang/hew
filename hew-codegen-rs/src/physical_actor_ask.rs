@@ -14,6 +14,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         message: u32,
         policy: hew_types::actor_delivery::SendPolicy,
         deadline_ns: Option<i64>,
+        sealed: bool,
         args: &[ArgumentTransfer],
         result: StorageId,
         normal: &PhysicalEdge,
@@ -52,67 +53,73 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
         let size = target.get_abi_size(&wrapper_ty);
-        let allocate = coro::external(
-            self.llvm,
-            "hew_actor_payload_try_alloc",
-            ptr.fn_type(&[size_ty.into()], false),
-        )?;
-        let wrapper = call_value(
-            &self.builder,
-            allocate,
-            &[size_ty.const_int(size, false).into()],
-            "ask.request",
-        )?
-        .into_pointer_value();
-        let allocation_failed = self
-            .ctx
-            .append_basic_block(self.value, "ask.allocation.failed");
-        let submit = self.ctx.append_basic_block(self.value, "ask.submit");
-        let missing = self
-            .builder
-            .build_is_null(wrapper, "ask.missing.request")
-            .llvm_ctx("check request allocation")?;
-        self.builder
-            .build_conditional_branch(missing, allocation_failed, submit)
-            .llvm_ctx("retain request fields until allocation")?;
-        self.builder.position_at_end(allocation_failed);
-        // The target is borrowed; only the request arguments were about to
-        // transfer, so only they are released when the wrapper never exists.
-        for source in sources.iter().skip(1) {
-            if let Some(action) = self
-                .module
-                .actor_recipes
-                .get(&self.storage(*source)?.ty)
-                .and_then(|recipe| recipe.destroy)
-            {
-                self.destroy_value(*source, action)?;
-            } else {
-                self.clear_owned(*source)?;
-            }
-        }
-        self.emit_ask_result(
-            result,
-            self.ctx.i32_type().const_int(
-                hew_runtime::internal::types::AskError::SendFailed as u64,
-                false,
-            ),
-            None,
-            handler,
-        )?;
-        self.emit_result_edge(Some(result), normal)?;
-        self.builder.position_at_end(submit);
-        self.builder
-            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
-            .llvm_ctx("initialize request ownership")?;
-        for (index, source) in sources.iter().skip(1).enumerate() {
-            let field = self
+        let wrapper = if sealed {
+            self.load(sources[1], "ask.sealed.request")?
+                .into_pointer_value()
+        } else {
+            let allocate = coro::external(
+                self.llvm,
+                "hew_actor_payload_try_alloc",
+                ptr.fn_type(&[size_ty.into()], false),
+            )?;
+            let wrapper = call_value(
+                &self.builder,
+                allocate,
+                &[size_ty.const_int(size, false).into()],
+                "ask.request",
+            )?
+            .into_pointer_value();
+            let allocation_failed = self
+                .ctx
+                .append_basic_block(self.value, "ask.allocation.failed");
+            let submit = self.ctx.append_basic_block(self.value, "ask.submit");
+            let missing = self
                 .builder
-                .build_struct_gep(wrapper_ty, wrapper, (index + 1) as u32, "ask.request.field")
-                .llvm_ctx("address typed request field")?;
+                .build_is_null(wrapper, "ask.missing.request")
+                .llvm_ctx("check request allocation")?;
             self.builder
-                .build_store(field, self.load(*source, "ask.argument")?)
-                .llvm_ctx("transfer request field")?;
-        }
+                .build_conditional_branch(missing, allocation_failed, submit)
+                .llvm_ctx("retain request fields until allocation")?;
+            self.builder.position_at_end(allocation_failed);
+            // The target is borrowed; only the request arguments were about to
+            // transfer, so only they are released when the wrapper never exists.
+            for source in sources.iter().skip(1) {
+                if let Some(action) = self
+                    .module
+                    .actor_recipes
+                    .get(&self.storage(*source)?.ty)
+                    .and_then(|recipe| recipe.destroy)
+                {
+                    self.destroy_value(*source, action)?;
+                } else {
+                    self.clear_owned(*source)?;
+                }
+            }
+            self.emit_ask_result(
+                result,
+                self.ctx.i32_type().const_int(
+                    hew_runtime::internal::types::AskError::SendFailed as u64,
+                    false,
+                ),
+                None,
+                handler,
+            )?;
+            self.emit_result_edge(Some(result), normal)?;
+            self.builder.position_at_end(submit);
+            self.builder
+                .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
+                .llvm_ctx("initialize request ownership")?;
+            for (index, source) in sources.iter().skip(1).enumerate() {
+                let field = self
+                    .builder
+                    .build_struct_gep(wrapper_ty, wrapper, (index + 1) as u32, "ask.request.field")
+                    .llvm_ctx("address typed request field")?;
+                self.builder
+                    .build_store(field, self.load(*source, "ask.argument")?)
+                    .llvm_ctx("transfer request field")?;
+            }
+            wrapper
+        };
         let wake = coro::external(
             self.llvm,
             "hew_coro_state_waker",
@@ -170,40 +177,73 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let cycle = self.ctx.append_basic_block(self.value, "ask.cycle.fault");
         // A completion call waits for admission as well as for the reply: a
         // full mailbox parks the caller instead of refusing the call.
-        let admit_new = coro::external(
-            self.llvm,
-            "hew_actor_ask_wait_new",
-            ptr.fn_type(
+        let admission = if sealed {
+            let resume = coro::external(
+                self.llvm,
+                "hew_actor_ask_wait_resume",
+                ptr.fn_type(
+                    &[
+                        size_ty.into(),
+                        self.ctx.i32_type().into(),
+                        ptr.into(),
+                        ptr.into(),
+                        ptr.into(),
+                    ],
+                    false,
+                ),
+            )?;
+            call_value(
+                &self.builder,
+                resume,
                 &[
-                    size_ty.into(),
-                    self.ctx.i32_type().into(),
-                    ptr.into(),
-                    size_ty.into(),
-                    ptr.into(),
-                    ptr.into(),
-                    ptr.into(),
+                    self.load_actor_target(sources[0], "ask.target")?.into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(message), false)
+                        .into(),
+                    wrapper.into(),
+                    channel.into(),
+                    waker.into(),
                 ],
-                false,
-            ),
-        )?;
-        let admission = call_value(
-            &self.builder,
-            admit_new,
-            &[
-                self.load_actor_target(sources[0], "ask.target")?.into(),
-                self.ctx
-                    .i32_type()
-                    .const_int(u64::from(message), false)
-                    .into(),
-                wrapper.into(),
-                size_ty.const_int(size, false).into(),
-                drop_request.as_global_value().as_pointer_value().into(),
-                channel.into(),
-                waker.into(),
-            ],
-            "ask.admission",
-        )?
-        .into_pointer_value();
+                "ask.resumed.admission",
+            )?
+            .into_pointer_value()
+        } else {
+            let admit_new = coro::external(
+                self.llvm,
+                "hew_actor_ask_wait_new",
+                ptr.fn_type(
+                    &[
+                        size_ty.into(),
+                        self.ctx.i32_type().into(),
+                        ptr.into(),
+                        size_ty.into(),
+                        ptr.into(),
+                        ptr.into(),
+                        ptr.into(),
+                    ],
+                    false,
+                ),
+            )?;
+            call_value(
+                &self.builder,
+                admit_new,
+                &[
+                    self.load_actor_target(sources[0], "ask.target")?.into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(message), false)
+                        .into(),
+                    wrapper.into(),
+                    size_ty.const_int(size, false).into(),
+                    drop_request.as_global_value().as_pointer_value().into(),
+                    channel.into(),
+                    waker.into(),
+                ],
+                "ask.admission",
+            )?
+            .into_pointer_value()
+        };
         // The request arguments moved into the wrapper; the borrowed target
         // keeps its owner, which releases it at the end of its scope.
         for source in sources.iter().skip(1) {
@@ -263,10 +303,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select mailbox capacity")?;
         self.builder.position_at_end(admit_refused);
-        self.free_handle("hew_actor_ask_wait_free", admission)?;
-        self.close_ask(channel, timer, wait_edge)?;
-        self.emit_ask_refused(result)?;
-        self.emit_result_edge(Some(result), normal)?;
+        if refuses {
+            let take = coro::external(
+                self.llvm,
+                "hew_actor_ask_wait_take_request",
+                ptr.fn_type(&[ptr.into()], false),
+            )?;
+            let request = call_value(
+                &self.builder,
+                take,
+                &[admission.into()],
+                "ask.refused.request",
+            )?
+            .into_pointer_value();
+            self.free_handle("hew_actor_ask_wait_free", admission)?;
+            self.close_ask(channel, timer, wait_edge)?;
+            self.emit_ask_refused(result, sources[0], message, request)?;
+            self.emit_result_edge(Some(result), normal)?;
+        } else {
+            self.builder
+                .build_unreachable()
+                .llvm_ctx("waiting admission cannot refuse")?;
+        }
         self.builder.position_at_end(admit_pending);
         self.check_actor_wait_cycle(wait_edge, cycle)?;
         frame.suspend(
@@ -450,11 +508,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     /// A `policy(target, on_full: .Reject)` call whose destination mailbox is
-    /// full: nothing was accepted, so the envelope is
-    /// `ActorError.Rejected(SendError.Full)` and the caller may make the same
-    /// call again. This is the only refusal a completion call reports; every
+    /// full: nothing was accepted, so `Rejected` returns the refusal reason
+    /// and the original owned request. This is the only refusal a completion
+    /// call reports; every
     /// other outcome means the request was accepted or its fate is unknown.
-    fn emit_ask_refused(&self, result: StorageId) -> CodegenResult<()> {
+    fn emit_ask_refused(
+        &self,
+        result: StorageId,
+        target: StorageId,
+        message: u32,
+        request: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
         let glue = self
             .module
             .variant_glue
@@ -472,7 +536,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("the call envelope lacks its variant recipe".into())
             })?;
-        let reason_ty = error_glue
+        let failure_ty = error_glue
             .variants
             .first()
             .and_then(|rejected| rejected.fields.first())
@@ -480,7 +544,43 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("`Rejected` lacks its refusal reason seat".into())
             })?;
+        let ResolvedTy::Named { args, .. } = &failure_ty else {
+            return Err(CodegenError::FailClosed(
+                "rejection lacks its SendFailure type".into(),
+            ));
+        };
+        let message_ty = &args[0];
+        let ResolvedTy::Named { args, .. } = message_ty else {
+            return Err(CodegenError::FailClosed(
+                "rejection lacks its Message type".into(),
+            ));
+        };
+        let payload_ty = &args[1];
+        let payload = self.ask_record(payload_ty, &[request.into()])?;
+        let action = self
+            .module
+            .actor_recipes
+            .get(&self.storage(target)?.ty)
+            .and_then(|recipe| recipe.clone)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("returned request lacks its retained target recipe".into())
+            })?;
+        let target = self.clone_value(target, action)?;
+        let message = self.ask_record(
+            message_ty,
+            &[
+                target,
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(message), false)
+                    .into(),
+                payload,
+            ],
+        )?;
+        let reason_ty = ResolvedTy::from_ty(&hew_types::Ty::send_error())
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
         let reason = self.actor_unit_variant(&reason_ty, self.ctx.i32_type().const_zero())?;
+        let failure = self.ask_record(&failure_ty, &[reason, message])?;
         let object_ty = llvm_type(
             self.ctx,
             &self.value_emitter().variant_layout(error_ty)?.object.repr,
@@ -490,12 +590,40 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_alloca(object_ty, "ask.refused")
             .llvm_ctx("allocate the refusal envelope")?;
-        self.write_variant_value(scratch, 0, &[reason], error_glue.id)?;
+        self.write_variant_value(scratch, 0, &[failure], error_glue.id)?;
         let envelope = self
             .builder
             .build_load(object_ty, scratch, "ask.refused.value")
             .llvm_ctx("take the refusal envelope")?;
         self.write_variant_value(self.slots[result.0 as usize], 1, &[envelope], glue.id)
+    }
+
+    fn ask_record(
+        &self,
+        ty: &ResolvedTy,
+        fields: &[BasicValueEnum<'ctx>],
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let layout = self.module.target.layout(ty).ok_or_else(|| {
+            CodegenError::FailClosed("sealed request record lacks its checked layout".into())
+        })?;
+        let mut value = llvm_type(self.ctx, &layout.repr)?
+            .into_struct_type()
+            .const_zero();
+        for (index, field) in fields.iter().enumerate() {
+            value = self
+                .builder
+                .build_insert_value(
+                    value,
+                    *field,
+                    u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed("request field index exceeds u32".into())
+                    })?,
+                    "ask.request.record",
+                )
+                .llvm_ctx("assemble sealed request owner")?
+                .into_struct_value();
+        }
+        Ok(value.into())
     }
 
     fn emit_ask_result(

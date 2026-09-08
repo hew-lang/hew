@@ -146,6 +146,8 @@ pub enum RuntimeValueKind {
     /// The paired channel allocation `channel.new` splits. Its nominal
     /// identity comes from the generated `hew_channel_new` ownership row.
     ChannelPair,
+    ActorRequestOwner,
+    ActorRequestAdmission,
     Bool,
     U8,
     U32,
@@ -217,6 +219,10 @@ impl RuntimeValueKind {
             }
             Self::ChannelHalfResult(kind) => kind.bare_ty(),
             Self::ChannelPair => channel_pair_ty()?,
+            Self::ActorRequestOwner => actor_request_owner_ty(),
+            Self::ActorRequestAdmission => {
+                ResolvedTy::named_opaque("std.builtins.ActorRequestAdmission", Vec::new())
+            }
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
             Self::U32 => ResolvedTy::U32,
@@ -572,6 +578,12 @@ impl ChannelHalfKind {
 pub fn channel_pair_ty() -> Option<ResolvedTy> {
     let contract = crate::ffi_contracts::extern_owned_resource_result("hew_channel_new")?;
     Some(ResolvedTy::named_opaque(contract.resource_type, Vec::new()))
+}
+
+/// The sealed completion request's source-declared runtime owner.
+#[must_use]
+pub fn actor_request_owner_ty() -> ResolvedTy {
+    ResolvedTy::named_opaque("std.builtins.ActorRequestOwner", Vec::new())
 }
 
 /// Whether one checked type is the paired channel allocation.
@@ -1471,6 +1483,8 @@ pub enum RuntimeCallFamily {
     // escapes that function: `new` extracts both halves and frees the pair.
     ChannelPairNew,
     ChannelPairFree,
+    ActorRequestRelease,
+    ActorRequestTake,
     ChannelPairIsValid,
     ChannelPairSender,
     ChannelPairReceiver,
@@ -2770,6 +2784,8 @@ impl RuntimeCallFamily {
             Self::ChannelReceiverClose => "hew_channel_receiver_close",
             Self::ChannelPairNew => "hew_channel_new",
             Self::ChannelPairFree => "hew_channel_pair_free",
+            Self::ActorRequestRelease => "hew_msg_envelope_release",
+            Self::ActorRequestTake => "hew_actor_ask_wait_take_request",
             Self::ChannelPairIsValid => "hew_channel_pair_is_valid",
             Self::ChannelPairSender => "hew_channel_pair_sender",
             Self::ChannelPairReceiver => "hew_channel_pair_receiver",
@@ -3175,6 +3191,8 @@ impl RuntimeCallFamily {
             "hew_channel_receiver_close" => Self::ChannelReceiverClose,
             "hew_channel_new" => Self::ChannelPairNew,
             "hew_channel_pair_free" => Self::ChannelPairFree,
+            "hew_msg_envelope_release" => Self::ActorRequestRelease,
+            "hew_actor_ask_wait_take_request" => Self::ActorRequestTake,
             "hew_channel_pair_is_valid" => Self::ChannelPairIsValid,
             "hew_channel_pair_sender" => Self::ChannelPairSender,
             "hew_channel_pair_receiver" => Self::ChannelPairReceiver,
@@ -3842,6 +3860,7 @@ impl RuntimeCallFamily {
                 | Self::ChannelSenderClose
                 | Self::ChannelReceiverClose
                 | Self::ChannelPairFree
+                | Self::ActorRequestRelease
                 | Self::DuplexClose
                 | Self::DuplexCloseHalf
                 // The half-extract methods move the unified `Duplex` handle out:
@@ -4011,6 +4030,22 @@ impl RuntimeCallFamily {
             Self::ChannelReceiverClose => channel_receiver_close_contract(),
             Self::ChannelPairNew => channel_pair_new_contract(),
             Self::ChannelPairFree => channel_pair_free_contract(),
+            Self::ActorRequestRelease => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::ActorRequestOwner,
+                    effect: RuntimeArgumentEffect::Move,
+                }],
+                RuntimeResultEffect::Unit,
+                &[],
+            ),
+            Self::ActorRequestTake => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::ActorRequestAdmission,
+                    effect: RuntimeArgumentEffect::Borrow,
+                }],
+                RuntimeResultEffect::FreshOwned(RuntimeValueKind::ActorRequestOwner),
+                &[],
+            ),
             Self::ChannelPairIsValid => channel_pair_is_valid_contract(),
             Self::ChannelPairSender => channel_pair_half_contract(true),
             Self::ChannelPairReceiver => channel_pair_half_contract(false),
@@ -4116,6 +4151,8 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ChannelHalf(_)
                     | RuntimeValueKind::ChannelHalfResult(_)
                     | RuntimeValueKind::ChannelPair
+                    | RuntimeValueKind::ActorRequestOwner
+                    | RuntimeValueKind::ActorRequestAdmission
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
@@ -4302,6 +4339,8 @@ impl RuntimeCallFamily {
             | F::ChannelReceiverClose
             | F::ChannelPairNew
             | F::ChannelPairFree
+            | F::ActorRequestRelease
+            | F::ActorRequestTake
             | F::ChannelPairIsValid
             | F::ChannelPairSender
             | F::ChannelPairReceiver
@@ -5242,6 +5281,8 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelReceiverClose
             | F::ChannelPairNew
             | F::ChannelPairFree
+            | F::ActorRequestRelease
+            | F::ActorRequestTake
             | F::ChannelPairIsValid
             | F::ChannelPairSender
             | F::ChannelPairReceiver
@@ -5755,6 +5796,7 @@ mod tests {
             "hew_channel_sender_close",
             "hew_channel_receiver_close",
             "hew_channel_pair_free",
+            "hew_msg_envelope_release",
             "hew_duplex_close",
             "hew_duplex_close_half",
             "hew_duplex_send_half",

@@ -1,7 +1,7 @@
 // `policy(target, on_full: ...)` is the completion view: a call through it
 // waits for the handler exactly as a call on the handle does, and the policy
 // decides only what happens when the destination mailbox is full. `.Reject`
-// refuses instead of parking and reports `Rejected(SendError.Full)`, which is
+// refuses instead of parking and reports `Rejected(SendFailure<Req>)`, which is
 // the one outcome from which the same call may safely be made again. `.Wait`
 // is the bare-handle behaviour and is the control here.
 actor Gate {
@@ -16,22 +16,17 @@ actor Gate {
     }
 
     receive fn tally() -> i64 { done }
+    receive fn echo(value: string) -> string { value }
 }
 
-fn describe(problem: ActorError<Never>) -> string {
+actor Spare {
+    receive fn echo(value: string) -> string { value }
+}
+
+fn describe<Req>(problem: ActorError<Never, Req>) -> string {
     match problem {
-        // The refusal reason is reached through `Rejected` and interpolated,
-        // so its `Display` impl must be selected under the same identity the
-        // payload carries.
-        ActorError.Rejected(reason) => f"rejected: {reason}",
-        ActorError.Trapped => "trapped",
-        ActorError.Dead => "dead",
-        ActorError.Timeout => "timeout",
-        ActorError.NodeNotRunning => "node not running",
-        ActorError.RoutingFailed => "routing failed",
-        ActorError.EncodeFailed => "encode failed",
-        ActorError.ConnectionDropped => "connection dropped",
-        ActorError.Partition => "partition",
+        ActorError.Rejected(failure) => f"rejected: {failure.reason}",
+        _ => "unexpected error",
     }
 }
 
@@ -55,6 +50,30 @@ fn main() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
     }
+    let spare = spawn Spare();
+    // Preserve the result in a binding before extracting its request: recovery
+    // must derive the protocol from the value, without the original call site.
+    let rejected = refusing.echo("déjà\0vu".to_upper());
+    match rejected {
+        .Err(ActorError.Rejected(failure)) => {
+            let redirected = failure.message.to(spare);
+            match redirected {
+                .Ok(value) => println(value == "DÉJÀ\0VU"),
+                .Err(_) => panic("redirection failed"),
+            }
+        },
+        _ => panic("the full mailbox accepted a request"),
+    }
+    // Dropping another rejection must release its original owned string.
+    let _abandoned = refusing.echo("drop\0me".to_upper());
+    let retained = match refusing.echo("retry\0me".to_upper()) {
+        .Err(ActorError.Rejected(failure)) => failure.message,
+        _ => panic("the full mailbox accepted the retained request"),
+    };
+    let orphaned = match refusing.echo("terminal\0origin".to_upper()) {
+        .Err(ActorError.Rejected(failure)) => failure,
+        _ => panic("the full mailbox accepted the terminal-origin request"),
+    };
     // A bare-handle call waits for a seat instead, and completes.
     match gate.tally() {
         .Ok(v) => println(v),
@@ -66,6 +85,17 @@ fn main() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
     }
+    match retained.retry() {
+        .Ok(value) => println(value == "RETRY\0ME"),
+        .Err(_) => panic("retry failed after capacity became available"),
+    }
     close(gate);
+    // The original destination is terminal. The detached request still owns
+    // its payload, and redirection selects Spare.echo's own handler identity.
+    match orphaned.to(spare) {
+        .Ok(value) => println(value == "TERMINAL\0ORIGIN"),
+        .Err(_) => panic("redirection after origin termination failed"),
+    }
+    close(spare);
     println("closed");
 }

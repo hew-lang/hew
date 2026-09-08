@@ -1521,6 +1521,7 @@ impl Checker {
         // HIR's exact forwarding proof. SIR selects its runtime action from
         // that validated lifecycle, after this declaration boundary.
         if family == crate::RuntimeCallFamily::FileRead(crate::runtime_call::FileReadOp::Close)
+            || family == crate::RuntimeCallFamily::ActorRequestRelease
             || matches!(family, crate::RuntimeCallFamily::Tcp(op) if op.is_release())
         {
             return None;
@@ -2660,6 +2661,8 @@ impl Checker {
             return Ty::result(reply_ty, Ty::actor_error(Ty::never_type()));
         };
         if !one_way {
+            let completion =
+                self.completion_request_type(&method_id, &reply_ty, target, policy, &payload);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -2670,7 +2673,7 @@ impl Checker {
                 },
             );
             self.record_submission_suspension(span, true);
-            return Ty::result(reply_ty, Ty::actor_error(Ty::never_type()));
+            return completion;
         }
         // A mailbox view submits and nothing more, so a lambda that answers
         // its caller cannot be called through one.

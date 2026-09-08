@@ -1300,6 +1300,8 @@ codegen-stable = [
   "hew_actor_ask_wait_free",
   "hew_actor_ask_wait_new",
   "hew_actor_ask_wait_poll",
+  "hew_actor_ask_wait_resume",
+  "hew_actor_ask_wait_take_request",
   "hew_actor_close_native",
   "hew_actor_coro_set_fault",
   "hew_actor_coro_state_new",
@@ -7128,3 +7130,24 @@ params = ["consume"]
 release-symbol = "hew_host_text_release"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+# A full admission detaches its unique unpublished envelope. The returned
+# request retains the original wrapper and typed destructor until resubmission
+# or release; the admission no longer owns it.
+[[ownership.contracts]]
+symbol = "hew_actor_ask_wait_take_request"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.builtins.ActorRequestOwner"
+release-symbol = "hew_msg_envelope_release"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "detach clears the admission envelope and transfers its one owned reference without copying its payload"
+
+[[ownership.contracts]]
+symbol = "hew_msg_envelope_release"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.builtins.ActorRequestOwner"]
+release-symbol = ""
+discharge-depth = "none"

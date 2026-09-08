@@ -2060,7 +2060,10 @@ fn builtin_callable_impl_program() -> Option<Program> {
         .items
         .into_iter()
         .filter(|(item, _)| {
-            matches!(item, Item::Trait(_) | Item::TypeDecl(_)) || is_builtin_callable_impl(item)
+            matches!(
+                item,
+                Item::Trait(_) | Item::TypeDecl(_) | Item::ExternBlock(_)
+            ) || is_builtin_callable_impl(item)
         })
         .collect();
     Some(Program {
@@ -2102,6 +2105,7 @@ fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
     match source_name {
         "VecIter" => "std.builtins.VecIter",
         "HashMapIter" => "std.builtins.HashMapIter",
+        "ActorRequestOwner" => "std.builtins.ActorRequestOwner",
         _ => source_name,
     }
 }
@@ -2149,12 +2153,20 @@ fn is_duration_receiver_param(param: &Param) -> bool {
 }
 
 fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item) || is_builtin_duration_ctor_impl(item)
+    is_builtin_vec_iterator_impl(item)
+        || is_builtin_duration_ctor_impl(item)
+        || is_builtin_request_owner_impl(item)
+}
+
+fn is_builtin_request_owner_impl(item: &Item) -> bool {
+    matches!(item, Item::Impl(decl) if matches!(&decl.target_type.0,
+        TypeExpr::Named { name, .. } if name == "ActorRequestOwner" || name == "std.builtins.ActorRequestOwner"))
 }
 
 fn is_builtin_callable_impl(item: &Item) -> bool {
     matches!(item, Item::Impl(impl_decl) if impl_decl.trait_bound.is_some())
         || is_builtin_duration_ctor_impl(item)
+        || is_builtin_request_owner_impl(item)
 }
 
 fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
@@ -2173,6 +2185,12 @@ fn check_builtin_callable_impl_program(
     // collide with root user nominals of the same leaf. The executable HIR is
     // still lowered from the original source AST, preserving all source spans.
     let mut checker_program = program.clone();
+    // These externs are already registered under their std.builtins owner.
+    // Re-declaring them in the isolated checker's root would give a close
+    // wrapper a different release identity from its lifecycle contract.
+    checker_program
+        .items
+        .retain(|(item, _)| !matches!(item, Item::ExternBlock(_)));
     for (item, _) in &mut checker_program.items {
         let Item::Impl(impl_decl) = item else {
             continue;
@@ -2206,10 +2224,10 @@ fn check_builtin_callable_impl_program(
     Err(Box::new(HirDiagnostic::new(
         HirDiagnosticKind::CheckerBoundaryViolation {
             name: "std/builtins.hew callable impls".to_string(),
-            reason,
+            reason: reason.clone(),
         },
         0..0,
-        "compiler-injected callable impls were not lowered",
+        format!("compiler-injected callable impls were not lowered: {reason}"),
     )))
 }
 
@@ -2874,12 +2892,13 @@ pub fn lower_program_with_mono_cap(
     }
     ctx.seed_stdlib_fn_registry();
     let builtin_declarations = builtin_callable_impl_program();
+    let mut builtin_impl_diagnostics = Vec::new();
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
         match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
-                    ctx.diagnostics.push(*diagnostic);
+                    builtin_impl_diagnostics.push(*diagnostic);
                     (None, None)
                 }
             },
@@ -2893,6 +2912,12 @@ pub fn lower_program_with_mono_cap(
     // See [`collect_inherent_impl_close_methods`] for the precise contract
     // (W3.030 Q-α-B + Q-β-C ratifications).
     ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
+    if let Some(builtins) = &builtin_declarations {
+        for (name, signature) in collect_inherent_impl_close_methods(builtins) {
+            ctx.impl_close_methods
+                .insert(format!("std.builtins.{name}"), signature);
+        }
+    }
     // Harvest the self-type names that declare a `consume self` inherent
     // method so the `#[linear]` validation accepts a sibling-inherent consuming
     // method as satisfying the must-declare-a-consumer contract — the inherent
@@ -2924,6 +2949,17 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.opaque_type_short_names,
         &mut ctx.non_opaque_type_short_names,
     );
+    if let Some(builtins) = &builtin_declarations {
+        for (item, _) in &builtins.items {
+            if let Item::TypeDecl(decl) = item {
+                if decl.is_opaque {
+                    ctx.opaque_type_short_names.insert(decl.name.clone());
+                    ctx.opaque_type_short_names
+                        .insert(format!("std.builtins.{}", decl.name));
+                }
+            }
+        }
+    }
     ctx.root_opaque_type_short_names
         .extend(program.items.iter().filter_map(|(item, _)| {
             let Item::TypeDecl(decl) = item else {
@@ -4066,6 +4102,7 @@ pub fn lower_program_with_mono_cap(
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
+    ctx.diagnostics.extend(builtin_impl_diagnostics);
 
     // P0.3 + P0.4: wasm32 blocking channel recv gate. Dispatched HERE (after
     // the diagnostics.clear above) so the gate's BlockingChannelRecvUnsupportedOnWasm
@@ -4621,6 +4658,11 @@ pub fn lower_program_with_mono_cap(
     // receiver-specific cursor and duration impls retain their compiler owner.
     if let Some(program) = &builtin_callable_impl_program {
         for (item, _) in &program.items {
+            if let Item::ExternBlock(block) = item {
+                for function in &block.functions {
+                    ctx.register_extern_fn_entry(function);
+                }
+            }
             if let Item::Impl(impl_decl) = item {
                 if !is_builtin_callable_impl(item) {
                     continue;
@@ -5760,6 +5802,43 @@ pub fn lower_program_with_mono_cap(
                 .insert("None".to_string(), ("Option".to_string(), 1));
             let empty_rewrites = HashMap::new();
             for (item, span) in &program.items {
+                if let Item::ExternBlock(block) = item {
+                    for function in &block.functions {
+                        let owner = format!("std.builtins.{}", function.name);
+                        let Some(declaration) = ctx.identity.declaration_by_path(&owner).cloned()
+                        else {
+                            continue;
+                        };
+                        let provenance = extern_provenance(Some("std.builtins"));
+                        items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                            id: ctx.ids.item(),
+                            node: ctx.ids.node(),
+                            declaration,
+                            name: function.name.clone(),
+                            abi: block.abi.clone(),
+                            param_tys: function
+                                .params
+                                .iter()
+                                .map(|parameter| ctx.lower_type(&parameter.ty))
+                                .collect(),
+                            param_consume: function
+                                .params
+                                .iter()
+                                .map(|parameter| parameter.is_consume)
+                                .collect(),
+                            return_ty: function
+                                .return_type
+                                .as_ref()
+                                .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty)),
+                            runtime_capability: extern_runtime_capability(
+                                &provenance,
+                                &function.name,
+                            ),
+                            provenance,
+                            span: function.span.clone(),
+                        }));
+                    }
+                }
                 if let Item::Impl(impl_decl) = item {
                     if is_builtin_callable_impl(item) {
                         let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
@@ -6385,10 +6464,10 @@ fn admit_opaque_resource_lifecycles(
                 HirDiagnosticKind::OpaqueResourceCloseMismatch {
                     resource_type: candidate.resource_type.clone(),
                     expected_release: candidate.release_symbol.clone(),
-                    detail,
+                    detail: detail.clone(),
                 },
                 decl.span.clone(),
-                "the canonical close does not match the checker-admitted consuming release",
+                format!("the canonical close does not match the checker-admitted consuming release: {detail}"),
             )),
         }
     }
@@ -8568,6 +8647,10 @@ impl LowerCtx {
         tc_output: &TypeCheckOutput,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        let saved_direct_calls = std::mem::replace(
+            &mut self.direct_call_targets,
+            tc_output.direct_call_targets.clone(),
+        );
         let saved = (
             std::mem::replace(
                 &mut self.method_call_rewrites,
@@ -8637,6 +8720,7 @@ impl LowerCtx {
             self.checked_call_effects,
             self.record_init_type_args,
         ) = saved;
+        self.direct_call_targets = saved_direct_calls;
 
         result
     }
@@ -17843,7 +17927,7 @@ impl LowerCtx {
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
         let site = self.ids.site();
-        if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).copied() {
+        if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
                 (
@@ -17857,7 +17941,10 @@ impl LowerCtx {
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
-                (ActorDeliveryCall::Readdress { .. }, Expr::MethodCall { receiver, args, .. }) => (
+                (
+                    ActorDeliveryCall::Readdress { .. } | ActorDeliveryCall::Resume { .. },
+                    Expr::MethodCall { receiver, args, .. },
+                ) => (
                     self.lower_expr(receiver, IntentKind::Consume),
                     args.iter()
                         .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
@@ -22800,21 +22887,25 @@ impl LowerCtx {
         )
     }
 
-    /// `ActorError` written with no type arguments means `ActorError<Never>`,
-    /// the envelope of a call on a handler that cannot fail. The checker
-    /// applies the same default; both must agree on the lowered identity.
+    /// Omitted `ActorError` parameters default to `Never`, as they do in the
+    /// checker. Both stages preserve the same concrete envelope identity.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
-        let resolved = self.resolve_named_type_ref_inner(name, args);
-        if matches!(&resolved, ResolvedTy::Named { name, args, builtin: None, .. }
-            if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE && args.is_empty())
+        let mut resolved = self.resolve_named_type_ref_inner(name, args);
+        if let ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+            ..
+        } = &mut resolved
         {
-            return ResolvedTy::named_user(
-                hew_types::actor_delivery::ACTOR_ERROR_TYPE.to_string(),
-                vec![ResolvedTy::named_user(
-                    hew_types::actor_delivery::NEVER_TYPE.to_string(),
-                    Vec::new(),
-                )],
-            );
+            if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE {
+                args.resize_with(args.len().max(2), || {
+                    ResolvedTy::named_user(
+                        hew_types::actor_delivery::NEVER_TYPE.to_string(),
+                        Vec::new(),
+                    )
+                });
+            }
         }
         resolved
     }
@@ -33819,9 +33910,9 @@ impl Sample for Broken {
             reason.contains("returns `bool`") && reason.contains("requires `i64`"),
             "diagnostic must preserve the checker mismatch: {reason}"
         );
-        assert_eq!(
-            diagnostic.note,
-            "compiler-injected callable impls were not lowered"
+        assert!(
+            diagnostic.note.contains(&reason),
+            "the displayed diagnostic must include its cause"
         );
     }
 

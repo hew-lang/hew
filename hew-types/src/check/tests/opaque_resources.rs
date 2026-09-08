@@ -589,7 +589,8 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
     assert!(missing_source
         .opaque_resource_candidates
         .candidates
-        .is_empty());
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
 
     let unknown_family = check_source_in_module(
         r#"
@@ -609,7 +610,8 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
     assert!(unknown_family
         .opaque_resource_candidates
         .candidates
-        .is_empty());
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(unknown_family
         .opaque_resource_candidates
         .conflicts
@@ -619,7 +621,11 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
 #[test]
 fn root_symbol_spoof_cannot_inherit_qualified_lifecycle() {
     let output = check_source(TCP_CONNECTION_SOURCE);
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -629,7 +635,11 @@ fn foreign_module_symbol_and_type_spoof_cannot_inherit_lifecycle() {
         TCP_CONNECTION_SOURCE,
         vec!["user".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -649,7 +659,11 @@ fn short_name_collision_records_result_mismatch_without_candidate() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -675,7 +689,11 @@ fn mismatched_source_consume_release_records_conflict() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -698,7 +716,11 @@ fn missing_source_release_records_conflict() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -722,7 +744,11 @@ fn borrowed_or_untyped_results_do_not_mint_candidates() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 

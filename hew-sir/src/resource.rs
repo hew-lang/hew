@@ -115,6 +115,7 @@ impl ResourceRelease {
                     .filter(|family| {
                         *family == RuntimeCallFamily::FileRead(FileReadOp::Close)
                             || *family == RuntimeCallFamily::ChannelPairFree
+                            || *family == RuntimeCallFamily::ActorRequestRelease
                             || matches!(family, RuntimeCallFamily::Tcp(op) if op.is_release())
                     })
                     .ok_or_else(|| {

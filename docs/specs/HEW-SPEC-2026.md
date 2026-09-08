@@ -117,19 +117,18 @@ form the runtime uses to carry an identity between nodes, not a type a program
 writes. `ChildRef<A>` stays distinct because it names a supervised *role*
 rather than an incarnation, and re-resolves on every call (§5.6).
 
-**Completion calls.** A call through an actor handle waits for its
-`receive fn` to finish. The intended type is
-`Result<R, ActorError<E, Req>>`: `R` is the success type (unit when omitted),
-`E` is the declared `fails` type (`Never` when omitted), and `Req` describes
-the sealed request returned on rejection. Programs normally write
-`ActorError` or `ActorError<E>`; the request parameter is inferred, and unused
-parameters default to `Never`. The typed request is pending implementation;
-see the limitations below.
-
-`fork pid.method(args)` runs the call concurrently as a task over that Result.
-An ordinary call waits, `fork` starts concurrent work, and `await` joins a
-task (§4.4). A successful completion means the handler's turn finished; it
-does not promise durable storage.
+**Completion calls.** A call on a `receive fn` through an actor handle waits
+for the handler to finish, exactly as a call on a function does.
+`<pid>.<method>(<args>)` has type `Result<R, ActorError<E, Req>>`, where `R` is
+the handler's return type and `()` when it declares none, and `E` is its
+declared `fails` type and `Never` when it declares none. Written bare,
+`ActorError` means `ActorError<Never, Never>`. `ActorError<E>` defaults only
+`Req` to `Never`. A rejecting completion view infers a concrete sealed request
+type; an ordinary waiting call uses `Never` because it cannot reject admission. `fork <pid>.<method>(<args>)` starts the same call concurrently
+as a `Task<Result<R, ActorError<E, Req>>>` that `await` then joins. The call carries no
+operator: an ordinary call waits, `fork` starts concurrent work, and `await`
+joins a task. The handler does not run locally; the call returns when the
+handler's turn has finished, which means processed, not durable.
 
 One-way delivery is a separate, explicit surface: `mailbox(target, on_full:
 ...)` yields a view whose calls submit and return as soon as the message is
@@ -145,22 +144,26 @@ is refused.
 
 A completion call chooses its own admission through the other view:
 `policy(target, on_full: ...)` yields a view whose calls complete exactly as a
-call on the handle does, with the same completion envelope. `.Wait` is
+call on the handle does, with `Result<R, ActorError<E, Req>>`. `.Wait` is
 the bare-handle behaviour and parks the caller while the destination mailbox is
-full; `.Reject` refuses instead, and the call reports `ActorError.Rejected`
-with the unaccepted request and its reason. Rejection is the only outcome from which
-the same call may safely be made again: every other variant means the request
+full; `.Reject` refuses instead, and the call reports
+`ActorError.Rejected(failure)`, with `failure.reason == SendError.Full`.
+The owned request remains in `failure.message`; `.retry()` consumes it and
+resubmits to the original actor, while `.to(other)` consumes it and resubmits
+to a compatible handler. Both return the handler completion result. The
+checker requires the same handler name, parameter types and reply contract.
+Dropping the request releases its payload. Rejection is the only outcome
+from which the same request may safely be resubmitted: every other variant means the request
 was accepted or its fate is unknown. One view type per kind — `policy`
 completes, `mailbox` submits — and both are immutable.
 
-**Rejected requests (intended contract).** A rejected completion or
+**Rejected requests.** A rejected completion or
 submission returns `SendFailure<Req>`, which retains the unaccepted request
 and exposes its `reason`. The payload stays sealed. Consuming retry resubmits
 to the original target; consuming redirection checks the new target against
 the request's handler and parameter types before resubmitting. A program
 cannot manufacture or open a sealed request. This contract preserves an
-affine payload on refusal. Typed request storage and the `retry()`/`to(target)`
-operations are pending together; their type information must survive storing
+affine payload on refusal. The request's type information survives storing
 and later matching the failure, without relying on the original call site.
 
 The outcome composes like any other `Result`: propagate with `?`, recover
@@ -288,12 +291,6 @@ language contracts:
 - Actor identity unification is pending. Current source names local handles
   `LocalPid<A>` and remote handles `RemotePid<A>`; `Pid<A>` above is the
   intended unified identity.
-- The current completion envelope is `ActorError<E>` with reason-only
-  `Rejected(SendError)`. The intended `Req` parameter,
-  `Rejected(SendFailure<Req>)`, sealed-request retention and typed
-  retry/redirection are not implemented. Do not rely on the temporary payload
-  shape as a recommended recovery API. Other examples propagate or deliberately
-  discard the envelope without destructuring that payload.
 - `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
   forms, but native supervisor lowering has not adopted them. The current
   internal stop entry point is not the public language spelling (§5.6).
@@ -5409,7 +5406,7 @@ in HEW-DIST-SPEC.md.
 **Accepted syntax and intended semantics.** `hew-parser` defines the syntax
 accepted by the current compiler. This specification states the edition's
 intended contracts; explicitly labelled implementation limitations, such as
-supervisor close and typed rejected requests, remain pending even when their
+supervisor close, remain pending even when their
 design is settled. A parser limitation is not permission to implement a
 superseded spelling as the language's permanent public surface.
 

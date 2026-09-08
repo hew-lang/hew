@@ -3070,6 +3070,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 message,
                 policy,
                 deadline_ns,
+                sealed,
                 args,
                 result,
                 normal,
@@ -3080,6 +3081,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 *message,
                 *policy,
                 *deadline_ns,
+                *sealed,
                 args,
                 *result,
                 normal,
@@ -3875,6 +3877,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalRuntimeAction::ChannelPairFree => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ChannelPairFree,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ActorRequestRelease => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ActorRequestRelease,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::ActorRequestTake => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ActorRequestTake,
                     transfers,
                     result,
                 )?;

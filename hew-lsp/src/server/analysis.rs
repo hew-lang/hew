@@ -2199,14 +2199,14 @@ mod tests {
         assert_eq!(hard_type_diagnostic(&doc), None);
         let hover = surface_hover(&doc, source, "peer.ask");
         assert!(
-            hover.contains("Result<i64,") && hover.contains("AskError"),
-            "hover over RemotePid.ask should report Result<i64, AskError>, got: {hover}",
+            hover.contains("Result<i64,") && hover.contains("ActorError"),
+            "hover over RemotePid.ask should report Result<i64, ActorError>, got: {hover}",
         );
         let sig = surface_sighelp(&doc, source, "peer.ask");
         assert!(
             sig.iter()
-                .any(|s| s.contains("ask(") && s.contains("Result<Worker::Reply, AskError>")),
-            "signature help should label ask(...) -> Result<Worker::Reply, AskError>, got: {sig:?}",
+                .any(|s| s.contains("ask(") && s.contains("Result<Worker::Reply, ActorError<Never, Never>>")),
+            "signature help should label ask(...) -> Result<Worker::Reply, ActorError<Never, Never>>, got: {sig:?}",
         );
         let completions = surface_completions(&doc, source, "peer.ask");
         for expected in ["ask", "send"] {
@@ -2218,8 +2218,8 @@ mod tests {
         assert!(
             surface_inlays(&doc)
                 .iter()
-                .any(|l| l.contains("Result<i64,") && l.contains("AskError")),
-            "inlay hint for `result` should show Result<i64, AskError>",
+                .any(|l| l.contains("Result<i64,") && l.contains("ActorError")),
+            "inlay hint for `result` should show Result<i64, ActorError>",
         );
     }
 

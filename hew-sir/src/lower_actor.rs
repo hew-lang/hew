@@ -489,7 +489,7 @@ impl Builder<'_, '_> {
         let message = handler.message_id;
 
         let output = self.ty(&expression.ty);
-        let signature = descriptor.ask_signature(message, &target_ty, output.clone())?;
+        let signature = descriptor.ask_signature(message, &target_ty, output.clone(), false)?;
         if signature.return_ty != output
             || signature.params.len() != args.len() + 1
             || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
@@ -538,6 +538,32 @@ impl Builder<'_, '_> {
         for input in inputs.iter().skip(1) {
             self.owned_live.remove(&input.operand.value);
         }
+        self.finish_actor_ask(
+            expression,
+            actor,
+            message,
+            *policy,
+            *deadline_ns,
+            false,
+            inputs,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one suspension carries its checked request and cleanup contract"
+    )]
+    fn finish_actor_ask(
+        &mut self,
+        expression: &HirExpr,
+        actor: crate::ActorId,
+        message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
+        deadline_ns: Option<i64>,
+        sealed: bool,
+        inputs: Vec<crate::BoundaryOperand>,
+    ) -> Result<ValueId, String> {
+        let output = self.ty(&expression.ty);
         self.service.require_type_facts(&output)?;
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
         let raw = self.fresh_value();
@@ -557,8 +583,9 @@ impl Builder<'_, '_> {
             kind: crate::SuspendKind::Ask {
                 actor,
                 message,
-                policy: *policy,
-                deadline_ns: *deadline_ns,
+                policy,
+                deadline_ns,
+                sealed,
             },
             inputs,
             result: CallResult::Value(ValueDef {
@@ -1084,6 +1111,10 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "delivery lowering keeps sealed-owner transfer and admission in one operation"
+    )]
     pub(super) fn lower_actor_delivery(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
         use hew_types::actor_delivery::ActorDeliveryCall;
         let HirExprKind::ActorDelivery {
@@ -1095,6 +1126,110 @@ impl Builder<'_, '_> {
             unreachable!()
         };
         match operation {
+            ActorDeliveryCall::Resume {
+                policy,
+                method_id,
+                redirect,
+            } => {
+                let mut request_ty = self.ty(&receiver.ty);
+                let mut request = lower_initial_value_transfer(
+                    self,
+                    receiver,
+                    "sealed request recovery",
+                    OwnedBindingUse::Move,
+                )?;
+                if !self.is_open() {
+                    return Ok(request);
+                }
+                if matches!(&request_ty, ResolvedTy::Named { name, .. } if name == hew_types::actor_delivery::FAILURE_TYPE)
+                {
+                    let shape = self.service.require_aggregate_shape(&request_ty)?;
+                    let fields = self.emit_destructure_value(
+                        request,
+                        &request_ty,
+                        shape,
+                        crate::Provenance::Site(expression.site),
+                    )?;
+                    let [_, message] = fields.as_slice() else {
+                        return Err("rejection lacks its sealed request".into());
+                    };
+                    request = message.id;
+                    request_ty = message.ty.clone();
+                }
+                let destination = if *redirect {
+                    let [destination] = args.as_slice() else {
+                        return Err("request redirection requires its checked target".into());
+                    };
+                    Some(self.delivery_target(destination)?)
+                } else {
+                    None
+                };
+                let shape = self.service.require_aggregate_shape(&request_ty)?;
+                let fields = self.emit_destructure_value(
+                    request,
+                    &request_ty,
+                    shape,
+                    crate::Provenance::Site(expression.site),
+                )?;
+                let [original, _, payload] = fields.as_slice() else {
+                    return Err("sealed request lacks its address and payload owner".into());
+                };
+                let (target, target_ty) = destination.unwrap_or((original.id, original.ty.clone()));
+                let actor = self.service.require_actor(&target_ty)?;
+                let handler = self.service.actors[actor.0 as usize]
+                    .handlers
+                    .iter()
+                    .find(|handler| {
+                        handler.declaration.full_path() == method_id
+                            || method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID
+                    })
+                    .ok_or("request recovery lacks its checked handler")?;
+                let source_ty = request_ty.to_ty();
+                let (_, payload_ty, source_policy) =
+                    hew_types::actor_delivery::message_parts(&source_ty)
+                        .ok_or("recovery input is not a checked message")?;
+                let (source_method, params, _, _) =
+                    hew_types::actor_delivery::request_parts(payload_ty)
+                        .ok_or("recovery input lacks its sealed completion protocol")?;
+                if source_policy != *policy
+                    || source_method.rsplit("::").next() != method_id.rsplit("::").next()
+                    || *params
+                        != hew_types::Ty::Tuple(
+                            handler.params.iter().map(ResolvedTy::to_ty).collect(),
+                        )
+                {
+                    return Err("request recovery changes its checked protocol".into());
+                }
+                self.service.actors[actor.0 as usize].ask_signature(
+                    handler.message_id,
+                    &target_ty,
+                    self.ty(&expression.ty),
+                    true,
+                )?;
+                let message = handler.message_id;
+                let shape = self.service.require_aggregate_shape(&payload.ty)?;
+                let payload = self.emit_destructure_value(
+                    payload.id,
+                    &payload.ty,
+                    shape,
+                    crate::Provenance::Site(expression.site),
+                )?;
+                let [owner] = payload.as_slice() else {
+                    return Err("sealed request must contain one runtime owner".into());
+                };
+                self.owned_live.remove(&owner.id);
+                let inputs = vec![
+                    crate::BoundaryOperand {
+                        operand: Operand { value: target },
+                        decision: crate::BoundaryDecision::Borrow,
+                    },
+                    crate::BoundaryOperand {
+                        operand: Operand { value: owner.id },
+                        decision: crate::BoundaryDecision::Move,
+                    },
+                ];
+                self.finish_actor_ask(expression, actor, message, *policy, None, true, inputs)
+            }
             ActorDeliveryCall::Policy { .. } => {
                 let (target, _) = self.delivery_target(receiver)?;
                 self.make_delivery_record(expression, vec![target])

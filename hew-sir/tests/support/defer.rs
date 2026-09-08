@@ -69,6 +69,7 @@ pub fn normalize(module: &mut SemModule) {
                 SemTerminator::CheckedBinary { id, .. }
                 | SemTerminator::Call { id, .. }
                 | SemTerminator::RtCall { id, .. }
+                | SemTerminator::ExternCall { id, .. }
                 | SemTerminator::ValueCall { id, .. }
                 | SemTerminator::IndirectCall { id, .. }
                 | SemTerminator::SwitchVariant { id, .. } => {

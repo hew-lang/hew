@@ -473,6 +473,8 @@ pub enum SuspendKind {
         /// full: `Wait` parks the caller, `Reject` refuses the call.
         policy: hew_types::actor_delivery::SendPolicy,
         deadline_ns: Option<i64>,
+        /// The input is the sealed request owner instead of fresh arguments.
+        sealed: bool,
     },
     RemoteAsk,
     Read,

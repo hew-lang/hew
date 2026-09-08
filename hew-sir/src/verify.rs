@@ -541,6 +541,7 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
             || crate::generator_parts(&key.0).is_some()
             || key.0.is_builtin(hew_types::BuiltinType::Stream)
             || key.0.is_builtin(hew_types::BuiltinType::Sink)
+            || key.0 == hew_types::runtime_call::actor_request_owner_ty()
             || (hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
                 || hew_types::runtime_call::IoHandleKind::of_ty(&key.0).is_some())
     }) {
@@ -2557,6 +2558,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Sender)
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || hew_types::runtime_call::is_channel_pair_ty(ty)
+        || *ty == hew_types::runtime_call::actor_request_owner_ty()
         || module.actors.iter().any(|actor| actor.admits_target(ty))
         || module
             .supervisors
@@ -4879,7 +4881,12 @@ fn verify_terminator_shape(
             unwind,
         } => {
             let valid = match kind {
-                crate::SuspendKind::Ask { actor, message, .. } => {
+                crate::SuspendKind::Ask {
+                    actor,
+                    message,
+                    sealed,
+                    ..
+                } => {
                     callable_context.and_then(|context| context.actors.get(actor.0 as usize))
                         .filter(|descriptor| descriptor.id == *actor)
                         .and_then(|descriptor| {
@@ -4891,7 +4898,7 @@ fn verify_terminator_shape(
                                 return None;
                             };
                             descriptor
-                                .ask_signature(*message, target, value.ty.clone())
+                                .ask_signature(*message, target, value.ty.clone(), *sealed)
                                 .ok()
                         })
                         .is_some_and(|signature| {

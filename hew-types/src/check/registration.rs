@@ -1660,6 +1660,7 @@ impl Checker {
         // (i8/i16/i32/i64/u8/u16/u32/u64/bool/char) round-trip through
         // `Ty::from_name` → `canonical_lowering_name`, so each lands as a
         // `(canonical_key, "Display") → { "fmt" → FnSig }` entry.
+        self.register_embedded_builtin_externs(&parsed.program);
         let impl_items: Vec<Spanned<Item>> = parsed
             .program
             .items
@@ -1701,6 +1702,39 @@ impl Checker {
             include_str!("../../../std/result.hew"),
             &["Result"],
         );
+    }
+
+    fn register_embedded_builtin_externs(&mut self, program: &hew_parser::ast::Program) {
+        // Embedded resource owners use the same source extern declarations
+        // and lifecycle contracts as imported modules. Their definitions do
+        // not have a module-graph collection pass to register these later.
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        let saved_origin = self
+            .registration_origin_module
+            .replace("std.builtins".to_string());
+        for (item, span) in &program.items {
+            if let Item::ExternBlock(block) = item {
+                self.register_extern_block(block, span);
+            }
+        }
+        self.current_module = saved_module;
+        self.registration_origin_module = saved_origin;
+        for (item, _) in &program.items {
+            if let Item::ExternBlock(block) = item {
+                for function in &block.functions {
+                    let canonical = format!("std.builtins.{}", function.name);
+                    self.publish_stdlib_hew_function_binding(
+                        function.name.clone(),
+                        &canonical,
+                        StdlibBarePublication::Prelude,
+                    );
+                    self.builtin_call_targets.insert(
+                        function.name.clone(),
+                        self.call_target_for_signature(&canonical),
+                    );
+                }
+            }
+        }
     }
 
     /// Pre-register one `pub trait` declared by `std/builtins.hew`.
@@ -9458,38 +9492,29 @@ impl Checker {
         }
     }
 
-    /// Rewrite bare IMPORTED nominals in an extern declaration's stored
-    /// signature to their import-lexical identity, so call sites type
-    /// against the same resolved nominal the extern contract compares
-    /// (rc1-F1 stage C). Only a bare name the declaring file/module does
-    /// NOT itself claim is rewritten; a locally declared bare spelling
-    /// keeps its body-facing form, and an unresolvable name stays as
-    /// written (the contract compare fails closed on it).
-    fn resolve_extern_sig_imported_nominals(&self, ty: &Ty) -> Ty {
+    /// Resolve an extern callable's nominal types through the same owner
+    /// authority as its ABI contract, preserving builtin discriminators.
+    fn resolve_extern_signature_nominals(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::Named {
                 name,
                 args,
                 builtin,
             } => {
-                // Mirror the contract ladder's order: the import-lexical
-                // fallback applies only to a bare name neither the file rule
-                // nor the canonical authority resolves.
-                let resolved = (!name.contains('.')
-                    && self.extern_nominal_file_owner(name).is_none()
-                    && self.canonical_nominal_name(name).is_none())
-                .then(|| self.extern_nominal_imported_owner(name))
-                .flatten();
+                // The callable signature and its ABI contract must name the
+                // same declaration, including a sibling type owned by this
+                // module. Preserve the checker's builtin discriminator.
+                let resolved = self.extern_signature_nominal_owner(name);
                 Ty::Named {
                     name: resolved.unwrap_or_else(|| name.clone()),
                     args: args
                         .iter()
-                        .map(|arg| self.resolve_extern_sig_imported_nominals(arg))
+                        .map(|arg| self.resolve_extern_signature_nominals(arg))
                         .collect(),
                     builtin: *builtin,
                 }
             }
-            _ => ty.map_children_pub(&|child| self.resolve_extern_sig_imported_nominals(child)),
+            _ => ty.map_children_pub(&|child| self.resolve_extern_signature_nominals(child)),
         }
     }
 
@@ -9929,9 +9954,9 @@ impl Checker {
                 sig.params = sig
                     .params
                     .iter()
-                    .map(|ty| self.resolve_extern_sig_imported_nominals(ty))
+                    .map(|ty| self.resolve_extern_signature_nominals(ty))
                     .collect();
-                sig.return_type = self.resolve_extern_sig_imported_nominals(&sig.return_type);
+                sig.return_type = self.resolve_extern_signature_nominals(&sig.return_type);
             }
             // Extern declarations use the same canonical owner spelling as
             // ordinary free functions. Their exact DefId comes from the
@@ -9955,17 +9980,23 @@ impl Checker {
             };
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
-            self.source_extern_declarations
-                .push(SourceExternDeclaration {
-                    declaration,
-                    symbol: source_symbol,
-                    symbol_template: source_symbol_template,
-                    signature_key: key.clone(),
-                    declaring_module: self.current_module.clone(),
-                    declaring_file: self.current_module_idx,
-                    direct_import_modules: self.current_module_direct_imports.clone(),
-                    consuming_params,
-                });
+            if !self
+                .source_extern_declarations
+                .iter()
+                .any(|existing| existing.declaration == declaration)
+            {
+                self.source_extern_declarations
+                    .push(SourceExternDeclaration {
+                        declaration,
+                        symbol: source_symbol,
+                        symbol_template: source_symbol_template,
+                        signature_key: key.clone(),
+                        declaring_module: self.current_module.clone(),
+                        declaring_file: self.current_module_idx,
+                        direct_import_modules: self.current_module_direct_imports.clone(),
+                        consuming_params,
+                    });
+            }
 
             self.record_root_value_binding(&f.name);
         }

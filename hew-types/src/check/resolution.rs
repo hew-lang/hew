@@ -2857,20 +2857,23 @@ impl Checker {
             .map(|qualified| Ty::named(qualified, args.to_vec()))
     }
 
-    /// `ActorError` written with no type arguments means `ActorError<Never>`:
-    /// the envelope of a call on a handler that cannot fail, which is the
-    /// spelling most source annotations want.
+    /// Omitted `ActorError` parameters default to the uninhabited `Never`.
     pub(super) fn resolve_type_expr_tracking_holes_with_context(
         &mut self,
         te: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
         context: TypeResolutionContext,
     ) -> Ty {
-        let ty = self.resolve_type_expr_inner(te, hole_vars, context);
-        if matches!(&ty, Ty::Named { name, args, builtin: None }
-            if name == crate::actor_delivery::ACTOR_ERROR_TYPE && args.is_empty())
+        let mut ty = self.resolve_type_expr_inner(te, hole_vars, context);
+        if let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = &mut ty
         {
-            return Ty::actor_error(Ty::never_type());
+            if name == crate::actor_delivery::ACTOR_ERROR_TYPE {
+                args.resize_with(args.len().max(2), Ty::never_type);
+            }
         }
         ty
     }

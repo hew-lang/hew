@@ -189,6 +189,55 @@ fn try_dot_completions(
     };
 
     let mut items = Vec::new();
+    let message_ty = match receiver_ty {
+        hew_types::Ty::Named { name, args, .. }
+            if name == hew_types::actor_delivery::FAILURE_TYPE && args.len() == 1 =>
+        {
+            &args[0]
+        }
+        _ => receiver_ty,
+    };
+    if let Some((_, payload, _)) = hew_types::actor_delivery::message_parts(message_ty) {
+        if let Some((_, _, success, failure)) = hew_types::actor_delivery::request_parts(payload) {
+            let result = hew_types::Ty::result(
+                success.clone(),
+                hew_types::Ty::actor_error_with_request(failure.clone(), message_ty.clone()),
+            );
+            for (method, parameters, insertion, documentation) in [
+                (
+                    "retry",
+                    "",
+                    "retry()",
+                    "Consume the unaccepted request and wait for completion on its original actor.",
+                ),
+                (
+                    "to",
+                    "actor",
+                    "to(${1:actor})",
+                    "Consume the unaccepted request and wait for completion on a compatible actor.",
+                ),
+            ] {
+                items.push(CompletionItem {
+                    label: method.into(),
+                    kind: CompletionKind::Method,
+                    detail: Some(format!(
+                        "fn {method}({parameters}) -> {}",
+                        result.user_facing()
+                    )),
+                    documentation: Some(documentation.into()),
+                    insert_text: Some(insertion.into()),
+                    insert_text_is_snippet: method == "to",
+                    sort_text: None,
+                });
+            }
+        }
+        // The request is sealed; its addressing and payload fields are not
+        // source-accessible. A SendFailure still exposes reason and message.
+        if message_ty == receiver_ty && hew_types::actor_delivery::request_parts(payload).is_some()
+        {
+            return Some(items);
+        }
+    }
     if let Some(type_def) = lookup_type_def_for_receiver(tc, receiver_ty) {
         for (field_name, field_ty) in &type_def.fields {
             items.push(CompletionItem {
@@ -1761,6 +1810,39 @@ fn main() {
             !labels.contains(&"count"),
             "internal actor field `count` must not appear in handle completions; got: {labels:?}"
         );
+    }
+
+    #[test]
+    fn rejected_completion_offers_recovery_without_exposing_payload_fields() {
+        let source = r#"
+            actor Worker { receive fn echo(value: string) -> string { value } }
+            fn main() {
+                let worker = policy(spawn Worker(), on_full: .Reject);
+                let result = worker.echo("hello");
+                match result {
+                    .Err(ActorError.Rejected(failure)) => {
+                        let _ = failure.message./*cursor*/retry();
+                    },
+                    _ => {},
+                }
+            }
+        "#;
+        let tc = type_check(&source.replace(CURSOR, ""));
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let items = items_at_cursor(source, Some(&tc));
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"retry") && labels.contains(&"to"),
+            "{labels:?}"
+        );
+        assert!(
+            !labels.contains(&"payload") && !labels.contains(&"target"),
+            "{labels:?}"
+        );
+        assert!(items.iter().all(|item| item
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.contains("Result<string"))));
     }
 
     /// A local declared INSIDE the tail-promoted then-branch must be visible at

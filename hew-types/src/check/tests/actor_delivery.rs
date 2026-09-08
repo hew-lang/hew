@@ -290,12 +290,16 @@ fn a_call_on_a_handle_completes_with_a_unit_result() {
     let (success, failure) = call.as_result().expect("completion result");
     assert_eq!(success, &crate::Ty::Unit, "{call:?}");
     // The handler declares no `fails`, so the error can never be `Failed`: the
-    // envelope's only parameter is the uninhabited `Never`.
+    // failure and rejection parameters are both the uninhabited `Never`.
     let crate::Ty::Named { name, args, .. } = failure else {
         panic!("completion error is not nominal: {failure:?}");
     };
     assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
-    assert_eq!(args.as_slice(), [crate::Ty::never_type()], "{failure:?}");
+    assert_eq!(
+        args.as_slice(),
+        [crate::Ty::never_type(), crate::Ty::never_type()],
+        "{failure:?}"
+    );
 }
 
 /// A mailbox view only submits, so a value-returning handler has no reply to
@@ -464,10 +468,134 @@ fn a_policy_view_completes_and_carries_its_admission_policy() {
         .filter_map(|ty| ty.as_result())
         .find(|(success, _)| **success == crate::Ty::I64)
         .expect("completion call type");
-    assert_eq!(
-        completion.1,
-        &crate::Ty::actor_error(crate::Ty::never_type())
-    );
+    let crate::Ty::Named { args, .. } = completion.1 else {
+        panic!("completion envelope")
+    };
+    assert_eq!(args[0], crate::Ty::never_type());
+    assert!(crate::actor_delivery::message_parts(&args[1]).is_some());
+}
+
+#[test]
+fn stored_completion_request_preserves_reply_and_rejects_incompatible_redirect() {
+    for destination in ["Good", "WrongParameters", "WrongName", "WrongReply"] {
+        let source = format!(
+            r#"
+            actor Worker {{ receive fn echo(value: string) -> string {{ value }} }}
+            actor Good {{ receive fn echo(value: string) -> string {{ value }} }}
+            actor WrongParameters {{ receive fn echo(value: i64) -> string {{ "wrong" }} }}
+            actor WrongName {{ receive fn other(value: string) -> string {{ value }} }}
+            actor WrongReply {{ receive fn echo(value: string) -> i64 {{ 0 }} }}
+            fn main() {{
+                let worker = policy(spawn Worker(), on_full: .Reject);
+                let result = worker.echo("owned");
+                match result {{
+                    .Err(ActorError.Rejected(failure)) => {{
+                        let reply = failure.message.to(spawn {destination}());
+                        match reply {{ .Ok(text) => println(text), .Err(_) => {{}} }}
+                    }},
+                    _ => {{}},
+                }}
+            }}
+        "#
+        );
+        let output = check_source(&source);
+        if destination == "Good" {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Worker::echo")
+                        && error.message.contains(&format!("{destination}::echo"))),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn completion_recovery_consumes_the_stored_rejection() {
+    for repeats in [false, true] {
+        let again = if repeats {
+            "let _ = failure.retry();"
+        } else {
+            ""
+        };
+        let output = check_source(&format!(
+            r#"
+            actor Worker {{ receive fn echo(value: string) -> string {{ value }} }}
+            fn main() {{
+                let worker = policy(spawn Worker(), on_full: .Reject);
+                let result = worker.echo("owned");
+                match result {{
+                    .Err(ActorError.Rejected(failure)) => {{
+                        let _ = failure.retry();
+                        {again}
+                    }},
+                    _ => {{}},
+                }}
+            }}
+        "#
+        ));
+        if repeats {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("moved")),
+                "{:?}",
+                output.errors
+            );
+        } else {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        }
+    }
+}
+
+#[test]
+fn sealed_request_keeps_the_declared_callable_protocol_after_coercion() {
+    for destination in ["Compatible", "Narrower"] {
+        let source = format!(
+            r"
+            fn pure() -> i64 {{ 1 }}
+            actor Original {{
+                receive fn invoke(operation: fn[suspends]() -> i64) -> i64 {{ operation() }}
+            }}
+            actor Compatible {{
+                receive fn invoke(operation: fn[suspends]() -> i64) -> i64 {{ operation() }}
+            }}
+            actor Narrower {{
+                receive fn invoke(operation: fn() -> i64) -> i64 {{ operation() }}
+            }}
+            fn main() {{
+                let original = policy(spawn Original(), on_full: .Reject);
+                let result = original.invoke(pure);
+                match result {{
+                    .Err(ActorError.Rejected(failure)) => {{
+                        let _ = failure.message.to(spawn {destination}());
+                    }},
+                    _ => {{}},
+                }}
+            }}
+        "
+        );
+        let output = check_source(&source);
+        if destination == "Compatible" {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Original::invoke")
+                        && error.message.contains("Narrower::invoke")),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
 }
 
 /// A bare handle completes under `.Wait`: a full mailbox parks the caller

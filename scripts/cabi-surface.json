@@ -20,7 +20,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -65,7 +65,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -80,7 +80,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -95,7 +95,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -110,7 +110,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -125,7 +125,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -184,7 +184,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -197,7 +197,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -210,7 +210,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -223,7 +223,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -236,7 +236,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -249,7 +249,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -293,7 +293,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -308,7 +308,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -322,7 +322,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -335,7 +335,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -376,7 +376,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -389,7 +389,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -403,7 +403,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -418,7 +418,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -448,7 +448,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -641,7 +641,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -654,7 +654,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -668,7 +668,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -682,7 +682,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -695,7 +695,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -789,7 +789,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -804,7 +804,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -849,7 +849,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -922,7 +922,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -952,7 +952,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -967,7 +967,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -982,7 +982,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1117,7 +1117,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1176,7 +1176,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1220,7 +1220,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1235,7 +1235,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1250,7 +1250,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1265,7 +1265,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1294,7 +1294,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1307,7 +1307,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1320,7 +1320,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1362,7 +1362,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1377,7 +1377,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1392,7 +1392,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1407,7 +1407,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1422,7 +1422,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1437,7 +1437,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1452,7 +1452,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1467,7 +1467,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1482,7 +1482,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1512,7 +1512,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1852,7 +1852,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1865,7 +1865,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1878,7 +1878,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1891,7 +1891,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1904,7 +1904,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1917,7 +1917,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1930,7 +1930,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1943,7 +1943,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1956,7 +1956,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1969,7 +1969,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1982,7 +1982,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1995,7 +1995,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2008,7 +2008,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2021,7 +2021,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2034,7 +2034,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2047,7 +2047,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2060,7 +2060,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2073,7 +2073,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2086,7 +2086,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2100,7 +2100,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2115,7 +2115,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2130,7 +2130,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2145,7 +2145,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2159,7 +2159,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2172,7 +2172,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2185,7 +2185,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2198,7 +2198,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2211,7 +2211,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2224,7 +2224,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2237,7 +2237,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2250,7 +2250,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2438,7 +2438,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2453,7 +2453,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2573,7 +2573,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2633,7 +2633,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2693,7 +2693,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2708,7 +2708,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2723,7 +2723,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2738,7 +2738,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2753,7 +2753,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2833,7 +2833,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2848,7 +2848,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2863,7 +2863,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2878,7 +2878,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2893,7 +2893,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2908,7 +2908,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2923,7 +2923,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2938,7 +2938,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2953,7 +2953,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2968,7 +2968,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2983,7 +2983,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -2998,7 +2998,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3013,7 +3013,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3028,7 +3028,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3043,7 +3043,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3058,7 +3058,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3073,7 +3073,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3088,7 +3088,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3103,7 +3103,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3118,7 +3118,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3133,7 +3133,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3148,7 +3148,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3163,7 +3163,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3178,7 +3178,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3193,7 +3193,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3208,7 +3208,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3223,7 +3223,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3238,7 +3238,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -3253,7 +3253,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3268,7 +3268,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3283,7 +3283,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3298,7 +3298,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3313,7 +3313,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3328,7 +3328,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3343,7 +3343,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3358,7 +3358,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3373,7 +3373,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3388,7 +3388,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3403,7 +3403,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3418,7 +3418,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3433,7 +3433,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3448,7 +3448,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3463,7 +3463,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3478,7 +3478,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3493,7 +3493,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3508,7 +3508,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -3523,7 +3523,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3538,7 +3538,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3823,7 +3823,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3836,7 +3836,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3849,7 +3849,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3862,7 +3862,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3875,7 +3875,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3888,7 +3888,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3902,7 +3902,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3917,7 +3917,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3932,7 +3932,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3947,7 +3947,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3962,7 +3962,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3977,7 +3977,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -3992,7 +3992,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4007,7 +4007,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4022,7 +4022,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4037,7 +4037,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4052,7 +4052,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4067,7 +4067,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4082,7 +4082,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4097,7 +4097,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4112,7 +4112,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4127,7 +4127,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4142,7 +4142,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4157,7 +4157,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4172,7 +4172,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4187,7 +4187,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4202,7 +4202,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4217,7 +4217,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4232,7 +4232,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4247,7 +4247,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4262,7 +4262,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4277,7 +4277,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4291,7 +4291,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4304,7 +4304,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4317,7 +4317,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4683,7 +4683,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4892,7 +4892,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4907,7 +4907,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4922,7 +4922,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4937,7 +4937,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4952,7 +4952,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4967,7 +4967,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4982,7 +4982,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4997,7 +4997,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5012,7 +5012,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5027,7 +5027,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5042,7 +5042,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5057,7 +5057,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5072,7 +5072,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5087,7 +5087,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5102,7 +5102,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5116,7 +5116,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5129,7 +5129,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5142,7 +5142,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5155,7 +5155,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5168,7 +5168,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5181,7 +5181,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5194,7 +5194,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5207,7 +5207,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5220,7 +5220,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5233,7 +5233,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5246,7 +5246,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5259,7 +5259,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5272,7 +5272,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5285,7 +5285,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5298,7 +5298,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5311,7 +5311,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5324,7 +5324,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5337,7 +5337,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5350,7 +5350,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5363,7 +5363,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5376,7 +5376,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5767,7 +5767,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5953,7 +5953,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5966,7 +5966,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5979,7 +5979,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5993,7 +5993,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6008,7 +6008,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6023,7 +6023,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6038,7 +6038,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6053,7 +6053,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6067,7 +6067,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6080,7 +6080,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6093,7 +6093,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6106,7 +6106,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6119,7 +6119,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6132,7 +6132,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6145,7 +6145,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6158,7 +6158,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6171,7 +6171,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6484,7 +6484,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6499,7 +6499,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6514,7 +6514,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6816,7 +6816,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6829,7 +6829,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6842,7 +6842,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6855,7 +6855,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6868,7 +6868,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6881,7 +6881,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6894,7 +6894,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6907,7 +6907,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6920,7 +6920,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6933,7 +6933,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6946,7 +6946,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6959,7 +6959,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6972,7 +6972,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6985,7 +6985,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6998,7 +6998,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7261,7 +7261,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7276,7 +7276,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7290,7 +7290,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7303,7 +7303,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7316,7 +7316,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7329,7 +7329,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7342,7 +7342,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7355,7 +7355,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7368,7 +7368,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7734,7 +7734,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -7959,7 +7959,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -8163,7 +8163,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -8952,7 +8952,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -9876,7 +9876,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -9889,7 +9889,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -9960,7 +9960,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -9973,7 +9973,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10066,7 +10066,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -10185,7 +10185,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10200,7 +10200,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10215,7 +10215,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10230,7 +10230,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10245,7 +10245,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10288,7 +10288,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10303,7 +10303,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10348,7 +10348,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10363,7 +10363,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10378,7 +10378,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10393,7 +10393,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10422,7 +10422,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10436,7 +10436,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10496,7 +10496,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10526,7 +10526,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10541,7 +10541,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -10565,19 +10565,6 @@
         "wasm32-wasip1": "fn hew_mailbox_try_send( *mut HewMailboxWasm, i32, *mut c_void, usize, ) -> i32"
       },
       "symbol": "hew_mailbox_try_send"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "codegen-stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_main_unwind_boundary( unsafe extern \"C-unwind\" fn(*mut c_void), *mut c_void, )"
-      },
-      "symbol": "hew_main_unwind_boundary"
     },
     {
       "availability": [
@@ -11143,7 +11130,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11169,7 +11156,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11182,7 +11169,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11195,7 +11182,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11208,7 +11195,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11234,7 +11221,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11273,7 +11260,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -11286,7 +11273,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -11312,7 +11299,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11429,7 +11416,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -11442,7 +11429,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11455,7 +11442,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -11468,7 +11455,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11507,7 +11494,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11642,7 +11629,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11657,7 +11644,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11672,7 +11659,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11881,7 +11868,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11973,7 +11960,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13404,7 +13391,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13417,7 +13404,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13430,7 +13417,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13443,7 +13430,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13456,7 +13443,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13469,7 +13456,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13482,7 +13469,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13495,7 +13482,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13509,7 +13496,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13771,7 +13758,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -13786,7 +13773,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13830,7 +13817,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -13888,7 +13875,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13916,7 +13903,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13988,7 +13975,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14003,7 +13990,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14058,7 +14045,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14117,7 +14104,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14175,7 +14162,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14190,7 +14177,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14204,7 +14191,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14217,7 +14204,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14230,7 +14217,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14243,7 +14230,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14256,7 +14243,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14269,7 +14256,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14282,7 +14269,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14296,7 +14283,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14311,7 +14298,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14326,7 +14313,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14341,7 +14328,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14356,7 +14343,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14370,7 +14357,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14383,7 +14370,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14397,7 +14384,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14411,7 +14398,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14424,7 +14411,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14437,7 +14424,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14451,7 +14438,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14466,7 +14453,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14481,7 +14468,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14495,7 +14482,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14509,7 +14496,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14537,7 +14524,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14712,7 +14699,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14819,7 +14806,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14832,7 +14819,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14845,7 +14832,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14858,7 +14845,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14871,7 +14858,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14884,7 +14871,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14897,7 +14884,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14910,7 +14897,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14923,7 +14910,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14936,7 +14923,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14949,7 +14936,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -14962,7 +14949,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15347,7 +15334,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15399,7 +15386,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15693,7 +15680,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15797,7 +15784,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15836,7 +15823,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15849,7 +15836,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15862,7 +15849,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15902,7 +15889,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15917,7 +15904,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15957,7 +15944,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -15970,7 +15957,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16509,7 +16496,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16674,7 +16661,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16793,7 +16780,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16806,7 +16793,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16936,7 +16923,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16962,7 +16949,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16975,7 +16962,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16988,7 +16975,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17027,7 +17014,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17040,7 +17027,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17131,7 +17118,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17209,7 +17196,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17339,7 +17326,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17742,7 +17729,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18119,7 +18106,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18132,7 +18119,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18820,7 +18807,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18835,7 +18822,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18970,7 +18957,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19493,7 +19480,7 @@
       "availability": [
         "native"
       ],
-      "classification": "internal",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19506,7 +19493,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19519,7 +19506,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -19532,7 +19519,7 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -21511,7 +21498,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -21526,7 +21513,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -21621,7 +21608,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -21802,7 +21789,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -21817,7 +21804,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -21832,7 +21819,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -21847,7 +21834,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -22265,7 +22252,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -22280,7 +22267,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "codegen-stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",

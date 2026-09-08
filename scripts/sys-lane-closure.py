@@ -553,6 +553,8 @@ def load_classification(
         "stable",
         "stable-stdlib",
         "non-declarable",
+        "public-host",
+        "public-host-stdlib",
         "sys-lane-closure",
         "ownership",
     }

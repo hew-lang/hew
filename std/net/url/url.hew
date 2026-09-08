@@ -260,7 +260,7 @@ pub fn decode_query(params: string) -> Vec<(string, string)> {
 }
 
 fn decode_query_impl(params: string) -> Vec<(string, string)> {
-    let decoded: Vec<(string, string)> = Vec.new();
+    var decoded: Vec<(string, string)> = Vec.new();
     if string.is_empty(params) {
         return decoded;
     }
@@ -328,7 +328,7 @@ pub fn encode_query(params: string) -> string {
 }
 
 fn encode_query_impl(params: string) -> string {
-    let encoded: Vec<string> = Vec.new();
+    var encoded: Vec<string> = Vec.new();
     let lines = string.lines(params);
     for i in 0 .. lines.len() {
         let line = lines[i];

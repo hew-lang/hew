@@ -388,7 +388,7 @@ extern "C" {
     fn hew_http_respond_json(req: RequestHandle, status: i32, json: string) -> i32;
     fn hew_http_respond_stream(req: RequestHandle, status: i32, content_type: string) -> Sink<string>;
     fn hew_http_server_close(consume server: Server);
-    fn hew_http_request_free(consume req: RequestHandle);
+    fn hew_http_request_free(req: RequestHandle);
     fn hew_sink_is_valid(sink: Sink<string>) -> bool;
     fn hew_stream_last_error() -> string;
 }

@@ -15,7 +15,10 @@
 //!   the last sender closes (`None`). Every calling context is a resumable
 //!   frame, `main` included.
 //! - `rx.try_recv()` never suspends: it returns `Some(value)` if an item is
-//!   immediately available, else `None`.
+//!   immediately available, and `None` when the channel is empty or closed.
+//! - A `select` arm spelled `v from rx.recv()` observes readiness without
+//!   taking an element; only the winning arm receives, and a losing arm leaves
+//!   the receiver untouched.
 //! - Draining with `for item in rx` consumes the receiver: it closes the read
 //!   half when the loop ends, so do not close it again.
 //!
@@ -88,8 +91,9 @@ trait SenderMethods {
 impl SenderMethods for Sender {
     /// Send a string message through the channel.
     ///
-    /// Routes through the element-layout witness entry — codegen intercepts
-    /// the call by name and supplies the witness for the element type.
+    /// The compiler lowers `tx.send(value)` to the channel send contract: the
+    /// element crosses the queue through its own layout witness, so this body
+    /// is the declaration's shape rather than the executed path.
     fn send(tx: Sender, data: string) {
         unsafe {
             hew_channel_send_layout(tx, data)

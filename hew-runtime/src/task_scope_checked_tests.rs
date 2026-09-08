@@ -589,13 +589,13 @@ fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
             ];
             receive.recv_timeout(Duration::from_secs(2)).unwrap();
             receive.recv_timeout(Duration::from_secs(2)).unwrap();
-            let selection = hew_checked_task_select_new(
-                tasks.as_ptr(),
-                tasks.len(),
-                i32::from(timeout),
-                0,
-                waker.descriptor(),
-            );
+            let selection = hew_checked_task_select_new(waker.descriptor());
+            for task in tasks {
+                hew_checked_task_select_add_task(selection, task);
+            }
+            if timeout {
+                hew_checked_task_select_arm_timer(selection, 0);
+            }
             if !timeout {
                 assert_eq!(hew_checked_task_select_poll(selection), -1);
                 release(&second_gate);
@@ -684,13 +684,10 @@ fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellati
                 readiness.wait();
             }
             let handles = [first, second, pending];
-            let select = hew_checked_task_select_new(
-                handles.as_ptr(),
-                handles.len(),
-                0,
-                0,
-                waker.descriptor(),
-            );
+            let select = hew_checked_task_select_new(waker.descriptor());
+            for handle in handles {
+                hew_checked_task_select_add_task(select, handle);
+            }
             assert_eq!(hew_checked_task_select_poll(select), 0);
             assert_eq!(hew_checked_task_select_poll_first(select), 1);
             hew_checked_task_select_free(select);

@@ -1,0 +1,10 @@
+[[case]]
+id = "select-timer-arm"
+intent = "An idle channel loses to the `after 20ms` arm, and the disarmed selection leaves the receiver usable: the next send arrives and the sender's close ends the drain."
+source = "cases/select-timer-arm.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "timeout\nreceived late\nclosed\n"
+exit = 0

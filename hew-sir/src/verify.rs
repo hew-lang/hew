@@ -5092,11 +5092,14 @@ fn verify_terminator_shape(
                         && tasks.is_some_and(|tasks| {
                             (*has_timeout || !tasks.is_empty())
                                 && tasks.iter().all(|input| {
+                                    // A source is borrowed and is either a
+                                    // checked task or a channel read half; the
+                                    // selection observes, never consumes.
                                     input.decision == crate::BoundaryDecision::Borrow
-                                        && matches!(
-                                            types.get(&input.operand.value),
-                                            Some(ResolvedTy::Task(_))
-                                        )
+                                        && types.get(&input.operand.value).is_some_and(|ty| {
+                                            matches!(ty, ResolvedTy::Task(_))
+                                                || ty.is_builtin(hew_types::BuiltinType::Receiver)
+                                        })
                                 })
                         })
                 }

@@ -11,66 +11,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_task_select(
         &self,
         order: hew_mir::physical::TaskSelectionOrder,
-        tasks: &[ArgumentTransfer],
+        sources: &[hew_mir::physical::PhysicalSelectSource],
         timeout: Option<StorageId>,
         result: StorageId,
         normal: &PhysicalEdge,
         cancel: &PhysicalEdge,
         unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        use hew_mir::physical::PhysicalSelectSource;
+
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("task selection requires a resumable body".into())
         })?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let count = u32::try_from(tasks.len()).map_err(|_| {
-            CodegenError::FailClosed("selection exceeds its task operand capacity".into())
+        let count = u64::try_from(sources.len()).map_err(|_| {
+            CodegenError::FailClosed("selection exceeds its source operand capacity".into())
         })?;
-        // The runtime copies these handles and retains each observation during
-        // construction. Hoist this fixed scratch array so repeated selection
-        // in a loop reuses storage; no borrowed array pointer survives new().
-        let task_array = if tasks.is_empty() {
-            pointer.const_null()
-        } else {
-            let entry = self.value.get_first_basic_block().ok_or_else(|| {
-                CodegenError::FailClosed("selection has no function entry".into())
-            })?;
-            let scratch = self.ctx.create_builder();
-            if let Some(first) = entry.get_first_instruction() {
-                scratch.position_before(&first);
-            } else {
-                scratch.position_at_end(entry);
-            }
-            let array_ty = pointer.array_type(count);
-            let array = scratch
-                .build_alloca(array_ty, "select.tasks")
-                .llvm_ctx("allocate selection task scratch")?;
-            for (index, task) in tasks.iter().enumerate() {
-                let ArgumentTransfer::Borrow(task) = task else {
-                    return Err(CodegenError::FailClosed(
-                        "selection must borrow every task handle".into(),
-                    ));
-                };
-                // SAFETY: the static array has exactly one slot per task.
-                let slot = unsafe {
-                    self.builder.build_in_bounds_gep(
-                        array_ty,
-                        array,
-                        &[
-                            self.ctx.i32_type().const_zero(),
-                            self.ctx.i32_type().const_int(index as u64, false),
-                        ],
-                        "select.task.slot",
-                    )
-                }
-                .llvm_ctx("address selected task")?;
-                self.builder
-                    .build_store(slot, self.load(*task, "select.task")?)
-                    .llvm_ctx("borrow selected task")?;
-            }
-            array
-        };
         let waker_fn = coro::external(
             self.llvm,
             "hew_coro_state_waker",
@@ -85,37 +41,52 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let start = coro::external(
             self.llvm,
             "hew_checked_task_select_new",
-            pointer.fn_type(
-                &[
-                    pointer.into(),
-                    size_ty.into(),
-                    self.ctx.i32_type().into(),
-                    self.ctx.i64_type().into(),
-                    pointer.into(),
-                ],
-                false,
-            ),
+            pointer.fn_type(&[pointer.into()], false),
         )?;
-        let duration = match timeout {
-            Some(duration) => self.load(duration, "select.duration")?,
-            None => self.ctx.i64_type().const_zero().into(),
-        };
-        let operation = suspend::call_value(
-            &self.builder,
-            start,
-            &[
-                task_array.into(),
-                size_ty.const_int(u64::from(count), false).into(),
+        let operation =
+            suspend::call_value(&self.builder, start, &[waker.into()], "select.operation")?
+                .into_pointer_value();
+        // Registration follows arm order, so a poll result is the arm's index.
+        for source in sources {
+            let ArgumentTransfer::Borrow(handle) = source.transfer() else {
+                return Err(CodegenError::FailClosed(
+                    "selection must borrow every source handle".into(),
+                ));
+            };
+            let symbol = match source {
+                PhysicalSelectSource::Task(_) => "hew_checked_task_select_add_task",
+                PhysicalSelectSource::ChannelRecv(_) => "hew_checked_task_select_add_channel",
+            };
+            let add = coro::external(
+                self.llvm,
+                symbol,
                 self.ctx
-                    .i32_type()
-                    .const_int(u64::from(timeout.is_some()), false)
-                    .into(),
-                duration.into(),
-                waker.into(),
-            ],
-            "select.operation",
-        )?
-        .into_pointer_value();
+                    .void_type()
+                    .fn_type(&[pointer.into(), pointer.into()], false),
+            )?;
+            let handle = self.load(handle, "select.source")?;
+            self.builder
+                .build_call(add, &[operation.into(), handle.into()], "select.register")
+                .llvm_ctx("register a selection source")?;
+        }
+        // The timer starts only after every observation is registered.
+        if let Some(duration) = timeout {
+            let arm = coro::external(
+                self.llvm,
+                "hew_checked_task_select_arm_timer",
+                self.ctx
+                    .void_type()
+                    .fn_type(&[pointer.into(), self.ctx.i64_type().into()], false),
+            )?;
+            let duration = self.load(duration, "select.duration")?;
+            self.builder
+                .build_call(
+                    arm,
+                    &[operation.into(), duration.into()],
+                    "select.arm.timer",
+                )
+                .llvm_ctx("arm the selection timer")?;
+        }
         let poll = self.ctx.append_basic_block(self.value, "select.poll");
         let inspect = self.ctx.append_basic_block(self.value, "select.inspect");
         let outcome = self.ctx.append_basic_block(self.value, "select.outcome");
@@ -170,7 +141,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 index,
                 self.ctx
                     .i64_type()
-                    .const_int(u64::from(count) + u64::from(timeout.is_some()), false),
+                    .const_int(count + u64::from(timeout.is_some()), false),
                 "select.valid.index",
             )
             .llvm_ctx("validate selected source index")?;

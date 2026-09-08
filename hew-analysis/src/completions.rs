@@ -1087,8 +1087,8 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         ),
         (
             "receive",
-            "receive ${1:name}(${2:params}) {\n\t$0\n}",
-            "receive name(params) { ... }",
+            "receive fn ${1:name}(${2:params}) {\n\t$0\n}",
+            "receive fn name(params) { ... }",
         ),
         ("loop", "loop {\n\t$0\n}", "loop { ... }"),
         (
@@ -1111,11 +1111,6 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "select from",
             "select {\n\t${1:binding} from ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
             "select { pattern from source => expr, after duration => expr }",
-        ),
-        (
-            "timeout",
-            "${1:expr} | after ${2:duration}",
-            "expr | after duration",
         ),
         ("defer", "defer ${0:expr};", "defer expr;"),
         (

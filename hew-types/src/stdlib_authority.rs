@@ -1221,8 +1221,6 @@ extern "C" {
             ("std.failure", "CrashAction"),
             ("std.failure", "CrashNotification"),
             ("std.failure", "CrashKind"),
-            ("std.io.closable", "Closable"),
-            ("std.io.closable", "CloseError"),
             ("std.link_monitor", "MonitorRef"),
             ("std.link_monitor", "MonitorError"),
             ("std.link_monitor", "set_partition_policy"),

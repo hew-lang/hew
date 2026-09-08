@@ -124,7 +124,7 @@ pub struct MethodSig {
     ///
     /// PR 1 (issue #1295) ships this field with the recognised set empty:
     /// no Hew surface syntax sets it today. PR 2 populates it for
-    /// `Closable::close`. No attribute syntax is exposed.
+    /// a consuming trait method. No attribute syntax is exposed.
     pub consumes_receiver: bool,
 }
 

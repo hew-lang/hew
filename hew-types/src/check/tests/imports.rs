@@ -1647,21 +1647,21 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
 /// unconditionally — these are always-in-scope and have no user import.
 #[test]
 fn stdlib_prelude_publishes_bare_type() {
-    let close_error = make_pub_struct("CloseError", "code");
+    let crash_info = make_pub_struct("CrashInfo", "code");
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.modules.insert("closable".to_string());
+    checker.modules.insert("failure".to_string());
     checker.register_stdlib_hew_items(
-        "closable",
-        "std.io.closable",
-        &[(Item::TypeDecl(close_error), 0..0)],
+        "failure",
+        "std.failure",
+        &[(Item::TypeDecl(crash_info), 0..0)],
         StdlibBarePublication::Prelude,
     );
 
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, 0, "CloseError".to_string())),
-        "prelude bootstrap surface must publish bare `CloseError` unconditionally"
+            .contains_key(&(None, 0, "CrashInfo".to_string())),
+        "prelude bootstrap surface must publish bare `CrashInfo` unconditionally"
     );
 }
 

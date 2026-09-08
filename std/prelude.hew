@@ -8,8 +8,6 @@ import std.builtins.{Display, Index, IntoIterator, Iterator, Option, Result};
 
 import std.failure.{CrashInfo, CrashAction, CrashNotification, CrashKind};
 
-import std.io.closable.{Closable, CloseError};
-
 import std.link_monitor.{MonitorError, PartitionPolicy, MonitorId, DownTarget, DownReason, DownNotification, MonitorRef, set_partition_policy,};
 
 import std.math as math;

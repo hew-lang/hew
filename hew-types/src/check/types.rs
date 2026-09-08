@@ -2819,11 +2819,10 @@ pub struct Checker {
     /// Mirrors [`TypeCheckOutput::actor_max_heap`]; populated in
     /// `check_actor` and moved out at the end of `check_program`.
     pub(super) actor_max_heap: HashMap<String, u64>,
-    /// Qualified method names (e.g. `"Closable::close"`) whose dispatch should
+    /// Qualified method names (e.g. `"Sink::drain"`) whose dispatch should
     /// mark the receiver moved and propagate `consumes_receiver` into the
-    /// per-call-site side table. Empty in PR 1 (issue #1295); PR 2 populates
-    /// this set when `trait Closable` is registered. Tests may insert names
-    /// directly to exercise the consume-marker path before PR 2 lands.
+    /// per-call-site side table. Tests may insert names directly to exercise
+    /// the consume-marker path.
     pub(super) consume_receiver_methods: HashSet<String>,
     pub(super) pending_lowering_facts: HashMap<SpanKey, PendingLoweringFact>,
     /// `HashMap` key/value admission checks deferred until after inference
@@ -4207,10 +4206,8 @@ impl Checker {
     /// [`TypeCheckOutput::method_call_consumes_receiver`] is set so codegen
     /// can null the drop slot.
     ///
-    /// PR 1 (issue #1295) ships this seam unused in production: no Hew
-    /// surface syntax populates the set, and stdlib trait registration does
-    /// not call this until PR 2 introduces `Closable::close`. Tests use it
-    /// to exercise the consume-marker pipeline before PR 2 lands.
+    /// Tests use this seam to exercise the consume-marker pipeline for a
+    /// trait method that is consuming by contract.
     pub fn register_consume_receiver_method(&mut self, qualified_name: impl Into<String>) {
         self.consume_receiver_methods.insert(qualified_name.into());
     }

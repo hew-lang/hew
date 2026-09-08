@@ -88,15 +88,14 @@ Every shipped module under `std/` should appear here.
 
 ### Files, OS, and processes
 
-| Module                        | Import            | Use for                                                |
-| ----------------------------- | ----------------- | ------------------------------------------------------ |
-| [`io`](io.hew)                | `std.io`          | stdin, stdout, and stderr helpers                      |
-| [`closable`](io/closable.hew) | `std.io.closable` | Legacy fallible-close trait awaiting cleanup alignment |
-| [`scanner`](io/scanner.hew)   | `std.io.scanner`  | Line and word scanning over strings, stdin, and files  |
-| [`fs`](fs.hew)                | `std.fs`          | File system operations                                 |
-| [`path`](path.hew)            | `std.path`        | File path and glob utilities                           |
-| [`os`](os.hew)                | `std.os`          | Operating system interfaces                            |
-| [`process`](process.hew)      | `std.process`     | Process execution                                      |
+| Module                      | Import           | Use for                                               |
+| --------------------------- | ---------------- | ----------------------------------------------------- |
+| [`io`](io.hew)              | `std.io`         | stdin, stdout, and stderr helpers                     |
+| [`scanner`](io/scanner.hew) | `std.io.scanner` | Line and word scanning over strings, stdin, and files |
+| [`fs`](fs.hew)              | `std.fs`         | File system operations                                |
+| [`path`](path.hew)          | `std.path`       | File path and glob utilities                          |
+| [`os`](os.hew)              | `std.os`         | Operating system interfaces                           |
+| [`process`](process.hew)    | `std.process`    | Process execution                                     |
 
 ### Collections, iteration, and concurrency
 

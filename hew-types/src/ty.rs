@@ -1135,11 +1135,8 @@ impl Ty {
 
     /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
     ///
-    /// Distinct from the process-resource `CloseError` registered by the
-    /// `Closable` trait (`registration.rs`); this variant names the duplex
-    /// close-failure (double-close / already-closed) at the type-checker
-    /// surface.  The two share a name by design; slice 6 (stdlib) will
-    /// unify them under a single `CloseError` enum.
+    /// This names the duplex close-failure (double-close / already-closed) at
+    /// the type-checker surface.
     #[must_use]
     pub fn duplex_close_error() -> Ty {
         Self::builtin_named(BuiltinType::CloseError, vec![])

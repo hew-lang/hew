@@ -5,47 +5,6 @@
 pub(super) use super::*;
 
 #[test]
-fn closable_consume_authority_matches_exact_impl_trait_identity() {
-    let parsed = hew_parser::parse(
-        r"
-        import std.io.closable;
-        type Probe { value: i64, }
-        impl Closable for Probe {
-            fn close(value: Probe) -> Result<(), closable.CloseError> { Ok(()) }
-        }
-        fn main() { let p = Probe { value: 1 }; let _ = p.close(); }
-        ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture parse: {:?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&parsed.program);
-    assert!(
-        output.errors.is_empty(),
-        "fixture typecheck: {:?}",
-        output.errors
-    );
-    assert!(
-        checker
-            .trait_impls_set
-            .contains(&("Probe".to_string(), "std.io.closable.Closable".to_string())),
-        "impl authority must retain exact Closable owner: {:?}",
-        checker.trait_impls_set
-    );
-    assert!(
-        checker
-            .consume_receiver_methods
-            .contains("std.io.closable.Closable::close"),
-        "consume authority must use the same exact owner: {:?}",
-        checker.consume_receiver_methods
-    );
-    assert_eq!(output.method_call_consumes_receiver.len(), 1);
-}
-
-#[test]
 fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
     let output = check_source(
         r"
@@ -2186,7 +2145,7 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
 
 #[test]
 fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
-    let mut checker = make_checker_with_trait("Closable", &["close"], false, false);
+    let mut checker = make_checker_with_trait("Sink", &["close"], false, false);
 
     let mut methods = HashMap::new();
     methods.insert(
@@ -2209,7 +2168,7 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
     );
 
     assert!(
-        checker.type_structurally_satisfies("channel.Sender", "Closable"),
+        checker.type_structurally_satisfies("channel.Sender", "Sink"),
         "structural check should prefer builtin Sender::close over imported stubs"
     );
 }

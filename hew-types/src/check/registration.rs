@@ -211,14 +211,6 @@ struct TraitSigCanonCtx<'a> {
     is_local: &'a dyn Fn(&str) -> bool,
 }
 
-/// Embedded source for `std/io/closable.hew`.
-///
-/// Parsed at import-registration time for `std::io::closable` so the
-/// `Closable` trait and `CloseError` enum are visible in the checker even
-/// in programs that were not loaded through the module-graph path (e.g.
-/// inline programs in tests).
-const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
-
 /// Import-free projection generated from the owning declarations in
 /// `std/builtins.hew` and `std/link_monitor.hew`.
 const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_ref.hew"));
@@ -1550,7 +1542,6 @@ impl Checker {
         // `CrashNotification` remains source-import-only for `#[on(exit)]`.
         self.register_builtin_failure_surface();
         if !self.module_registry.has_search_paths() {
-            self.register_builtin_closable_surface();
             self.register_builtin_monitor_ref_surface();
         }
     }
@@ -1842,30 +1833,6 @@ impl Checker {
                 module_short,
                 &module_full_path,
                 &impl_items,
-                StdlibBarePublication::Prelude,
-            );
-        }
-    }
-
-    fn register_builtin_closable_surface(&mut self) {
-        let identity = "module:std.io.closable";
-        if self.registered_stdlib_hew_sources.contains(identity) {
-            return;
-        }
-        self.registered_stdlib_hew_sources
-            .insert(identity.to_string());
-        let parsed = hew_parser::parse(CLOSABLE_HEW);
-        debug_assert!(
-            parsed.errors.is_empty(),
-            "std/io/closable.hew failed to parse: {:?}",
-            parsed.errors
-        );
-        if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items(
-                "closable",
-                "std.io.closable",
-                &items,
                 StdlibBarePublication::Prelude,
             );
         }
@@ -7466,9 +7433,8 @@ impl Checker {
         // explicitly — the receiver is still live afterward, so the
         // scope-exit drop dispatches `close` again. Only the inherent form is
         // checked here (mirrors the HIR W3.030 discipline, which only walks
-        // trait-free `impl T { fn close }` blocks); a `Closable` trait impl's
-        // ownership contract is validated against the trait signature
-        // elsewhere.
+        // trait-free `impl T { fn close }` blocks); trait implementation
+        // signatures are validated separately.
         if method.name == "close"
             && !method.consumes_self
             && trait_bound.is_none()
@@ -8429,17 +8395,16 @@ impl Checker {
         // derived property of the name, stamped when a type resolves against a
         // canonical builtin source and left `None` when the same name resolves
         // against its in-scope user definition. The std dual-surface error
-        // enums (`CloseError`, `SendError`, …) hit this — a trait method
-        // declared in `std/io/closable.hew` carries the local-enum form
-        // (`builtin: None`) while an `impl Closable` in another module resolves
-        // the bare name to the builtin surface (`builtin: Some(CloseError)`).
+        // enums (`CloseError`, `SendError`, …) can hit this when a trait method
+        // carries the local-enum form (`builtin: None`) while an implementation
+        // resolves the same name through a builtin surface.
         // Re-derive the tag from the name on both sides so trait-conformance
         // compares nominal identity rather than the incidental resolution path.
         //
         // Under qualified-by-default the trait declaration records its sibling
         // types by their BARE name (as written inside the defining module) while
         // an importer's `impl` spells the same type through its module qualifier
-        // (`closable.CloseError`). These name the one type, so both spellings
+        // (`module.CloseError`). These name the one type, so both spellings
         // must canonicalize to a single DEFINING-MODULE-qualified identity before
         // the comparison — never to a bare name. Stripping any known-module
         // prefix and comparing bare names is unsound: it collapses two distinct
@@ -10611,46 +10576,6 @@ impl Checker {
                         );
                     }
 
-                    // `std.io.closable` is a pure-Hew trait module with no C
-                    // bindings.  The normal `resolved_items` path only fires for
-                    // modules whose items were pre-parsed in a module graph; for
-                    // inline programs we use the embedded source instead.  Parsing
-                    // it here registers `Closable` in `trait_defs` and `CloseError`
-                    // in `type_defs`.  The `register_stdlib_hew_items` loop then
-                    // fires the `tr.name == "Closable"` arm which wires its
-                    // exact source-owned trait method into
-                    // `consume_receiver_methods`.
-                    if module_path == "std.io.closable" && decl.resolved_items.is_none() {
-                        // This embedded source is the shipped module selected by
-                        // the import resolver, not a user module that happens
-                        // to share its spelling.  Preserve that provenance so
-                        // bare `Closable` resolves to its exact owner.
-                        self.canonical_std_module_sources
-                            .insert("std.io.closable".to_string());
-                        let identity = format!("module:{module_path}");
-                        if !self
-                            .registered_stdlib_hew_sources
-                            .contains(identity.as_str())
-                        {
-                            self.registered_stdlib_hew_sources.insert(identity);
-                            let parsed = hew_parser::parse(CLOSABLE_HEW);
-                            debug_assert!(
-                                parsed.errors.is_empty(),
-                                "std/io/closable.hew failed to parse: {:?}",
-                                parsed.errors,
-                            );
-                            if parsed.errors.is_empty() {
-                                let items: Vec<_> = parsed.program.items.into_iter().collect();
-                                self.register_stdlib_hew_items(
-                                    &short,
-                                    "std.io.closable",
-                                    &items,
-                                    StdlibBarePublication::Prelude,
-                                );
-                            }
-                        }
-                    }
-
                     self.handle_bearing_dirty = true;
                     return;
                 }
@@ -11131,16 +11056,6 @@ impl Checker {
                     self.trait_defs
                         .entry(format!("{module_short}.{}", tr.name))
                         .or_insert(info);
-                    // When the stdlib `Closable` trait is registered, wire its
-                    // `close` method into the consume-receiver set so the
-                    // move-checker marks the receiver moved at every call site.
-                    // This must happen at trait-load time (not Checker::new) so
-                    // programs that never import std::io::closable do not see
-                    // phantom consume markers.
-                    if tr.name == "Closable" {
-                        self.consume_receiver_methods
-                            .insert(format!("{module_full_path}.{}::close", tr.name));
-                    }
                 }
                 Item::Function(fd) => {
                     let qualified = self.canonical_fn_identity(Some(module_full_path), &fd.name);

@@ -818,8 +818,7 @@ impl Checker {
     }
 
     /// Returns whether the qualified method name `Trait::method` is in the
-    /// recognised consume-receiver set. PR 1 (#1295) ships an empty set; PR 2
-    /// populates it for `Closable::close` when the trait is registered.
+    /// recognised consume-receiver set.
     fn is_consume_receiver_method(&self, qualified_name: &str) -> bool {
         self.consume_receiver_methods.contains(qualified_name)
     }
@@ -827,8 +826,8 @@ impl Checker {
     /// Returns true if any trait impl on `type_name` registered a method
     /// named `method` that is in the recognised consume-receiver set.
     ///
-    /// Stdlib `impl Closable for T { fn close }` flattens trait methods into
-    /// the inherent-method table on `T`, so the dispatch at the named-type
+    /// Trait methods flatten into the inherent-method table on `T`, so the
+    /// dispatch at the named-type
     /// site doesn't carry the originating trait. To honour
     /// `consumes_receiver` declared on the trait, we walk the
     /// `trait_impls_set` for matching `(type, trait)` pairs and check the
@@ -9557,16 +9556,13 @@ impl Checker {
                     // specific double-close diagnostic. Discharging the
                     // obligation is a consequence of the move, never a
                     // substitute for it — close-then-use is use-after-move.
-                    // Three surfaces qualify:
-                    //   1. stdlib `impl Closable for T { fn close }` — the trait
-                    //      `close` flattens into T's inherent-method table; honour
-                    //      the `consumes_receiver` declared on the trait.
-                    //   2. a `#[resource]` type's inherent `fn close(consume self)` — the
+                    // Two surfaces qualify:
+                    //   1. a `#[resource]` type's inherent `fn close(consume self)` — the
                     //      implicit-drop dispatch target, which when called
                     //      explicitly also moves the receiver so the scope-exit
                     //      implicit drop is suppressed on the consumed path (no
                     //      double-close).
-                    //   3. any `fn m(consume self)` inherent method — the
+                    //   2. any `fn m(consume self)` inherent method — the
                     //      terminal single-consume surface (a builder's
                     //      `build(consume self)`, a `#[linear]` type's consuming
                     //      method). The resolved sig carries the consume fact.
@@ -9865,7 +9861,7 @@ impl Checker {
                                     // `Consumed` and suppresses the duplicate
                                     // scope-exit implicit drop. The `consumes`
                                     // flag was computed above (resource close or
-                                    // a `Closable` trait method flattened onto
+                                    // a consuming trait method flattened onto
                                     // this type); other inherent/trait methods
                                     // are not consuming releases.
                                     consumes_receiver,

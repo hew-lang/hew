@@ -3424,11 +3424,11 @@ impl Checker {
                     }
                 };
                 // A bare import binding can resolve to its source-canonical
-                // owner (`std.io.closable.CloseError`).  Consume the import by
+                // owner (`std.failure.CrashInfo`). Consume the import by
                 // the original binding before treating that canonical identity
                 // as a source-qualified reference; otherwise the lint would
                 // look for a fictional root `std` import and warn about the
-                // actual `closable` import being unused.
+                // actual source-module import being unused.
                 if let Some(binding) = imported_module_binding {
                     // `binding.Type` resolved above to its full source owner.
                     // The lexical binding is the import-lint authority: using

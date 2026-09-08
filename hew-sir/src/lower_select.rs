@@ -8,6 +8,22 @@ use crate::{
 use hew_hir::{HirBinding, HirExpr, HirSelect, HirSelectArmKind};
 use hew_types::ResolvedTy;
 
+/// One evaluated `select` source, in arm order.
+enum SelectSource<'a> {
+    /// A prepared task handle the winning arm awaits.
+    Task {
+        target: BindingTarget,
+        ty: ResolvedTy,
+        output: ResolvedTy,
+    },
+    /// A borrowed channel receiver the winning arm receives from. `output` is
+    /// the `Option<T>` the arm binds.
+    Channel {
+        receiver: &'a HirExpr,
+        output: ResolvedTy,
+    },
+}
+
 impl Builder<'_, '_> {
     #[expect(
         clippy::too_many_lines,
@@ -23,7 +39,7 @@ impl Builder<'_, '_> {
         let probe_depth = self.argument_receiver_loans.len();
         let result_ty = self.ty(&expression.ty);
         let provenance = Provenance::Site(expression.site);
-        let mut tasks = Vec::new();
+        let mut sources: Vec<(usize, SelectSource<'_>)> = Vec::new();
         let mut timer = None;
         let mut inputs = Vec::new();
         let mut loans = Vec::new();
@@ -65,7 +81,38 @@ impl Builder<'_, '_> {
                         operand: Operand { value },
                         decision: BoundaryDecision::Borrow,
                     });
-                    tasks.push((arm_index, target, ty.clone(), *output.clone()));
+                    sources.push((
+                        arm_index,
+                        SelectSource::Task {
+                            target,
+                            ty: ty.clone(),
+                            output: *output.clone(),
+                        },
+                    ));
+                }
+                HirSelectArmKind::ChannelRecv { receiver } => {
+                    // The selection observes readiness only: the winning arm
+                    // performs the ordinary receive on its own borrow.
+                    let ty = self.ty(&receiver.ty);
+                    let element = crate::receiver_element(&ty)
+                        .ok_or("channel selection operand lacks its element type")?
+                        .clone();
+                    let operand = self.lower_borrowed_read(receiver, &mut loans)?;
+                    inputs.push(BoundaryOperand {
+                        operand,
+                        decision: BoundaryDecision::Borrow,
+                    });
+                    sources.push((
+                        arm_index,
+                        SelectSource::Channel {
+                            receiver,
+                            output: ResolvedTy::named_builtin(
+                                "Option",
+                                hew_types::BuiltinType::Option,
+                                vec![element],
+                            ),
+                        },
+                    ));
                 }
                 HirSelectArmKind::AfterTimer { duration } => {
                     if timer.is_some() || self.ty(&duration.ty) != ResolvedTy::Duration {
@@ -73,10 +120,14 @@ impl Builder<'_, '_> {
                     }
                     timer = Some(self.lower_read_operand(duration, "selection timer")?);
                 }
-                _ => return Err("native selection arm requires a task or timer".into()),
+                _ => {
+                    return Err(
+                        "native selection arm requires a task, a channel receive or a timer".into(),
+                    )
+                }
             }
         }
-        if tasks.is_empty() && timer.is_none() {
+        if sources.is_empty() && timer.is_none() {
             return Err("task selection has no arms".into());
         }
         self.argument_receiver_loans.truncate(loan_depth);
@@ -131,16 +182,16 @@ impl Builder<'_, '_> {
         self.end_call_loans(&loans)?;
         let mut exits = Vec::new();
         for (arm_index, arm) in select.arms.iter().enumerate() {
-            let task = tasks
+            let source = sources
                 .iter()
                 .enumerate()
-                .find(|(_, (index, ..))| *index == arm_index);
+                .find(|(_, (index, _))| *index == arm_index);
             // The suspension contract validates the index before resuming.
             // Its final alternative is exhaustive, with no synthetic exit.
             let failure = if arm_index + 1 == select.arms.len() {
                 None
             } else {
-                let selected_index = task.map_or(tasks.len(), |(index, _)| index);
+                let selected_index = source.map_or(sources.len(), |(index, _)| index);
                 let index = self.emit_typed(
                     provenance.clone(),
                     &ResolvedTy::I64,
@@ -161,16 +212,26 @@ impl Builder<'_, '_> {
                 )?;
                 Some(self.branch_candidate_test(condition)?)
             };
-            if let Some((_, (_, target, ty, output))) = task {
-                let value = match target {
-                    BindingTarget::Place(place) => self.emit_typed(
-                        provenance.clone(),
-                        ty,
-                        SemOpKind::LoadTake { place: *place },
-                    )?,
-                    BindingTarget::Value(value) => *value,
+            if let Some((_, (_, source))) = source {
+                let (value, output) = match source {
+                    SelectSource::Task { target, ty, output } => {
+                        let value = match target {
+                            BindingTarget::Place(place) => self.emit_typed(
+                                provenance.clone(),
+                                ty,
+                                SemOpKind::LoadTake { place: *place },
+                            )?,
+                            BindingTarget::Value(value) => *value,
+                        };
+                        (self.lower_task_await_value(value, output)?, output.clone())
+                    }
+                    SelectSource::Channel { receiver, output } => {
+                        // Readiness was observed, nothing taken: the winner
+                        // receives, and a closed channel resolves to `None`.
+                        let value = self.lower_channel_recv_into(receiver, output.clone(), true)?;
+                        (Some(value), output.clone())
+                    }
                 };
-                let value = self.lower_task_await_value(value, output)?;
                 if !self.is_open() {
                     if let Some(failure) = failure {
                         self.restore_control_state(&failure);

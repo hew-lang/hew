@@ -3,8 +3,10 @@ use super::*;
 #[path = "../../hew-sir/tests/support/select.rs"]
 mod fixture;
 
+/// A selection opens over its waker, registers one source per arm, and arms
+/// the timer only when the source carries one.
 #[test]
-fn task_select_emits_borrowed_task_arrays() {
+fn task_select_registers_one_source_per_arm() {
     for timed in [false, true] {
         let semantic = fixture::module(2, timed);
         let target = physical_target_for_inventory(
@@ -23,8 +25,38 @@ fn task_select_emits_borrowed_task_arrays() {
             .unwrap()
             .get_type()
             .get_param_types();
-        let target = TargetData::create(&physical.target.data_layout);
-        assert_eq!(params[1], ctx.ptr_sized_int_type(&target, None).into());
+        assert_eq!(params.len(), 1, "the selection opens over its waker alone");
+        let mut registrations = 0;
+        for block in llvm
+            .get_functions()
+            .filter(|function| function.get_first_basic_block().is_some())
+            .flat_map(inkwell::values::FunctionValue::get_basic_blocks)
+        {
+            let mut instruction = block.get_first_instruction();
+            while let Some(current) = instruction {
+                if let Ok(call) = inkwell::values::CallSiteValue::try_from(current) {
+                    if call.get_called_fn_value().is_some_and(|callee| {
+                        callee.get_name().to_bytes() == b"hew_checked_task_select_add_task"
+                    }) {
+                        registrations += 1;
+                    }
+                }
+                instruction = current.get_next_instruction();
+            }
+        }
+        assert_eq!(
+            registrations, 2,
+            "the fixture registers one observation per task arm"
+        );
+        assert!(llvm
+            .get_function("hew_checked_task_select_add_channel")
+            .is_none());
+        assert_eq!(
+            llvm.get_function("hew_checked_task_select_arm_timer")
+                .is_some(),
+            timed,
+            "the timer is armed exactly when the selection has one"
+        );
     }
 }
 
@@ -49,12 +81,17 @@ fn task_select_native_timer_abi() {
             .set_linkage(Linkage::External);
         let engine = engine(&llvm, optimized);
         use hew_runtime::task_scope::checked::{
-            hew_checked_task_select_free, hew_checked_task_select_new, hew_checked_task_select_poll,
+            hew_checked_task_select_arm_timer, hew_checked_task_select_free,
+            hew_checked_task_select_new, hew_checked_task_select_poll,
         };
         for (symbol, address) in [
             (
                 "hew_checked_task_select_new",
                 hew_checked_task_select_new as *const () as usize,
+            ),
+            (
+                "hew_checked_task_select_arm_timer",
+                hew_checked_task_select_arm_timer as *const () as usize,
             ),
             (
                 "hew_checked_task_select_poll",

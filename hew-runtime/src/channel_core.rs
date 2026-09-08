@@ -372,6 +372,31 @@ impl ChannelCore {
         (1, Some(item))
     }
 
+    /// Observe whether the next receive would complete, retaining `waker` when
+    /// it would not. Nothing is consumed: the selection's winning arm performs
+    /// the ordinary receive.
+    ///
+    /// Returns 1 with an element queued, 2 at end of channel, 3 after a
+    /// producer fault, and 0 after registering the waker.
+    ///
+    /// # Safety
+    /// `waker` obeys the [`HewWaker`] contract.
+    pub unsafe fn poll_recv_ready(&self, waker: &HewWaker) -> i32 {
+        let mut inner = self.locked();
+        if !inner.queue.is_empty() {
+            return 1;
+        }
+        if inner.sink_fault {
+            return 3;
+        }
+        if inner.sink_closed {
+            return 2;
+        }
+        // SAFETY: the caller keeps the descriptor live during retain.
+        inner.native_consumer = Some(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+        0
+    }
+
     /// Deposit one already-encoded envelope for a checked coroutine producer,
     /// retaining `waker` when the ring is full.
     ///

@@ -66,6 +66,18 @@ pub struct HewChannelReceiver {
     poll_registration: Arc<ChannelPollRegistration>,
 }
 
+impl HewChannelReceiver {
+    /// Observe whether the next receive would complete, retaining `waker` when
+    /// it would not. Used by the `select` channel arm, which never consumes.
+    ///
+    /// # Safety
+    /// `waker` obeys the [`HewWaker`](crate::wake::HewWaker) contract.
+    pub(crate) unsafe fn poll_recv_ready(&self, waker: &crate::wake::HewWaker) -> i32 {
+        // SAFETY: the waker contract is the caller's.
+        unsafe { self.core.poll_recv_ready(waker) }
+    }
+}
+
 impl Drop for HewChannelReceiver {
     fn drop(&mut self) {
         self.poll_registration.cancel_active(&self.core);

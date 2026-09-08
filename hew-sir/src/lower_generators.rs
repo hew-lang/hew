@@ -279,9 +279,21 @@ impl Builder<'_, '_> {
         receiver: &HirExpr,
         park: bool,
     ) -> Result<ValueId, String> {
+        let output = self.ty(&expression.ty);
+        self.lower_channel_recv_into(receiver, output, park)
+    }
+
+    /// The receive itself, with the `Option<T>` result named by the caller.
+    /// A `select` winner knows the result type from the receiver's own
+    /// element, not from a call expression.
+    pub(super) fn lower_channel_recv_into(
+        &mut self,
+        receiver: &HirExpr,
+        output: ResolvedTy,
+        park: bool,
+    ) -> Result<ValueId, String> {
         let mut loans = Vec::new();
         let channel = self.lower_borrowed_read(receiver, &mut loans)?;
-        let output = self.ty(&expression.ty);
         self.service.require_type_facts(&output)?;
         self.service.require_variant_shape(&output)?;
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;

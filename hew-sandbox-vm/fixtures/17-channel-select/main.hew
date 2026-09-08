@@ -1,7 +1,21 @@
+import std.channel.channel;
+
 fn main() {
-    let ch = channel<i64>();
-    ch.send(7);
+    let (tx, rx) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(error) => {
+            println(error);
+            return;
+        },
+    };
+    tx.send(7);
     select {
-        value from ch.recv() => println(value);
+        value from rx.recv() => match value {
+            .Some(item) => println(f"{item}"),
+            .None => println("closed"),
+        },
+        after 50ms => println("timeout"),
     }
+    tx.close();
+    rx.close();
 }

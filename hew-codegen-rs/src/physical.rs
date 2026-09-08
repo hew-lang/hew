@@ -3079,13 +3079,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ),
             PhysicalTerminator::TaskSelect {
                 order,
-                tasks,
+                sources,
                 timeout,
                 result,
                 normal,
                 cancel,
                 unwind,
-            } => self.emit_task_select(*order, tasks, *timeout, *result, normal, cancel, unwind),
+            } => self.emit_task_select(*order, sources, *timeout, *result, normal, cancel, unwind),
             PhysicalTerminator::GeneratorYield {
                 value,
                 normal,

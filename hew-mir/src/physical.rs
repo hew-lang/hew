@@ -489,6 +489,26 @@ pub struct PhysicalVariantGlue {
     pub variants: Vec<PhysicalVariantCase>,
 }
 
+/// One `select` source in arm order. The physical index a selection reports is
+/// this position, so the arms and the registrations share one order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalSelectSource {
+    /// A borrowed checked task handle; the winning arm awaits it.
+    Task(ArgumentTransfer),
+    /// A borrowed channel receiver; the winning arm performs the receive.
+    ChannelRecv(ArgumentTransfer),
+}
+
+impl PhysicalSelectSource {
+    /// The borrowed handle this source observes.
+    #[must_use]
+    pub const fn transfer(self) -> ArgumentTransfer {
+        match self {
+            Self::Task(transfer) | Self::ChannelRecv(transfer) => transfer,
+        }
+    }
+}
+
 /// Element recipe shared by vector operations and ordinary value copy/drop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVectorGlue {
@@ -1068,7 +1088,7 @@ pub enum PhysicalTerminator {
     },
     TaskSelect {
         order: hew_sir::TaskSelectionOrder,
-        tasks: Vec<ArgumentTransfer>,
+        sources: Vec<PhysicalSelectSource>,
         timeout: Option<StorageId>,
         result: StorageId,
         normal: PhysicalEdge,
@@ -3213,9 +3233,24 @@ impl FunctionLowerer<'_> {
                         "selection lacks its source index result",
                     ));
                 };
+                let sources = self
+                    .argument_transfers(tasks)?
+                    .into_iter()
+                    .zip(tasks)
+                    .map(|(transfer, input)| {
+                        let ty = &self.storage[self.value(input.operand.value)?.0 as usize].ty;
+                        // The operand's own type says which substrate this arm
+                        // observes; the selection has no other authority.
+                        if ty.is_builtin(hew_types::BuiltinType::Receiver) {
+                            Ok(PhysicalSelectSource::ChannelRecv(transfer))
+                        } else {
+                            Ok(PhysicalSelectSource::Task(transfer))
+                        }
+                    })
+                    .collect::<Result<Vec<_>, PhysicalError>>()?;
                 Ok(PhysicalTerminator::TaskSelect {
                     order: *order,
-                    tasks: self.argument_transfers(tasks)?,
+                    sources,
                     timeout,
                     result: self.value(result.id)?,
                     normal: self.lower_edge(&resumes[0])?,
@@ -6036,7 +6071,7 @@ fn terminator_successors(
             Ok(successors)
         }
         PhysicalTerminator::TaskSelect {
-            tasks,
+            sources,
             timeout,
             result,
             normal,
@@ -6044,11 +6079,13 @@ fn terminator_successors(
             unwind,
             ..
         } => {
-            for task in tasks {
-                let ArgumentTransfer::Borrow(task) = task else {
-                    return Err(PhysicalError::new("selection must borrow its task handles"));
+            for source in sources {
+                let ArgumentTransfer::Borrow(handle) = source.transfer() else {
+                    return Err(PhysicalError::new(
+                        "selection must borrow its source handles",
+                    ));
                 };
-                initialized(function, &state, *task, block, "selected task")?;
+                initialized(function, &state, handle, block, "selected source")?;
             }
             if let Some(timeout) = timeout {
                 initialized(function, &state, *timeout, block, "selection timeout")?;
@@ -6769,7 +6806,7 @@ fn verify_terminator(
             edge(unwind)
         }
         PhysicalTerminator::TaskSelect {
-            tasks,
+            sources,
             timeout,
             result,
             normal,
@@ -6777,18 +6814,25 @@ fn verify_terminator(
             unwind,
             ..
         } => {
-            if tasks.is_empty() && timeout.is_none() {
-                return Err(PhysicalError::new("selection requires a task or timeout"));
+            if sources.is_empty() && timeout.is_none() {
+                return Err(PhysicalError::new("selection requires a source or timeout"));
             }
-            for task in tasks {
-                let ArgumentTransfer::Borrow(task) = task else {
+            for source in sources {
+                let ArgumentTransfer::Borrow(handle) = source.transfer() else {
                     return Err(PhysicalError::new(
-                        "selection requires borrowed task handles",
+                        "selection requires borrowed source handles",
                     ));
                 };
-                if !matches!(slot(*task)?.ty, ResolvedTy::Task(_)) {
+                let ty = &slot(handle)?.ty;
+                let agrees = match source {
+                    PhysicalSelectSource::Task(_) => matches!(ty, ResolvedTy::Task(_)),
+                    PhysicalSelectSource::ChannelRecv(_) => {
+                        ty.is_builtin(hew_types::BuiltinType::Receiver)
+                    }
+                };
+                if !agrees {
                     return Err(PhysicalError::new(
-                        "selection input must have an exact Task type",
+                        "selection source type disagrees with its registration",
                     ));
                 }
             }

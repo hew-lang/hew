@@ -1,9 +1,13 @@
-//! Borrowed task observation for source selection. The winning branch performs
-//! the ordinary checked await; observing readiness never consumes a result.
+//! Borrowed readiness observation for source selection. A selection registers
+//! its sources in arm order — a checked task, a channel receive — and an
+//! optional timer last. Observing readiness never consumes a source: the
+//! winning branch performs the ordinary await or receive.
 
 use super::{
-    checked, hew_checked_task_wait_new, retain, HewCheckedTaskWait, HewTask, PENDING, TAKEN,
+    checked, hew_checked_task_wait_new, retain, HewCheckedTaskWait, HewTask, COMPLETION_ORDER,
+    PENDING, TAKEN,
 };
+use crate::channel::HewChannelReceiver;
 use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
 };
@@ -11,12 +15,28 @@ use crate::coro_state::CoroStatus;
 use crate::util::MutexExt;
 use crate::wake::HewWaker;
 use std::ptr;
+use std::sync::atomic::Ordering;
+
+/// One registered source. Sources keep arm order, so the poll result is the
+/// arm's own index and the timer's index is the source count.
+#[derive(Debug)]
+enum SelectSource {
+    /// An independently retained observation of a checked task handle.
+    Task(HewCheckedTaskWait),
+    /// A borrowed receiver plus the completion order stamped when its
+    /// readiness was first observed. The selection never consumes an element.
+    Channel {
+        receiver: *mut HewChannelReceiver,
+        ready_order: Option<u64>,
+    },
+}
 
 /// Independently retained observations of the source handles and optional timer.
 #[derive(Debug)]
 pub struct HewCheckedTaskSelect {
-    tasks: Vec<HewCheckedTaskWait>,
+    sources: Vec<SelectSource>,
     timer: *mut HewCoroSleep,
+    waker: *const HewWaker,
 }
 
 impl Drop for HewCheckedTaskSelect {
@@ -26,89 +46,162 @@ impl Drop for HewCheckedTaskSelect {
     }
 }
 
-/// Observe checked task handles without transferring their source ownership.
-/// The timer starts after every task observation has been registered.
+/// Open a selection over the caller's waker. Sources are registered in arm
+/// order, and the timer is armed last so it starts after every observation.
 ///
 /// # Safety
-/// `tasks` points to `count` live checked handles, or is null when count is zero.
-/// Each source handle stays live for this call. The retained waker descriptor
-/// obeys its contract. Free the returned selection exactly once.
+/// The retained waker descriptor obeys its contract and stays live for the
+/// selection. Free the returned selection exactly once.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_select_new(
-    tasks: *const *mut HewTask,
-    count: usize,
-    has_timeout: i32,
-    duration_ns: i64,
     waker: *const HewWaker,
 ) -> *mut HewCheckedTaskSelect {
-    let mut observations = Vec::with_capacity(count);
-    for index in 0..count {
-        // SAFETY: the source array is live; each observation acquires its own
-        // task reference before passing that reference to the wait constructor.
-        unsafe {
-            let task = *tasks.add(index);
-            retain(task);
-            observations.push(*Box::from_raw(hew_checked_task_wait_new(task, waker)));
-        }
-    }
-    let timer = if has_timeout != 0 {
-        // SAFETY: caller provides a retained-target descriptor.
-        unsafe { hew_coro_sleep_new(duration_ns, waker) }
-    } else {
-        ptr::null_mut()
-    };
     Box::into_raw(Box::new(HewCheckedTaskSelect {
-        tasks: observations,
-        timer,
+        sources: Vec::new(),
+        timer: ptr::null_mut(),
+        waker,
     }))
 }
 
-/// Return a ready task's source index, or `count` when the timer wins.
+/// Register one checked task observation without transferring its ownership.
+///
+/// # Safety
+/// `selection` is the live handle from `hew_checked_task_select_new` and
+/// `task` is a live checked handle that outlives this selection.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_select_add_task(
+    selection: *mut HewCheckedTaskSelect,
+    task: *mut HewTask,
+) {
+    if selection.is_null() {
+        return;
+    }
+    // SAFETY: the observation acquires its own task reference before passing
+    // that reference to the wait constructor.
+    unsafe {
+        let selection = &mut *selection;
+        retain(task);
+        let wait = *Box::from_raw(hew_checked_task_wait_new(task, selection.waker));
+        selection.sources.push(SelectSource::Task(wait));
+    }
+}
+
+/// Register one borrowed channel receiver. Readiness is observed, never taken.
+///
+/// # Safety
+/// `selection` is the live handle from `hew_checked_task_select_new` and
+/// `receiver` is a live receiver that outlives this selection.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_select_add_channel(
+    selection: *mut HewCheckedTaskSelect,
+    receiver: *mut HewChannelReceiver,
+) {
+    if selection.is_null() {
+        return;
+    }
+    // SAFETY: caller owns the selection for the duration of this call.
+    unsafe {
+        (*selection).sources.push(SelectSource::Channel {
+            receiver,
+            ready_order: None,
+        });
+    }
+}
+
+/// Arm the selection's timer after every source has been registered.
+///
+/// # Safety
+/// `selection` is the live handle from `hew_checked_task_select_new` and has
+/// no timer yet.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_select_arm_timer(
+    selection: *mut HewCheckedTaskSelect,
+    duration_ns: i64,
+) {
+    if selection.is_null() {
+        return;
+    }
+    // SAFETY: caller provides a retained-target descriptor with the selection.
+    unsafe {
+        let selection = &mut *selection;
+        selection.timer = hew_coro_sleep_new(duration_ns, selection.waker);
+    }
+}
+
+/// Return a ready source's arm index, or the source count when the timer wins.
 /// Pending is -1; an invalid consumed source or failed timer is -2.
-/// When several tasks are ready, source order breaks the tie.
+/// When several sources are ready, arm order breaks the tie.
 ///
 /// # Safety
 /// `selection` is a live observation owned by the caller. Its tasks have no
 /// concurrent consuming observer; checked source ownership establishes this.
 #[no_mangle]
-pub unsafe extern "C" fn hew_checked_task_select_poll(
-    selection: *const HewCheckedTaskSelect,
-) -> i64 {
+pub unsafe extern "C" fn hew_checked_task_select_poll(selection: *mut HewCheckedTaskSelect) -> i64 {
     // SAFETY: caller retains the observation throughout this poll.
     unsafe { poll(selection, false) }
 }
 
-/// Select the earliest completion, even when several children are already ready.
-/// Source order breaks an equal completion-order tie.
+/// Select the earliest completion, even when several sources are already ready.
+/// Arm order breaks an equal completion-order tie.
 ///
 /// # Safety
 /// The same retained observation contract as `hew_checked_task_select_poll`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_select_poll_first(
-    selection: *const HewCheckedTaskSelect,
+    selection: *mut HewCheckedTaskSelect,
 ) -> i64 {
     // SAFETY: caller retains the observation throughout this poll.
     unsafe { poll(selection, true) }
 }
 
-unsafe fn poll(selection: *const HewCheckedTaskSelect, first_completion: bool) -> i64 {
+unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> i64 {
     // SAFETY: caller retains the observation throughout this poll.
-    let selection = unsafe { &*selection };
+    let selection = unsafe { &mut *selection };
+    let waker = selection.waker;
     let mut first = None;
-    for (index, wait) in selection.tasks.iter().enumerate() {
-        // SAFETY: each wait independently retains the checked task storage.
-        let state = unsafe { checked(wait.task) }.lock_or_recover();
-        let status = state.outcome();
-        if status == TAKEN {
-            return -2;
-        }
-        if status != PENDING {
-            if !first_completion {
-                return i64::try_from(index).unwrap_or(-2);
+    for index in 0..selection.sources.len() {
+        let order = match &mut selection.sources[index] {
+            SelectSource::Task(wait) => {
+                // SAFETY: each wait independently retains the checked task storage.
+                let state = unsafe { checked(wait.task) }.lock_or_recover();
+                let status = state.outcome();
+                if status == TAKEN {
+                    return -2;
+                }
+                if status == PENDING {
+                    continue;
+                }
+                state.order
             }
-            let candidate = (state.order, index);
-            first = Some(first.map_or(candidate, |previous| std::cmp::min(previous, candidate)));
+            SelectSource::Channel {
+                receiver,
+                ready_order,
+            } => {
+                if let Some(order) = *ready_order {
+                    order
+                } else {
+                    if receiver.is_null() || waker.is_null() {
+                        return -2;
+                    }
+                    // SAFETY: the receiver is borrowed for the selection and
+                    // the waker descriptor is live per the caller's contract.
+                    let status = unsafe { (**receiver).poll_recv_ready(&*waker) };
+                    if status == 0 {
+                        continue;
+                    }
+                    // A closed or faulted channel is ready: the winning arm's
+                    // receive resolves it to `None` or to its own fault.
+                    let order = COMPLETION_ORDER.fetch_add(1, Ordering::Relaxed);
+                    *ready_order = Some(order);
+                    order
+                }
+            }
+        };
+        if !first_completion {
+            return i64::try_from(index).unwrap_or(-2);
         }
+        let candidate = (order, index);
+        first = Some(first.map_or(candidate, |previous| std::cmp::min(previous, candidate)));
     }
     if let Some((_, index)) = first {
         return i64::try_from(index).unwrap_or(-2);
@@ -117,7 +210,7 @@ unsafe fn poll(selection: *const HewCheckedTaskSelect, first_completion: bool) -
         // SAFETY: the selection owns its timer until detached.
         let status = unsafe { hew_coro_sleep_status(selection.timer) };
         if status == CoroStatus::Complete as i32 {
-            return i64::try_from(selection.tasks.len()).unwrap_or(-2);
+            return i64::try_from(selection.sources.len()).unwrap_or(-2);
         }
         if status != CoroStatus::Pending as i32 {
             return -2;
@@ -126,7 +219,7 @@ unsafe fn poll(selection: *const HewCheckedTaskSelect, first_completion: bool) -
     -1
 }
 
-/// Detach every observation without consuming or cancelling a source task.
+/// Detach every observation without consuming or cancelling a source.
 /// Late notifications retain their own readiness target, never frame storage.
 ///
 /// # Safety

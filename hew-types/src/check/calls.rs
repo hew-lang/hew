@@ -2695,6 +2695,17 @@ impl Checker {
         ) {
             return (ty, Some(CheckedSelectSource::ChannelReceive { call: key }));
         }
+        // The element type may still be a variable here — `let (tx, rx) =
+        // channel.new(4)` with nothing yet constraining it — so the receive's
+        // rewrite is deferred rather than recorded. The deferred entry is the
+        // same decision, so a select arm classifies from it.
+        if self
+            .deferred_channel_rewrites
+            .get(&key)
+            .is_some_and(|deferred| deferred.handle_kind == "Receiver" && deferred.method == "recv")
+        {
+            return (ty, Some(CheckedSelectSource::ChannelReceive { call: key }));
+        }
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,

@@ -24,15 +24,18 @@ fn task_select_preserves_borrows_and_requires_resumability() {
             .unwrap()
             .into_unverified();
         assert!(physical.callables[0].is_resumable);
-        let PhysicalTerminator::TaskSelect { tasks, .. } =
+        let PhysicalTerminator::TaskSelect { sources, .. } =
             &physical.functions[0].blocks[0].terminator
         else {
             panic!("missing task selection")
         };
-        assert_eq!(tasks.len(), count as usize);
-        assert!(tasks
+        assert_eq!(sources.len(), count as usize);
+        assert!(sources
             .iter()
-            .all(|task| matches!(task, ArgumentTransfer::Borrow(_))));
+            .all(|source| matches!(source, PhysicalSelectSource::Task(_))));
+        assert!(sources
+            .iter()
+            .all(|source| matches!(source.transfer(), ArgumentTransfer::Borrow(_))));
         physical.callables[0].is_resumable = false;
         assert!(verify_physical_module(&physical).is_err());
     }
@@ -44,18 +47,18 @@ fn task_select_rejects_consuming_observations() {
     let mut physical = lower_physical_module(&semantic, target(&semantic))
         .unwrap()
         .into_unverified();
-    let PhysicalTerminator::TaskSelect { tasks, .. } =
+    let PhysicalTerminator::TaskSelect { sources, .. } =
         &mut physical.functions[0].blocks[0].terminator
     else {
         unreachable!()
     };
-    let ArgumentTransfer::Borrow(slot) = tasks[0] else {
+    let ArgumentTransfer::Borrow(slot) = sources[0].transfer() else {
         unreachable!()
     };
-    tasks[0] = ArgumentTransfer::Move(slot);
+    sources[0] = PhysicalSelectSource::Task(ArgumentTransfer::Move(slot));
     let error = verify_physical_module(&physical).unwrap_err();
     assert!(
-        error.to_string().contains("borrowed task handles"),
+        error.to_string().contains("borrowed source handles"),
         "{error}"
     );
 }

@@ -1803,6 +1803,18 @@ impl Checker {
                         return;
                     }
                 }
+                // Draining a channel consumes its read half: the loop closes
+                // the receiver when it ends, so a later `rx.close()` is a use
+                // after move here rather than an unbalanced close in SIR.
+                if matches!(
+                    resolved_iter_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Receiver),
+                        ..
+                    }
+                ) {
+                    self.mark_expr_moved(&iterable.0, &iterable.1);
+                }
                 // Infer the element type from the iterable.
                 let elem_ty = match &iter_ty {
                     Ty::Array(inner, _) | Ty::Slice(inner) => (**inner).clone(),

@@ -688,9 +688,9 @@ pub fn call_boundary_types_match(left: &ResolvedTy, right: &ResolvedTy) -> bool 
     if left == right {
         return true;
     }
-    // `builtin` is the identity fact for an endpoint. Name and opacity now
-    // agree everywhere; a declaration that omits the message type still
-    // meets a caller that spells it.
+    // `builtin` is the identity fact for an endpoint. Name and opacity agree
+    // for declared members; `std.channel`'s own bare declarations still meet a
+    // caller that spells the element here.
     match (channel_endpoint(left), channel_endpoint(right)) {
         (Some((left_kind, left_args)), Some((right_kind, right_args))) => {
             left_kind == right_kind

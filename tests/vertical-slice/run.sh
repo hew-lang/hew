@@ -48,7 +48,7 @@ reject_output="${ROOT}/.tmp/vertical-slice-reject-output.txt"
 stdout_output="${ROOT}/.tmp/vertical-slice.stdout"
 stderr_output="${ROOT}/.tmp/vertical-slice.stderr"
 old_verb_output="${ROOT}/.tmp/vertical-slice-remote-pid-old-verb.hew"
-node_lookup_identity="/tmp/hew-cap13-node-lookup-send.key"
+node_lookup_identity="/tmp/hew-node-lookup-location.key"
 identity_aggregates_identity="/tmp/hew-cap13-identity-aggregates.key"
 trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}" "${node_lookup_identity}" "${node_lookup_identity}.hew-state" "${identity_aggregates_identity}" "${identity_aggregates_identity}.hew-state"' EXIT
 
@@ -4759,11 +4759,10 @@ run_accept_expect_status "tuple_heap_return" 42
 # failed-seed rollback, and repeated lifecycle start/shutdown.
 run_accept_expect_status "node_config_atomic_lifecycle" 0
 
-# Accept: Node.lookup(name) must expose the registered local actor as a
-# RemotePid<T>, and pid.send(msg) must deliver through the in-process
-# send-by-id path.
+# Accept: Node.lookup(name) must expose the registered local actor as its
+# typed RemotePid<T> carrier and reject a distinct missing name.
 rm -f "${node_lookup_identity}" "${node_lookup_identity}.hew-state"
-run_accept_expect_status "node_lookup_send" 0
+run_accept_expect_status "node_lookup_location" 0
 
 # Accept: compiler-owned identity aggregates project, compare, hash, display,
 # and round-trip through Node.lookup without scalar reinterpretation.

@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
 use crate::vec::HewVec;
-use hew_cabi::string::{string_as_str, HewString};
+use hew_cabi::string::{string_as_str, string_to_cstring, HewString};
 use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
@@ -5509,6 +5509,30 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
     })
 }
 
+/// Managed-string adapter for compiler-owned `Node::register` calls.
+///
+/// This keeps the public C-string ABI above available to native clients while
+/// making the Hew compiler's managed `String` ownership explicit at its FFI
+/// boundary. Embedded NUL names fail closed instead of truncating a registry
+/// identity.
+///
+/// # Safety
+///
+/// `name` must be null (the Hew empty string) or a live managed string handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_register_by_pid_string(
+    name: *const HewString,
+    pid: u64,
+) -> c_int {
+    // SAFETY: caller supplies a live managed string for this synchronous copy.
+    let Ok(name) = (unsafe { string_to_cstring(name) }) else {
+        set_last_error("Node::register: name contains an embedded NUL");
+        return -1;
+    };
+    // SAFETY: CString provides a live NUL-terminated pointer for this call.
+    unsafe { hew_node_api_register_by_pid(name.as_ptr(), pid) }
+}
+
 /// `Node::unregister(name)` — remove a name registration from the active node.
 ///
 /// The symmetric counterpart of [`hew_node_api_register_by_pid`]: it clears the
@@ -5561,6 +5585,28 @@ pub unsafe extern "C" fn hew_node_api_lookup_location(
         // SAFETY: node is pinned by the read lock; caller guarantees name/output.
         unsafe { hew_node_lookup_location(node, name, out) }
     })
+}
+
+/// Managed-string adapter for compiler-owned `Node::lookup` calls.
+///
+/// The public C-string ABI remains available above; this adapter owns the
+/// conversion boundary so a Hew `String` is never reinterpreted as a C string.
+///
+/// # Safety
+///
+/// `name` must be null (the Hew empty string) or a live managed string handle,
+/// and `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_lookup_location_string(
+    name: *const HewString,
+    out: *mut HewRemotePid,
+) -> c_int {
+    // SAFETY: caller supplies a live managed string for this synchronous copy.
+    let Ok(name) = (unsafe { string_to_cstring(name) }) else {
+        return -1;
+    };
+    // SAFETY: CString and output pointer satisfy the public ABI's requirements.
+    unsafe { hew_node_api_lookup_location(name.as_ptr(), out) }
 }
 
 /// `Node::set_transport(name)` — Set the transport type before starting.

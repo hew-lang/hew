@@ -90,7 +90,7 @@ pub enum BuiltinLinkage {
     /// synthesise a two-step call sequence:
     /// 1. `hew_actor_pid(actor_ptr: ptr) -> u64` — extract the numeric PID
     ///    from the `LocalPid<T>` alloca (which is a `ptr` in LLVM).
-    /// 2. `hew_node_api_register_by_pid(name: ptr, pid: u64) -> i32` — the
+    /// 2. `hew_node_api_register_by_pid_string(name: ptr, pid: u64) -> i32` — the
     ///    actual C-ABI registration call.
     ///
     /// `RuntimeFfiShim` cannot be used here because the LLVM call sequence
@@ -2373,14 +2373,14 @@ pub const CATALOG: &[BuiltinEntry] = &[
         &[BuiltinTy::String, BuiltinTy::U64],
         BuiltinTy::I32,
         BuiltinLinkage::NodeRegisterByPid {
-            register_symbol: "hew_node_api_register_by_pid",
+            register_symbol: "hew_node_api_register_by_pid_string",
             pid_accessor: "hew_actor_pid",
         },
     ),
     // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`
     //
     // Codegen allocates the aggregate Ok payload in the destination Result and
-    // passes it to `hew_node_api_lookup_location(name, out) -> i32`. A zero
+    // passes it to `hew_node_api_lookup_location_string(name, out) -> i32`. A zero
     // status selects Ok; any non-zero status selects LookupError::NotFound.
     // The scalar catalog types are dispatch placeholders only and never define
     // the C ABI for this CalleeNameDispatchOnly entry.

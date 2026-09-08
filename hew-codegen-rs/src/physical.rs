@@ -4102,7 +4102,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 let register = get_or_declare_external(
                     self.llvm,
-                    "hew_node_api_register_by_pid",
+                    "hew_node_api_register_by_pid_string",
                     status_ty.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
                 )?;
                 let local = self
@@ -4141,7 +4141,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let status_ty = self.ctx.i32_type();
                 let lookup = get_or_declare_external(
                     self.llvm,
-                    "hew_node_api_lookup_location",
+                    "hew_node_api_lookup_location_string",
                     status_ty.fn_type(&[ptr.into(), ptr.into()], false),
                 )?;
                 let result_case = self.value_emitter().variant_glue(result_glue)?;

@@ -187,6 +187,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         coro_sleep::hew_coro_sleep_until_new,
         coro_sleep::hew_coro_sleep_status,
         coro_sleep::hew_coro_sleep_free,
+        print::hew_print_value,
         string::hew_string_hash_fnv1a,
         string::hew_string_equals,
         string::hew_string_is_empty,

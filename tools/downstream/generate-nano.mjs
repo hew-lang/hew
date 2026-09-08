@@ -134,7 +134,7 @@ blank();
 emit('# Control flow keywords');
 const controlFlow = [...new Set([
   ...kw.control_flow,
-  'select', 'join', 'yield', 'after', 'from', 'await',
+  'select', 'race', 'yield', 'after', 'from', 'await', 'await_restart',
   'scope',
 ])];
 // Split across multiple lines for readability if needed
@@ -159,9 +159,13 @@ emit('color green "\\<fn[[:space:]]*\\[(clone|var|once)([[:space:]]*,[[:space:]]
 emit('color green "\\<capture[[:space:]]*\\([[:space:]]*var\\>"');
 blank();
 
-// Actor & concurrency
+// Actor & concurrency. Control-like actor words are emitted with the control
+// group above so one token has one colour in the generated syntax.
 emit('# Actor & concurrency');
-const actorChunks = chunkArray([...kw.actors], 10);
+const actorChunks = chunkArray(
+  kw.actors.filter(k => !['scope', 'select', 'race', 'after', 'await', 'await_restart'].includes(k)),
+  10,
+);
 for (const chunk of actorChunks) {
   emit(`color brightgreen ${nanoKeywordRegex(chunk)}`);
 }
@@ -246,7 +250,7 @@ blank();
 
 // Operators
 emit('# Operators');
-emit('color white "->|=>|<-|\\.\\.[ =]?"');
+emit('color white "->|=>|\\.\\.[ =]?"');
 emit('color white "==[^=]|!=|<=|>="');
 emit('color white "<<=|>>=|&=|\\|=|\\^=|\\+=|-=|\\*=|/=|%="');
 emit('color white "<<|>>"');

@@ -63,14 +63,7 @@ const keywordGroups = {
     // Actor keywords that serve as control flow. `cooperate` is deliberately
     // NOT here — syntax-data.json classifies it under reserved_unused (a
     // compiler-internal safepoint token, not a source expression). It is not
-    // emitted by any keywordGroups entry at all: vscode-hew's template
-    // classifies every reserved_unused word under invalid.removed.hew (a
-    // scope this generator does not own or manage), and an explicit vitest
-    // guard (tests/grammar-structure.test.ts, "marks rejected keywords as
-    // invalid.removed.hew, not keyword.reserved.hew") asserts no separate
-    // keyword.reserved.hew scope exists. See the coverage-check exclusion
-    // below for the same reasoning.
-    'select', 'join', 'after', 'from', 'await', 'await_restart', 'scope',
+    'select', 'race', 'after', 'from', 'await', 'await_restart', 'scope',
   ])],
 
   // `mut` is deliberately excluded from kw.declarations here even though
@@ -85,7 +78,7 @@ const keywordGroups = {
   'keyword.declaration.hew': kw.declarations.filter(k => k !== 'mut'),
 
   'keyword.actor.hew': [
-    'actor', 'fork', 'init', 'move', 'receive', 'spawn', 'this',
+    'actor', 'fork', 'init', 'move', 'receive', 'spawn',
   ],
 
   'keyword.supervisor.hew': [
@@ -108,13 +101,7 @@ const keywordGroups = {
 
   'constant.language.boolean.hew': ['true', 'false'],
 
-  // NOTE: no keyword.reserved.hew entry here. reserved_unused words
-  // (cooperate/try/catch/race/foreign) are deliberately NOT assigned a
-  // scope by this generator — vscode-hew's template already classifies
-  // them under invalid.removed.hew, a scope this generator does not own,
-  // and a vitest guard asserts a separate keyword.reserved.hew scope must
-  // not exist (see the keyword.control.hew comment above). Adding this
-  // entry back reintroduces a redundant, test-failing pattern.
+  'keyword.reserved.hew': [...kw.reserved_unused],
 };
 
 // -- Type group mapping ----------------------------------------------------
@@ -223,6 +210,9 @@ function updatePatterns(patterns, path) {
 updatePatterns(grammar.patterns, 'patterns');
 
 for (const [key, value] of Object.entries(grammar.repository)) {
+  // Retired spellings are deliberately highlighted by hand and must not be
+  // replaced by generated keyword patterns.
+  if (key === 'retired-syntax') continue;
   if (value.patterns) {
     updatePatterns(value.patterns, `repository.${key}`);
   }
@@ -326,7 +316,9 @@ if (missing.length > 0) {
   console.log(`   ${missing.join(', ')}\n`);
 }
 
-const extras = [...coveredKeywords].filter(k => !syntaxData.all_keywords.includes(k));
+const intentionallyUnassignedKeywords = new Set(['from']);
+const extras = [...coveredKeywords].filter(k =>
+  !syntaxData.all_keywords.includes(k) && !intentionallyUnassignedKeywords.has(k));
 if (extras.length > 0) {
   console.log(`\u26a0 Keywords in grammar scopes but not in all_keywords:`);
   console.log(`   ${extras.join(', ')}\n`);

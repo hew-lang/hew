@@ -33,10 +33,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .iter()
             .find(|handler| handler.message_id == message)
             .ok_or_else(|| CodegenError::FailClosed("ask lacks its exact receive member".into()))?;
+        // The target is borrowed to address the actor; every request argument
+        // transfers its value into the message wrapper.
         let sources = args
             .iter()
-            .map(|argument| match argument {
-                ArgumentTransfer::Move(source) => Ok(*source),
+            .enumerate()
+            .map(|(index, argument)| match (index, argument) {
+                (0, ArgumentTransfer::Borrow(source)) | (_, ArgumentTransfer::Move(source)) => {
+                    Ok(*source)
+                }
                 _ => Err(CodegenError::FailClosed(
                     "ask lacks an owning request transfer".into(),
                 )),
@@ -71,7 +76,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(missing, allocation_failed, submit)
             .llvm_ctx("retain request fields until allocation")?;
         self.builder.position_at_end(allocation_failed);
-        for source in &sources {
+        // The target is borrowed; only the request arguments were about to
+        // transfer, so only they are released when the wrapper never exists.
+        for source in sources.iter().skip(1) {
             if let Some(action) = self
                 .module
                 .actor_recipes

@@ -1679,7 +1679,10 @@ impl<'a> Flow<'a> {
                         | SemTerminator::Panic { .. }
                         | SemTerminator::Suspend {
                             kind: crate::SuspendKind::Select { .. }
-                                | crate::SuspendKind::NativeIo { .. },
+                                | crate::SuspendKind::NativeIo { .. }
+                                // An ask reads its target to address the actor
+                                // and retains nothing past the reply.
+                                | crate::SuspendKind::Ask { .. },
                             ..
                         }
                 ) && matches!(

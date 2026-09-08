@@ -3253,6 +3253,33 @@ impl Checker {
         let field_ty =
             Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
         let resolved_field = self.subst.resolve(&field_ty);
+        // A record field holding a lambda-actor handle answers a call the same
+        // way the handle does: `job.run(3)` is the completion call on the
+        // stored handle, not an indirect function call.
+        if let Ty::Named {
+            args: ref type_args,
+            builtin: Some(crate::BuiltinType::LambdaPid),
+            ..
+        } = resolved_field
+        {
+            if type_args.len() == 2 {
+                let type_args = type_args.clone();
+                let call =
+                    self.check_lambda_actor_call(&resolved_field, &type_args, args, span, None);
+                // The delivery receiver is the field read, so record the
+                // field's exact type for the lowering that builds it.
+                if let Ok(field_resolved) = crate::resolved_ty::ResolvedTy::from_ty(&resolved_field)
+                {
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::RecordFnFieldCall {
+                            field_ty: field_resolved,
+                        },
+                    );
+                }
+                return Some(call);
+            }
+        }
         let (params, ret) = match &resolved_field {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 (params.clone(), (**ret).clone())

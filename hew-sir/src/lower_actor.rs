@@ -508,9 +508,13 @@ impl Builder<'_, '_> {
         if !self.is_open() {
             return Ok(target);
         }
+        // The call reads its target to address the actor and returns before
+        // the handle could be needed again: it retains nothing, so the target
+        // is a borrow. A handle read out of a collection is borrowed itself,
+        // and a call on it must not be a transfer it cannot make.
         inputs.push(crate::BoundaryOperand {
             operand: Operand { value: target },
-            decision: crate::BoundaryDecision::Move,
+            decision: crate::BoundaryDecision::Borrow,
         });
         for source in args {
             let value = lower_initial_value_transfer(
@@ -530,7 +534,8 @@ impl Builder<'_, '_> {
         inputs = std::iter::once(inputs[0].clone())
             .chain(argument_order.iter().map(|index| inputs[index + 1].clone()))
             .collect();
-        for input in &inputs {
+        // The request arguments transfer; the borrowed target keeps its owner.
+        for input in inputs.iter().skip(1) {
             self.owned_live.remove(&input.operand.value);
         }
         self.service.require_type_facts(&output)?;
@@ -985,12 +990,22 @@ impl Builder<'_, '_> {
         };
         let (target, target_ty) = self.delivery_target(receiver)?;
         let actor = self.service.require_actor(&target_ty)?;
-        let handler = self.service.actors[actor.0 as usize]
-            .handlers
-            .iter()
-            .find(|handler| handler.declaration.full_path() == method_id.as_str())
-            .ok_or("message description has no exact receive member")?
-            .clone();
+        // A lambda actor declares one unnamed handler, so its message
+        // selects that member. Every other actor selects by exact identity.
+        let descriptor = &self.service.actors[actor.0 as usize];
+        let handler = if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
+            match descriptor.handlers.as_slice() {
+                [only] if descriptor.is_lambda() => only,
+                _ => return Err("a lambda actor declares exactly one handler".into()),
+            }
+        } else {
+            descriptor
+                .handlers
+                .iter()
+                .find(|handler| handler.declaration.full_path() == method_id.as_str())
+                .ok_or("message description has no exact receive member")?
+        }
+        .clone();
         if !handler.owes_no_reply()
             || handler.params.len() != args.len()
             || argument_order.len() != args.len()

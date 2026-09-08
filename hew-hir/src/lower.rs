@@ -18215,6 +18215,39 @@ impl LowerCtx {
                         span,
                     };
                 }
+                // `mailbox(handle, ..)(msg)` submits one way: the checker
+                // records the same lambda dispatch as a `Message`.
+                if let Some(ActorMethodKind::Message {
+                    method_id,
+                    policy,
+                    argument_order,
+                }) = self
+                    .actor_method_dispatch
+                    .get(&rewrite_key)
+                    .filter(|dispatch| {
+                        matches!(dispatch, ActorMethodKind::Message { method_id, .. }
+                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                    })
+                    .cloned()
+                {
+                    let (kind, ty) = self.lower_lambda_actor_submission(
+                        function,
+                        args,
+                        &method_id,
+                        policy,
+                        argument_order,
+                        &span,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 if let Some(MethodCallRewrite::GenericWireCodec {
                     direction,
                     value_ty,
@@ -20795,6 +20828,64 @@ impl LowerCtx {
                 deadline_ns: None,
             },
             result_ty,
+        )
+    }
+
+    /// `mailbox(handle, ..)(msg)` on a lambda actor: build the addressed
+    /// message and submit it at the same site, exactly as a `receive fn`
+    /// without a reply does through a named actor's mailbox view.
+    fn lower_lambda_actor_submission(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: &[CallArg],
+        method_id: &str,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let receiver = self.lower_expr(function, IntentKind::Read);
+        let lowered_args: Vec<HirExpr> = args
+            .iter()
+            .map(|arg| {
+                let spanned = arg.expr();
+                self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+            })
+            .collect();
+        let Some(ty) = self.checker_expr_ty_if_present(span) else {
+            return (
+                HirExprKind::Unsupported("message submission has no checked type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+            return (
+                HirExprKind::Unsupported("message submission has no checked message type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        self.try_register_enum_instantiation_ty(&ty, span);
+        let message = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
+            ty: message_ty,
+            intent: IntentKind::Consume,
+            kind: HirExprKind::ActorMessage {
+                receiver: Box::new(receiver),
+                method_id: method_id.to_string(),
+                args: lowered_args,
+                policy,
+                argument_order,
+            },
+            span: span.clone(),
+        };
+        (
+            HirExprKind::ActorDelivery {
+                receiver: Box::new(message),
+                args: Vec::new(),
+                operation: hew_types::actor_delivery::ActorDeliveryCall::Submit { policy },
+            },
+            ty,
         )
     }
 
@@ -26684,6 +26775,35 @@ impl LowerCtx {
         }
         if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            // A lambda dispatch on method-call syntax is a call on a stored
+            // handle: `job.run(3)` addresses the handle in the field, so the
+            // field read is the delivery receiver.
+            let lowered_receiver = if matches!(&dispatch,
+                ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. }
+                    if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+            {
+                let Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) =
+                    self.method_call_rewrites.get(&key).cloned()
+                else {
+                    return (
+                        HirExprKind::Unsupported(
+                            "a stored lambda handle call has no field type".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    );
+                };
+                self.make_expr(
+                    HirExprKind::FieldAccess {
+                        object: Box::new(lowered_receiver),
+                        field: method.to_string(),
+                    },
+                    field_ty,
+                    IntentKind::Read,
+                    span.clone(),
+                )
+            } else {
+                lowered_receiver
+            };
             let lowered_args: Vec<HirExpr> = args
                 .iter()
                 .map(|arg| {

@@ -6010,12 +6010,17 @@ fn terminator_successors(
             unwind,
             ..
         } => {
+            // The target is borrowed to address the actor; the request
+            // arguments are consumed into the message wrapper.
             for argument in args {
-                let ArgumentTransfer::Move(source) = argument else {
+                let (ArgumentTransfer::Borrow(source) | ArgumentTransfer::Move(source)) = argument
+                else {
                     return Err(PhysicalError::new("ask must consume its complete request"));
                 };
                 initialized(function, &state, *source, block, "ask request")?;
-                consume_if_owned(function, &mut state, *source)?;
+                if matches!(argument, ArgumentTransfer::Move(_)) {
+                    consume_if_owned(function, &mut state, *source)?;
+                }
             }
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new("ask cannot replace an active fault"));
@@ -6735,8 +6740,8 @@ fn verify_terminator(
             ..
         } => {
             let target = match args.first() {
-                Some(ArgumentTransfer::Move(source)) => slot(*source)?.ty.clone(),
-                _ => return Err(PhysicalError::new("ask must transfer its target first")),
+                Some(ArgumentTransfer::Borrow(source)) => slot(*source)?.ty.clone(),
+                _ => return Err(PhysicalError::new("ask must borrow its target first")),
             };
             let signature = module
                 .actors
@@ -6750,10 +6755,17 @@ fn verify_terminator(
                     "ask differs from its full protocol signature",
                 ));
             }
-            for (argument, parameter) in args.iter().zip(&signature.params) {
-                let ArgumentTransfer::Move(source) = argument else {
+            for (index, (argument, parameter)) in args.iter().zip(&signature.params).enumerate() {
+                let (ArgumentTransfer::Borrow(source) | ArgumentTransfer::Move(source)) = argument
+                else {
                     return Err(PhysicalError::new("ask must transfer its complete request"));
                 };
+                let borrowed = matches!(argument, ArgumentTransfer::Borrow(_));
+                if borrowed != (index == 0) {
+                    return Err(PhysicalError::new(
+                        "ask borrows its target and transfers its complete request",
+                    ));
+                }
                 if slot(*source)?.ty != parameter.ty {
                     return Err(PhysicalError::new(
                         "ask request field changes its protocol type",

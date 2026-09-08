@@ -1,0 +1,25 @@
+// A generic record whose field is a callable over the record's own type
+// parameter. Instantiating `Gate<i64>` has to substitute `A` inside
+// `fn(A) -> bool`; leaving the field abstract refused type facts for `A`
+// before the whole program could lower.
+//
+// The predicate is moved into the record, so the constructor consumes it:
+// a written callable type carries no copy unless it says `fn[clone]`.
+type Gate<A> {
+    pred: fn(A) -> bool,
+    label: string,
+}
+
+fn gate<A>(consume pred: fn(A) -> bool, label: string) -> Gate<A> {
+    Gate { pred: pred, label: label }
+}
+
+fn main() -> i64 {
+    let even = gate(|x: i64| x % 2 == 0, "even");
+    let long = gate(|s: string| s.len() > 3, "long");
+    println(f"{even.label}:{(even.pred)(4)}");
+    println(f"{even.label}:{(even.pred)(7)}");
+    println(f"{long.label}:{(long.pred)("tree")}");
+    println(f"{long.label}:{(long.pred)("t")}");
+    0
+}

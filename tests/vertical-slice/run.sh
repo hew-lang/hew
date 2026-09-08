@@ -652,6 +652,7 @@ expect_check_fail_contains_without \
 # (`string.repeat` single fresh producer), while the real leak root is the
 # record-free nested concat temp in `first + " " + last`.
 run_accept_expect_stdout "generic_record_string_field"
+run_accept_expect_stdout "generic_record_callable_field"
 run_accept_expect_stdout "nested_string_concat_temp"
 run_accept_expect_stdout "dotted_expression_paths"
 expect_check_fail_contains \

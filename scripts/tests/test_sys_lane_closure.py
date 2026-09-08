@@ -103,8 +103,7 @@ TEST_MODULE = """
 BASE_TOML = """
     stable = ["hew_toy_free", "hew_toy_spawn", "hew_toy_free_wasm", "hew_toy_inert"]
     stable-stdlib = []
-    codegen-stable = []
-    internal = []
+    non-declarable = []
 """
 
 # Valid Rust whose braces are DATA, not syntax. Each of these bodies used to
@@ -164,8 +163,7 @@ LITERAL_BRACE_TOML = """
       "toy_lifetime",
     ]
     stable-stdlib = []
-    codegen-stable = []
-    internal = []
+    non-declarable = []
 """
 
 # A body that genuinely does not balance. There is no correct closure for this
@@ -199,8 +197,7 @@ CFG_FIELD_CRATE = """
 CFG_FIELD_TOML = """
     stable = ["hew_toy_cfg_field"]
     stable-stdlib = []
-    codegen-stable = []
-    internal = []
+    non-declarable = []
 """
 
 # Generic method names such as `drop` are too ambiguous to form call-graph
@@ -222,8 +219,7 @@ DENYLISTED_ROOT_CRATE = """
 DENYLISTED_ROOT_TOML = """
     stable = ["drop"]
     stable-stdlib = []
-    codegen-stable = []
-    internal = []
+    non-declarable = []
 """
 
 DENYLISTED_EDGE_CRATE = """
@@ -245,8 +241,7 @@ DENYLISTED_EDGE_CRATE = """
 DENYLISTED_EDGE_TOML = """
     stable = ["hew_toy_drop_wrapper"]
     stable-stdlib = []
-    codegen-stable = []
-    internal = []
+    non-declarable = []
 """
 
 

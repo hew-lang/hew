@@ -13,7 +13,7 @@ docs/dev/lsp-editor-setup.md
 docs/diagrams.md
 docs/hew-language-guide.md
 docs/internal/ir-ladder.md
-docs/internal/jit-host-abi.md
+docs/internal/runtime-export-classification.md
 docs/internal/runtime-ownership-table.md
 docs/internal/sir-domain-matrix.md
 docs/internal/versioning.md

@@ -253,9 +253,9 @@ surface that each candidate needs:
   registry entries, timers, and reset hooks behind session-specific runtime
   fields if a later design splits `SchedulerState` out of `Runtime`.
 
-The JIT host ABI classification remains conservative: lifecycle and default
-runtime management symbols stay internal, matching
-`docs/internal/jit-host-abi.md`. JIT-compiled modules should receive only the
+The Runtime export classification remains conservative: lifecycle and default
+runtime management symbols stay non-declarable, matching
+`docs/internal/runtime-export-classification.md`. JIT-compiled modules should receive only the
 stable handle-aware operations they need and the opaque `HewRuntime *` for their
 session.
 

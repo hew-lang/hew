@@ -1,11 +1,11 @@
 //! Inventory gate: every `stdlib_catalog` builtin with a runtime symbol must
-//! appear in the `stable` section of `scripts/jit-symbol-classification.toml`.
+//! appear in the `stable` section of `scripts/runtime-export-classification.toml`.
 //!
 //! This test prevents silent drift where a catalog row names a symbol that is
 //! either misspelled, removed from the runtime, or never classified.
 //!
-//! Authority: the `stable` list in `scripts/jit-symbol-classification.toml`
-//! covers every `#[no_mangle] extern "C"` symbol that JIT modules may
+//! Authority: the `stable` list in `scripts/runtime-export-classification.toml`
+//! covers every `#[no_mangle] extern "C"` symbol that generated native modules may
 //! reference directly. This is a superset of `known_runtime_symbols` (which is the
 //! MIR-emitter subset). We validate against `stable` here because:
 //!
@@ -18,7 +18,7 @@
 //!   entirely inside the codegen backend (LLVM ops). They always pass.
 //!
 //! When a symbol is missing from `stable`, it either needs to be added to
-//! `scripts/jit-symbol-classification.toml` or the catalog row's linkage
+//! `scripts/runtime-export-classification.toml` or the catalog row's linkage
 //! is wrong.
 
 use hew_hir::stdlib_catalog::{entries, BuiltinLinkage};
@@ -31,9 +31,9 @@ use std::collections::HashSet;
 /// TOML parser.
 ///
 /// WHY: avoids adding a toml crate test-dep; the format has been stable since
-/// the file was introduced and is enforced by the verifier (scripts/verify-jit-symbols.sh).
+/// the file was introduced and is enforced by the runtime export verifier (scripts/verify-ffi-symbols.py).
 fn parse_stable_symbols() -> HashSet<String> {
-    let raw = include_str!("../../../scripts/jit-symbol-classification.toml");
+    let raw = include_str!("../../../scripts/runtime-export-classification.toml");
     let mut inside = false;
     let mut symbols = HashSet::new();
 
@@ -43,7 +43,7 @@ fn parse_stable_symbols() -> HashSet<String> {
             inside = true;
             continue;
         }
-        // The internal list starts after stable; stop at the next `]` that
+        // The stable list ends at the next `]` that
         // closes the stable section (it's always on its own line).
         if inside && trimmed == "]" {
             break;
@@ -68,7 +68,7 @@ fn catalog_runtime_symbols_are_classified() {
     let stable = parse_stable_symbols();
     assert!(
         !stable.is_empty(),
-        "failed to parse any symbols from scripts/jit-symbol-classification.toml — \
+        "failed to parse any symbols from scripts/runtime-export-classification.toml — \
          check that the file exists and the stable = [ ] block is intact"
     );
 
@@ -85,10 +85,10 @@ fn catalog_runtime_symbols_are_classified() {
             // intercepted in codegen by callee name and never declare an LLVM
             // extern of their own. Always considered classified.
             // CompilerIntrinsic / CalleeNameDispatchOnly entries do not name a
-            // C-ABI symbol exposed at the JIT host boundary; LayoutDescriptorSymbol
+            // C-ABI symbol exposed at the generated-code host boundary; LayoutDescriptorSymbol
             // entries name `#[no_mangle] pub static` descriptors in
             // `hew-runtime/src/layout_intrinsics.rs`, not extern "C" fns, and the
-            // JIT-symbol-classification gate only enumerates fn exports (see
+            // runtime export classification gate only enumerates fn exports (see
             // `scripts/verify-ffi-symbols.py:4`). All three are out of scope here.
             BuiltinLinkage::CompilerIntrinsic { .. }
             | BuiltinLinkage::CalleeNameDispatchOnly
@@ -104,7 +104,7 @@ fn catalog_runtime_symbols_are_classified() {
                     if !stable.contains(sym) {
                         failures.push(format!(
                             "catalog row `{}` (linkage symbol `{sym}`) is not in the \
-                             `stable` section of scripts/jit-symbol-classification.toml",
+                             `stable` section of scripts/runtime-export-classification.toml",
                             entry.name,
                         ));
                     }
@@ -116,7 +116,7 @@ fn catalog_runtime_symbols_are_classified() {
         if !stable.contains(symbol) {
             failures.push(format!(
                 "catalog row `{}` (linkage symbol `{}`) is not in the \
-                 `stable` section of scripts/jit-symbol-classification.toml",
+                 `stable` section of scripts/runtime-export-classification.toml",
                 entry.name, symbol
             ));
         }
@@ -127,7 +127,7 @@ fn catalog_runtime_symbols_are_classified() {
         panic!(
             "{} catalog row(s) name a runtime symbol absent from the classification table:\n  {}\n\n\
              To fix: add each missing symbol to the `stable` list in \
-             scripts/jit-symbol-classification.toml, or correct the catalog linkage.",
+             scripts/runtime-export-classification.toml, or correct the catalog linkage.",
             failures.len(),
             list
         );

@@ -3488,6 +3488,32 @@ mod tests {
     }
 
     #[test]
+    fn check_file_accepts_shipped_directory_peer_reimports() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root")
+            .to_path_buf();
+        let dir = tempfile::tempdir().expect("create peer-reimport fixture");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.net.http;\n\
+             import std.net.http.http_client;\n\n\
+             fn main() {}\n",
+        );
+
+        check_file(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                module_search_paths: Some(vec![repo_root]),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("reimporting a shipped directory peer must not duplicate declarations");
+    }
+
+    #[test]
     fn user_directory_peer_import_keeps_requested_module_owner() {
         let dir = tempfile::tempdir().expect("create module-owner fixture");
         let module_dir = dir.path().join("greeting");

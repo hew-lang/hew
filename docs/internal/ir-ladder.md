@@ -1695,7 +1695,7 @@ three are not read as contradictory.
 
 **`hew-mir/src/runtime_symbols.rs` is the only symbol table** [decision, plan
 §6], and it carries both halves of a symbol's row: the spelling and its
-ownership. The FFI ownership TOML (`scripts/jit-symbol-classification.toml`) is
+ownership. The FFI ownership TOML (`scripts/runtime-export-classification.toml`) is
 the source text an author edits and is **generated into** `runtime_symbols.rs`
 [P1], the way `hew-types/build.rs:52` `generate_ffi_ownership_table` already
 generates `ffi_contracts::FFI_OWNERSHIP_CONTRACTS` from it (`:60-118`) — never
@@ -2354,7 +2354,7 @@ extern `Pointer` types keep today's Copy verdict (`ty.rs:1452-1459` lists
 
 ### 6.4 FFI / runtime ownership table (produced by another lane)
 
-Every C-ABI symbol has a row in `scripts/jit-symbol-classification.toml`,
+Every C-ABI symbol has a row in `scripts/runtime-export-classification.toml`,
 generated into `hew-mir/src/runtime_symbols.rs` — the one symbol table (§5.1) —
 and projected to `hew_types::ffi_contracts::ExternOwnershipContract { params:
 [Borrow | Consume | Retain], result: Fresh | Retained | Borrowed | None,
@@ -2695,7 +2695,7 @@ leaf (§5.1, §5.2 item 7) [P4].
 
 Not deleted (kept as authorities): `hew-mir/src/runtime_symbols.rs` — **the one
 symbol table**, spelling and ownership row together (§5.1), with
-`scripts/jit-symbol-classification.toml` kept as the source text generated into
+`scripts/runtime-export-classification.toml` kept as the source text generated into
 it [P1] and `hew-types/src/ffi_contracts.rs` kept as the generator's other
 output; `callee_ownership_contract` and `CalleeOwnershipContract` inside that
 same file are **deleted** with the legacy lowerer [P5], because a spelling-keyed

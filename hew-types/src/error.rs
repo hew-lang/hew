@@ -1028,11 +1028,11 @@ pub enum TypeErrorKind {
         msg_id: u32,
     },
     /// An `extern "rt"` function declaration names a symbol that is not in
-    /// the `stable` section of `scripts/jit-symbol-classification.toml`.
+    /// the `stable` section of `scripts/runtime-export-classification.toml`.
     ///
-    /// `extern "rt"` is the user-facing surface for JIT-runtime functions that
+    /// `extern "rt"` is the user-facing surface for runtime functions that
     /// the Hew compiler validates at check time. Only symbols in the `stable`
-    /// classification are legal `extern "rt"` targets; `internal` symbols are
+    /// classification are legal `extern "rt"` targets; `non-declarable` symbols are
     /// scheduler/lifecycle-only and must not be named in user code.
     ///
     /// Envelope code: `E_EXTERN_RT_SYMBOL_UNCLASSIFIED`.

@@ -17,7 +17,8 @@ use crate::extern_symbol::{ExternSymbolTemplate, TemplateSegment};
 use crate::ty::Ty;
 
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
-const RUNTIME_SYMBOL_CATALOG: &str = include_str!("../../scripts/jit-symbol-classification.toml");
+const RUNTIME_SYMBOL_CATALOG: &str =
+    include_str!("../../scripts/runtime-export-classification.toml");
 
 /// The runtime ABI class of one `Vec<T>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

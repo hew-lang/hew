@@ -20,9 +20,10 @@ IO_RUNTIME_FFI_FILES = (
     "io_time.rs",
     "transport.rs",
 )
-CODEGEN_STABLE_IO_EXPORTS = {
+NON_DECLARABLE_IO_EXPORTS = {
     "hew_conn_await_read",
     "hew_listener_await_accept",
+    "hew_stream_pipe_native",
 }
 C_UNWIND_MACHINE_EMIT_EXPORTS = {
     "hew_machine_emit_step_enter",
@@ -70,11 +71,11 @@ def run_script(*args: str) -> subprocess.CompletedProcess[str]:
 
 def ownership_errors_for_source(source: str) -> list[str]:
     with tempfile.TemporaryDirectory() as directory:
-        classification_path = Path(directory) / "jit-symbol-classification.toml"
+        classification_path = Path(directory) / "runtime-export-classification.toml"
         classification_path.write_text(source, encoding="utf-8")
         with mock.patch.object(
             verify_ffi_symbols,
-            "JIT_SYMBOL_CLASSIFICATION",
+            "RUNTIME_EXPORT_CLASSIFICATION",
             classification_path,
         ):
             classification = verify_ffi_symbols.load_jit_symbol_classification()
@@ -100,18 +101,64 @@ def test_classify_stable_outputs_sorted_names_only() -> None:
     assert "hew_sched_init" not in lines
 
 
-def test_classify_internal_outputs_sorted_names_only() -> None:
-    result = run_script("--classify", "internal", "--validate")
+def test_classify_non_declarable_outputs_sorted_names_only() -> None:
+    result = run_script("--classify", "non-declarable", "--validate")
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines == sorted(lines)
-    assert "hew_sched_init" not in lines
+    assert "hew_sched_init" in lines
     assert "hew_runtime_cleanup" in lines
     assert "hew_actor_spawn" not in lines
 
-    codegen_result = run_script("--classify", "codegen-stable", "--validate")
-    assert codegen_result.returncode == 0, codegen_result.stderr
-    assert "hew_sched_init" in codegen_result.stdout.splitlines()
+
+def test_missing_non_declarable_tier_is_rejected() -> None:
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    start = source.index("non-declarable = [")
+    end = source.index("\n]", start) + 2
+    malformed_source = source[:start] + source[end:]
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "runtime-export-classification.toml"
+        malformed.write_text(malformed_source, encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "RUNTIME_EXPORT_CLASSIFICATION",
+            malformed,
+        ):
+            try:
+                verify_ffi_symbols.load_jit_symbol_classification()
+            except ValueError as error:
+                assert "missing non-declarable list" in str(error)
+            else:
+                raise AssertionError("missing non-declarable tier must be rejected")
+
+
+def test_legacy_tiers_are_rejected() -> None:
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "runtime-export-classification.toml"
+        malformed.write_text(
+            source.replace(
+                "[sys-lane-closure.authenticated-edges]",
+                "codegen-stable = []\n\n[sys-lane-closure.authenticated-edges]",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "RUNTIME_EXPORT_CLASSIFICATION",
+            malformed,
+        ):
+            try:
+                verify_ffi_symbols.load_jit_symbol_classification()
+            except ValueError as error:
+                assert "unknown classification list(s): codegen-stable" in str(error)
+            else:
+                raise AssertionError("legacy classification tiers must be rejected")
 
 
 def test_validate_covers_every_runtime_export_exactly_once() -> None:
@@ -139,7 +186,7 @@ def test_validate_reports_missing_symbol_with_classification_file_path() -> None
     assert errors == [
         "unclassified runtime exports (1): "
         f"{phantom} "
-        f"(update {verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION})"
+        f"(update {verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION})"
     ]
 
 
@@ -178,10 +225,10 @@ def test_public_host_tiers_require_their_exporting_crate_and_do_not_overlap() ->
     runtime = verify_ffi_symbols.extract_runtime_exports()
     stdlib = verify_ffi_symbols.extract_stdlib_exports()
     original = verify_ffi_symbols.load_jit_symbol_classification()
-    runtime_symbol = min(original["internal"])
+    runtime_symbol = min(original["non-declarable"])
     stdlib_symbol = min(original["stable-stdlib"])
     for old, new, symbol in [
-        ("internal", "public-host", runtime_symbol),
+        ("non-declarable", "public-host", runtime_symbol),
         ("stable-stdlib", "public-host-stdlib", stdlib_symbol),
     ]:
         classification = {tier: set(symbols) for tier, symbols in original.items()}
@@ -221,10 +268,9 @@ def test_io_runtime_exports_are_jit_stable() -> None:
         io_exports.update(pattern.findall(source))
 
     assert io_exports
-    assert not (io_exports & classification["internal"])
-    assert io_exports & classification["codegen-stable"] == CODEGEN_STABLE_IO_EXPORTS
-    assert io_exports - CODEGEN_STABLE_IO_EXPORTS <= classification["stable"]
-    assert "hew_shutdown_initiate" in classification["internal"]
+    assert io_exports & classification["non-declarable"] == NON_DECLARABLE_IO_EXPORTS
+    assert io_exports - NON_DECLARABLE_IO_EXPORTS <= classification["stable"]
+    assert "hew_shutdown_initiate" in classification["non-declarable"]
 
 
 def test_c_unwind_machine_emit_exports_are_classified() -> None:
@@ -236,8 +282,8 @@ def test_c_unwind_machine_emit_exports_are_classified() -> None:
         "hew_machine_emit_step_enter",
         "hew_machine_emit_step_exit_keep",
         "hew_machine_emit_take",
-    } <= classification["codegen-stable"]
-    assert "hew_machine_emit_step_exit" in classification["internal"]
+    } <= classification["non-declarable"]
+    assert "hew_machine_emit_step_exit" in classification["non-declarable"]
 
 
 def test_local_pid_runtime_surface_is_jit_stable() -> None:
@@ -246,8 +292,7 @@ def test_local_pid_runtime_surface_is_jit_stable() -> None:
 
     assert LOCAL_PID_STABLE_EXPORTS <= runtime_exports
     assert LOCAL_PID_STABLE_EXPORTS <= classification["stable"]
-    assert not (LOCAL_PID_STABLE_EXPORTS & classification["codegen-stable"])
-    assert not (LOCAL_PID_STABLE_EXPORTS & classification["internal"])
+    assert not (LOCAL_PID_STABLE_EXPORTS & classification["non-declarable"])
 
     # The withdrawn pair must stay out of reach of `extern "rt"`: they are real
     # runtime exports, but not user-declarable in any tier.
@@ -258,7 +303,7 @@ def test_local_pid_runtime_surface_is_jit_stable() -> None:
 
 def test_string_to_bytes_transfer_contract_is_exact() -> None:
     document = tomllib.loads(
-        verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
             encoding=verify_ffi_symbols.SOURCE_ENCODING
         )
     )
@@ -274,7 +319,7 @@ def test_string_to_bytes_transfer_contract_is_exact() -> None:
 
 
 def test_owned_result_requires_release_without_claiming_a_refcount_share() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     old = (
@@ -314,7 +359,7 @@ def test_owned_result_requires_release_without_claiming_a_refcount_share() -> No
 
 
 def test_malformed_string_to_bytes_retention_fails_verification() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     good = (
@@ -332,11 +377,11 @@ def test_malformed_string_to_bytes_retention_fails_verification() -> None:
     assert source.count(good) == 1, "fixture must target exactly one contract row"
 
     with tempfile.TemporaryDirectory() as directory:
-        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed = Path(directory) / "runtime-export-classification.toml"
         malformed.write_text(source.replace(good, bad), encoding="utf-8")
         with mock.patch.object(
             verify_ffi_symbols,
-            "JIT_SYMBOL_CLASSIFICATION",
+            "RUNTIME_EXPORT_CLASSIFICATION",
             malformed,
         ):
             classification = verify_ffi_symbols.load_jit_symbol_classification()
@@ -359,7 +404,7 @@ def test_malformed_string_to_bytes_retention_fails_verification() -> None:
 
 
 def test_transferred_result_with_resource_basis_fails_verification() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     transferred = (
@@ -381,7 +426,7 @@ def test_transferred_result_with_resource_basis_fails_verification() -> None:
 
 
 def test_resource_transfer_without_body_basis_fails_verification() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     basis = (
@@ -398,7 +443,7 @@ def test_resource_transfer_without_body_basis_fails_verification() -> None:
 
 
 def test_unmeasured_resource_result_is_accepted_without_mint_authority() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     measured = (
@@ -414,7 +459,7 @@ def test_unmeasured_resource_result_is_accepted_without_mint_authority() -> None
 
 
 def test_malformed_resource_result_type_fails_verification() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     good = (
@@ -430,11 +475,11 @@ def test_malformed_resource_result_type_fails_verification() -> None:
     assert source.count(good) == 1, "fixture must target exactly one contract row"
 
     with tempfile.TemporaryDirectory() as directory:
-        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed = Path(directory) / "runtime-export-classification.toml"
         malformed.write_text(source.replace(good, bad), encoding="utf-8")
         with mock.patch.object(
             verify_ffi_symbols,
-            "JIT_SYMBOL_CLASSIFICATION",
+            "RUNTIME_EXPORT_CLASSIFICATION",
             malformed,
         ):
             classification = verify_ffi_symbols.load_jit_symbol_classification()
@@ -457,7 +502,7 @@ def test_malformed_resource_result_type_fails_verification() -> None:
 
 
 def test_malformed_resource_param_types_fails_verification() -> None:
-    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+    source = verify_ffi_symbols.RUNTIME_EXPORT_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
     )
     good = 'resource-param-types = ["std.fs.FileReadStream"]'
@@ -465,11 +510,11 @@ def test_malformed_resource_param_types_fails_verification() -> None:
     assert source.count(good) >= 1, "fixture must target at least one contract row"
 
     with tempfile.TemporaryDirectory() as directory:
-        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed = Path(directory) / "runtime-export-classification.toml"
         malformed.write_text(source.replace(good, bad, 1), encoding="utf-8")
         with mock.patch.object(
             verify_ffi_symbols,
-            "JIT_SYMBOL_CLASSIFICATION",
+            "RUNTIME_EXPORT_CLASSIFICATION",
             malformed,
         ):
             classification = verify_ffi_symbols.load_jit_symbol_classification()
@@ -492,7 +537,9 @@ def test_malformed_resource_param_types_fails_verification() -> None:
 
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
-    test_classify_internal_outputs_sorted_names_only,
+    test_classify_non_declarable_outputs_sorted_names_only,
+    test_missing_non_declarable_tier_is_rejected,
+    test_legacy_tiers_are_rejected,
     test_validate_covers_every_runtime_export_exactly_once,
     test_validate_reports_missing_symbol_with_classification_file_path,
     test_validate_rejects_missing_stable_stdlib_export,

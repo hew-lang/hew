@@ -3,13 +3,13 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-const JIT_CLASSIFICATION_TOML: &str = include_str!("../../scripts/jit-symbol-classification.toml");
+const RUNTIME_EXPORT_CLASSIFICATION_TOML: &str =
+    include_str!("../../scripts/runtime-export-classification.toml");
 const USER_DECLARABLE_BLOCKS: &[&str] = &["stable = [", "stable-stdlib = ["];
 const CLASSIFIED_BLOCKS: &[&str] = &[
     "stable = [",
     "stable-stdlib = [",
-    "codegen-stable = [",
-    "internal = [",
+    "non-declarable = [",
     "public-host = [",
     "public-host-stdlib = [",
 ];
@@ -45,7 +45,9 @@ fn parse_symbol_blocks(source: &'static str, headers: &[&str]) -> HashSet<&'stat
 #[must_use]
 pub fn stable_symbols() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| parse_symbol_blocks(JIT_CLASSIFICATION_TOML, USER_DECLARABLE_BLOCKS))
+    SET.get_or_init(|| {
+        parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, USER_DECLARABLE_BLOCKS)
+    })
 }
 
 /// Whether `symbol` belongs to a classified Hew runtime or stdlib FFI tier.
@@ -56,7 +58,7 @@ pub fn stable_symbols() -> &'static HashSet<&'static str> {
 #[must_use]
 pub fn is_classified_hew_ffi_symbol(symbol: &str) -> bool {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| parse_symbol_blocks(JIT_CLASSIFICATION_TOML, CLASSIFIED_BLOCKS))
+    SET.get_or_init(|| parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, CLASSIFIED_BLOCKS))
         .contains(symbol)
 }
 
@@ -87,7 +89,7 @@ public-host-stdlib = [
     }
 
     #[test]
-    fn stable_and_internal_tiers_are_distinguished() {
+    fn stable_and_non_declarable_tiers_are_distinguished() {
         assert!(stable_symbols().contains("hew_env_get"));
         assert!(is_classified_hew_ffi_symbol("hew_actor_cooperate"));
         assert!(!stable_symbols().contains("hew_actor_cooperate"));

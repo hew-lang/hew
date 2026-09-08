@@ -181,7 +181,7 @@ pub fn vtable_dispatch_oob_message(slot: u32, max: u32) -> String {
 /// condition, so the helper diverges (`-> !`).
 ///
 /// Registered in `hew-mir/src/runtime_symbols.rs`'s allowlist and in
-/// `scripts/jit-symbol-classification.toml`'s `stable` list, per
+/// `scripts/runtime-export-classification.toml`'s `stable` list, per
 /// LESSONS row P0 `boundary-fail-closed`: every codegen-named
 /// symbol must be declared by the runtime ahead of any emission.
 ///
@@ -223,7 +223,7 @@ pub extern "C" fn hew_vtable_dispatch_panic_on_oob(slot: u32, max: u32) -> ! {
 // the buffer.
 //
 // Two ABI symbols, mirrored in `hew-mir/src/runtime_symbols.rs`'s
-// allowlist and `scripts/jit-symbol-classification.toml`'s `stable`
+// allowlist and `scripts/runtime-export-classification.toml`'s `stable`
 // list — same wire path as `hew_vtable_dispatch_panic_on_oob`.
 //
 // FAIL-CLOSED DISCIPLINE

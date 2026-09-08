@@ -1504,7 +1504,7 @@ mod assoc_types_slice2 {
     // ── extern "rt" validation ─────────────────────────────────────────────────
     //
     // `extern "rt"` declares JIT-visible runtime functions. Every symbol must
-    // appear in the `stable` section of scripts/jit-symbol-classification.toml.
+    // appear in the `stable` section of scripts/runtime-export-classification.toml.
     // Unclassified symbols produce `ExternRtSymbolUnclassified`; classified
     // symbols are accepted. `extern "C"` is unchanged by this validation.
 
@@ -1568,11 +1568,11 @@ mod assoc_types_slice2 {
         );
     }
 
-    /// A `codegen-stable` symbol must be rejected in `extern "rt"` — it is
+    /// A `non-declarable` symbol must be rejected in `extern "rt"` — it is
     /// compiler-emitted, not user-callable. The checker only accepts `stable`.
     #[test]
     fn extern_rt_codegen_stable_symbol_rejected() {
-        // hew_actor_cooperate is in the codegen-stable tier, not stable.
+        // hew_actor_cooperate is in the non-declarable tier, not stable.
         let extern_item = make_extern_rt_block(&["hew_actor_cooperate"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
@@ -1585,7 +1585,7 @@ mod assoc_types_slice2 {
                 TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                 if symbol_name == "hew_actor_cooperate"
             )),
-            "codegen-stable symbol hew_actor_cooperate must be rejected in \
+            "non-declarable symbol hew_actor_cooperate must be rejected in \
              extern \"rt\"; got: {:?}",
             output.errors
         );
@@ -1595,7 +1595,7 @@ mod assoc_types_slice2 {
     /// `hew_dyn_box_free`) is compiler-emission only. Exposing it as
     /// user-callable would let user code call the free path with a wrong
     /// `(size, align)` pair or with a foreign pointer, producing double-free
-    /// / wrong-layout UB. Both symbols must live in `codegen-stable` and the
+    /// / wrong-layout UB. Both symbols must live in `non-declarable` and the
     /// checker must reject any `extern "rt"` declaration that names them.
     #[test]
     fn extern_rt_dyn_box_symbols_rejected() {
@@ -1612,7 +1612,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == sym
                 )),
-                "codegen-stable symbol {sym} must be rejected in extern \"rt\"; \
+                "non-declarable symbol {sym} must be rejected in extern \"rt\"; \
                  got: {:?}",
                 output.errors
             );
@@ -1625,7 +1625,7 @@ mod assoc_types_slice2 {
     /// calls and manages the slot's manual refcount + cancellation protocol.
     /// Exposing them as user-callable `extern "rt"` surface would let user code
     /// allocate/free/cancel slots out of protocol and corrupt the refcount
-    /// (double-free / use-after-free). All six must live in `codegen-stable` and
+    /// (double-free / use-after-free). All six must live in `non-declarable` and
     /// the checker must reject any `extern "rt"` declaration that names them.
     #[test]
     fn extern_rt_read_slot_lifecycle_symbols_rejected() {
@@ -1649,7 +1649,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == sym
                 )),
-                "codegen-stable read-slot symbol {sym} must be rejected in \
+                "non-declarable read-slot symbol {sym} must be rejected in \
                  extern \"rt\"; got: {:?}",
                 output.errors
             );
@@ -1660,7 +1660,7 @@ mod assoc_types_slice2 {
     /// and `hew_supervisor_nested_get_raw`) are compiler-emitted only — the
     /// codegen translates MIR `hew_supervisor_child_get` / `_nested_get` calls
     /// into these `_raw` variants to avoid the Windows x64 MSVC sret ABI
-    /// mismatch.  Both must live in `codegen-stable` so that user `extern "rt"`
+    /// mismatch.  Both must live in `non-declarable` so that user `extern "rt"`
     /// declarations are rejected by the checker.
     #[test]
     fn extern_rt_supervisor_raw_shims_rejected() {
@@ -1680,7 +1680,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == sym
                 )),
-                "codegen-stable shim {sym} must be rejected in extern \"rt\"; \
+                "non-declarable shim {sym} must be rejected in extern \"rt\"; \
                  got: {:?}",
                 output.errors
             );
@@ -1870,7 +1870,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == setter
                 )),
-                "internal stream-error setter {setter} must be rejected in extern \"rt\"; \
+                "non-declarable stream-error setter {setter} must be rejected in extern \"rt\"; \
                  got: {:?}",
                 output.errors
             );
@@ -2278,8 +2278,8 @@ mod assoc_types_slice2 {
         assert!(
             err.suggestions
                 .iter()
-                .any(|s| s.contains("jit-symbol-classification.toml")),
-            "suggestion must mention jit-symbol-classification.toml; got: {:?}",
+                .any(|s| s.contains("runtime-export-classification.toml")),
+            "suggestion must mention runtime-export-classification.toml; got: {:?}",
             err.suggestions
         );
     }

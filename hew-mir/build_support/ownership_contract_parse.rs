@@ -25,7 +25,7 @@ struct ContractRow {
     /// balanced retained alias, `"resource-transfer"` for an opaque close
     /// authority, and empty when the question has not been answered.
     /// Empty is the fail-closed default — see the `result-retention` section
-    /// of `scripts/jit-symbol-classification.toml`.
+    /// of `scripts/runtime-export-classification.toml`.
     result_retention: String,
     /// Runtime-body evidence for an opaque `resource-transfer`. Kept in the
     /// source table for auditability; it is validated but need not enter the

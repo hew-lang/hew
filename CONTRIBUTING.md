@@ -151,9 +151,8 @@ permanent language restriction to satisfy an old fixture.
 New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with native and WASM behaviour coverage wherever the target supports it. Apply the parity principle in [`docs/internal/engineering-invariants.md`](docs/internal/engineering-invariants.md):
 
 - Exercise supported behavior through shared source corpora and WASI E2E tests. For an intentional platform limitation, add or update the typed feature disposition in `wasm-capability-manifest.toml` and prove its diagnostic with a focused negative test.
-- Classify new runtime exports in `scripts/jit-symbol-classification.toml`
-  and record their target disposition. The filename is historical; it does
-  not imply a user-facing JIT. Source-declarable exports and compiler-private
+- Classify new runtime exports in `scripts/runtime-export-classification.toml`
+  and record their target disposition. Source-declarable exports and compiler-private
   entry points have different contracts. Use the Make-owned ABI checks and
   describe ownership from the actual boundary, not from a symbol count.
 - Add contract tests for timeout, cancel, and budget edges.

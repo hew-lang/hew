@@ -1885,7 +1885,7 @@ mod tests {
     // "the audit says fresh" is a proxy for that, not the answer. This measures
     // it at the real allocation site over a real handshake, and the answer is
     // recorded as `result-retention = "transferred"` on the symbol's
-    // [[ownership.contracts]] row in scripts/jit-symbol-classification.toml.
+    // [[ownership.contracts]] row in scripts/runtime-export-classification.toml.
     //
     // Three probes, all on results obtained from a live stream:
     //

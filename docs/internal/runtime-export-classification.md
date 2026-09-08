@@ -1,70 +1,54 @@
-# JIT host ABI classification
+# Runtime export classification
 
-JIT session dylibs must only see the stable and codegen-stable Hew host ABI.
-Runtime lifecycle and other process-global hooks stay out of the JIT session
-allow-list so a JIT-compiled module cannot reinitialize, drain, or tear down
-shared runtime state.
+This file defines the runtime export classification used by native linking,
+source `extern "rt"` admission, generated-code hosts, and C ABI surface generation.
+Source-declarable exports form the stable API; every other runtime export is
+classified as non-declarable and remains available only to compiler-generated
+code or AOT runtime support.
 
 ## Source of truth
 
-The source of truth lives in `scripts/jit-symbol-classification.toml`.
+The source of truth lives in `scripts/runtime-export-classification.toml`.
 
-We use an out-of-band allow-list instead of inline annotations because the
-same reviewed classification file feeds three consumers:
+The reviewed classification file feeds these consumers:
 
 - `scripts/verify-ffi-symbols.py --classify …`
 - the required CI lint gate (`make verify-ffi`, which runs `--classify stable --validate`)
 - the stable runtime-symbol set consumed by `hew-mir::runtime_symbols` and
-  codegen-rs JIT/runtime lowering
+  codegen-rs runtime lowering
+- the C ABI surface generator and the FFI ownership contract projection
 
-That keeps the ABI review surface centralized while still failing closed: the
-verifier rejects any `#[no_mangle] extern "C" fn` in `hew-runtime/src/` that
-is missing from the file or classified more than once.
+The verifier scans `hew-runtime` and `hew-std` exports and fails closed when an
+export is missing, duplicated, or assigned to the wrong crate.
 
-## Three-tier model
+## Two-tier model
 
 ### `stable`
 
 Handle-oriented, user-visible runtime operations that `extern "rt"` declarations
-in Hew source code may name, and that JIT hosts must expose in their symbol map.
-The type-checker enforces this boundary: any symbol named in an `extern "rt"`
-block that is not in `stable` is a hard compile-time error.
+in Hew source code may name. Generated-code hosts expose these symbols. The type-checker
+enforces this boundary: a symbol named in an `extern "rt"` block must occur in
+`stable` or `stable-stdlib`.
 
-### `codegen-stable`
+### `non-declarable`
 
-Symbols the Hew compiler emits into generated LLVM IR for non-trivial actor
-programs. Examples: cooperate safepoints (`hew_actor_cooperate`), task-scope
-wiring (`hew_task_scope_set_current`), actor-state locking
-(`hew_actor_state_lock_acquire` / `_release`), execution-context access
-(`hew_require_execution_context`), and scheduler bootstrap (`hew_sched_init`).
+Every runtime export that user source cannot name through `extern "rt"`. This
+tier combines compiler-emitted protocol functions such as safepoints,
+task-scope wiring, actor-state locking, execution-context access, and scheduler
+bootstrap with lifecycle, session, shutdown, reset, drain, and runtime-control
+functions. The checker rejects all of them in user declarations.
 
-These symbols are **NOT** user-callable via `extern "rt"`: the checker rejects
-any attempt. They can only appear in compiler-emitted IR. JIT hosts must
-provide them alongside the `stable` tier — a JIT host that loads only `stable`
-will fail to link any non-trivial actor program.
-
-### `internal`
-
-Lifecycle, session/global-state, scheduler shutdown/reset/drain, and
-conservative runtime-control hooks. These are **never JIT-reachable** — not
-by user code and not by compiler-emitted IR. They are AOT-linkable only.
-
-When a runtime export is ambiguous, prefer `internal` first and promote it
-later with an explicit review.
+Hosts that execute compiler-generated modules expose the runtime symbols
+they link; AOT-only lifecycle and process-global functions remain outside the
+generated-module symbol map. The shared tier name records the one property relevant to source
+admission: user code cannot declare these exports.
 
 ## Classification decision flowchart
 
 ```
-Does this symbol produce, install, mutate, observe, or destroy any
-system-lane state?
-  Yes → NOT stable (codegen-stable if the compiler emits it, else internal)
-  No  →
-    Is this symbol named by user extern "rt" blocks?
-      Yes → stable
-      No  →
-        Is this symbol emitted by the Hew compiler into IR?
-          Yes → codegen-stable
-          No  → internal
+Is this a source-declarable runtime operation?
+  Yes → stable (or stable-stdlib for a stdlib export)
+  No  → non-declarable
 ```
 
 ## The system lane is not user-declarable
@@ -98,12 +82,12 @@ name says nothing about the lane (`hew_mailbox_try_recv`).
 Where the privileged and the legitimate question are separable, SPLIT rather
 than remove: `hew_mailbox_has_user_messages` answers "is there work for me"
 from the `stable` tier while the system-aware `hew_mailbox_has_messages` stays
-`internal`. Where they are not separable — destruction is not — the whole
+`non-declarable`. Where they are not separable — destruction is not — the whole
 symbol moves, and its constructors move with it *when the object would
 otherwise be stranded*: a raw `hew_mailbox_new` mailbox is owned by nobody but
-its holder, so a `stable` constructor with an `internal` release symbol is a
+its holder, so a `stable` constructor with a `non-declarable` release symbol is a
 leak factory. That is a test about tracking, not a reflex. `hew_actor_free`
-moved to `internal` for the same destruction reason and the spawn family stayed
+moved to `non-declarable` for the same destruction reason and the spawn family stayed
 `stable`, because a spawned actor is runtime-tracked — the live-actor registry,
 the scheduler and the supervision tree all hold it, and `hew_runtime_cleanup`,
 `hew_actor_group_destroy` and supervisor teardown reclaim it — so withholding
@@ -114,7 +98,7 @@ VALUE, not the ORIGIN, and is not a substitute. The legitimate producers are
 runtime paths whose event is authenticated by a transition they perform
 themselves — `hew_actor_trap` CAS-transitions the child terminal before
 notifying its supervisor — not entry points that accept a composed event.
-`hew_actor_trap` is itself `internal` for that reason: it took the subject
+`hew_actor_trap` is itself `non-declarable` for that reason: it took the subject
 (`actor`) and the reason (`error_code`) from its own arguments, so as a
 `stable` symbol it *was* an entry point that accepts a composed event. What
 makes the remaining call sites authenticated is that none of them is
@@ -127,13 +111,13 @@ That is the general case, but not the whole of it. When the peer is ALREADY
 terminal, installation has no later death to wait for, so it synthesizes the
 signal the contract owes immediately — and the destination is the runtime
 ABI's first argument. The raw 2-arg `hew_actor_link` / `hew_actor_monitor` are
-therefore `codegen-stable`, not `stable`: the user surface is 1-arg, and
+therefore `non-declarable`, not `stable`: the user surface is 1-arg, and
 `hew-mir/src/lower/actor.rs` synthesizes `hew_actor_self()` as arg0 for every
 call it emits, so the destination is structurally the CALLING actor and a
 program can only cause its own actor to receive a signal it just asked for.
 `link_monitor_subject_is_always_the_self_handle` asserts that over every form
 the lowering emits. The stable-pid forwarders `hew_local_pid_link` /
-`hew_local_pid_monitor` moved to `internal` with them; the `_unlink` /
+`hew_local_pid_monitor` moved to `non-declarable` with them; the `_unlink` /
 `_demonitor` siblings stay `stable`, because removing a registration produces
 no signal.
 
@@ -177,7 +161,7 @@ is a symbol that can reach the system queue without appearing in the closure,
 which is the same defect class the gate exists to remove.
 
 Escapes live in `[sys-lane-closure.authenticated-edges]` and
-`[sys-lane-closure.non-roots]` in `scripts/jit-symbol-classification.toml`.
+`[sys-lane-closure.non-roots]` in `scripts/runtime-export-classification.toml`.
 Each needs a written reason, each is checked for staleness, and an
 authenticated edge clears exactly one caller→callee pair — a *new* caller of
 the same callee still fails. An authenticated edge's **caller must not itself
@@ -200,16 +184,17 @@ including `hew_actor_free` — the very symbol the transitive rule was written t
 catch. What the waiver can honestly say is "the runtime, not the caller, chose
 to reclaim this actor", and that sentence is false for a destructor a user
 `extern "rt"` block may name and point at any actor it holds. So
-`hew_actor_free` is `internal`, and the waiver covers only the routes where the
+`hew_actor_free` is `non-declarable`, and the waiver covers only the routes where the
 sentence is true: spawn rollback, `hew_exit` / runtime cleanup, and supervisor
-and group teardown. `hew_supervisor_remove_child` moved to `internal` for the
+and group teardown. `hew_supervisor_remove_child` moved to `non-declarable` for the
 same reason and at the same limit: it reached the raw destructor on a
 caller-selected child index, and supervisor ownership does not change what the
 call reaches. Run `python3 scripts/sys-lane-closure.py --explain
 hew_actor_free` after deleting the edge to see the witness path this reasoning
 is about.
 
-## JIT host requirements
+## Host requirements
 
-A compliant JIT host **must** expose `stable ∪ codegen-stable`. The `internal`
-tier must never appear in a JIT session symbol map.
+A compliant host exposes the stable symbols required by its generated module.
+The non-declarable tier is never a source declaration surface; AOT-only symbols
+remain outside a generated-module symbol map.

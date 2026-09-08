@@ -1816,7 +1816,7 @@ coverage-branch:
 
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Validates that every hew-runtime #[no_mangle] export is classified in
-# scripts/jit-symbol-classification.toml (stable vs internal).
+# scripts/runtime-export-classification.toml (stable vs non-declarable).
 
 LINT_GATES += verify-ffi
 verify-ffi: cabi-surface-check
@@ -1845,7 +1845,7 @@ test-cabi-surface:
 
 LINT_GATES += verify-sys-lane-closure
 # ── System-lane closure ────────────────────────────────────────────────────
-# docs/internal/jit-host-abi.md forbids any `stable` symbol from producing,
+# docs/internal/runtime-export-classification.md forbids any `stable` symbol from producing,
 # installing, mutating, observing or destroying system-lane state. That is a
 # property of the transitive CALL GRAPH, not of a symbol's own body: four
 # hand-audits of the stable tier produced four different answers because each

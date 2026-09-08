@@ -1,6 +1,6 @@
 //! Machine-checked ownership facts for C-ABI extern symbols.
 //!
-//! `scripts/jit-symbol-classification.toml` is the single source of truth.
+//! `scripts/runtime-export-classification.toml` is the single source of truth.
 //! `hew-types/build.rs` projects it here so HIR can validate an extern
 //! resource boundary before MIR lowering, while MIR consumes the exact same
 //! table through its re-export.  An absent row is deliberately not a borrow.

@@ -9800,9 +9800,9 @@ impl Checker {
         reason = "extern registration validates ABI authority and records lifecycle provenance"
     )]
     pub(super) fn register_extern_block(&mut self, eb: &ExternBlock, block_span: &Span) {
-        // `extern "rt"` is the Hew-side declaration surface for JIT-visible
-        // runtime functions. Validate each declared symbol against the `stable`
-        // section of scripts/jit-symbol-classification.toml. Fail-closed: an
+        // `extern "rt"` is the Hew-side declaration surface for runtime
+        // functions. Validate each declared symbol against the `stable`
+        // section of scripts/runtime-export-classification.toml. Fail-closed: an
         // unclassified symbol is a hard error so the failure surfaces at check
         // time rather than at link time or (worse) silently routing to a wrong
         // runtime entry.
@@ -9820,32 +9820,31 @@ impl Checker {
                             symbol_name: f.name.clone(),
                             hint: format!(
                                 "add `\"{}\"` to the `stable` list in \
-                                 scripts/jit-symbol-classification.toml, \
+                                 scripts/runtime-export-classification.toml, \
                                  or use `extern \"C\"` for raw FFI symbols \
-                                 that are not part of the Hew JIT runtime ABI",
+                                 that are not part of the Hew runtime export ABI",
                                 f.name
                             ),
                         },
                         span: f.span.clone(),
                         message: format!(
-                            "`extern \"rt\" fn {}` names a symbol not in the JIT \
-                             runtime stable ABI — only symbols classified as `stable` \
-                             in scripts/jit-symbol-classification.toml may appear in \
+                            "`extern \"rt\" fn {}` names a symbol outside the stable \
+                             runtime export ABI — only symbols classified as `stable` \
+                             in scripts/runtime-export-classification.toml may appear in \
                              `extern \"rt\"` blocks",
                             f.name
                         ),
                         notes: vec![(
                             f.span.clone(),
-                            "The `internal` classification covers lifecycle/shutdown \
-                             symbols; `codegen-stable` covers compiler-emitted symbols \
-                             (e.g. cooperate safepoints, actor-state locks). Neither \
-                             may be named by user code in `extern \"rt\"` blocks."
+                            "The `non-declarable` classification covers compiler-emitted, \
+                             lifecycle, and shutdown symbols. None of these may be named \
+                             by user code in `extern \"rt\"` blocks."
                                 .to_string(),
                             self.current_module.clone(),
                         )],
                         suggestions: vec![format!(
                             "add `\"{}\"` to the `stable` list in \
-                             scripts/jit-symbol-classification.toml",
+                             scripts/runtime-export-classification.toml",
                             f.name
                         )],
                         source_module: self.current_module.clone(),
@@ -10564,7 +10563,7 @@ impl Checker {
                         let module_full_path = canonical_owner.clone();
                         self.register_resolved_stdlib_hew_source(
                             decl,
-                            &module_path,
+                            &module_full_path,
                             &short,
                             &module_full_path,
                             resolved_items,
@@ -10666,7 +10665,7 @@ impl Checker {
                 // definition errors.  The `registered_stdlib_hew_sources` set tracks
                 // by canonical `module_path` so all `import std::fs` ImportDecls
                 // collapse to the same key.
-                if self.stdlib_hew_source_already_registered(decl, &module_path) {
+                if self.stdlib_hew_source_already_registered(decl, &full_dot_path) {
                     // Global declaration registration is deliberately deduped,
                     // but each importing scope still needs its own selected
                     // bare bindings. This path is reached when a transitive

@@ -4351,13 +4351,11 @@ impl Checker {
     /// Wired methods (the actor surface, NOT the channel surface):
     ///   - `.send(msg: M)` → `Result<(), SendError>` (tell-shaped, R = ()) or
     ///     `Result<R, AskError>` (ask-shaped). Verifies `M: @send`. Secondary
-    ///     surface to the canonical call-syntax `handle(msg)`; both route
-    ///     to `hew_lambda_actor_send` at MIR.
+    ///     surface to the canonical call-syntax `handle(msg)`.
     ///   - `.close()` → `()` — consuming; moves the handle. Deliberately returns
     ///     plain `()` rather than `Result<(), CloseError>` (unlike `Duplex::close`):
     ///     the lambda-actor release is unconditionally successful, and the
-    ///     `CloseError` layout is not yet codegen-able. Lowers to
-    ///     `hew_lambda_actor_release`.
+    ///     `CloseError` layout is not yet codegen-able.
     ///
     /// `.recv()` / `.try_recv()` / `.try_send()` / `.send_half()` / `.recv_half()`
     /// are NOT a lambda-actor surface: a lambda actor is not a channel. The caller
@@ -4416,8 +4414,8 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-send entry hint; MIR's `lower_duplex_send`
-                // re-routes a lambda-actor handle to `hew_lambda_actor_send`.
+                // Records the duplex-send entry hint; MIR selects the real
+                // delivery from the receiver's handle type.
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
                 // Return type depends on reply direction, mirroring call-syntax dispatch:
                 //   tell-shaped (R = ())  → Result<(), SendError>
@@ -4447,10 +4445,8 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-close rewrite symbol. MIR's
-                // `lower_duplex_close` routes a lambda-actor handle to
-                // `hew_lambda_actor_release` (the lambda stop-on-last-drop
-                // ritual) and anything else to the raw `Duplex` close.
+                // Records the duplex-close rewrite symbol. MIR selects the
+                // real release from the receiver's handle type.
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
                 // Consuming: the LambdaPid<M, R> binding is moved.
                 self.method_call_consumes_receiver

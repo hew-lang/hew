@@ -1572,6 +1572,58 @@ fn main() {
 
 Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, ActorError>` like any ask.
 
+### Lambda actors — `actor |params| { .. }`
+
+An `actor |params| { .. }` expression declares an actor with no source name.
+Its captures become the actor's state, its body becomes its one handler, and
+it evaluates to a `LambdaPid<Msg, Reply>` handle.
+
+```hew
+fn main() {
+    let factor = 3;
+    let scale = actor |n: i64| -> i64 {
+        return n * factor;
+    };
+    match scale(7) {
+        .Ok(v) => println(v),
+        .Err(_) => println("the call failed"),
+    }
+    close(scale);
+}
+```
+
+Calling the handle is the completion call: it waits for the handler and yields
+`Result<R, ActorError>`, exactly as a call on a named actor's pid does. A
+multi-parameter lambda is called with one argument per parameter.
+
+A `LambdaPid<Msg, Reply>` is an ordinary value. Store it in a record field or a
+`Vec` and call it where it is stored; a handle read out of a collection is
+borrowed, and the call addresses the actor through the borrow without taking
+it. `close(handle)` stops the actor and waits for its terminal cleanup, and
+`closed(handle)` observes a stop someone else requested.
+
+Both delivery views apply to a lambda handle. `mailbox(handle, on_full: ..)`
+submits one way, so it accepts only a lambda that owes its caller nothing; a
+lambda that returns a value is refused there, and the handle itself is how you
+wait for the reply. `policy(handle, on_full: ..)` completes like the handle and
+chooses only how a full mailbox is answered.
+
+```hew
+fn main() {
+    let log = actor |line: string| {
+        println(line);
+    };
+    let inbox = mailbox(log, on_full: .Reject);
+    let _ = inbox("queued");
+    close(log);
+}
+```
+
+A lambda that captures its own handle is refused (`E_RECURSIVE_LAMBDA_ACTOR`):
+the handle and the state seat it would live in own each other. Declare a named
+actor when a handler needs to reach its own actor — inside a named actor's
+body, `self` is that handle.
+
 ### Avoid reference cycles in actor state
 
 Hew has no cycle collector and no weak reference for sendable strong handles.

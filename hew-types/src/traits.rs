@@ -838,11 +838,9 @@ impl TraitRegistry {
             // LambdaPid<M, R>: the user-visible lambda-actor handle.
             // Send/Sync iff BOTH M: Send AND R: Send (message and reply cross
             // the actor boundary).
-            // NOT Copy (move-only resource — last-handle drop stops the actor).
-            // NOT Clone (a lambda actor handle is not split or duplicated by
-            //   cloning; the runtime owns strong/weak ref discipline, §5.9).
-            // Resource: yes — dropping the last handle runs the stop-on-last-
-            //   handle-drop protocol (`hew_lambda_actor_release`).
+            // NOT Clone: a lambda actor handle is not split or duplicated by
+            //   cloning; `close(handle)` is how a program stops the actor.
+            // Resource: yes — the handle carries the actor's lifecycle.
             Ty::Named {
                 builtin: Some(BuiltinType::LambdaPid),
                 args,

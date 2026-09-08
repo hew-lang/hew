@@ -591,8 +591,8 @@ fn duplex_recv_half_twice_fires_use_after_move() {
 
 /// Call-syntax `worker(msg)` and method-syntax `worker.send(msg)` both typecheck
 /// on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`). Both enter the
-/// `hew_duplex_send` rewrite path; MIR re-routes to `hew_lambda_actor_send`
-/// from the handle's `LambdaPid` type.
+/// `hew_duplex_send` rewrite path; MIR selects the real delivery from the
+/// handle's `LambdaPid` type.
 ///
 /// Call-syntax remains canonical; `.send()` is an allowed-secondary surface.
 #[test]
@@ -614,9 +614,8 @@ fn lambda_actor_call_syntax_typechecks() {
 }
 
 /// `.send()` on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`) typechecks
-/// and records `hew_duplex_send` in the rewrite table — the shared send-entry hint
-/// that MIR re-routes to `hew_lambda_actor_send` from the handle's `LambdaPid`
-/// type.
+/// and records `hew_duplex_send` in the rewrite table — the shared send-entry
+/// hint MIR resolves from the handle's `LambdaPid` type.
 #[test]
 fn lambda_actor_dot_send_records_send_entry_rewrite() {
     let source = r"
@@ -636,7 +635,7 @@ fn lambda_actor_dot_send_records_send_entry_rewrite() {
     assert!(
         has_rewrite(&output, "hew_duplex_send"),
         "`.send()` on lambda-actor handle must record the hew_duplex_send entry hint \
-         (MIR re-routes to hew_lambda_actor_send by handle type); got: {:#?}",
+         (MIR resolves the delivery from the handle type); got: {:#?}",
         output.method_call_rewrites
     );
 }

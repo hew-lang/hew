@@ -444,6 +444,51 @@ fn a_completion_call_chain_without_a_cycle_is_accepted() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
+#[test]
+fn self_completion_is_refused_inside_receive_and_private_method_bodies() {
+    for body in [
+        "receive fn run() { let _ = self.done(); }",
+        "receive fn run() { helper(); } fn helper() { let _ = self.done(); }",
+    ] {
+        let output = check_source(&format!(
+            "actor Worker {{ {body} receive fn done() {{}} }} fn main() {{}}"
+        ));
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("a completion call to self waits for the actor turn")),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn self_mailbox_submission_and_calls_to_another_instance_remain_valid() {
+    let output = check_source(
+        "actor Worker { \
+           receive fn run(other: LocalPid<Worker>) { \
+             let _ = mailbox(self, on_full: .Reject).done(); let _ = other.done(); \
+           } \
+           receive fn done() {} \
+         } fn main() {}",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn self_call_prepared_by_select_keeps_its_timeout_escape() {
+    let output = check_source(
+        "actor Worker { \
+           receive fn run() { \
+             select { reply from self.done() => {}, after 1ms => {} } \
+           } \
+           receive fn done() {} \
+         } fn main() {}",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
 /// `policy(..)` is the completion view: its calls wait for the handler exactly
 /// as a bare-handle call does, and the view only chooses the call's admission.
 #[test]

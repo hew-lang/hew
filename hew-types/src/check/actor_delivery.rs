@@ -301,6 +301,27 @@ impl Checker {
             return Ty::Error;
         };
         let through_view = submitting_view.is_some();
+        // Private actor methods share the caller's state seat. Deferred closure
+        // and generator bodies have their own effect identity and do not inherit it.
+        let owns_actor_turn = self.in_actor_handler_context
+            || (self.current_actor_type.is_some()
+                && matches!(
+                    self.effect_graph.current_body,
+                    Some(super::effects::EffectBody::Declaration(_))
+                ));
+        if !through_view
+            && owns_actor_turn
+            && matches!(&receiver.0, Expr::Identifier(name) if name == "self")
+            && !self.suspension_operands.contains(&key)
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a completion call to self waits for the actor turn that is already running; \
+                 use mailbox(self, on_full: .Reject) for a one-way submission"
+                    .into(),
+            );
+        }
         // A `policy(..)` view completes like a bare handle; only its admission
         // behaviour differs, so it selects the call's own policy.
         let completion_policy = delivery::policy_view_parts(&receiver_ty)

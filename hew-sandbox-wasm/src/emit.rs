@@ -364,7 +364,7 @@ impl<'a> PackageEmitter<'a> {
                             parameters: Vec::new(),
                         });
                 }
-                TypeDefKind::Actor | TypeDefKind::Machine => {}
+                TypeDefKind::Actor | TypeDefKind::Supervisor | TypeDefKind::Machine => {}
             }
         }
 

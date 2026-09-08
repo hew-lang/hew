@@ -1769,6 +1769,9 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write("supervisor ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() {
+            self.format_opt_type_params(Some(&decl.type_params));
+        }
         // Emit the config-param clause when present: `supervisor App(config: T)`.
         // Without this, `hew fmt` silently drops the param and breaks all
         // config.field references in the body — a fail-open on the dev-tool surface.
@@ -1821,6 +1824,13 @@ impl<'a> Formatter<'a> {
         self.write(&spec.name);
         self.write(": ");
         self.write(&spec.actor_type);
+        if !spec.type_args.is_empty() {
+            self.write("<");
+            self.comma_sep(&spec.type_args, |formatter, ty| {
+                formatter.format_type_expr(&ty.0);
+            });
+            self.write(">");
+        }
         if !spec.args.is_empty() {
             self.write("(");
             self.comma_sep(&spec.args, |f, (field_name, arg)| {
@@ -5546,6 +5556,24 @@ impl<T> Vec<T> {
     fn fstring_literal_readable_unicode_round_trips() {
         let src = "fn greet(name: string) -> string {\n    f\"bonjour {name} — café\"\n}\n";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn generic_supervisor_and_child_arguments_roundtrip() {
+        let source = "supervisor Group<T: Send>(seed: Vec<T>) { child worker: module.Worker<Vec<T>>(value: seed), }";
+        let formatted = roundtrip(source);
+        let parsed = parse(&formatted);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let Item::Supervisor(supervisor) = &parsed.program.items[0].0 else {
+            panic!("supervisor lost by formatting")
+        };
+        assert_eq!(supervisor.type_params[0].name, "T");
+        assert_eq!(supervisor.type_params[0].bounds[0].name, "Send");
+        assert_eq!(supervisor.children[0].actor_type, "module.Worker");
+        assert!(
+            matches!(&supervisor.children[0].type_args[0].0, TypeExpr::Named { name, type_args: Some(args) } if name == "Vec" && args.len() == 1)
+        );
+        assert_eq!(roundtrip(&formatted), formatted);
     }
 
     // ── supervisor config-param round-trip ───────────────────────────────────

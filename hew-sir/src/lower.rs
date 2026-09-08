@@ -582,7 +582,7 @@ struct InstanceService<'a> {
     actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>, TypeSubstitution)>,
     supervisors: Vec<crate::SemSupervisor>,
     /// Bodies the lowering synthesizes outside the HIR item table.
-    synthetic_sources: HashMap<CallableId, HirFn>,
+    synthetic_sources: HashMap<CallableId, (HirFn, TypeSubstitution)>,
     closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
     closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
     /// Dispatch tables demanded by the erasure sites this module lowered.
@@ -708,12 +708,11 @@ fn concrete_variant_shape(
     };
     builtin.map_or_else(
         || concrete_user_variant_shape(module, enum_ty),
-        |builtin| concrete_builtin_variant_shape(module, enum_ty, args, builtin),
+        |builtin| concrete_builtin_variant_shape(enum_ty, args, builtin),
     )
 }
 
 fn concrete_builtin_variant_shape(
-    module: &HirModule,
     enum_ty: &ResolvedTy,
     args: &[ResolvedTy],
     builtin: hew_types::BuiltinType,
@@ -740,49 +739,35 @@ fn concrete_builtin_variant_shape(
             ));
         }
     }
-    let expected_origin = match builtin {
-        hew_types::BuiltinType::Option => "Option",
-        hew_types::BuiltinType::Result => "Result",
-        _ => {
-            return Err(format!(
-                "builtin `{}` has no payload-variant SIR descriptor",
-                enum_ty.user_facing()
-            ));
-        }
-    };
-    let mut matches = module
-        .enum_layouts
-        .iter()
-        .filter(|layout| layout.key.origin_name == expected_origin && layout.key.type_args == args);
-    let layout = matches.next().ok_or_else(|| {
+    let declaration = builtin.generic_enum().ok_or_else(|| {
         format!(
-            "builtin enum `{}` has no exact HIR specialization layout",
+            "builtin `{}` has no payload-variant SIR declaration",
             enum_ty.user_facing()
         )
     })?;
-    if matches.next().is_some() {
+    if args.len() != declaration.type_params.len() {
         return Err(format!(
-            "builtin enum `{}` has more than one exact HIR specialization layout",
+            "builtin enum `{}` has incorrect type argument arity",
             enum_ty.user_facing()
         ));
     }
-    let variants = layout
+    let variants = declaration
         .variants
         .iter()
         .map(|variant| SemVariant {
-            name: variant.name.clone(),
+            name: variant.name.to_string(),
             fields: variant
-                .field_tys
+                .payload_type_args
                 .iter()
                 .enumerate()
-                .map(|(index, ty)| SemVariantField {
-                    name: index.to_string(),
-                    ty: ty.clone(),
+                .map(|(field, argument)| SemVariantField {
+                    name: field.to_string(),
+                    ty: args[*argument].clone(),
                 })
                 .collect(),
         })
         .collect();
-    Ok((layout.is_indirect, variants))
+    Ok((false, variants))
 }
 
 /// A variant no value can inhabit: one of its payload types has no values.
@@ -1704,6 +1689,10 @@ impl<'a> InstanceService<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each callable instance kind selects its own source and substitution together"
+    )]
     fn input_for_callable(&self, callable: CallableId) -> Result<LoweringInput<'a>, String> {
         let callable_meta = self.callable(callable).cloned().ok_or_else(|| {
             format!(
@@ -1746,8 +1735,13 @@ impl<'a> InstanceService<'a> {
                 },
             });
         }
-        if let Some(function) = self.synthetic_sources.get(&callable) {
-            return Ok(synthetic_input(function.clone(), callable_meta));
+        if let Some((function, substitution)) = self.synthetic_sources.get(&callable) {
+            return Ok(LoweringInput {
+                function: Cow::Owned(function.clone()),
+                callable: callable_meta,
+                substitution: substitution.clone(),
+                source: BodySource::Function,
+            });
         }
         let function = *self
             .table
@@ -2478,16 +2472,6 @@ struct LoweringInput<'a> {
     callable: SemCallable,
     substitution: TypeSubstitution,
     source: BodySource,
-}
-
-/// A body the lowering synthesized itself: no HIR item, no type parameters.
-fn synthetic_input<'a>(function: HirFn, callable: SemCallable) -> LoweringInput<'a> {
-    LoweringInput {
-        function: Cow::Owned(function),
-        callable,
-        substitution: TypeSubstitution::empty(),
-        source: BodySource::Function,
-    }
 }
 
 enum BodySource {

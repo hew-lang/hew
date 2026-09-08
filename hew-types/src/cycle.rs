@@ -282,7 +282,7 @@ fn collect_value_type_edges_for_def<'a>(
                 );
             }
         }
-        TypeDefKind::Actor | TypeDefKind::Machine => {}
+        TypeDefKind::Actor | TypeDefKind::Supervisor | TypeDefKind::Machine => {}
     }
 }
 
@@ -503,7 +503,7 @@ fn collect_instantiated_value_type_fields<'a>(
                 );
             }
         }
-        TypeDefKind::Actor | TypeDefKind::Machine => {}
+        TypeDefKind::Actor | TypeDefKind::Supervisor | TypeDefKind::Machine => {}
     }
 }
 

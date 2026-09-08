@@ -689,12 +689,11 @@ pub(crate) struct BuiltinEnumSpec {
     pub(crate) item_id: ItemId,
     pub(crate) type_params: &'static [&'static str],
     variants: BuiltinEnumVariants,
-    variant_payloads: Option<&'static [&'static [&'static str]]>,
 }
 
 #[derive(Clone, Copy)]
 enum BuiltinEnumVariants {
-    Generic(&'static [&'static str]),
+    Generic(&'static [hew_types::builtin_type::BuiltinEnumVariant]),
     Monomorphic(&'static [BuiltinMonomorphicEnumVariant]),
 }
 
@@ -708,7 +707,9 @@ impl Iterator for BuiltinEnumVariantNames {
 
     fn next(&mut self) -> Option<Self::Item> {
         let name = match self.variants {
-            BuiltinEnumVariants::Generic(variants) => variants.get(self.index).copied(),
+            BuiltinEnumVariants::Generic(variants) => {
+                variants.get(self.index).map(|variant| variant.name)
+            }
             BuiltinEnumVariants::Monomorphic(variants) => {
                 variants.get(self.index).map(|variant| variant.name)
             }
@@ -737,15 +738,14 @@ impl BuiltinEnumSpec {
         }
     }
 
-    fn variant_payload(&self, index: usize) -> &'static [&'static str] {
+    fn variant_payload(&self, index: usize) -> Vec<&'static str> {
         match self.variants {
-            BuiltinEnumVariants::Generic(_) => self
-                .variant_payloads
-                .expect("generic builtin enum must declare variant payloads")
-                .get(index)
-                .copied()
-                .expect("generic builtin enum variant must have a matching payload"),
-            BuiltinEnumVariants::Monomorphic(_) => &[],
+            BuiltinEnumVariants::Generic(variants) => variants[index]
+                .payload_type_args
+                .iter()
+                .map(|parameter| self.type_params[*parameter])
+                .collect(),
+            BuiltinEnumVariants::Monomorphic(_) => Vec::new(),
         }
     }
 }
@@ -762,7 +762,6 @@ const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
     item_id: ItemId(0),
     type_params: &[],
     variants: BuiltinEnumVariants::Generic(&[]),
-    variant_payloads: None,
 };
 /// HIR registration order is observable for duplicate bare variant names:
 /// later specs replace earlier entries in `machine_ctor_registry`.
@@ -840,17 +839,19 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
         type_name: "Option",
         canonical_type_name: "Option",
         item_id: SYNTHETIC_OPTION_ITEM,
-        type_params: &["T"],
-        variants: BuiltinEnumVariants::Generic(&["Some", "None"]),
-        variant_payloads: Some(&[&["T"], &[]]),
+        type_params: BuiltinType::Option.generic_enum().unwrap().type_params,
+        variants: BuiltinEnumVariants::Generic(
+            BuiltinType::Option.generic_enum().unwrap().variants,
+        ),
     };
     specs[1] = BuiltinEnumSpec {
         type_name: "Result",
         canonical_type_name: "Result",
         item_id: SYNTHETIC_RESULT_ITEM,
-        type_params: &["T", "E"],
-        variants: BuiltinEnumVariants::Generic(&["Ok", "Err"]),
-        variant_payloads: Some(&[&["T"], &["E"]]),
+        type_params: BuiltinType::Result.generic_enum().unwrap().type_params,
+        variants: BuiltinEnumVariants::Generic(
+            BuiltinType::Result.generic_enum().unwrap().variants,
+        ),
     };
 
     let mut index = 0;
@@ -863,7 +864,6 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
             item_id,
             type_params: &[],
             variants: BuiltinEnumVariants::Monomorphic(catalog_entry.variants),
-            variant_payloads: None,
         };
         index += 1;
     }
@@ -14729,6 +14729,13 @@ impl LowerCtx {
     fn lower_supervisor(&mut self, decl: &SupervisorDecl, span: Span) -> Option<HirSupervisorDecl> {
         let (declaration, bootstrap_declaration) = self.source_supervisor_declarations(&span)?;
         let strategy = decl.strategy.map(lower_supervisor_strategy);
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            decl.type_params
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
+        );
 
         // Bind the construction-time config params in a fresh scope so the child
         // init-arg exprs lowered below can reference them (`config.field`). Mirror
@@ -14759,24 +14766,20 @@ impl LowerCtx {
                     static_slot += 1;
                     idx
                 };
-                let child_ty = self
-                    .canonical_supervisor_child_ty(&child.actor_type)
-                    .unwrap_or_else(|| {
-                        self.diagnostics.push(
-                            HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: child.actor_type.clone(),
-                                    reason: "supervisor child has no lexical actor authority"
-                                        .to_string(),
-                                },
-                                child.span.clone(),
-                                "a dotted supervisor child must resolve through the checker's \
-                                 exact module binding",
-                            )
-                            .with_source_module(self.current_module_name.clone()),
-                        );
-                        format!("<invalid-supervisor-child:{}>", child.actor_type)
-                    });
+                let child_ty = self.checked_ty(&child.span).cloned().unwrap_or_else(|| {
+                    self.diagnostics.push(
+                        HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: child.actor_type.clone(),
+                                reason: "supervisor child has no checked handle type".to_string(),
+                            },
+                            child.span.clone(),
+                            "supervisor child types must survive checker resolution",
+                        )
+                        .with_source_module(self.current_module_name.clone()),
+                    );
+                    ResolvedTy::Unit
+                });
                 HirSupervisorChild {
                     name: child.name.clone(),
                     ty: child_ty,
@@ -14825,6 +14828,7 @@ impl LowerCtx {
 
         // Pop the param scope now that every child's init-arg expr is lowered.
         self.pop_scope();
+        self.current_fn_type_params = previous_type_params;
 
         Some(HirSupervisorDecl {
             id: self.ids.item(),
@@ -14832,6 +14836,11 @@ impl LowerCtx {
             declaration,
             bootstrap_declaration,
             name: decl.name.clone(),
+            type_params: decl
+                .type_params
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
             params,
             strategy,
             // Decompose the fused `intensity` AST field into the two HIR fields
@@ -23662,82 +23671,6 @@ impl LowerCtx {
                 || format!("{module_binding}.{member}"),
                 |owner| format!("{owner}.{member}"),
             )
-    }
-
-    /// Canonicalize a supervisor child's user-spelled actor type to the
-    /// registered actor identity (`qualified_name()`), so the child's MIR
-    /// actor-layout lookup and the child-handle PID agree.
-    ///
-    /// A supervisor child records its actor type as the raw source spelling
-    /// (`child b: bank.Account` stores `bank.Account`), whose prefix is the
-    /// user's import alias. A module actor's identity is `qualified_name()` =
-    /// `{module_full_path}.{name}` (`hew.bank.Account`), which the MIR actor
-    /// layout keys on. Left raw, the alias-prefixed spelling never matches that
-    /// key and MIR rejects the supervisor with an unknown-actor
-    /// `NotYetImplemented`. Resolve the `alias.Type` prefix through
-    /// `module_import_bindings` — the same table the checker's spawn resolution
-    /// uses — so a supervisor-child handle carries the same identity a spawn
-    /// handle does. Bare spellings follow lexical authority: a current-scope
-    /// declaration wins, then the checker's exact named/aliased import binding,
-    /// then a flattened file-import identity. No globally loaded leaf-name
-    /// fallback participates.
-    fn canonical_supervisor_child_ty(&self, raw: &str) -> Option<String> {
-        if let Some((module_binding, member)) = raw.split_once('.') {
-            let owner = self.module_import_bindings.get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                module_binding.to_string(),
-            ))?;
-            let canonical = format!("{owner}.{member}");
-            return self
-                .actor_type_names
-                .contains(&canonical)
-                .then_some(canonical);
-        }
-        // A flattened file import is syntactically present in the root item
-        // stream, so it also appears root-visible. Its explicit source-owner
-        // alias must therefore be checked before the ordinary current-scope
-        // declaration rung.
-        if self.current_module_name.is_none() {
-            if let Some(canonical) = self.file_import_root_type_aliases.get(raw) {
-                return self
-                    .actor_type_names
-                    .contains(canonical)
-                    .then(|| canonical.clone());
-            }
-        }
-        // A supervisor inside an imported module may name an actor declared in
-        // that same file by its local spelling. The checker supplies the exact
-        // set of actor identities, so qualify only an exact owner/name member;
-        // do not infer an owner by scanning globally loaded leaf names.
-        if let Some(module_full_path) = self.current_module_name.as_deref() {
-            let local_actor = format!("{module_full_path}.{raw}");
-            if self.actor_type_names.contains(&local_actor) {
-                return Some(local_actor);
-            }
-        }
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if self.current_scope_declares_source_type(raw, current_module_is_file_import) {
-            return Some(self.canonical_current_module_record_name(raw));
-        }
-        if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                raw.to_string(),
-            ))
-            .cloned()
-        {
-            return self
-                .actor_type_names
-                .contains(&canonical)
-                .then_some(canonical);
-        }
-        Some(raw.to_string())
     }
 
     /// Whether bare `name` is authored by the scope currently being lowered.
@@ -34635,63 +34568,6 @@ impl Widget {
         assert_eq!(
             ctx.imported_module_member_key("codec", "MAX_READS"),
             "std.net.http.codec.MAX_READS"
-        );
-    }
-
-    #[test]
-    fn supervisor_child_identity_uses_exact_import_owner_and_keeps_root_bare() {
-        let mut ctx = LowerCtx::new(
-            &TypeCheckOutput::default(),
-            MONOMORPHISATION_REGISTRY_CAP,
-            TargetArch::host(),
-        );
-        ctx.module_import_bindings.insert(
-            (None, 0, "left_worker".to_string()),
-            "services.left.worker".to_string(),
-        );
-        ctx.module_import_bindings.insert(
-            (None, 0, "right_worker".to_string()),
-            "services.right.worker".to_string(),
-        );
-        ctx.file_import_root_type_aliases.insert(
-            "FlatWorker".to_string(),
-            "support.nested.worker.FlatWorker".to_string(),
-        );
-        ctx.actor_type_names.extend([
-            "services.left.worker.Worker".to_string(),
-            "services.right.worker.Worker".to_string(),
-            "support.nested.worker.FlatWorker".to_string(),
-        ]);
-
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("left_worker.Worker"),
-            Some("services.left.worker.Worker".to_string()),
-            "a qualified module import must retain the complete checker owner"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("right_worker.Worker"),
-            Some("services.right.worker.Worker".to_string()),
-            "same-leaf actors in nested modules must remain distinct"
-        );
-        assert_ne!(
-            ctx.canonical_supervisor_child_ty("left_worker.Worker"),
-            ctx.canonical_supervisor_child_ty("right_worker.Worker"),
-            "canonicalization must never retry a nested actor by leaf name"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("FlatWorker"),
-            Some("support.nested.worker.FlatWorker".to_string()),
-            "a flattened actor's bare surface must project to its declaration owner"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("RootWorker"),
-            Some("RootWorker".to_string()),
-            "a genuine root actor must keep its bare identity"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("services.left.worker.Worker"),
-            None,
-            "a raw canonical path without a lexical module root must fail closed"
         );
     }
 

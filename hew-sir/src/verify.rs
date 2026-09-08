@@ -1406,10 +1406,10 @@ fn verify_callable_table<'a>(
     let mut supervisor_declarations = HashSet::new();
     for supervisor in &module.supervisors {
         let checked = supervisor.validate(module).and_then(|()| {
-            if supervisor_declarations.insert(&supervisor.declaration) {
+            if supervisor_declarations.insert((&supervisor.declaration, &supervisor.handle_ty)) {
                 Ok(())
             } else {
-                Err("supervisor declaration is repeated".into())
+                Err("supervisor instance is repeated".into())
             }
         });
         if let Err(reason) = checked {

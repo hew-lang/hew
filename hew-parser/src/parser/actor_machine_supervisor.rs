@@ -1108,6 +1108,11 @@ impl Parser<'_> {
         visibility: Visibility,
     ) -> Option<SupervisorDecl> {
         let name = self.expect_ident()?;
+        let type_params = if self.eat(&Token::Less) {
+            self.parse_type_params()?
+        } else {
+            Vec::new()
+        };
 
         // Optional construction-time config params: `supervisor App(config: T)`.
         // Mirrors the actor `init(params)` shape; the child init-arg exprs in the
@@ -1269,6 +1274,11 @@ impl Parser<'_> {
                         actor_type.push('.');
                         actor_type.push_str(&type_name);
                     }
+                    let type_args = if self.eat(&Token::Less) {
+                        self.parse_type_args()?
+                    } else {
+                        Vec::new()
+                    };
 
                     // Parse named init args: `child w: Worker(field: expr, ...)`.
                     // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
@@ -1527,6 +1537,7 @@ impl Parser<'_> {
                     children.push(ChildSpec {
                         name: child_name,
                         actor_type,
+                        type_args,
                         args,
                         restart,
                         wired_to,
@@ -1555,6 +1566,7 @@ impl Parser<'_> {
         Some(SupervisorDecl {
             visibility,
             name,
+            type_params,
             params,
             strategy,
             intensity,

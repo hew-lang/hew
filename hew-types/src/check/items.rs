@@ -80,6 +80,13 @@ impl Checker {
     ///   (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     /// - Any other strategy rejects `pool` decls (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
+        let bounds = self
+            .type_defs
+            .get(&sd.name)
+            .map_or_else(HashMap::new, |definition| definition.bounds.clone());
+        self.current_type_param_bounds
+            .push(TypeParamScope::new(bounds, HashMap::new()));
         // A dotted child type (`child a: bank.Account`) references the
         // module's actor; mark the import used so the program does not get a
         // spurious unused-import warning when the supervisor is the only
@@ -96,9 +103,6 @@ impl Checker {
             }
         }
 
-        // ── 1. Child actor identity ──────────────────────────────────────────
-        self.check_supervisor_child_actor_types(sd, span);
-
         // ── 2. Duplicate child names ─────────────────────────────────────────
         self.check_supervisor_duplicate_children(sd, span);
 
@@ -111,103 +115,65 @@ impl Checker {
         // ── 5. Dependency cycle detection ────────────────────────────────────
         self.check_supervisor_wired_to_cycles(sd, span);
 
-        // ── 6. Permanent children must not have owned-heap state fields ──────
-        self.check_supervisor_permanent_owned_heap(sd, span);
-
         // ── 7. Intensity restart-budget sanity ──────────────────────────────
         self.check_supervisor_intensity(sd, span);
 
         // ── 8. Children must not declare #[every] periodic handlers ──────────
         self.check_supervisor_periodic_children(sd, span);
 
-        // ── 9. Type-check child init-arg expressions against the config
-        //       params, then validate the resolved arg types (byte-copy wall).
-        //       Step 9 binds `sd.params` (the construction-time config params,
-        //       `supervisor App(config: T)`) in a fresh scope and synthesises
-        //       the type of each child init-arg EXPRESSION so a `config.field`
-        //       read resolves through the config struct's record layout and
-        //       lands in `expr_types`. HIR/MIR lowering reads those resolved
-        //       types (`object.ty = Named{config_ty}`, `source_expr.ty = field
-        //       type`) to emit the init-closure thunk; without this step the
-        //       init-arg exprs are never type-checked and `config.field` carries
-        //       no resolved type. The resolved arg type is also what the
-        //       BitCopy wall now validates (a scalar `config.field` passes; an
-        //       owned one is still walled until the owned init thunk lands).
+        // Child construction uses the ordinary spawn contract with retained
+        // config parameters in scope. Each restart repeats this construction.
         self.check_supervisor_init_args(sd, span);
+        self.current_type_param_bounds.pop();
+        self.exit_primary_sig_scope(scope);
     }
 
-    /// Resolve every child through lexical actor authority before HIR/MIR.
-    ///
-    /// This is the fail-closed boundary for unsupported spellings: package
-    /// actors must arrive through a whole-module qualifier or an exact
-    /// named/aliased binding. Merely loading another module that exports the
-    /// same leaf never grants authority, and a local non-actor declaration
-    /// shadows an import instead of silently selecting the foreign actor.
-    fn check_supervisor_child_actor_types(&mut self, sd: &SupervisorDecl, span: &Span) {
-        for child in &sd.children {
-            let child_span = if child.span.is_empty() {
-                span.clone()
-            } else {
-                child.span.clone()
-            };
-            let Some(identity) = self.resolve_supervisor_child_type(&child.actor_type) else {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::UnknownChildActor,
-                    },
-                    child_span,
-                    format!(
-                        "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references \
-                         unknown actor `{}`; import a public actor into this scope or qualify it \
-                         through a module binding",
-                        sd.name, child.name, child.actor_type
-                    ),
-                ));
-                continue;
-            };
-            match self.type_defs.get(&identity) {
-                Some(type_def) if type_def.kind == TypeDefKind::Actor => {}
-                None if self.supervisor_children.contains_key(&identity) => {}
-                Some(_) => self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::ChildNotSupervisable,
-                    },
-                    child_span,
-                    format!(
-                        "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names \
-                         `{}`; the selected declaration `{identity}` is neither an actor nor a \
-                         supervisor",
-                        sd.name, child.name, child.actor_type
-                    ),
-                )),
-                None => self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::UnknownChildActor,
-                    },
-                    child_span,
-                    format!(
-                        "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references \
-                         unknown actor `{}`; import a public actor into this scope or qualify it \
-                         through a module binding",
-                        sd.name, child.name, child.actor_type
-                    ),
-                )),
-            }
+    /// Prove lexical child authority before publishing a typed child handle.
+    fn resolve_checked_supervisor_child(
+        &mut self,
+        supervisor: &SupervisorDecl,
+        child: &hew_parser::ast::ChildSpec,
+        span: &Span,
+    ) -> Option<String> {
+        let child_span = if child.span.is_empty() {
+            span.clone()
+        } else {
+            child.span.clone()
+        };
+        let identity = self.resolve_supervisor_child_type(&child.actor_type);
+        let definition = identity.as_ref().and_then(|name| self.type_defs.get(name));
+        if definition.is_some_and(|definition| {
+            matches!(
+                definition.kind,
+                TypeDefKind::Actor | TypeDefKind::Supervisor
+            )
+        }) || identity
+            .as_ref()
+            .is_some_and(|name| definition.is_none() && self.supervisor_children.contains_key(name))
+        {
+            return identity;
         }
+        let (subkind, message) = if let Some(identity) = identity.filter(|_| definition.is_some()) {
+            (SupervisorErrorKind::ChildNotSupervisable, format!(
+                "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names `{}`; the selected declaration `{identity}` is neither an actor nor a supervisor",
+                supervisor.name, child.name, child.actor_type,
+            ))
+        } else {
+            (SupervisorErrorKind::UnknownChildActor, format!(
+                "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references unknown actor `{}`; import a public actor into this scope or qualify it through a module binding",
+                supervisor.name, child.name, child.actor_type,
+            ))
+        };
+        self.errors.push(TypeError::new(
+            TypeErrorKind::SupervisorError { subkind },
+            child_span,
+            message,
+        ));
+        None
     }
 
-    /// Bind the supervisor's construction-time config params in scope, type-
-    /// check every child's init-arg expressions, and validate the resolved arg
-    /// types against the byte-copy wall.
-    ///
-    /// The config params (`supervisor App(config: T)`) are in scope only for
-    /// the child init-arg expressions (`child cache: Cache(capacity:
-    /// config.size)`), mirroring the actor `init(params)` shape. Each init-arg
-    /// expression is synthesised so `config.field` resolves through the config
-    /// struct's record layout to the field's type and `expr_types` carries both
-    /// the field-access result type and the config-param identifier type — the
-    /// resolved discriminators HIR stamps onto the HIR exprs and MIR reads to
-    /// lower the `ConfigField` init arg.
+    /// Check child construction with the supervisor's retained config in scope.
+    /// Store each complete child handle at its source site for HIR to consume.
     fn check_supervisor_init_args(&mut self, sd: &SupervisorDecl, span: &Span) {
         self.env.push_scope();
 
@@ -230,25 +196,27 @@ impl Checker {
             );
         }
 
-        // Synthesise the type of every child's init-arg expressions so the
-        // resolved types land in `expr_types` (the discriminator HIR/MIR read).
-        // Surfacing real errors here (`config.nonexistent_field`, a config-field
-        // / actor-param type mismatch) is a new user-facing diagnostic.
-        //
-        // Pool children now route their per-member init args through the same
-        // init-closure thunk path as static children (one shared template,
-        // re-run per member), so their init-arg exprs are type-checked here too.
-        // Pool arity is not an init arg at all — it is the `count:` clause,
-        // synthesised by `check_supervisor_pool_count` below.
         for child in &sd.children {
-            for (_arg_name, arg_expr) in &child.args {
-                self.synthesize(&arg_expr.0, &arg_expr.1);
+            let Some(identity) = self.resolve_checked_supervisor_child(sd, child, span) else {
+                continue;
+            };
+            let target = (Expr::Identifier(identity), child.span.clone());
+            let handle = self.check_spawn(&target, &child.type_args, &child.args, &child.span);
+            self.record_type(&child.span, &handle);
+            if let Some(child_ty) = handle.as_actor_handle() {
+                if let Some(children) = self.supervisor_children.get_mut(&sd.name) {
+                    let entries = if child.is_pool {
+                        &mut children.pools
+                    } else {
+                        &mut children.statics
+                    };
+                    if let Some((_, ty)) = entries.iter_mut().find(|(name, _)| name == &child.name)
+                    {
+                        *ty = child_ty.clone();
+                    }
+                }
             }
         }
-
-        // Validate the resolved init-arg types against the byte-copy wall while
-        // the config params are still in scope.
-        self.check_supervisor_init_args_bitcopy(sd, span);
 
         // Validate every pool child's `count:` clause (presence, integer type,
         // positive literal) while config params are still in scope so a
@@ -397,81 +365,6 @@ impl Checker {
         }
     }
 
-    /// Reject supervised child init args unless the actor init-parameter type is
-    /// reproducible by the init-closure restart thunk.
-    ///
-    /// The v0.6 init-closure restart model re-runs every init arg on each
-    /// incarnation: a scalar `config.field` is re-loaded and an owned
-    /// `string`/`bytes` field is deep-cloned per restart, so each child gets a
-    /// fresh, unaliased owned value. After transparent aliases are expanded,
-    /// `ty_is_supervisor_init_reproducible` admits scalars together with
-    /// `string` and `bytes` (the types the thunk has a per-field clone for).
-    /// Owned collections, records, enums, generic, user-defined, and
-    /// `#[resource]` handle types stay walled (fail-closed): their clone-in-thunk
-    /// codegen is not wired (collections/records) or is structurally forbidden
-    /// (re-cloning a handle would alias a live resource).
-    fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
-        for child in &sd.children {
-            // Only children with explicit init args carry init-arg types.
-            if child.args.is_empty() {
-                continue;
-            }
-
-            // Look up the actor's init parameter list.  Unknown actors are
-            // handled elsewhere; skip here to avoid duplicate diagnostics.
-            // The registry is keyed by canonical actor identity; a package-
-            // module child stores the alias-prefixed spelling, so canonicalize
-            // before the lookup or this reproducibility wall silently skips.
-            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
-            let Some(init_params) = self.actor_init_params.get(&child_identity).cloned() else {
-                continue;
-            };
-
-            for (arg_name, _arg_expr) in &child.args {
-                // Find the matching init parameter by name.
-                let Some(param) = init_params.iter().find(|param| param.name == *arg_name) else {
-                    // Missing-param errors are reported elsewhere (wired_to check
-                    // or MIR lowering); skip here.
-                    continue;
-                };
-
-                // The wall is keyed on the actor init-PARAMETER type: that type
-                // is what the child's state field stores, so it is what the
-                // init-closure thunk must re-produce per incarnation. A scalar
-                // param (`capacity: i64`) is reproducible by a load; an owned
-                // `string`/`bytes` by a per-field deep-clone; everything else
-                // stays walled (fail-closed). The arg-EXPRESSION typing that
-                // `config.field` requires happens in `check_supervisor_init_args`'
-                // synthesis pass; this is the param-type gate.
-                let resolved_param_ty = self.normalize_for_use(&param.ty);
-                if !ty_is_supervisor_init_reproducible(&resolved_param_ty) {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::SupervisorError {
-                            subkind: SupervisorErrorKind::InitArgNonBitcopy,
-                        },
-                        param.span.clone(),
-                        format!(
-                            "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
-                             (actor `{}`) passes init arg `{}` of type `{}`; supervised actor \
-                             init args are re-produced by the init-closure restart model on \
-                             every restart. Scalar primitives (`i8`..`u64`, `f32`, `f64`, \
-                             `bool`, `char`) and owned `string` / `bytes` are admitted (the \
-                             thunk loads or deep-clones them per incarnation). Owned \
-                             collections, records, enums, generic, alias, user-defined, and \
-                             `#[resource]` handle types are rejected — their clone-in-thunk \
-                             codegen is not wired (or is structurally forbidden for handles)",
-                            sd.name,
-                            child.name,
-                            child.actor_type,
-                            arg_name,
-                            param.ty.user_facing()
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-
     /// Validate the `intensity: N within <duration>` restart budget: the
     /// restart count must be non-negative and the window must parse to a
     /// positive duration. The parser already guarantees the window is a real
@@ -518,104 +411,6 @@ impl Checker {
                     sd.name, intensity.window
                 ),
             )),
-        }
-    }
-
-    /// Guard against C1 UAF: a supervisor with a permanent restart policy will
-    /// byte-copy `spec.init_state` into the fresh actor on restart.  If the
-    /// actor's state contains an owned-heap field (Vec, String, `HashMap`,
-    /// `HashSet`, Bytes), that byte-copy aliases the pointer from the crashed
-    /// actor, and the next `state_drop_fn` call produces a use-after-free.
-    ///
-    /// This check is a hard compile error per R89 ("stop the compile until we
-    /// can address it").  Full fix (`init_state_clone_fn`) is tracked as
-    /// v0.5.0.1 P0.
-    ///
-    /// EXEMPTION (v0.6 init-closure restart model): a child whose owned field is
-    /// supplied by a REPRODUCIBLE init arg (`name: config.label` where `name` is
-    /// a `string`) takes the init-thunk path — codegen produces the field by a
-    /// per-incarnation deep-clone, not a byte-copy template. That is exactly the
-    /// structural fix this wall flags as deferred, so such a field is no longer a
-    /// UAF hazard and is exempt. Owned fields NOT covered by a reproducible init
-    /// arg still byte-copy and stay walled.
-    fn check_supervisor_permanent_owned_heap(&mut self, sd: &SupervisorDecl, span: &Span) {
-        for child in &sd.children {
-            // Pool children are dynamically spawned, not restarted from a
-            // fixed spec, so they are exempt from this check.
-            if child.is_pool {
-                continue;
-            }
-
-            // RestartPolicy::None defaults to permanent per llvm.rs:3013.
-            let is_permanent = child.restart.is_none_or(|p| p == RestartPolicy::Permanent);
-            if !is_permanent {
-                continue;
-            }
-
-            // Look up the actor's TypeDef.  If the type is unknown or is not
-            // an actor, a separate diagnostic already covers it. The registry is
-            // keyed by canonical actor identity; canonicalize the package-module
-            // child's alias-prefixed spelling before the lookup so the owned-heap
-            // wall does not silently skip.
-            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
-            let Some(type_def) = self.type_defs.get(&child_identity).cloned() else {
-                continue;
-            };
-            if type_def.kind != TypeDefKind::Actor {
-                continue;
-            }
-
-            // Init params for the child's actor, used to resolve whether an init
-            // arg covering an owned field is reproducible (init-thunk path).
-            let init_params = self.actor_init_params.get(&child_identity).cloned();
-
-            for (field_name, field_ty) in &type_def.fields {
-                if !ty_is_known_owned_heap(field_ty) {
-                    continue;
-                }
-                // Exempt the field if the child supplies a reproducible init arg
-                // for it: the init thunk deep-clones it per incarnation, so the
-                // byte-copy aliasing hazard does not apply. An arg `name`
-                // resolves either to a state field of the same name or to an
-                // init param of that name; both route the value into the field.
-                let covered_by_reproducible_init = child.args.iter().any(|(arg_name, _)| {
-                    if arg_name != field_name {
-                        return false;
-                    }
-                    // The arg names this field. It is reproducible if the field
-                    // type itself is reproducible (state-field arg) or the
-                    // matching init param type is (init-param arg).
-                    if ty_is_supervisor_init_reproducible(field_ty) {
-                        return true;
-                    }
-                    init_params.as_ref().is_some_and(|params| {
-                        params
-                            .iter()
-                            .find(|p| p.name == *arg_name)
-                            .is_some_and(|p| ty_is_supervisor_init_reproducible(&p.ty))
-                    })
-                });
-                if covered_by_reproducible_init {
-                    continue;
-                }
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::PermanentOwnedHeap,
-                    },
-                    span.clone(),
-                    format!(
-                        "E_SUPERVISOR_PERMANENT_OWNED_HEAP: supervisor `{}` child `{}` \
-                         (actor `{}`) has field `{}` of type `{}` which is an owned-heap \
-                         type; restarting a permanent child byte-copies init_state, \
-                         aliasing the heap pointer from the crashed actor and causing a \
-                         use-after-free on the next state_drop_fn call — use \
-                         `restart: transient` or `restart: temporary`, or remove owned-heap \
-                         fields from the actor state; full fix (init_state_clone_fn) tracked \
-                         as v0.5.0.1 P0",
-                        sd.name, child.name, child.actor_type, field_name, field_ty
-                    ),
-                ));
-            }
         }
     }
 
@@ -2720,54 +2515,6 @@ impl Checker {
     }
 }
 
-/// Fail-closed scalar allowlist for supervised child init args.
-///
-/// Authority: this enumerates the scalar `Ty` variants from the checker-owned
-/// primitive set in `hew-types/src/ty.rs` (`PRIMITIVE_ALIASES` and
-/// `Ty::from_canonical_primitive_name`): fixed-width ints, floats, `bool`, and
-/// `char`. Other primitive variants in that set (`isize`, `usize`, `string`,
-/// `bytes`, `duration`, unit, never) are deliberately not admitted.
-fn ty_is_supervisor_init_bitcopy_scalar(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Char
-    )
-}
-
-/// Whether a supervised child init-param type can be re-produced by the
-/// init-closure restart thunk on every incarnation.
-///
-/// Admits:
-/// - every scalar `BitCopy` primitive (re-produced by a plain load), and
-/// - the owned heap types the init thunk has a per-field deep-clone for:
-///   `string` (allocating clone) and `bytes` (refcounted clone). A restarted
-///   child gets a fresh, unaliased owned value per incarnation.
-///
-/// Rejects (stays walled, fail-closed):
-/// - owned collections (`Vec`/`HashMap`/`HashSet`), user records, enums, and
-///   tuples — their per-field clone-in-thunk codegen is not yet wired, so
-///   admitting them would reach a codegen path that cannot deep-clone;
-/// - `#[resource]` handle types — re-cloning a handle per restart would alias a
-///   live resource (double-close / UAF). Handles are never reproducible.
-///
-/// WHEN-OBSOLETE: when the init thunk grows per-field clone for collections /
-/// records / enums (reusing the actor state-clone spine), widen this predicate
-/// to those kinds; `#[resource]` handles stay rejected permanently.
-fn ty_is_supervisor_init_reproducible(ty: &Ty) -> bool {
-    ty_is_supervisor_init_bitcopy_scalar(ty) || matches!(ty, Ty::String | Ty::Bytes)
-}
-
 impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
         let is_receiver = index == 0 && self.is_receiver_param(param);
@@ -2849,30 +2596,6 @@ fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
             builtin: None,
         } if args.is_empty() && name == source_identity
     )
-}
-
-/// Returns `true` for types that carry owned heap allocations and therefore
-/// cannot be safely byte-copied as `init_state` for a permanent supervisor
-/// child restart (C1 UAF guard — v0.5.0.1 P0).
-///
-/// Covers `String`, `Bytes`, and the three generic collections `Vec<_>`,
-/// `HashMap<_,_>`, `HashSet<_>`.  Nested ownership (e.g. `Vec<Vec<i64>>`) is
-/// detected at the outer level.  Fields typed as user-defined records that
-/// *contain* owned-heap types are a known residual gap; see the
-/// `KNOWN-RESIDUAL` test in check/tests.rs.
-fn ty_is_known_owned_heap(ty: &Ty) -> bool {
-    matches!(ty, Ty::String | Ty::Bytes)
-        || matches!(
-            ty,
-            Ty::Named {
-                builtin: Some(
-                    crate::BuiltinType::Vec
-                        | crate::BuiltinType::HashMap
-                        | crate::BuiltinType::HashSet
-                ),
-                ..
-            }
-        )
 }
 
 #[cfg(test)]

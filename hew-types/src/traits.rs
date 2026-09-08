@@ -214,6 +214,11 @@ pub struct TraitRegistry {
     type_params: HashMap<String, Vec<String>>,
 }
 
+struct MarkerDerivation<'a> {
+    visiting: HashSet<String>,
+    type_param_bound: &'a dyn Fn(&str, MarkerTrait) -> bool,
+}
+
 impl TraitRegistry {
     /// Create a new empty trait registry.
     #[must_use]
@@ -586,7 +591,22 @@ impl TraitRegistry {
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
-        let mut visiting = HashSet::new();
+        self.implements_marker_with_bounds(ty, marker, &|_, _| false)
+    }
+
+    /// Derive a marker using the caller's proven bounds on abstract parameters.
+    /// The same structural walk checks concrete fields and nested arguments.
+    #[must_use]
+    pub(crate) fn implements_marker_with_bounds(
+        &self,
+        ty: &Ty,
+        marker: MarkerTrait,
+        type_param_bound: &dyn Fn(&str, MarkerTrait) -> bool,
+    ) -> bool {
+        let mut visiting = MarkerDerivation {
+            visiting: HashSet::new(),
+            type_param_bound,
+        };
         self.implements_marker_guarded(ty, marker, &mut visiting)
     }
 
@@ -611,8 +631,12 @@ impl TraitRegistry {
         &self,
         ty: &Ty,
         marker: MarkerTrait,
-        visiting: &mut HashSet<String>,
+        visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
+        if matches!(ty, Ty::Named { name, args, builtin: None } if args.is_empty() && (visiting.type_param_bound)(name, marker))
+        {
+            return true;
+        }
         if marker == MarkerTrait::Serializable {
             return self.is_serializable(ty);
         }
@@ -947,7 +971,7 @@ impl TraitRegistry {
                 // obligation; the result is decided by the non-recursive
                 // members. (Direct infinite-size cycles are rejected by
                 // `cycle.rs`; this only keeps the derivation total.)
-                if !visiting.insert(name.clone()) {
+                if !visiting.visiting.insert(name.clone()) {
                     return true;
                 }
                 // Record types: value types declared with `record`. Markers are
@@ -974,7 +998,7 @@ impl TraitRegistry {
                 } else {
                     false // Unknown type — conservatively fail
                 };
-                visiting.remove(name);
+                visiting.visiting.remove(name);
                 result
             }
 
@@ -1067,7 +1091,7 @@ impl TraitRegistry {
             // become user-accessible (v0.6+).
             Ty::Task(inner) => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker(inner, MarkerTrait::Send)
+                    self.implements_marker_guarded(inner, MarkerTrait::Send, visiting)
                 }
                 _ => false,
             },
@@ -1130,7 +1154,7 @@ impl TraitRegistry {
         fields: &[Ty],
         args: &[Ty],
         marker: MarkerTrait,
-        visiting: &mut HashSet<String>,
+        visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
         // Concrete-field pass: check every field that is not a bare type-param
         // placeholder. For non-generic types all fields are concrete and this

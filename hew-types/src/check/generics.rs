@@ -1094,8 +1094,13 @@ impl Checker {
             return self.display_impl_type(ty).is_some();
         }
         if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
-            return self.registry.implements_marker(ty, MarkerTrait::Send)
-                || matches!(ty, Ty::Named { name, args, builtin: None } if args.is_empty() && self.type_param_carries_bound(name, trait_name));
+            return self.registry.implements_marker_with_bounds(
+                ty,
+                MarkerTrait::Send,
+                &|name, marker| {
+                    marker == MarkerTrait::Send && self.type_param_carries_bound(name, trait_name)
+                },
+            );
         }
         if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
             && !Self::ty_mentions_type_params(

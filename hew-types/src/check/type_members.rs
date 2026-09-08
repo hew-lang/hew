@@ -59,7 +59,7 @@ impl Checker {
             return Some(Ty::Error);
         };
         let call = matches!(usage, DottedTypeMemberUse::Call { .. });
-        if context.record.is_some() || call != (variant.payload_arity > 0) {
+        if context.record.is_some() || call == variant.payload_type_args.is_empty() {
             self.report_error(
                 TypeErrorKind::PathKindMismatch,
                 span,
@@ -248,13 +248,15 @@ impl Checker {
         let expected_arity = builtin.arity();
 
         let result = match usage {
-            DottedTypeMemberUse::Reference { span: _ } if variant.payload_arity == 0 => Ty::Named {
-                builtin: Some(builtin),
-                name: head.canonical_type.clone(),
-                args: (0..expected_arity)
-                    .map(|_| Ty::Var(TypeVar::fresh()))
-                    .collect(),
-            },
+            DottedTypeMemberUse::Reference { span: _ } if variant.payload_type_args.is_empty() => {
+                Ty::Named {
+                    builtin: Some(builtin),
+                    name: head.canonical_type.clone(),
+                    args: (0..expected_arity)
+                        .map(|_| Ty::Var(TypeVar::fresh()))
+                        .collect(),
+                }
+            }
             DottedTypeMemberUse::Reference { span } => {
                 self.synthesize_identifier(constructor, span)
             }

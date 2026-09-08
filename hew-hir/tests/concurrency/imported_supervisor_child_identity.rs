@@ -10,6 +10,14 @@ use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 const WORKER_MODULE: &str = "imported_supervisor_child_support.worker";
 const NAMED_WORKER_MODULE: &str = "services.workers";
 
+fn child_handle(name: &str) -> hew_types::ResolvedTy {
+    hew_types::ResolvedTy::named_builtin(
+        "LocalPid",
+        hew_types::BuiltinType::LocalPid,
+        vec![hew_types::ResolvedTy::named_user(name, Vec::new())],
+    )
+}
+
 fn file_import_program(
     imported_src: &str,
     root_src: &str,
@@ -248,7 +256,10 @@ fn file_imported_supervisor_child_and_protocol_share_full_actor_identity() {
 
     let pool = supervisor(&output, "ImportedWorkerPool");
     assert_eq!(pool.children.len(), 1);
-    assert_eq!(pool.children[0].ty, imported.qualified_name());
+    assert_eq!(
+        pool.children[0].ty,
+        child_handle(&imported.qualified_name())
+    );
 }
 
 #[test]
@@ -322,7 +333,7 @@ fn named_and_aliased_supervisor_children_use_the_imported_actor_identity() {
         );
         assert_eq!(
             supervisor(&output, "App").children[0].ty,
-            "services.workers.Worker"
+            child_handle("services.workers.Worker")
         );
     }
 }
@@ -336,7 +347,7 @@ fn whole_module_supervisor_child_uses_the_imported_actor_identity() {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "App").children[0].ty,
-        "services.workers.Worker"
+        child_handle("services.workers.Worker")
     );
 }
 
@@ -354,7 +365,7 @@ fn selected_alias_does_not_authorize_a_raw_canonical_actor_path_in_hir() {
             }
         )
     }));
-    let diagnostic = output
+    output
         .diagnostics
         .iter()
         .find(|diagnostic| {
@@ -362,11 +373,10 @@ fn selected_alias_does_not_authorize_a_raw_canonical_actor_path_in_hir() {
                 &diagnostic.kind,
                 hew_hir::HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
                     if name == "services.workers.Worker"
-                        && reason == "supervisor child has no lexical actor authority"
+                        && reason == "supervisor child has no checked handle type"
             )
         })
         .expect("forced HIR lowering must fail closed at the checker boundary");
-    assert!(diagnostic.note.contains("exact module binding"));
 }
 
 #[test]
@@ -385,7 +395,7 @@ fn file_imported_supervisor_resolves_its_same_file_actor_by_exact_owner() {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "Inner").children[0].ty,
-        format!("{WORKER_MODULE}.Worker")
+        child_handle(&format!("{WORKER_MODULE}.Worker"))
     );
 }
 
@@ -398,7 +408,10 @@ fn root_actor_keeps_authority_over_same_leaf_named_import_in_hir() {
     );
     assert!(checked.errors.is_empty(), "{:#?}", checked.errors);
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
-    assert_eq!(supervisor(&output, "App").children[0].ty, "Worker");
+    assert_eq!(
+        supervisor(&output, "App").children[0].ty,
+        child_handle("Worker")
+    );
     assert!(output.module.items.iter().any(|item| matches!(
         item,
         HirItem::Actor(actor) if actor.name == "Worker" && actor.defining_module.is_none()

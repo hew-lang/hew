@@ -1332,6 +1332,7 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
         TypeDefKind::Struct => "type",
         TypeDefKind::Enum => "enum",
         TypeDefKind::Actor => "actor",
+        TypeDefKind::Supervisor => "supervisor",
         TypeDefKind::Machine => "machine",
         TypeDefKind::Record => "record",
     };

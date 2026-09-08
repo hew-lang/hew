@@ -2126,6 +2126,7 @@ impl Checker {
 
     fn collect_item_type_param_names(&mut self, item: &Item) {
         match item {
+            Item::Supervisor(sd) => self.insert_type_param_names(&sd.type_params),
             Item::Function(fd) => self.insert_opt_type_param_names(fd.type_params.as_ref()),
             Item::TypeDecl(td) => self.insert_opt_type_param_names(td.type_params.as_ref()),
             Item::Record(rd) => self.insert_opt_type_param_names(rd.type_params.as_ref()),
@@ -2730,13 +2731,58 @@ impl Checker {
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
+                    if !self.register_type_namespace_name(None, &sd.name, span) {
+                        continue;
+                    }
+                    let type_params: Vec<_> =
+                        sd.type_params.iter().map(|p| p.name.clone()).collect();
+                    let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
+                    let fields = sd
+                        .params
+                        .iter()
+                        .map(|param| (param.name.clone(), self.resolve_type_expr(&param.ty)))
+                        .collect();
+                    let mut bounds = self.collect_type_param_bounds(Some(&sd.type_params), None);
+                    for parameter in &type_params {
+                        let bounds = bounds.entry(parameter.clone()).or_default();
+                        if !bounds.iter().any(|bound| bound == "Send") {
+                            bounds.push("Send".into());
+                        }
+                    }
+                    self.type_defs.insert(
+                        sd.name.clone(),
+                        TypeDef {
+                            kind: TypeDefKind::Supervisor,
+                            name: sd.name.clone(),
+                            type_params,
+                            bounds,
+                            fields,
+                            field_order: sd.params.iter().map(|param| param.name.clone()).collect(),
+                            variants: HashMap::new(),
+                            methods: HashMap::new(),
+                            doc_comment: None,
+                            is_indirect: false,
+                        },
+                    );
                     // Partition children by kind in source order. Slot index for each
                     // child is its 0-based position within its own partition, matching
                     // the runtime layout (children[] for static, pool_slots[] for pool).
                     let mut statics = Vec::new();
                     let mut pools = Vec::new();
                     for c in &sd.children {
-                        let entry = (c.name.clone(), c.actor_type.clone());
+                        let type_args = c
+                            .type_args
+                            .iter()
+                            .map(|arg| self.resolve_type_expr(arg))
+                            .collect();
+                        let entry = (
+                            c.name.clone(),
+                            Ty::Named {
+                                builtin: None,
+                                name: self.canonical_supervisor_child_type(&c.actor_type),
+                                args: type_args,
+                            },
+                        );
                         if c.is_pool {
                             pools.push(entry);
                         } else {
@@ -2747,6 +2793,9 @@ impl Checker {
                         sd.name.clone(),
                         crate::check::types::SupervisorChildren { statics, pools },
                     );
+                    self.exit_primary_sig_scope(scope);
+                    self.local_type_defs.insert(sd.name.clone());
+                    self.source_type_defs.insert(sd.name.clone());
                 }
                 Item::Record(rd) => {
                     if !self.register_type_namespace_name(None, &rd.name, span) {
@@ -4827,7 +4876,6 @@ impl Checker {
                     ActorInitParamInfo {
                         name: p.name.clone(),
                         ty,
-                        span: p.ty.1.clone(),
                     }
                 })
                 .collect()

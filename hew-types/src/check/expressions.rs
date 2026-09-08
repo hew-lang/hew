@@ -1765,7 +1765,7 @@ impl Checker {
         ty: &Ty,
     ) {
         let ty = self.subst.resolve(ty);
-        if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
+        if !self.type_satisfies_trait_bound(&ty, "Send") {
             self.report_invalid_actor_send(&ty, error_span);
         }
         if self.ty_contains_affine_actor_transfer(&ty) {
@@ -7223,117 +7223,70 @@ impl Checker {
 
         match &resolved {
             Ty::Named { name, args, .. } => {
-                // Actor children produce ChildRef<T>; nested supervisors remain LocalPid<S>.
-                // Accepts local actor handles via as_actor_handle().
-                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
-                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
-                        // Check static children first, then pool children.
-                        let resolved_slot =
-                            sup_children
-                                .statics
-                                .iter()
-                                .enumerate()
-                                .find_map(|(idx, (cn, ty))| {
-                                    (cn == field).then(|| {
-                                    (
-                                        crate::check::types::ChildSlot {
-                                            kind: crate::check::types::ChildKind::Static,
-                                            #[expect(
-                                                clippy::cast_possible_truncation,
-                                                reason = "supervisor child count is always small; \
-                                                          u32 is the ABI type"
-                                            )]
-                                            index: idx as u32,
-                                            child_ty: ty.clone(),
-                                            child_name: cn.clone(),
-                                            supervisor: sup_name.clone(),
-                                        },
-                                        ty.clone(),
-                                    )
-                                })
-                                });
-                        let resolved_slot = resolved_slot.or_else(|| {
-                            sup_children
-                                .pools
-                                .iter()
-                                .enumerate()
-                                .find_map(|(idx, (cn, ty))| {
-                                    (cn == field).then(|| {
-                                    (
-                                        crate::check::types::ChildSlot {
-                                            kind: crate::check::types::ChildKind::Pool,
-                                            #[expect(
-                                                clippy::cast_possible_truncation,
-                                                reason = "supervisor child count is always small; \
-                                                          u32 is the ABI type"
-                                            )]
-                                            index: idx as u32,
-                                            child_ty: ty.clone(),
-                                            child_name: cn.clone(),
-                                            supervisor: sup_name.clone(),
-                                        },
-                                        ty.clone(),
-                                    )
-                                })
-                                })
-                        });
-                        if let Some((slot, child_type)) = resolved_slot {
-                            let slot_kind = slot.kind;
-                            self.supervisor_child_slots
-                                .insert(SpanKey::in_module(span, self.current_module_idx), slot);
-                            // Path-4 defense-in-depth bound enforcement on
-                            // supervisor-child PID synthesis. The
-                            // `SupervisorChildren` table stores child types
-                            // as bare `String` names (see
-                            // `check::types::SupervisorChildren`); the
-                            // synthesised PID payload is `Ty::Named { args:
-                            // vec![] }`, so the helper short-circuits today
-                            // on empty args. Wiring the call here means any
-                            // future change that admits type-parameterised
-                            // children (e.g. `child h: Holder<File>`)
-                            // inherits enforcement at the canonical seam
-                            // rather than re-litigating bound checking at a
-                            // sibling site.
-                            self.enforce_type_def_instantiation_bounds(&child_type, &[], span);
-                            // The child type is stored as the raw user-spelled
-                            // string (`bank.Account`); canonicalize its module
-                            // prefix to the registered actor identity so the
-                            // synthesised `LocalPid` carries the same dotted
-                            // identity a spawn handle does and method dispatch
-                            // keys `fn_sigs` correctly.
-                            let canonical_child_type =
-                                self.canonical_supervisor_child_type(&child_type);
-                            let child_ty = Ty::Named {
-                                builtin: None,
-                                name: canonical_child_type.clone(),
-                                args: vec![],
-                            };
-                            if slot_kind == crate::check::types::ChildKind::Pool {
+                // A role retains the child's complete type after substituting
+                // the owning supervisor's concrete arguments.
+                if let Some(Ty::Named {
+                    name: sup_name,
+                    args: sup_args,
+                    ..
+                }) = resolved.as_actor_handle()
+                {
+                    if let Some(children) = self.supervisor_children.get(sup_name).cloned() {
+                        let selected = children
+                            .statics
+                            .iter()
+                            .enumerate()
+                            .map(|(index, child)| (super::types::ChildKind::Static, index, child))
+                            .chain(children.pools.iter().enumerate().map(|(index, child)| {
+                                (super::types::ChildKind::Pool, index, child)
+                            }))
+                            .find(|(_, _, (name, _))| name == field);
+                        if let Some((kind, index, (child_name, template))) = selected {
+                            let parameters = self
+                                .type_defs
+                                .get(sup_name)
+                                .map_or_else(Vec::new, |definition| definition.type_params.clone());
+                            let substitution = parameters
+                                .into_iter()
+                                .zip(sup_args.iter().cloned())
+                                .collect();
+                            let child_ty = template.substitute_named_params_parallel(&substitution);
+                            if let Ty::Named { name, args, .. } = &child_ty {
+                                self.enforce_type_def_instantiation_bounds(name, args, span);
+                            }
+                            self.supervisor_child_slots.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                super::types::ChildSlot {
+                                    kind,
+                                    index: u32::try_from(index)
+                                        .expect("supervisor child count exceeds u32"),
+                                    child_ty: child_ty.user_facing().to_string(),
+                                    child_name: child_name.clone(),
+                                    supervisor: sup_name.clone(),
+                                },
+                            );
+                            if kind == super::types::ChildKind::Pool {
                                 return Ty::supervisor_pool(
                                     Ty::Named {
                                         builtin: None,
                                         name: sup_name.clone(),
-                                        args: vec![],
+                                        args: sup_args.clone(),
                                     },
                                     child_ty,
                                 );
                             }
-                            if self.supervisor_children.contains_key(&canonical_child_type) {
+                            if matches!(&child_ty, Ty::Named { name, .. } if self.supervisor_children.contains_key(name))
+                            {
                                 return Ty::local_pid(child_ty);
                             }
                             return Ty::child_ref(child_ty);
                         }
-                        // The supervisor is known but this child name is not declared.
-                        // Emit a clear diagnostic and stop — the fallthrough branch
-                        // would silently return Ty::Error because the handle has no type
-                        // definition in the checker's type_defs map.
-                        let all_names: Vec<&str> = sup_children
+                        let names = children
                             .statics
                             .iter()
-                            .chain(sup_children.pools.iter())
-                            .map(|(cn, _)| cn.as_str())
-                            .collect();
-                        let similar = crate::error::find_similar(field, all_names.iter().copied());
+                            .chain(children.pools.iter())
+                            .map(|(name, _)| name.as_str());
+                        let similar = crate::error::find_similar(field, names);
                         self.report_error_with_suggestions(
                             TypeErrorKind::UndefinedField,
                             span,
@@ -8950,6 +8903,11 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
+            let owner_kind = if self.supervisor_children.contains_key(&name) {
+                "supervisor"
+            } else {
+                "actor"
+            };
             let type_params = self
                 .type_defs
                 .get(&name)
@@ -8971,7 +8929,7 @@ impl Checker {
                     TypeErrorKind::ActorTypeArgArityMismatch {
                         actor_name: name.clone(), expected: declared_arity, got: resolved_type_args.len(),
                     }, span,
-                    format!("actor `{name}` has {declared_arity} type parameter(s) but {} type argument(s) were supplied", resolved_type_args.len()),
+                    format!("{owner_kind} `{name}` has {declared_arity} type parameter(s) but {} type argument(s) were supplied", resolved_type_args.len()),
                 );
                 return Ty::local_pid(Ty::Error);
             }
@@ -8989,7 +8947,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::MissingActorTypeArgs { actor_name: name.clone(), expected_arity: declared_arity },
                     span,
-                    format!("cannot infer all type arguments of actor `{name}` from its spawn arguments; supply explicit type arguments"),
+                    format!("cannot infer all type arguments of {owner_kind} `{name}` from its spawn arguments; supply explicit type arguments"),
                 );
                 return Ty::local_pid(Ty::Error);
             }

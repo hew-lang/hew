@@ -95,7 +95,6 @@ impl ExecutionContextReader {
 pub(super) struct ActorInitParamInfo {
     pub(super) name: String,
     pub(super) ty: Ty,
-    pub(super) span: Span,
 }
 
 /// One checker-derived lifecycle for a qualified closeable opaque nominal.
@@ -1173,10 +1172,10 @@ pub enum PoolAccessorKind {
 pub(crate) struct SupervisorChildren {
     /// Children declared with `child name: Type`, in source order.
     /// Slot index = position in this vec.
-    pub(crate) statics: Vec<(String, String)>,
+    pub(crate) statics: Vec<(String, Ty)>,
     /// Children declared with `pool name: Type`, in source order.
     /// Slot index = position in this vec.
-    pub(crate) pools: Vec<(String, String)>,
+    pub(crate) pools: Vec<(String, Ty)>,
 }
 
 // ── Pattern-resolution side table ────────────────────────────────────────────
@@ -2461,6 +2460,7 @@ pub enum TypeDefKind {
     Struct,
     Enum,
     Actor,
+    Supervisor,
     Machine,
     /// Immutable value-type record declared with the `record` keyword.
     ///

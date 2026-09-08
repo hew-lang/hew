@@ -2551,10 +2551,11 @@ instantiation site, naming the argument and the bound it fails, never at a
 later send. A message to the wrong instantiation is a type error at the send
 or ask site.
 
-The specified generic supervisor's child specs name the instantiated actor, so
-a restarted child has the same instantiation and `workers.worker` has type
-`ChildRef<Worker<Job>>`. Generic supervisor parsing and generic actor bound
-propagation remain implementation gaps; these examples state the contract:
+A generic supervisor's child specs name the instantiated actor, so a restarted
+child has the same instantiation and `workers.worker` has type
+`ChildRef<Worker<Job>>`. Construction arguments can infer the supervisor's type
+arguments and the type arguments of its children. Each instance retains its own
+typed configuration and restart budget:
 
 ```hew
 actor Worker<Job: Send> {

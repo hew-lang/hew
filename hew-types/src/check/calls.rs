@@ -1891,17 +1891,24 @@ impl Checker {
                 let (expr, sp) = args[0].expr();
                 let actor_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&actor_ty);
-                // A supervisor stops through its own terminal contract, which
-                // tears its children down before returning: `supervisor_stop`
-                // is that one spelling, and the actor lifecycle boundary has no
-                // separate termination signal to wait on.
+                // Supervisor close uses the tree's terminal contract, which
+                // tears down every child before returning.
                 if let Some(Ty::Named { name, .. }) = resolved.as_actor_handle() {
                     if self.supervisor_children.contains_key(name) {
-                        self.report_error_with_suggestions(
+                        if func_name == "close" {
+                            self.record_direct_call_target(
+                                span,
+                                CallTarget::Runtime(
+                                    crate::runtime_call::RuntimeCallFamily::SupervisorStop,
+                                ),
+                            );
+                            self.record_submission_suspension(span, true);
+                            return Ty::Unit;
+                        }
+                        self.report_error(
                             TypeErrorKind::InvalidOperation,
                             span,
-                            format!("`{func_name}` expects an actor handle; `{name}` is a supervisor"),
-                            vec!["use `supervisor_stop(sup)` to stop a supervisor tree".to_string()],
+                            format!("`closed({name})` waiting for supervisor termination without requesting shutdown is not implemented"),
                         );
                         return Ty::Error;
                     }
@@ -2036,7 +2043,12 @@ impl Checker {
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
                 // Accept local actor handles as supervisor handles.
-                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_handle() {
+                if let Some(Ty::Named {
+                    name: sup_name,
+                    args: sup_args,
+                    ..
+                }) = sup_ty_resolved.as_actor_handle()
+                {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
                         let statics = &sup_children.statics;
@@ -2051,15 +2063,19 @@ impl Checker {
                                 usize::try_from(*idx).ok().filter(|i| *i < statics.len())
                             {
                                 let child_type = &statics[i].1;
-                                return Ty::child_ref(Ty::Named {
-                                    builtin: None,
-                                    // Canonicalize the raw user-spelled child
-                                    // type (`bank.Account`) to the registered
-                                    // actor identity so the PID matches the
-                                    // spawn-derived identity and dispatches.
-                                    name: self.canonical_supervisor_child_type(child_type),
-                                    args: vec![],
-                                });
+                                let parameters = self
+                                    .type_defs
+                                    .get(sup_name)
+                                    .map_or_else(Vec::new, |definition| {
+                                        definition.type_params.clone()
+                                    });
+                                let substitution = parameters
+                                    .into_iter()
+                                    .zip(sup_args.iter().cloned())
+                                    .collect();
+                                return Ty::child_ref(
+                                    child_type.substitute_named_params_parallel(&substitution),
+                                );
                             }
                         }
                         // Non-constant index: fresh type var

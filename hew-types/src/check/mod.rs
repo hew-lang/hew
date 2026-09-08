@@ -13,9 +13,9 @@ use hew_parser::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, ConstDecl,
     Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
     LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl,
-    RecordDecl, RecordKind, RestartPolicy, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
+    RecordDecl, RecordKind, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam,
+    UnaryOp, VariantKind, WhereClause,
 };
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -185,6 +185,7 @@ fn value_type_kind_label(kind: TypeDefKind) -> &'static str {
     match kind {
         TypeDefKind::Enum => "enum",
         TypeDefKind::Record => "record",
+        TypeDefKind::Supervisor => "supervisor",
         TypeDefKind::Struct | TypeDefKind::Actor | TypeDefKind::Machine => "type",
     }
 }
@@ -2041,7 +2042,20 @@ impl Checker {
             self.current_module_idx = 0;
         }
 
-        for (item, span) in &program.items {
+        // Resolve declared child types before any function projects a child
+        // role, including a child whose type arguments come from config.
+        for (item, span) in program
+            .items
+            .iter()
+            .filter(|(item, _)| matches!(item, Item::Supervisor(_)))
+        {
+            self.check_item(item, span);
+        }
+        for (item, span) in program
+            .items
+            .iter()
+            .filter(|(item, _)| !matches!(item, Item::Supervisor(_)))
+        {
             self.check_item(item, span);
         }
 

@@ -194,8 +194,5 @@ pub(crate) fn declared_handle(ty: &ResolvedTy) -> Option<DefId> {
         return None;
     };
     let instance = inner.nominal_instance()?;
-    instance
-        .args
-        .is_empty()
-        .then(|| instance.nominal.declaration().clone())
+    Some(instance.nominal.declaration().clone())
 }

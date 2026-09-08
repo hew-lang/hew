@@ -730,6 +730,7 @@ pub struct HirSupervisorDecl {
     /// Exact source-owned identity projected by the later bootstrap adapter.
     pub bootstrap_declaration: DefId,
     pub name: String,
+    pub type_params: Vec<String>,
     /// Construction-time config parameters (`supervisor App(config: T)`). Bound
     /// in scope throughout the body so child init-arg exprs can reference them.
     /// Empty when the declaration omits the `(...)` clause. The MIR bootstrap
@@ -749,7 +750,8 @@ pub struct HirSupervisorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorChild {
     pub name: String,
-    pub ty: String,
+    /// Complete checked child handle, including any supervisor type parameters.
+    pub ty: ResolvedTy,
     pub restart_policy: Option<HirRestartPolicy>,
     /// Declarative sibling wiring: init-param name → sibling child name.
     /// `None` means no `wired_to:` clause. S-B validates key correctness.

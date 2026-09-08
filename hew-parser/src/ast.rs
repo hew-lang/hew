@@ -1533,6 +1533,8 @@ pub struct SupervisorDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    #[serde(default)]
+    pub type_params: Vec<TypeParam>,
     /// Construction-time config parameters, written `supervisor App(config: T)`.
     /// In scope throughout the body (the child init-arg exprs reference them, so
     /// a child's init value can derive from runtime config). Empty when the
@@ -1576,6 +1578,8 @@ pub enum SupervisorStrategy {
 pub struct ChildSpec {
     pub name: String,
     pub actor_type: String,
+    #[serde(default)]
+    pub type_args: Vec<Spanned<TypeExpr>>,
     /// Named init args for this child's actor, e.g. `child w: Worker(id: 7)`.
     /// Mirrors `Spawn.args` at the AST level: each entry is `(field_name, expr)`.
     /// Positional args (no `name:` prefix) are rejected by the parser with a

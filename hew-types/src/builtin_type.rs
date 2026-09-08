@@ -108,28 +108,36 @@ pub enum BuiltinType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinEnumVariant {
     pub name: &'static str,
-    pub payload_arity: usize,
+    /// Payload fields select type arguments from the owning declaration.
+    pub payload_type_args: &'static [usize],
+}
+
+/// Declaration shape shared by checker constructors and semantic instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinGenericEnum {
+    pub type_params: &'static [&'static str],
+    pub variants: &'static [BuiltinEnumVariant],
 }
 
 const OPTION_VARIANTS: &[BuiltinEnumVariant] = &[
     BuiltinEnumVariant {
         name: "Some",
-        payload_arity: 1,
+        payload_type_args: &[0],
     },
     BuiltinEnumVariant {
         name: "None",
-        payload_arity: 0,
+        payload_type_args: &[],
     },
 ];
 
 const RESULT_VARIANTS: &[BuiltinEnumVariant] = &[
     BuiltinEnumVariant {
         name: "Ok",
-        payload_arity: 1,
+        payload_type_args: &[0],
     },
     BuiltinEnumVariant {
         name: "Err",
-        payload_arity: 1,
+        payload_type_args: &[1],
     },
 ];
 
@@ -283,12 +291,26 @@ impl BuiltinType {
     /// Look up a constructor variant registered for this generic builtin enum.
     #[must_use]
     pub fn enum_variant(self, name: &str) -> Option<&'static BuiltinEnumVariant> {
-        let variants = match self {
-            Self::Option => OPTION_VARIANTS,
-            Self::Result => RESULT_VARIANTS,
-            _ => return None,
-        };
-        variants.iter().find(|variant| variant.name == name)
+        self.generic_enum()?
+            .variants
+            .iter()
+            .find(|variant| variant.name == name)
+    }
+
+    /// Canonical generic enum declaration selected by its builtin identity.
+    #[must_use]
+    pub const fn generic_enum(self) -> Option<BuiltinGenericEnum> {
+        match self {
+            Self::Option => Some(BuiltinGenericEnum {
+                type_params: &["T"],
+                variants: OPTION_VARIANTS,
+            }),
+            Self::Result => Some(BuiltinGenericEnum {
+                type_params: &["T", "E"],
+                variants: RESULT_VARIANTS,
+            }),
+            _ => None,
+        }
     }
 
     /// Whether cloning this builtin duplicates only its outer handle and treats

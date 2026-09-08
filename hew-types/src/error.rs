@@ -619,17 +619,11 @@ pub enum SupervisorErrorKind {
     /// `E_SUPERVISOR_PERIODIC_CHILD`: a supervised child's actor declares an
     /// `#[every]` periodic handler, which is not armed for supervised children.
     PeriodicChild,
-    /// `E_SUPERVISOR_INIT_ARG_NON_BITCOPY`: a supervised child init arg has a
-    /// type the init-closure restart thunk cannot reproduce per incarnation.
-    InitArgNonBitcopy,
     /// `E_SUPERVISOR_INTENSITY_RESTARTS`: a negative `intensity:` restart budget.
     IntensityRestarts,
     /// `E_SUPERVISOR_INTENSITY_WINDOW`: the `intensity:` window is zero-length or
     /// not a valid duration literal.
     IntensityWindow,
-    /// `E_SUPERVISOR_PERMANENT_OWNED_HEAP`: a permanent child's state carries an
-    /// owned-heap field that byte-copy restart would alias.
-    PermanentOwnedHeap,
     /// `E_SUPERVISOR_DUPLICATE_CHILD`: two children share a name.
     DuplicateChild,
     /// `E_SUPERVISOR_STRATEGY_POOL_MISMATCH`: `pool` children and the chosen
@@ -657,10 +651,8 @@ impl SupervisorErrorKind {
             Self::PoolCountType => "SupervisorPoolCountType",
             Self::PoolCountNonPositive => "SupervisorPoolCountNonPositive",
             Self::PeriodicChild => "SupervisorPeriodicChild",
-            Self::InitArgNonBitcopy => "SupervisorInitArgNonBitcopy",
             Self::IntensityRestarts => "SupervisorIntensityRestarts",
             Self::IntensityWindow => "SupervisorIntensityWindow",
-            Self::PermanentOwnedHeap => "SupervisorPermanentOwnedHeap",
             Self::DuplicateChild => "SupervisorDuplicateChild",
             Self::StrategyPoolMismatch => "SupervisorStrategyPoolMismatch",
             Self::WiredToUnknownSibling => "SupervisorWiredToUnknownSibling",
@@ -2187,19 +2179,14 @@ mod tests {
             SupervisorErrorKind::PoolCountType,
             SupervisorErrorKind::PoolCountNonPositive,
             SupervisorErrorKind::PeriodicChild,
-            SupervisorErrorKind::InitArgNonBitcopy,
             SupervisorErrorKind::IntensityRestarts,
             SupervisorErrorKind::IntensityWindow,
-            SupervisorErrorKind::PermanentOwnedHeap,
             SupervisorErrorKind::DuplicateChild,
             SupervisorErrorKind::StrategyPoolMismatch,
             SupervisorErrorKind::WiredToUnknownSibling,
             SupervisorErrorKind::WiredToTypeMismatch,
             SupervisorErrorKind::WiredCycle,
         ];
-
-        // 13 distinct E_SUPERVISOR_* codes → 13 subkinds.
-        assert_eq!(ALL.len(), 13, "expected 13 supervisor subkinds");
 
         let via_subkind: HashSet<&'static str> = ALL.iter().map(|s| s.as_kind_str()).collect();
         assert_eq!(

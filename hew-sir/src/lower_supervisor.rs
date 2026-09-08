@@ -9,7 +9,7 @@ use super::{
     function_source_origin, lower_initial_value_transfer, Builder, CallableId, CallableInstance,
     CallableState, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirModule, InstanceService,
     IntentKind, OwnKind, OwnedBindingUse, ResolvedTy, SemAbiParam, SemCallConv, SemCallable,
-    SemCallableKind, SemParamPassing, SemSignature, ValueId,
+    SemCallableKind, SemParamPassing, SemSignature, TypeSubstitution, ValueId,
 };
 use crate::{
     ActorOperation, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor,
@@ -46,20 +46,11 @@ fn restart_window_secs(window: Option<&str>) -> Result<u32, String> {
         .map_err(|_| format!("restart window `{window}` exceeds the supported range"))
 }
 
-fn local_pid(nominal: String) -> ResolvedTy {
-    ResolvedTy::named_builtin(
-        hew_types::BuiltinType::LocalPid.canonical_name(),
-        hew_types::BuiltinType::LocalPid,
-        vec![ResolvedTy::Named {
-            name: nominal,
-            args: Vec::new(),
-            builtin: None,
-            is_opaque: false,
-        }],
-    )
-}
-
 impl InstanceService<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one supervisor instance owns its config, restart budget and child spawn contracts"
+    )]
     pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
         if let Some(supervisor) = self
             .supervisors
@@ -71,6 +62,22 @@ impl InstanceService<'_> {
         let source = declaration(self.module, ty)
             .ok_or("supervisor handle lacks its exact declaration")?
             .clone();
+        let ResolvedTy::Named { args, .. } = ty else {
+            return Err("supervisor instance requires its checked handle type".into());
+        };
+        let [inner] = args.as_slice() else {
+            return Err("supervisor handle requires one concrete supervisor type".into());
+        };
+        let instance = inner
+            .nominal_instance()
+            .ok_or("supervisor instance lacks its nominal identity")?;
+        if instance.args.len() != source.type_params.len() {
+            return Err("supervisor instance type arguments differ from its declaration".into());
+        }
+        let substitution = TypeSubstitution {
+            params: source.type_params.clone(),
+            args: instance.args,
+        };
         let strategy = match source.strategy {
             None | Some(hew_hir::HirSupervisorStrategy::OneForOne) => SemRestartStrategy::OneForOne,
             Some(hew_hir::HirSupervisorStrategy::OneForAll) => SemRestartStrategy::OneForAll,
@@ -93,9 +100,16 @@ impl InstanceService<'_> {
                 .ok_or("restart intensity must be a positive count")?,
         };
         let window_secs = restart_window_secs(source.window.as_deref())?;
-        let config: Vec<ResolvedTy> = source.params.iter().map(|param| param.ty.clone()).collect();
+        let config: Vec<ResolvedTy> = source
+            .params
+            .iter()
+            .map(|param| substitution.apply(&param.ty))
+            .collect();
         self.require_type_facts(ty)?;
         for ty in &config {
+            self.require_type_facts(ty)?;
+        }
+        for ty in &substitution.args {
             self.require_type_facts(ty)?;
         }
         let id = SupervisorId(
@@ -114,7 +128,7 @@ impl InstanceService<'_> {
         });
         let mut children = Vec::new();
         for (index, child) in source.children.iter().enumerate() {
-            let handle = local_pid(child.ty.clone());
+            let handle = substitution.apply(&child.ty);
             let role = if super::actor::declaration(self.module, &handle).is_some() {
                 SemSupervisedRole::Actor(self.require_actor(&handle)?)
             } else if declaration(self.module, &handle).is_some() {
@@ -133,7 +147,8 @@ impl InstanceService<'_> {
                 Some(hew_hir::HirRestartPolicy::Transient) => SemRestartPolicy::Transient,
                 Some(hew_hir::HirRestartPolicy::Temporary) => SemRestartPolicy::Temporary,
             };
-            let spawn = self.register_child_spawn(id, index, &source, child, handle, &config)?;
+            let spawn =
+                self.register_child_spawn(id, index, &source, child, handle, &substitution)?;
             children.push(SemSupervisorChild {
                 name: child.name.clone(),
                 role,
@@ -155,7 +170,7 @@ impl InstanceService<'_> {
         source: &hew_hir::HirSupervisorDecl,
         child: &hew_hir::HirSupervisorChild,
         handle: ResolvedTy,
-        config: &[ResolvedTy],
+        substitution: &TypeSubstitution,
     ) -> Result<CallableId, String> {
         let id = CallableId(
             u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
@@ -167,7 +182,10 @@ impl InstanceService<'_> {
             value_class: hew_hir::ValueClass::BitCopy,
             intent: IntentKind::Consume,
             kind: HirExprKind::Spawn {
-                actor_name: child.ty.clone(),
+                actor_name: crate::supervisor::declared_handle(&handle)
+                    .ok_or("supervised child lacks its declared handle type")?
+                    .full_path()
+                    .to_string(),
                 args: child.init_args.clone(),
             },
             span: child.span.clone(),
@@ -194,7 +212,7 @@ impl InstanceService<'_> {
             intrinsic_id: None,
         };
         let mut params = Vec::new();
-        for ty in config {
+        for ty in &self.supervisors[supervisor.0 as usize].config {
             let owned = OwnKind::of_ty(ty, self.checked_facts.rows())? == OwnKind::Owned;
             params.push(SemAbiParam {
                 ty: ty.clone(),
@@ -225,7 +243,8 @@ impl InstanceService<'_> {
             call_conv: SemCallConv::Default,
             kind: SemCallableKind::HewDirect,
         });
-        self.synthetic_sources.insert(id, function);
+        self.synthetic_sources
+            .insert(id, (function, substitution.clone()));
         self.states.push(CallableState::Unreached);
         self.statuses.push(None);
         self.request_body(id);

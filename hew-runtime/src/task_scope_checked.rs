@@ -30,9 +30,11 @@ use std::sync::{Arc, Mutex};
 #[path = "task_scope_select.rs"]
 mod select;
 pub use select::{
-    hew_checked_task_select_add_channel, hew_checked_task_select_add_task,
-    hew_checked_task_select_arm_timer, hew_checked_task_select_free, hew_checked_task_select_new,
-    hew_checked_task_select_poll, hew_checked_task_select_poll_first, HewCheckedTaskSelect,
+    hew_checked_task_select_add_actor, hew_checked_task_select_add_channel,
+    hew_checked_task_select_add_task, hew_checked_task_select_arm_timer,
+    hew_checked_task_select_fault, hew_checked_task_select_free, hew_checked_task_select_new,
+    hew_checked_task_select_poll, hew_checked_task_select_poll_first,
+    hew_checked_task_select_set_context, HewCheckedTaskSelect,
 };
 
 const PENDING: i32 = 0;

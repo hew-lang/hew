@@ -9,7 +9,9 @@ use hew_hir::{HirBinding, HirExpr, HirSelect, HirSelectArmKind};
 use hew_types::ResolvedTy;
 
 /// One evaluated `select` source, in arm order.
-enum SelectSource<'a> {
+enum SelectSource {
+    /// An ephemeral invocation owns its request until selected or abandoned.
+    ActorCall(super::actor::StartedActorCall),
     /// A prepared task handle the winning arm awaits.
     Task {
         target: BindingTarget,
@@ -19,7 +21,8 @@ enum SelectSource<'a> {
     /// A borrowed channel receiver the winning arm receives from. `output` is
     /// the `Option<T>` the arm binds.
     Channel {
-        receiver: &'a HirExpr,
+        receiver: Operand,
+        loans: Vec<ValueId>,
         output: ResolvedTy,
     },
 }
@@ -39,7 +42,7 @@ impl Builder<'_, '_> {
         let probe_depth = self.argument_receiver_loans.len();
         let result_ty = self.ty(&expression.ty);
         let provenance = Provenance::Site(expression.site);
-        let mut sources: Vec<(usize, SelectSource<'_>)> = Vec::new();
+        let mut sources: Vec<(usize, SelectSource)> = Vec::new();
         let mut timer = None;
         let mut inputs = Vec::new();
         let mut loans = Vec::new();
@@ -97,15 +100,20 @@ impl Builder<'_, '_> {
                     let element = crate::receiver_element(&ty)
                         .ok_or("channel selection operand lacks its element type")?
                         .clone();
+                    let source_loan_depth = loans.len();
                     let operand = self.lower_borrowed_read(receiver, &mut loans)?;
+                    let source_loans = loans[source_loan_depth..].to_vec();
+                    self.argument_receiver_loans
+                        .extend(source_loans.iter().copied());
                     inputs.push(BoundaryOperand {
-                        operand,
+                        operand: operand.clone(),
                         decision: BoundaryDecision::Borrow,
                     });
                     sources.push((
                         arm_index,
                         SelectSource::Channel {
-                            receiver,
+                            receiver: operand,
+                            loans: source_loans,
                             output: ResolvedTy::named_builtin(
                                 "Option",
                                 hew_types::BuiltinType::Option,
@@ -114,17 +122,28 @@ impl Builder<'_, '_> {
                         },
                     ));
                 }
+                HirSelectArmKind::ActorAsk { call } => {
+                    let Some(started) = self.lower_actor_select_start(call)? else {
+                        return Ok(None);
+                    };
+                    inputs.push(BoundaryOperand {
+                        operand: Operand {
+                            value: started.operation,
+                        },
+                        decision: BoundaryDecision::Borrow,
+                    });
+                    sources.push((arm_index, SelectSource::ActorCall(started)));
+                }
                 HirSelectArmKind::AfterTimer { duration } => {
                     if timer.is_some() || self.ty(&duration.ty) != ResolvedTy::Duration {
                         return Err("task selection requires at most one duration timer".into());
                     }
                     timer = Some(self.lower_read_operand(duration, "selection timer")?);
                 }
-                _ => {
-                    return Err(
-                        "native selection arm requires a task, a channel receive or a timer".into(),
-                    )
-                }
+                HirSelectArmKind::StreamNext { .. } => return Err(
+                    "native selection arm requires a task, actor call, channel receive or timer"
+                        .into(),
+                ),
             }
         }
         if sources.is_empty() && timer.is_none() {
@@ -179,7 +198,6 @@ impl Builder<'_, '_> {
         }
         self.restore_control_state(&inherited);
         self.current = resumed;
-        self.end_call_loans(&loans)?;
         let mut exits = Vec::new();
         for (arm_index, arm) in select.arms.iter().enumerate() {
             let source = sources
@@ -212,8 +230,40 @@ impl Builder<'_, '_> {
                 )?;
                 Some(self.branch_candidate_test(condition)?)
             };
+            // The selected receiver keeps exactly its prepared borrow through
+            // take. End every other observation loan before the branch runs.
+            let selected_loans = match source {
+                Some((_, (_, SelectSource::Channel { loans, .. }))) => loans.as_slice(),
+                _ => &[],
+            };
+            let ending: Vec<_> = loans
+                .iter()
+                .filter(|loan| !selected_loans.contains(loan))
+                .copied()
+                .collect();
+            self.end_call_loans(&ending)?;
+            // Release every losing invocation before entering the selected arm.
+            // Task and channel inputs remain borrowed; only these ephemeral
+            // operations own work that the selection is abandoning.
+            for (other_index, other) in &sources {
+                if *other_index != arm_index {
+                    if let SelectSource::ActorCall(started) = other {
+                        self.emit_destroy(started.operation)?;
+                    }
+                }
+            }
             if let Some((_, (_, source))) = source {
                 let (value, output) = match source {
+                    SelectSource::ActorCall(started) => {
+                        let operation = crate::ActorOperation::CallTake(started.protocol.clone());
+                        let signature = self.actor_signature(&operation)?;
+                        let value = self.emit_actor_call(
+                            operation,
+                            signature,
+                            vec![started.operation, started.target],
+                        )?;
+                        (value, started.protocol.result.clone())
+                    }
                     SelectSource::Task { target, ty, output } => {
                         let value = match target {
                             BindingTarget::Place(place) => self.emit_typed(
@@ -225,10 +275,19 @@ impl Builder<'_, '_> {
                         };
                         (self.lower_task_await_value(value, output)?, output.clone())
                     }
-                    SelectSource::Channel { receiver, output } => {
+                    SelectSource::Channel {
+                        receiver,
+                        output,
+                        loans,
+                    } => {
                         // Readiness was observed, nothing taken: the winner
                         // receives, and a closed channel resolves to `None`.
-                        let value = self.lower_channel_recv_into(receiver, output.clone(), true)?;
+                        let value = self.lower_channel_recv_prepared(
+                            receiver.clone(),
+                            output.clone(),
+                            true,
+                            loans,
+                        )?;
                         (Some(value), output.clone())
                     }
                 };

@@ -77,6 +77,23 @@ struct Waiter {
     item: Option<Vec<u8>>,
 }
 
+/// A receive owns its notification until it completes; a select borrows a
+/// registration owned by that selection. Dropping a losing observation releases
+/// its target immediately without clearing a subsequent receiver registration.
+enum NativeConsumer {
+    Receive(Arc<OwnedWaker>),
+    Observe(std::sync::Weak<OwnedWaker>),
+}
+
+impl NativeConsumer {
+    fn into_waker(self) -> Option<Arc<OwnedWaker>> {
+        match self {
+            Self::Receive(waker) => Some(waker),
+            Self::Observe(waker) => waker.upgrade(),
+        }
+    }
+}
+
 struct Inner {
     queue: VecDeque<Vec<u8>>,
     capacity: usize,
@@ -108,7 +125,7 @@ struct Inner {
     /// beyond the `Vec<u8>` itself.
     elem_layout: Option<HewValueLayout>,
     /// The checked consumer parked by [`ChannelCore::next_native`].
-    native_consumer: Option<Arc<OwnedWaker>>,
+    native_consumer: Option<NativeConsumer>,
     /// Checked producers parked on a full ring by [`ChannelCore::send_native`].
     native_producers: Vec<Arc<OwnedWaker>>,
 }
@@ -311,7 +328,9 @@ impl ChannelCore {
                 None if inner.sink_closed => return 2,
                 None => {
                     // SAFETY: the caller keeps the descriptor live during retain.
-                    inner.native_consumer = Some(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                    inner.native_consumer = Some(NativeConsumer::Receive(Arc::new(unsafe {
+                        OwnedWaker::retain(waker)
+                    })));
                     return 0;
                 }
             }
@@ -356,7 +375,9 @@ impl ChannelCore {
                 None if inner.sink_closed => return (2, None),
                 None => {
                     // SAFETY: the caller keeps the descriptor live during retain.
-                    inner.native_consumer = Some(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                    inner.native_consumer = Some(NativeConsumer::Receive(Arc::new(unsafe {
+                        OwnedWaker::retain(waker)
+                    })));
                     return (0, None);
                 }
             }
@@ -372,16 +393,15 @@ impl ChannelCore {
         (1, Some(item))
     }
 
-    /// Observe whether the next receive would complete, retaining `waker` when
+    /// Observe whether the next receive would complete, registering `waker` when
     /// it would not. Nothing is consumed: the selection's winning arm performs
     /// the ordinary receive.
     ///
     /// Returns 1 with an element queued, 2 at end of channel, 3 after a
     /// producer fault, and 0 after registering the waker.
     ///
-    /// # Safety
-    /// `waker` obeys the [`HewWaker`] contract.
-    pub unsafe fn poll_recv_ready(&self, waker: &HewWaker) -> i32 {
+    /// The caller owns the registration; the channel keeps only a weak reference.
+    pub fn poll_recv_ready(&self, waker: &Arc<OwnedWaker>) -> i32 {
         let mut inner = self.locked();
         if !inner.queue.is_empty() {
             return 1;
@@ -392,8 +412,7 @@ impl ChannelCore {
         if inner.sink_closed {
             return 2;
         }
-        // SAFETY: the caller keeps the descriptor live during retain.
-        inner.native_consumer = Some(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+        inner.native_consumer = Some(NativeConsumer::Observe(Arc::downgrade(waker)));
         0
     }
 
@@ -427,7 +446,10 @@ impl ChannelCore {
             }
             inner.queue.push_back(envelope);
             consumer_wake = inner.consumer.take();
-            native_consumer = inner.native_consumer.take();
+            native_consumer = inner
+                .native_consumer
+                .take()
+                .and_then(NativeConsumer::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -472,7 +494,10 @@ impl ChannelCore {
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
             inner.queue.push_back(bytes);
             consumer_wake = inner.consumer.take();
-            native_consumer = inner.native_consumer.take();
+            native_consumer = inner
+                .native_consumer
+                .take()
+                .and_then(NativeConsumer::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -884,7 +909,10 @@ impl ChannelCore {
             let mut inner = self.locked();
             inner.sink_closed = true;
             consumer_wake = inner.consumer.take();
-            native_consumer = inner.native_consumer.take();
+            native_consumer = inner
+                .native_consumer
+                .take()
+                .and_then(NativeConsumer::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -971,6 +999,7 @@ impl ChannelCore {
             native_wakes = inner
                 .native_consumer
                 .take()
+                .and_then(NativeConsumer::into_waker)
                 .into_iter()
                 .chain(std::mem::take(&mut inner.native_producers))
                 .collect::<Vec<_>>();
@@ -1088,6 +1117,34 @@ mod tests {
         hew_read_slot_new, hew_read_slot_status, install_read_slot_free_probe_for_test,
         new_read_slot_free_probe_for_test, read_slot_free_probe_count, read_slot_refs_for_test,
     };
+
+    #[test]
+    fn select_observation_detaches_without_consuming_or_disarming_a_successor() {
+        use crate::wake::blocking::Readiness;
+
+        let core = ChannelCore::new(1);
+        let (old_target, old_waker) = Readiness::new();
+        let old = Arc::new(old_waker);
+        assert_eq!(core.poll_recv_ready(&old), 0);
+        drop(old);
+        assert_eq!(Arc::strong_count(&old_target), 1);
+
+        let (target, waker) = Readiness::new();
+        let observation = Arc::new(waker);
+        assert_eq!(core.poll_recv_ready(&observation), 0);
+        // SAFETY: the retained descriptor outlives the synchronous send.
+        let sent = unsafe { core.poll_send_envelope(observation.descriptor(), b"value".to_vec()) };
+        assert_eq!(sent, (1, None));
+        assert!(target.take_ready());
+        assert!(!old_target.take_ready());
+        assert_eq!(core.poll_recv_ready(&observation), 1);
+        assert_eq!(core.pop(), Some(b"value".to_vec()));
+        assert_eq!(core.poll_recv_ready(&observation), 0);
+        drop(observation);
+        core.close_sink();
+        assert!(!target.take_ready());
+        assert_eq!(Arc::strong_count(&target), 1);
+    }
 
     #[test]
     fn fifo_push_pop_without_parking() {

@@ -505,6 +505,8 @@ pub enum PhysicalSelectSource {
     Task(ArgumentTransfer),
     /// A borrowed channel receiver; the winning arm performs the receive.
     ChannelRecv(ArgumentTransfer),
+    /// A borrowed ephemeral completion; the winning arm consumes its result.
+    ActorCall(ArgumentTransfer),
 }
 
 impl PhysicalSelectSource {
@@ -512,7 +514,9 @@ impl PhysicalSelectSource {
     #[must_use]
     pub const fn transfer(self) -> ArgumentTransfer {
         match self {
-            Self::Task(transfer) | Self::ChannelRecv(transfer) => transfer,
+            Self::Task(transfer) | Self::ChannelRecv(transfer) | Self::ActorCall(transfer) => {
+                transfer
+            }
         }
     }
 }
@@ -914,6 +918,7 @@ pub enum PhysicalRuntimeAction {
     ChannelPairNew,
     ChannelPairFree,
     ActorRequestRelease,
+    ActorCallFree,
     ActorRequestTake,
     ChannelPairIsValid,
     ChannelPairSender,
@@ -1004,6 +1009,7 @@ impl PhysicalRuntimeAction {
             Self::ChannelPairNew => RuntimeCallFamily::ChannelPairNew,
             Self::ChannelPairFree => RuntimeCallFamily::ChannelPairFree,
             Self::ActorRequestRelease => RuntimeCallFamily::ActorRequestRelease,
+            Self::ActorCallFree => RuntimeCallFamily::ActorCallFree,
             Self::ActorRequestTake => RuntimeCallFamily::ActorRequestTake,
             Self::ChannelPairIsValid => RuntimeCallFamily::ChannelPairIsValid,
             Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
@@ -2470,6 +2476,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::ChannelPairNew => PhysicalRuntimeAction::ChannelPairNew,
         RuntimeCallFamily::ChannelPairFree => PhysicalRuntimeAction::ChannelPairFree,
         RuntimeCallFamily::ActorRequestRelease => PhysicalRuntimeAction::ActorRequestRelease,
+        RuntimeCallFamily::ActorCallFree => PhysicalRuntimeAction::ActorCallFree,
         RuntimeCallFamily::ActorRequestTake => PhysicalRuntimeAction::ActorRequestTake,
         RuntimeCallFamily::ChannelPairIsValid => PhysicalRuntimeAction::ChannelPairIsValid,
         RuntimeCallFamily::ChannelPairSender => PhysicalRuntimeAction::ChannelPairSender,
@@ -3314,6 +3321,8 @@ impl FunctionLowerer<'_> {
                         // observes; the selection has no other authority.
                         if ty.is_builtin(hew_types::BuiltinType::Receiver) {
                             Ok(PhysicalSelectSource::ChannelRecv(transfer))
+                        } else if ty.is_builtin(hew_types::BuiltinType::ActorCall) {
+                            Ok(PhysicalSelectSource::ActorCall(transfer))
                         } else {
                             Ok(PhysicalSelectSource::Task(transfer))
                         }
@@ -7030,6 +7039,9 @@ fn verify_terminator(
                 let ty = &slot(handle)?.ty;
                 let agrees = match source {
                     PhysicalSelectSource::Task(_) => matches!(ty, ResolvedTy::Task(_)),
+                    PhysicalSelectSource::ActorCall(_) => {
+                        ty.is_builtin(hew_types::BuiltinType::ActorCall)
+                    }
                     PhysicalSelectSource::ChannelRecv(_) => {
                         ty.is_builtin(hew_types::BuiltinType::Receiver)
                     }
@@ -7619,9 +7631,12 @@ fn verify_terminator(
                 ));
             }
             for (argument, parameter) in args.iter().zip(&signature.params) {
-                let ArgumentTransfer::Move(id) = argument else {
+                let ((SemParamPassing::Borrow, ArgumentTransfer::Borrow(id))
+                | (SemParamPassing::Consume, ArgumentTransfer::Move(id))) =
+                    (parameter.passing, argument)
+                else {
                     return Err(PhysicalError::new(
-                        "actor boundary must transfer each payload owner",
+                        "actor boundary changes its argument ownership",
                     ));
                 };
                 if slot(*id)?.ty != parameter.ty {

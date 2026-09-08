@@ -1,0 +1,10 @@
+[[case]]
+id = "select-actor-lifecycle"
+intent = "Actor select arms never block mailbox admission, withdraw queued losers before handler side effects, and preserve dispatched handlers while releasing late owned replies."
+source = "cases/select-actor-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "recovered true\nadmission did not block\nhandled 0\nqueued request withdrawn\nhandled 0\ndispatched reply abandoned\nhandled 1\n"
+exit = 0

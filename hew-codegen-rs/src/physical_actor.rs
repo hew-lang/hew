@@ -944,7 +944,53 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
+        match &operation {
+            ActorOperation::CallStart(protocol) => {
+                let result = result.ok_or_else(|| {
+                    CodegenError::FailClosed("completion start has no result owner".into())
+                })?;
+                let value = self.emit_actor_call_start(
+                    protocol.actor,
+                    protocol.message,
+                    protocol.policy,
+                    protocol.deadline_ns,
+                    protocol.sealed,
+                    transfers,
+                )?;
+                self.store(result, value.into())?;
+                return self.emit_result_edge(Some(result), normal);
+            }
+            ActorOperation::CallTake(protocol) => {
+                let [ArgumentTransfer::Move(operation), ArgumentTransfer::Borrow(target)] =
+                    transfers
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "completion take changes its owners".into(),
+                    ));
+                };
+                let result = result.ok_or_else(|| {
+                    CodegenError::FailClosed("completion take has no result".into())
+                })?;
+                let value = self
+                    .load(*operation, "ask.selected.operation")?
+                    .into_pointer_value();
+                self.emit_actor_call_take(
+                    value,
+                    protocol.actor,
+                    protocol.message,
+                    protocol.policy,
+                    *target,
+                    result,
+                )?;
+                self.clear_owned(*operation)?;
+                return self.emit_result_edge(Some(result), normal);
+            }
+            _ => {}
+        }
         let id = match &operation {
+            ActorOperation::CallStart(_) | ActorOperation::CallTake(_) => {
+                unreachable!("completion returned above")
+            }
             ActorOperation::Spawn(id)
             | ActorOperation::SelfHandle(id)
             | ActorOperation::Close(id)
@@ -979,6 +1025,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("missing native actor descriptor".into())
             })?;
         let status = match operation {
+            ActorOperation::CallStart(_) | ActorOperation::CallTake(_) => {
+                unreachable!("completion returned above")
+            }
             ActorOperation::Close(_) => {
                 let [source] = sources.as_slice() else {
                     return Err(CodegenError::FailClosed(

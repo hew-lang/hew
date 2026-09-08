@@ -3,11 +3,7 @@
 use super::*;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "one physical suspension owns request transfer, readiness and all cleanup edges"
-    )]
+    #[allow(clippy::too_many_arguments, reason = "exact actor suspension contract")]
     pub(in crate::physical) fn emit_actor_ask(
         &self,
         actor: ActorId,
@@ -24,18 +20,118 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("ask requires a resumable invocation".into())
         })?;
-        let actor = self
-            .module
-            .actors
-            .get(actor.0 as usize)
-            .ok_or_else(|| CodegenError::FailClosed("ask lacks its actor descriptor".into()))?;
+        let operation =
+            self.emit_actor_call_start(actor, message, policy, deadline_ns, sealed, args)?;
+        let ArgumentTransfer::Borrow(target) = args[0] else {
+            return Err(CodegenError::FailClosed(
+                "ask must borrow its target".into(),
+            ));
+        };
+        // A deadline is an independent progress path, so this call alone
+        // cannot prove a closed actor dependency cycle.
+        let wait_edge = if deadline_ns.is_some() {
+            self.ctx.ptr_type(AddressSpace::default()).const_null()
+        } else {
+            self.new_actor_wait_edge(self.load_actor_target(target, "ask.wait.target")?.into(), 0)?
+        };
+        let poll = self.ctx.append_basic_block(self.value, "ask.poll");
+        let inspect = self.ctx.append_basic_block(self.value, "ask.inspect");
+        let pending = self.ctx.append_basic_block(self.value, "ask.pending");
+        let completed = self.ctx.append_basic_block(self.value, "ask.completed");
+        let cancelled = self.ctx.append_basic_block(self.value, "ask.cancelled");
+        let destroyed = self.ctx.append_basic_block(self.value, "ask.destroyed");
+        let failed = self.ctx.append_basic_block(self.value, "ask.failed");
+        let cycle = self.ctx.append_basic_block(self.value, "ask.cycle");
+        self.builder
+            .build_unconditional_branch(poll)
+            .llvm_ctx("poll completion")?;
+        self.builder.position_at_end(poll);
+        self.free_handle("hew_actor_wait_edge_prepare", wait_edge)?;
+        let cancelling = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelling = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                cancelling,
+                self.ctx.i32_type().const_zero(),
+                "ask.cancel.requested",
+            )
+            .llvm_ctx("inspect completion cancellation")?;
+        self.builder
+            .build_conditional_branch(cancelling, cancelled, inspect)
+            .llvm_ctx("select completion cancellation")?;
+        self.builder.position_at_end(inspect);
+        let status = self.state_value("hew_actor_call_poll", operation)?;
+        self.builder
+            .build_switch(
+                status,
+                completed,
+                &[
+                    (self.ctx.i32_type().const_all_ones(), pending),
+                    (self.ctx.i32_type().const_int((-2_i64) as u64, true), failed),
+                ],
+            )
+            .llvm_ctx("inspect completion readiness")?;
+        self.builder.position_at_end(pending);
+        self.check_actor_wait_cycle(wait_edge, cycle)?;
+        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        self.builder.position_at_end(destroyed);
+        self.builder
+            .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
+            .llvm_ctx("mark destroyed completion frame")?;
+        self.builder
+            .build_unconditional_branch(cancelled)
+            .llvm_ctx("abandon destroyed completion")?;
+        self.builder.position_at_end(completed);
+        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        self.emit_actor_call_take(operation, actor, message, policy, target, result)?;
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        self.free_handle("hew_actor_call_free", operation)?;
+        self.initialize_cancellation_fault()?;
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(cycle);
+        self.initialize_actor_cycle_fault(wait_edge)?;
+        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        self.free_handle("hew_actor_call_free", operation)?;
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(failed);
+        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        self.free_handle("hew_actor_call_free", operation)?;
+        self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)
+    }
+
+    /// Transfer the checked request into the shared runtime operation. Starting
+    /// never parks: later select operands may still be evaluated or fail.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one exact request allocation and transfer boundary"
+    )]
+    pub(super) fn emit_actor_call_start(
+        &self,
+        actor: ActorId,
+        message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
+        deadline_ns: Option<i64>,
+        sealed: bool,
+        args: &[ArgumentTransfer],
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("completion start requires an invocation state".into())
+        })?;
+        let actor = self.module.actors.get(actor.0 as usize).ok_or_else(|| {
+            CodegenError::FailClosed("completion lacks its actor descriptor".into())
+        })?;
         let handler = actor
             .handlers
             .iter()
             .find(|handler| handler.message_id == message)
-            .ok_or_else(|| CodegenError::FailClosed("ask lacks its exact receive member".into()))?;
-        // The target is borrowed to address the actor; every request argument
-        // transfers its value into the message wrapper.
+            .ok_or_else(|| {
+                CodegenError::FailClosed("completion lacks its receive member".into())
+            })?;
         let sources = args
             .iter()
             .enumerate()
@@ -44,7 +140,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     Ok(*source)
                 }
                 _ => Err(CodegenError::FailClosed(
-                    "ask lacks an owning request transfer".into(),
+                    "completion changes request ownership".into(),
                 )),
             })
             .collect::<CodegenResult<Vec<_>>>()?;
@@ -69,20 +165,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "ask.request",
             )?
             .into_pointer_value();
-            let allocation_failed = self
+            let failed = self
                 .ctx
                 .append_basic_block(self.value, "ask.allocation.failed");
-            let submit = self.ctx.append_basic_block(self.value, "ask.submit");
+            let populate = self.ctx.append_basic_block(self.value, "ask.populate");
+            let start = self.ctx.append_basic_block(self.value, "ask.start");
             let missing = self
                 .builder
                 .build_is_null(wrapper, "ask.missing.request")
                 .llvm_ctx("check request allocation")?;
             self.builder
-                .build_conditional_branch(missing, allocation_failed, submit)
-                .llvm_ctx("retain request fields until allocation")?;
-            self.builder.position_at_end(allocation_failed);
-            // The target is borrowed; only the request arguments were about to
-            // transfer, so only they are released when the wrapper never exists.
+                .build_conditional_branch(missing, failed, populate)
+                .llvm_ctx("retain fields until request allocation")?;
+            self.builder.position_at_end(failed);
             for source in sources.iter().skip(1) {
                 if let Some(action) = self
                     .module
@@ -95,17 +190,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.clear_owned(*source)?;
                 }
             }
-            self.emit_ask_result(
-                result,
-                self.ctx.i32_type().const_int(
-                    hew_runtime::internal::types::AskError::SendFailed as u64,
-                    false,
-                ),
-                None,
-                handler,
-            )?;
-            self.emit_result_edge(Some(result), normal)?;
-            self.builder.position_at_end(submit);
+            self.builder
+                .build_unconditional_branch(start)
+                .llvm_ctx("start failed allocation outcome")?;
+            self.builder.position_at_end(populate);
             self.builder
                 .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
                 .llvm_ctx("initialize request ownership")?;
@@ -113,11 +201,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let field = self
                     .builder
                     .build_struct_gep(wrapper_ty, wrapper, (index + 1) as u32, "ask.request.field")
-                    .llvm_ctx("address typed request field")?;
+                    .llvm_ctx("address request field")?;
                 self.builder
                     .build_store(field, self.load(*source, "ask.argument")?)
                     .llvm_ctx("transfer request field")?;
             }
+            self.builder
+                .build_unconditional_branch(start)
+                .llvm_ctx("start populated request")?;
+            self.builder.position_at_end(start);
             wrapper
         };
         let wake = coro::external(
@@ -132,379 +224,179 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .map_or(ptr.const_null(), |function| {
                 function.as_global_value().as_pointer_value()
             });
-        let new = coro::external(
-            self.llvm,
-            "hew_reply_channel_new_native",
-            ptr.fn_type(&[ptr.into(); 2], false),
-        )?;
-        let channel = call_value(
-            &self.builder,
-            new,
-            &[waker.into(), drop_reply.into()],
-            "ask.channel",
-        )?
-        .into_pointer_value();
-        let timer = deadline_ns
-            .map(|duration| {
-                let start = coro::external(
-                    self.llvm,
-                    "hew_coro_sleep_new",
-                    ptr.fn_type(&[self.ctx.i64_type().into(), ptr.into()], false),
-                )?;
-                Ok::<_, CodegenError>(
-                    call_value(
-                        &self.builder,
-                        start,
-                        &[
-                            self.ctx.i64_type().const_int(duration as u64, true).into(),
-                            waker.into(),
-                        ],
-                        "ask.deadline",
-                    )?
-                    .into_pointer_value(),
-                )
-            })
-            .transpose()?;
-        let drop_request = self
-            .llvm
-            .get_function(&message_symbol(actor.id, message))
-            .ok_or_else(|| CodegenError::FailClosed("ask request lacks its destructor".into()))?;
-        let wait_edge = self.new_actor_wait_edge(
-            self.load_actor_target(sources[0], "ask.wait.target")?
+        let reply_size = callable(self.module, handler.callable)?
+            .return_layout
+            .as_ref()
+            .map_or(0, |layout| layout.size);
+        let mut types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            vec![size_ty.into(), self.ctx.i32_type().into(), ptr.into()];
+        let mut arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
+            self.load_actor_target(sources[0], "ask.target")?.into(),
+            self.ctx
+                .i32_type()
+                .const_int(u64::from(message), false)
                 .into(),
-            0,
+            wrapper.into(),
+        ];
+        if !sealed {
+            let drop_request = self
+                .llvm
+                .get_function(&message_symbol(actor.id, message))
+                .ok_or_else(|| CodegenError::FailClosed("request lacks its destructor".into()))?;
+            types.extend::<[inkwell::types::BasicMetadataTypeEnum<'ctx>; 2]>([
+                size_ty.into(),
+                ptr.into(),
+            ]);
+            arguments.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 2]>([
+                size_ty.const_int(size, false).into(),
+                drop_request.as_global_value().as_pointer_value().into(),
+            ]);
+        }
+        types.extend::<[inkwell::types::BasicMetadataTypeEnum<'ctx>; 6]>([
+            size_ty.into(),
+            ptr.into(),
+            ptr.into(),
+            self.ctx.i64_type().into(),
+            self.ctx.i32_type().into(),
+            self.ctx.i32_type().into(),
+        ]);
+        arguments.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 6]>([
+            size_ty.const_int(reply_size, false).into(),
+            drop_reply.into(),
+            waker.into(),
+            self.ctx
+                .i64_type()
+                .const_int(deadline_ns.unwrap_or(0) as u64, true)
+                .into(),
+            self.ctx
+                .i32_type()
+                .const_int(u64::from(deadline_ns.is_some()), false)
+                .into(),
+            self.ctx
+                .i32_type()
+                .const_int(
+                    u64::from(policy == hew_types::actor_delivery::SendPolicy::Reject),
+                    false,
+                )
+                .into(),
+        ]);
+        let start = coro::external(
+            self.llvm,
+            if sealed {
+                "hew_actor_call_resume"
+            } else {
+                "hew_actor_call_new"
+            },
+            ptr.fn_type(&types, false),
         )?;
-        let cycle = self.ctx.append_basic_block(self.value, "ask.cycle.fault");
-        // A completion call waits for admission as well as for the reply: a
-        // full mailbox parks the caller instead of refusing the call.
-        let admission = if sealed {
-            let resume = coro::external(
-                self.llvm,
-                "hew_actor_ask_wait_resume",
-                ptr.fn_type(
-                    &[
-                        size_ty.into(),
-                        self.ctx.i32_type().into(),
-                        ptr.into(),
-                        ptr.into(),
-                        ptr.into(),
-                    ],
-                    false,
-                ),
-            )?;
-            call_value(
-                &self.builder,
-                resume,
-                &[
-                    self.load_actor_target(sources[0], "ask.target")?.into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(u64::from(message), false)
-                        .into(),
-                    wrapper.into(),
-                    channel.into(),
-                    waker.into(),
-                ],
-                "ask.resumed.admission",
-            )?
-            .into_pointer_value()
-        } else {
-            let admit_new = coro::external(
-                self.llvm,
-                "hew_actor_ask_wait_new",
-                ptr.fn_type(
-                    &[
-                        size_ty.into(),
-                        self.ctx.i32_type().into(),
-                        ptr.into(),
-                        size_ty.into(),
-                        ptr.into(),
-                        ptr.into(),
-                        ptr.into(),
-                    ],
-                    false,
-                ),
-            )?;
-            call_value(
-                &self.builder,
-                admit_new,
-                &[
-                    self.load_actor_target(sources[0], "ask.target")?.into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(u64::from(message), false)
-                        .into(),
-                    wrapper.into(),
-                    size_ty.const_int(size, false).into(),
-                    drop_request.as_global_value().as_pointer_value().into(),
-                    channel.into(),
-                    waker.into(),
-                ],
-                "ask.admission",
-            )?
-            .into_pointer_value()
-        };
-        // The request arguments moved into the wrapper; the borrowed target
-        // keeps its owner, which releases it at the end of its scope.
+        let operation =
+            call_value(&self.builder, start, &arguments, "ask.operation")?.into_pointer_value();
         for source in sources.iter().skip(1) {
             self.clear_owned(*source)?;
         }
-        let admit_poll = self.ctx.append_basic_block(self.value, "ask.admit.poll");
-        let admit_inspect = self.ctx.append_basic_block(self.value, "ask.admit.inspect");
-        let admit_pending = self.ctx.append_basic_block(self.value, "ask.admit.pending");
-        let admit_done = self.ctx.append_basic_block(self.value, "ask.admit.done");
-        let admit_cancelled = self
-            .ctx
-            .append_basic_block(self.value, "ask.admit.cancelled");
-        let admit_refused = self.ctx.append_basic_block(self.value, "ask.admit.refused");
-        let admit_destroyed = self.ctx.append_basic_block(self.value, "ask.admit.destroy");
-        self.builder
-            .build_unconditional_branch(admit_poll)
-            .llvm_ctx("poll request admission")?;
-        self.builder.position_at_end(admit_poll);
-        self.free_handle("hew_actor_wait_edge_prepare", wait_edge)?;
-        let cancelling = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
-        let cancelling = self
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                cancelling,
-                self.ctx.i32_type().const_zero(),
-                "ask.admit.cancel.requested",
-            )
-            .llvm_ctx("inspect caller cancellation during admission")?;
-        self.builder
-            .build_conditional_branch(cancelling, admit_cancelled, admit_inspect)
-            .llvm_ctx("select caller cancellation during admission")?;
-        self.builder.position_at_end(admit_inspect);
-        let admitted_status = self.state_value("hew_actor_ask_wait_poll", admission)?;
-        let full = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                admitted_status,
-                self.ctx.i32_type().const_all_ones(),
-                "ask.admit.full",
-            )
-            .llvm_ctx("inspect mailbox capacity")?;
-        // `.Wait` parks the caller until the mailbox has room; `.Reject`
-        // refuses the call outright and hands back the reason, which is the
-        // only outcome from which the caller may safely make the call again.
-        let refuses = policy == hew_types::actor_delivery::SendPolicy::Reject;
-        self.builder
-            .build_conditional_branch(
-                full,
-                if refuses {
-                    admit_refused
-                } else {
-                    admit_pending
-                },
-                admit_done,
-            )
-            .llvm_ctx("select mailbox capacity")?;
-        self.builder.position_at_end(admit_refused);
-        if refuses {
-            let take = coro::external(
-                self.llvm,
-                "hew_actor_ask_wait_take_request",
-                ptr.fn_type(&[ptr.into()], false),
-            )?;
-            let request = call_value(
-                &self.builder,
-                take,
-                &[admission.into()],
-                "ask.refused.request",
-            )?
-            .into_pointer_value();
-            self.free_handle("hew_actor_ask_wait_free", admission)?;
-            self.close_ask(channel, timer, wait_edge)?;
-            self.emit_ask_refused(result, sources[0], message, request)?;
-            self.emit_result_edge(Some(result), normal)?;
+        Ok(operation)
+    }
+
+    /// Materialize the selected value using the same reply and rejection recipes
+    /// as an ordinary call. The operation releases only what was not taken.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "exact selected completion protocol"
+    )]
+    pub(super) fn emit_actor_call_take(
+        &self,
+        operation: PointerValue<'ctx>,
+        actor: ActorId,
+        message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
+        target: StorageId,
+        result: StorageId,
+    ) -> CodegenResult<()> {
+        let handler = self
+            .module
+            .actors
+            .get(actor.0 as usize)
+            .and_then(|actor| {
+                actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == message)
+            })
+            .ok_or_else(|| CodegenError::FailClosed("selected call lacks its protocol".into()))?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let entry = self.ctx.create_builder();
+        let block = self.value.get_first_basic_block().unwrap();
+        if let Some(first) = block.get_first_instruction() {
+            entry.position_before(&first);
         } else {
-            self.builder
-                .build_unreachable()
-                .llvm_ctx("waiting admission cannot refuse")?;
+            entry.position_at_end(block);
         }
-        self.builder.position_at_end(admit_pending);
-        self.check_actor_wait_cycle(wait_edge, cycle)?;
-        frame.suspend(
-            self.ctx,
-            self.llvm,
-            &self.builder,
-            admit_poll,
-            admit_destroyed,
-            false,
-        )?;
-        self.builder.position_at_end(admit_destroyed);
-        self.reject_invalid_task_state()?;
-        self.builder.position_at_end(admit_cancelled);
-        self.free_handle("hew_actor_ask_wait_free", admission)?;
-        self.close_ask(channel, timer, wait_edge)?;
-        self.initialize_cancellation_fault()?;
-        self.emit_edge(cancel)?;
-        self.builder.position_at_end(admit_done);
-        self.free_handle("hew_actor_ask_wait_free", admission)?;
-        let submitted = admitted_status;
-        let reply_layout = callable(self.module, handler.callable)?
+        let reply = callable(self.module, handler.callable)?
             .return_layout
-            .as_ref();
-        // The reply slot is hoisted out of loops, then promoted into the coroutine
-        // frame if a request parks. No operation retains its address after take.
-        let reply = reply_layout
+            .as_ref()
             .map(|layout| {
-                let entry = self.ctx.create_builder();
-                let block = self.value.get_first_basic_block().unwrap();
-                if let Some(first) = block.get_first_instruction() {
-                    entry.position_before(&first);
-                } else {
-                    entry.position_at_end(block);
-                }
                 entry
                     .build_alloca(llvm_type(self.ctx, &layout.repr)?, "ask.reply")
-                    .llvm_ctx("allocate exact reply slot")
+                    .llvm_ctx("allocate selected reply slot")
             })
             .transpose()?;
-        let poll = self.ctx.append_basic_block(self.value, "ask.poll");
-        let inspect = self.ctx.append_basic_block(self.value, "ask.inspect");
-        let pending = self.ctx.append_basic_block(self.value, "ask.pending");
-        let parked = self.ctx.append_basic_block(self.value, "ask.parked");
-        let destroyed = self
-            .ctx
-            .append_basic_block(self.value, "ask.invalid.destroy");
-        let completed = self.ctx.append_basic_block(self.value, "ask.completed");
-        let rejected = self.ctx.append_basic_block(self.value, "ask.rejected");
-        let cancelled = self.ctx.append_basic_block(self.value, "ask.cancelled");
-        let failed = self.ctx.append_basic_block(self.value, "ask.failed");
-        let admitted = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                submitted,
-                self.ctx.i32_type().const_zero(),
-                "ask.admitted",
-            )
-            .llvm_ctx("check admission")?;
-        self.builder
-            .build_conditional_branch(admitted, poll, rejected)
-            .llvm_ctx("select admitted request")?;
-        self.builder.position_at_end(rejected);
-        self.close_ask(channel, timer, wait_edge)?;
-        self.emit_ask_result(result, submitted, None, handler)?;
-        self.emit_result_edge(Some(result), normal)?;
-        self.builder.position_at_end(poll);
-        self.free_handle("hew_actor_wait_edge_prepare", wait_edge)?;
-        let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
-        let cancellation = self
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                cancellation,
-                self.ctx.i32_type().const_zero(),
-                "ask.cancel.requested",
-            )
-            .llvm_ctx("inspect caller cancellation")?;
-        self.builder
-            .build_conditional_branch(cancellation, cancelled, inspect)
-            .llvm_ctx("select caller cancellation")?;
-        self.builder.position_at_end(inspect);
-        let poll_fn = coro::external(
+        let request = entry
+            .build_alloca(ptr, "ask.rejected.request")
+            .llvm_ctx("allocate rejected request slot")?;
+        let take = coro::external(
             self.llvm,
-            "hew_reply_channel_poll_native",
-            self.ctx
-                .i32_type()
-                .fn_type(&[ptr.into(), size_ty.into(), ptr.into()], false),
+            "hew_actor_call_take",
+            self.ctx.i32_type().fn_type(&[ptr.into(); 3], false),
         )?;
         let status = call_value(
             &self.builder,
-            poll_fn,
+            take,
             &[
-                channel.into(),
-                size_ty
-                    .const_int(reply_layout.map_or(0, |layout| layout.size), false)
-                    .into(),
+                operation.into(),
                 reply.unwrap_or(ptr.const_null()).into(),
+                request.into(),
             ],
             "ask.outcome",
         )?
         .into_int_value();
-        let waiting = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_all_ones(),
-                "ask.waiting",
-            )
-            .llvm_ctx("inspect reply readiness")?;
-        self.builder
-            .build_conditional_branch(waiting, pending, completed)
-            .llvm_ctx("select reply readiness")?;
-        self.builder.position_at_end(pending);
-        if let Some(timer) = timer {
-            let timed_out = self.ctx.append_basic_block(self.value, "ask.timed.out");
-            let timer_status = self.state_value("hew_coro_sleep_status", timer)?;
-            self.builder
-                .build_switch(
-                    timer_status,
-                    failed,
-                    &[
-                        (self.ctx.i32_type().const_zero(), parked),
-                        (self.ctx.i32_type().const_int(1, false), timed_out),
-                    ],
+        self.free_handle("hew_actor_call_free", operation)?;
+        let done = self.ctx.append_basic_block(self.value, "ask.taken");
+        if policy == hew_types::actor_delivery::SendPolicy::Reject {
+            let rejected = self.ctx.append_basic_block(self.value, "ask.rejected");
+            let replied = self.ctx.append_basic_block(self.value, "ask.replied");
+            let refused = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_int(
+                        hew_runtime::internal::types::AskError::MailboxFull as u64,
+                        false,
+                    ),
+                    "ask.refused",
                 )
-                .llvm_ctx("inspect ask deadline")?;
-            self.builder.position_at_end(timed_out);
-            self.close_ask(channel, Some(timer), wait_edge)?;
-            self.emit_ask_result(
-                result,
-                self.ctx.i32_type().const_int(
-                    hew_runtime::internal::types::AskError::Timeout as u64,
-                    false,
-                ),
-                None,
-                handler,
-            )?;
-            self.emit_result_edge(Some(result), normal)?;
-        } else {
+                .llvm_ctx("classify request rejection")?;
             self.builder
-                .build_unconditional_branch(parked)
-                .llvm_ctx("park pending ask")?;
+                .build_conditional_branch(refused, rejected, replied)
+                .llvm_ctx("select owned rejection")?;
+            self.builder.position_at_end(rejected);
+            let request = self
+                .builder
+                .build_load(ptr, request, "ask.rejected.envelope")
+                .llvm_ctx("take rejected envelope")?
+                .into_pointer_value();
+            self.emit_ask_refused(result, target, message, request)?;
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish rejected request")?;
+            self.builder.position_at_end(replied);
         }
-        self.builder.position_at_end(parked);
-        self.check_actor_wait_cycle(wait_edge, cycle)?;
-        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
-        self.builder.position_at_end(destroyed);
-        self.reject_invalid_task_state()?;
-        self.builder.position_at_end(completed);
-        self.close_ask(channel, timer, wait_edge)?;
         self.emit_ask_result(result, status, reply, handler)?;
-        self.emit_result_edge(Some(result), normal)?;
-        self.builder.position_at_end(cancelled);
-        self.close_ask(channel, timer, wait_edge)?;
-        self.initialize_cancellation_fault()?;
-        self.emit_edge(cancel)?;
-        self.builder.position_at_end(cycle);
-        self.initialize_actor_cycle_fault(wait_edge)?;
-        self.close_ask(channel, timer, wait_edge)?;
-        self.emit_edge(unwind)?;
-        self.builder.position_at_end(failed);
-        self.close_ask(channel, timer, wait_edge)?;
-        self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
-        self.emit_edge(unwind)
-    }
-
-    fn close_ask(
-        &self,
-        channel: PointerValue<'ctx>,
-        timer: Option<PointerValue<'ctx>>,
-        wait_edge: PointerValue<'ctx>,
-    ) -> CodegenResult<()> {
-        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
-        if let Some(timer) = timer {
-            self.free_handle("hew_coro_sleep_free", timer)?;
-        }
-        self.free_handle("hew_reply_channel_cancel", channel)?;
-        self.free_handle("hew_reply_channel_free", channel)
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish selected completion")?;
+        self.builder.position_at_end(done);
+        Ok(())
     }
 
     /// A `policy(target, on_full: .Reject)` call whose destination mailbox is

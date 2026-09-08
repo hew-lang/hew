@@ -1514,6 +1514,7 @@ pub enum RuntimeCallFamily {
     ChannelPairNew,
     ChannelPairFree,
     ActorRequestRelease,
+    ActorCallFree,
     ActorRequestTake,
     ChannelPairIsValid,
     ChannelPairSender,
@@ -2816,6 +2817,7 @@ impl RuntimeCallFamily {
             Self::ChannelPairNew => "hew_channel_new",
             Self::ChannelPairFree => "hew_channel_pair_free",
             Self::ActorRequestRelease => "hew_msg_envelope_release",
+            Self::ActorCallFree => "hew_actor_call_free",
             Self::ActorRequestTake => "hew_actor_ask_wait_take_request",
             Self::ChannelPairIsValid => "hew_channel_pair_is_valid",
             Self::ChannelPairSender => "hew_channel_pair_sender",
@@ -3224,6 +3226,7 @@ impl RuntimeCallFamily {
             "hew_channel_new" => Self::ChannelPairNew,
             "hew_channel_pair_free" => Self::ChannelPairFree,
             "hew_msg_envelope_release" => Self::ActorRequestRelease,
+            "hew_actor_call_free" => Self::ActorCallFree,
             "hew_actor_ask_wait_take_request" => Self::ActorRequestTake,
             "hew_channel_pair_is_valid" => Self::ChannelPairIsValid,
             "hew_channel_pair_sender" => Self::ChannelPairSender,
@@ -3899,6 +3902,7 @@ impl RuntimeCallFamily {
                 | Self::ChannelReceiverClose
                 | Self::ChannelPairFree
                 | Self::ActorRequestRelease
+                | Self::ActorCallFree
                 | Self::DuplexClose
                 | Self::DuplexCloseHalf
                 // The half-extract methods move the unified `Duplex` handle out:
@@ -4066,6 +4070,14 @@ impl RuntimeCallFamily {
             Self::ChannelReceiverClose => channel_receiver_close_contract(),
             Self::ChannelPairNew => channel_pair_new_contract(),
             Self::ChannelPairFree => channel_pair_free_contract(),
+            Self::ActorCallFree => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::Receiver(BuiltinType::ActorCall),
+                    effect: RuntimeArgumentEffect::Move,
+                }],
+                RuntimeResultEffect::Unit,
+                &[],
+            ),
             Self::ActorRequestRelease => runtime_semantic_contract(
                 &[RuntimeArgumentContract {
                     ty: RuntimeValueKind::ActorRequestOwner,
@@ -4379,6 +4391,7 @@ impl RuntimeCallFamily {
             | F::ChannelPairNew
             | F::ChannelPairFree
             | F::ActorRequestRelease
+            | F::ActorCallFree
             | F::ActorRequestTake
             | F::ChannelPairIsValid
             | F::ChannelPairSender
@@ -5322,6 +5335,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelPairNew
             | F::ChannelPairFree
             | F::ActorRequestRelease
+            | F::ActorCallFree
             | F::ActorRequestTake
             | F::ChannelPairIsValid
             | F::ChannelPairSender

@@ -870,6 +870,8 @@ pub mod signal;
 pub mod actor;
 pub mod actor_balance;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod actor_call_native;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_group;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod actor_native;

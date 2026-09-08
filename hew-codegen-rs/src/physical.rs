@@ -3931,6 +3931,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
+            PhysicalRuntimeAction::ActorCallFree => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ActorCallFree,
+                    transfers,
+                    result,
+                )?;
+            }
             PhysicalRuntimeAction::ActorRequestRelease => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ActorRequestRelease,

@@ -141,7 +141,8 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 hew_sir::SemTerminator::ActorCall {
                     operation:
                         hew_sir::ActorOperation::AwaitClosed(_)
-                        | hew_sir::ActorOperation::StreamStart { .. },
+                        | hew_sir::ActorOperation::StreamStart { .. }
+                        | hew_sir::ActorOperation::CallStart(_),
                     ..
                 } => {
                     resumable.insert(function.callable);
@@ -181,7 +182,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::ActorCall {
                     operation:
                         hew_sir::ActorOperation::AwaitClosed(_)
-                        | hew_sir::ActorOperation::StreamStart { .. },
+                        | hew_sir::ActorOperation::StreamStart { .. }
+                        | hew_sir::ActorOperation::CallStart(_),
                     ..
                 } => {
                     resumable.insert(function.callable);

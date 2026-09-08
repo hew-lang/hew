@@ -1,0 +1,10 @@
+[[case]]
+id = "select-actor-call-arm"
+intent = "An actor completion wins over a gated task and empty channel; the task remains joinable and the channel stays usable."
+source = "cases/select-actor-call-arm.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "OWNED ACTOR REPLY\ntask still joinable\nreceiver still usable\nreceiver evaluated once\nprepared receiver\n"
+exit = 0

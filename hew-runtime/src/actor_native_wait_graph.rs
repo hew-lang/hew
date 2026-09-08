@@ -15,7 +15,8 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 #[derive(Debug)]
 pub struct HewActorWaitEdge {
     owner: ActorIncarnation,
-    target: ActorIncarnation,
+    targets: Vec<ActorIncarnation>,
+    external_progress: bool,
     operation: i32,
     diagnostic: OnceLock<String>,
 }
@@ -31,9 +32,19 @@ static WAITS: LazyLock<Mutex<HashMap<ActorIncarnation, Registration>>> =
 
 impl HewActorWaitEdge {
     fn register(owner: ActorIncarnation, target: ActorIncarnation, operation: i32) -> Arc<Self> {
+        Self::register_alternatives(owner, vec![target], false, operation)
+    }
+
+    fn register_alternatives(
+        owner: ActorIncarnation,
+        targets: Vec<ActorIncarnation>,
+        external_progress: bool,
+        operation: i32,
+    ) -> Arc<Self> {
         let edge = Arc::new(Self {
             owner,
-            target,
+            targets,
+            external_progress,
             operation,
             diagnostic: OnceLock::new(),
         });
@@ -58,6 +69,34 @@ pub(crate) fn ready(owner: ActorIncarnation) {
     }
 }
 
+pub(crate) fn resolve_target(target: local_handles::HewLocalPidId) -> Option<ActorIncarnation> {
+    local_handles::resolve_current_actor(target).and_then(|id| {
+        live_actors::with_actor_send_by_id(id, |actor| {
+            // SAFETY: this guard pins the exact destination during capture.
+            unsafe { ActorIncarnation::of(actor) }
+        })
+    })
+}
+
+/// Select dependencies are alternatives. A timer or an independently driven
+/// source is a possible escape, so that turn cannot prove a closed actor knot.
+/// This registration replaces the owner's single strict dependency atomically.
+pub(crate) fn select_alternatives(
+    owner: ActorIncarnation,
+    targets: Vec<ActorIncarnation>,
+    external_progress: bool,
+) -> *const HewActorWaitEdge {
+    if owner.is_none() {
+        return std::ptr::null();
+    }
+    Arc::into_raw(HewActorWaitEdge::register_alternatives(
+        owner,
+        targets,
+        external_progress,
+        3,
+    ))
+}
+
 /// Create a candidate for an exact local actor dependency; null means the
 /// invocation does not hold a proven actor turn or the destination has retired.
 ///
@@ -74,12 +113,7 @@ pub unsafe extern "C" fn hew_actor_wait_edge_new(
     if owner.is_none() {
         return std::ptr::null();
     }
-    let target = local_handles::resolve_current_actor(target).and_then(|id| {
-        live_actors::with_actor_send_by_id(id, |actor| {
-            // SAFETY: this guard pins the exact destination during capture.
-            unsafe { ActorIncarnation::of(actor) }
-        })
-    });
+    let target = resolve_target(target);
     target.map_or(std::ptr::null(), |target| {
         Arc::into_raw(HewActorWaitEdge::register(owner, target, operation))
     })
@@ -95,7 +129,11 @@ pub unsafe extern "C" fn hew_actor_wait_edge_prepare(edge: *const HewActorWaitEd
     let Some(edge) = (unsafe { edge.as_ref() }) else {
         return;
     };
-    if let Some(registration) = WAITS.lock_or_recover().get_mut(&edge.owner) {
+    if let Some(registration) = WAITS
+        .lock_or_recover()
+        .get_mut(&edge.owner)
+        .filter(|registration| std::ptr::eq(registration.edge.as_ptr(), edge))
+    {
         registration.armed = true;
         registration.pending = false;
     }
@@ -114,44 +152,74 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
         return 0;
     };
     let mut graph = WAITS.lock_or_recover();
-    let Some(registration) = graph.get_mut(&edge.owner) else {
+    let Some(registration) = graph
+        .get_mut(&edge.owner)
+        .filter(|registration| std::ptr::eq(registration.edge.as_ptr(), edge))
+    else {
         return 0;
     };
     if !registration.armed {
         return 0;
     }
     registration.pending = true;
-    let mut path = vec![edge.owner.actor_id()];
-    let mut next = edge.target;
+    // A turn is proven blocked only when every alternative is another proven
+    // blocked turn. Remove escapes to readiness, independent sources, timers
+    // and unregistered actors until the remaining closed set stops shrinking.
+    let active: HashMap<_, _> = graph
+        .iter()
+        .filter(|(_, registration)| registration.armed && registration.pending)
+        .filter_map(|(owner, registration)| registration.edge.upgrade().map(|edge| (*owner, edge)))
+        .collect();
+    let mut blocked: HashSet<_> = active
+        .iter()
+        .filter(|(_, edge)| !edge.external_progress && !edge.targets.is_empty())
+        .map(|(owner, _)| *owner)
+        .collect();
+    loop {
+        let escaped: Vec<_> = blocked
+            .iter()
+            .filter(|owner| {
+                active[owner]
+                    .targets
+                    .iter()
+                    .any(|target| !blocked.contains(target))
+            })
+            .copied()
+            .collect();
+        if escaped.is_empty() {
+            break;
+        }
+        for owner in escaped {
+            blocked.remove(&owner);
+        }
+    }
+    if !blocked.contains(&edge.owner) {
+        return 0;
+    }
+    let mut path = Vec::new();
+    let mut next = edge.owner;
     let mut visited = HashSet::new();
     while visited.insert(next) {
         path.push(next.actor_id());
-        if next == edge.owner {
-            let operation = match edge.operation {
-                0 => "ask",
-                1 => "mailbox wait",
-                _ => "actor termination wait",
-            };
-            let path = path
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(" -> ");
-            let _ = edge
-                .diagnostic
-                .set(format!("local actor wait cycle at {operation}: {path}"));
-            graph.get_mut(&edge.owner).unwrap().pending = false;
-            return 1;
-        }
-        let Some(registration) = graph.get(&next).filter(|r| r.armed && r.pending) else {
-            break;
-        };
-        let Some(dependency) = registration.edge.upgrade() else {
-            break;
-        };
-        next = dependency.target;
+        next = active[&next].targets[0];
     }
-    0
+    path.push(next.actor_id());
+    let operation = match edge.operation {
+        0 => "ask",
+        1 => "mailbox wait",
+        2 => "actor termination wait",
+        _ => "select",
+    };
+    let path = path
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    let _ = edge
+        .diagnostic
+        .set(format!("local actor wait cycle at {operation}: {path}"));
+    graph.get_mut(&edge.owner).unwrap().pending = false;
+    1
 }
 
 /// Materialize the diagnosed cycle as an ordinary owned logical fault.
@@ -196,6 +264,40 @@ pub unsafe extern "C" fn hew_actor_wait_edge_free(edge: *const HewActorWaitEdge)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn select_requires_every_alternative_to_close_the_actor_knot() {
+        for (external_progress, escaping_actor) in [(false, false), (true, false), (false, true)] {
+            let a = ActorIncarnation::from_parts(900_001_001, 1);
+            let b = ActorIncarnation::from_parts(900_001_002, 2);
+            let c = ActorIncarnation::from_parts(900_001_003, 3);
+            let outside = ActorIncarnation::from_parts(900_001_004, 4);
+            let select = select_alternatives(a, vec![b, c], external_progress);
+            let first = Arc::into_raw(HewActorWaitEdge::register(b, a, 0));
+            let second = Arc::into_raw(HewActorWaitEdge::register(
+                c,
+                if escaping_actor { outside } else { a },
+                0,
+            ));
+            // SAFETY: the fixture exclusively drives each live registration.
+            unsafe {
+                hew_actor_wait_edge_prepare(first);
+                assert_eq!(hew_actor_wait_edge_pending(first), 0);
+                hew_actor_wait_edge_prepare(second);
+                assert_eq!(hew_actor_wait_edge_pending(second), 0);
+                hew_actor_wait_edge_prepare(select);
+                let cycle = hew_actor_wait_edge_pending(select);
+                assert_eq!(cycle != 0, !external_progress && !escaping_actor);
+                if cycle != 0 {
+                    let fault = hew_actor_wait_edge_fault(select);
+                    crate::fault::hew_fault_drop(fault);
+                }
+                hew_actor_wait_edge_free(select);
+                hew_actor_wait_edge_free(first);
+                hew_actor_wait_edge_free(second);
+            }
+        }
+    }
+
     #[test]
     fn readiness_breaks_old_dependencies_before_actor_resumption() {
         let a = ActorIncarnation::from_parts(900_000_001, 1);

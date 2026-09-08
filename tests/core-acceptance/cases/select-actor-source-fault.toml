@@ -1,0 +1,11 @@
+[[case]]
+id = "select-actor-source-fault"
+intent = "Failure while evaluating a later select source releases an already-started actor operation and its owned request/reply without stranding the handler."
+source = "cases/select-actor-source-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "caller cleanup\n"
+stderr = "hew: failure: UserPanic (212): later select source failed\n"
+exit = 1

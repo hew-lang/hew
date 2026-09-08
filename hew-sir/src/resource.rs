@@ -13,6 +13,8 @@ use hew_types::{
 pub enum ResourceRelease {
     /// Affine reference to scope-owned task execution and its eventual result.
     Task,
+    /// An ephemeral actor invocation owns its request and eventual reply.
+    ActorCall,
     /// Generator storage released only after checked cooperative close.
     Generator,
     /// HIR has validated the consuming close body's forwarding to this release.
@@ -109,6 +111,7 @@ impl ResourceRelease {
     pub fn runtime_family(&self) -> Result<RuntimeCallFamily, String> {
         match self {
             Self::Task => Ok(RuntimeCallFamily::TaskFree),
+            Self::ActorCall => Ok(RuntimeCallFamily::ActorCallFree),
             Self::Generator => Ok(RuntimeCallFamily::GeneratorFree),
             Self::Nominal { lifecycle, .. } => {
                 RuntimeCallFamily::from_c_symbol(&lifecycle.release_symbol)
@@ -138,6 +141,9 @@ pub(crate) fn resource_release_from_hir(
     module: &hew_hir::HirModule,
     ty: &ResolvedTy,
 ) -> Option<ResourceRelease> {
+    if ty.is_builtin(hew_types::BuiltinType::ActorCall) {
+        return Some(ResourceRelease::ActorCall);
+    }
     if ty.is_builtin(hew_types::BuiltinType::Generator) {
         return Some(ResourceRelease::Generator);
     }
@@ -230,6 +236,15 @@ pub fn verify_resource_release(
     if facts.class != ValueClass::AffineResource || facts.clone != CloneKind::None {
         return Err("resource release requires affine ownership without a copy recipe".into());
     }
+    if *release == ResourceRelease::ActorCall {
+        return if matches!(ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::ActorCall), args, .. }
+            if matches!(args.as_slice(), [result] if result.is_builtin(hew_types::BuiltinType::Result)))
+        {
+            Ok(())
+        } else {
+            Err("actor completion release requires its exact Result protocol".into())
+        };
+    }
     if *release == ResourceRelease::Generator {
         return if ty.is_builtin(hew_types::BuiltinType::Generator) {
             Ok(())
@@ -297,6 +312,7 @@ pub fn verify_resource_release(
     }
     match release {
         ResourceRelease::Generator
+        | ResourceRelease::ActorCall
         | ResourceRelease::Task
         | ResourceRelease::Stream
         | ResourceRelease::Sink

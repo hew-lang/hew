@@ -46,6 +46,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let operation =
             suspend::call_value(&self.builder, start, &[waker.into()], "select.operation")?
                 .into_pointer_value();
+        let context = coro::external(
+            self.llvm,
+            "hew_checked_task_select_set_context",
+            self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        self.builder
+            .build_call(context, &[operation.into(), frame.state.into()], "")
+            .llvm_ctx("bind select to its actor turn")?;
         // Registration follows arm order, so a poll result is the arm's index.
         for source in sources {
             let ArgumentTransfer::Borrow(handle) = source.transfer() else {
@@ -56,6 +64,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let symbol = match source {
                 PhysicalSelectSource::Task(_) => "hew_checked_task_select_add_task",
                 PhysicalSelectSource::ChannelRecv(_) => "hew_checked_task_select_add_channel",
+                PhysicalSelectSource::ActorCall(_) => "hew_checked_task_select_add_actor",
             };
             let add = coro::external(
                 self.llvm,
@@ -95,6 +104,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let cancelled = self.ctx.append_basic_block(self.value, "select.cancelled");
         let destroyed = self.ctx.append_basic_block(self.value, "select.destroyed");
         let failed = self.ctx.append_basic_block(self.value, "select.failed");
+        let cycle = self.ctx.append_basic_block(self.value, "select.cycle");
         self.builder
             .build_unconditional_branch(poll)
             .llvm_ctx("poll selection")?;
@@ -130,7 +140,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_switch(
                 index,
                 outcome,
-                &[(self.ctx.i64_type().const_all_ones(), pending)],
+                &[
+                    (self.ctx.i64_type().const_all_ones(), pending),
+                    (self.ctx.i64_type().const_int((-3_i64) as u64, true), cycle),
+                ],
             )
             .llvm_ctx("park pending selection")?;
         self.builder.position_at_end(outcome);
@@ -165,6 +178,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.free_handle("hew_checked_task_select_free", operation)?;
         self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
+        self.builder.position_at_end(cycle);
+        let fault = coro::external(
+            self.llvm,
+            "hew_checked_task_select_fault",
+            pointer.fn_type(&[pointer.into()], false),
+        )?;
+        let fault = suspend::call_value(
+            &self.builder,
+            fault,
+            &[operation.into()],
+            "select.cycle.fault",
+        )?;
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_checked_task_select_free", operation)?;
+        self.emit_edge(unwind)?;
         self.builder.position_at_end(failed);
         self.free_handle("hew_checked_task_select_free", operation)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;

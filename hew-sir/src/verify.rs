@@ -2557,6 +2557,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || crate::sink_element(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::Sender)
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
+        || ty.is_builtin(hew_types::BuiltinType::ActorCall)
         || hew_types::runtime_call::is_channel_pair_ty(ty)
         || *ty == hew_types::runtime_call::actor_request_owner_ty()
         || module.actors.iter().any(|actor| actor.admits_target(ty))
@@ -4650,7 +4651,11 @@ fn verify_terminator_shape(
                 })?;
                 if args.len() != signature.params.len()
                     || args.iter().zip(&signature.params).any(|(arg, param)| {
-                        arg.decision != crate::BoundaryDecision::Move
+                        arg.decision
+                            != match param.passing {
+                                crate::SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+                                _ => crate::BoundaryDecision::Move,
+                            }
                             || types.get(&arg.operand.value) != Some(&param.ty)
                     })
                 {
@@ -5130,6 +5135,7 @@ fn verify_terminator_shape(
                                         && types.get(&input.operand.value).is_some_and(|ty| {
                                             matches!(ty, ResolvedTy::Task(_))
                                                 || ty.is_builtin(hew_types::BuiltinType::Receiver)
+                                                || ty.is_builtin(hew_types::BuiltinType::ActorCall)
                                         })
                                 })
                         })

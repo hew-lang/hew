@@ -1375,7 +1375,7 @@ mod tests {
                 | BuiltinType::CancellationToken => {
                     Some((ValueClass::AffineResource, CloneKind::None))
                 }
-                BuiltinType::Task => Some((ValueClass::AffineResource, CloneKind::None)),
+                BuiltinType::Task | BuiltinType::ActorCall => Some((ValueClass::AffineResource, CloneKind::None)),
                 // Never the type of a value.
                 BuiltinType::Iterator | BuiltinType::ActorState | BuiltinType::MachineState => None,
             };

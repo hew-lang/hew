@@ -674,11 +674,8 @@ impl Verifier {
                         crate::node::HirSelectArmKind::StreamNext { stream } => {
                             self.expr(stream);
                         }
-                        crate::node::HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                            self.expr(actor);
-                            for arg in args {
-                                self.expr(arg);
-                            }
+                        crate::node::HirSelectArmKind::ActorAsk { call } => {
+                            self.expr(call);
                         }
                         crate::node::HirSelectArmKind::TaskAwait { task } => {
                             self.expr(task);

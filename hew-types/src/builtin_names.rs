@@ -373,6 +373,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::VecIter
             | BuiltinType::HashMapIter
             | BuiltinType::Task
+            | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
             | BuiltinType::StreamPair

@@ -18,7 +18,9 @@ use crate::lifetime::live_actors::ActorIncarnation;
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -123,6 +125,10 @@ pub struct HewReplyChannel {
     /// Retained readiness target for a checked native invocation. Registration
     /// precedes admission; abandonment detaches it without touching the sender.
     native_waker: Mutex<Option<crate::wake::OwnedWaker>>,
+    /// Native operation dispatch claim: 0 is an untracked foreign request,
+    /// 1 is withdrawable, 2 is dispatched, and 3 is withdrawn. The scheduler
+    /// and the request owner race one CAS, so a queued loser cannot execute.
+    native_dispatch: AtomicU8,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -168,7 +174,46 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
         native_waker: Mutex::new(None),
+        native_dispatch: AtomicU8::new(0),
     }))
+}
+
+/// Mark an unpublished native request as withdrawable until dispatch claims it.
+///
+/// # Safety
+/// The channel is exclusively owned and no request has been published.
+pub(crate) unsafe fn enable_native_withdrawal(channel: *mut HewReplyChannel) {
+    // SAFETY: the caller owns the unpublished channel.
+    unsafe { (*channel).native_dispatch.store(1, Ordering::Release) };
+}
+
+/// Withdraw before dispatch, or leave an already running handler alone.
+///
+/// # Safety
+/// The optional channel is retained throughout this call.
+pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
+    // SAFETY: the caller retains the optional channel through this CAS.
+    if let Some(channel) = unsafe { channel.as_ref() } {
+        let _ = channel
+            .native_dispatch
+            .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+/// Claim a queued request immediately before the scheduler enters its handler.
+/// A withdrawal that won the race makes the scheduler discard its owned node.
+///
+/// # Safety
+/// The channel is null or retained by the scheduler's current request node.
+pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel) -> bool {
+    // SAFETY: a non-null channel is retained by the owned message node.
+    let Some(channel) = (unsafe { channel.as_ref() }) else {
+        return true;
+    };
+    channel
+        .native_dispatch
+        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+        != Err(3)
 }
 
 /// Record that the waiter on this reply channel is a PARKED CONTINUATION

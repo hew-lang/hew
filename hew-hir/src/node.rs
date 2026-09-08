@@ -2528,14 +2528,14 @@ pub enum HirSelectArmKind {
     StreamNext { stream: Box<HirExpr> },
     /// `pat from <actor-expr>.<method>(<args>) => body`. The arm
     /// dispatches an ask to `actor.method(args)` and waits for the
-    /// reply; the binding receives the reply value.
+    /// reply; the binding receives its complete checked `Result`.
     ActorAsk {
-        actor: Box<HirExpr>,
-        method: String,
-        args: Vec<HirExpr>,
+        /// The normalized checked call preserves exact protocol identity,
+        /// argument order, admission policy, deadline and complete result.
+        call: Box<HirExpr>,
     },
-    /// `pat from await <task-expr> => body`. The arm waits for `task`
-    /// to complete with `Ok(T)`; the binding receives `T`.
+    /// `pat from <task-expr> => body`. The arm waits for `task`
+    /// to complete; the binding receives `T`.
     /// Cancellation and trap outcomes propagate through the `select`
     /// site per HEW-SPEC-2026 §4.11.1.
     TaskAwait { task: Box<HirExpr> },

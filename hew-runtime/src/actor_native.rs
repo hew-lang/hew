@@ -16,7 +16,7 @@ mod close;
 pub(crate) use close::finish_native_terminal;
 pub use close::NativeActorCompletion;
 #[path = "actor_native_wait_graph.rs"]
-mod wait_graph;
+pub(crate) mod wait_graph;
 
 unsafe extern "C" fn wake_actor(context: *mut std::ffi::c_void) {
     // SAFETY: each descriptor retains the immutable incarnation allocation.

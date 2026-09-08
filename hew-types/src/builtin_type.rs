@@ -22,6 +22,8 @@ pub enum BuiltinType {
     /// Compiler-synthesised parallel snapshot cursor for `HashMap<K, V>`.
     HashMapIter,
     Task,
+    /// Compiler-only owned completion operation; its argument is the checked result.
+    ActorCall,
     StreamPair,
     Generator,
     AsyncGenerator,
@@ -210,6 +212,7 @@ builtin_types! {
     VecIter => "VecIter",
     HashMapIter => "HashMapIter",
     Task => "Task",
+    ActorCall => "__ActorCall",
     StreamPair => "StreamPair",
     Generator => "Generator",
     AsyncGenerator => "AsyncGenerator",
@@ -372,7 +375,8 @@ impl BuiltinType {
     #[must_use]
     pub const fn marker(self) -> BuiltinTypeMarker {
         match self {
-            Self::Duplex
+            Self::ActorCall
+            | Self::Duplex
             | Self::Sink
             | Self::Stream
             | Self::Sender
@@ -504,6 +508,7 @@ impl BuiltinType {
             | Self::VecIter
             | Self::HashSet
             | Self::Task
+            | Self::ActorCall
             | Self::Generator
             | Self::AsyncGenerator
             | Self::Range

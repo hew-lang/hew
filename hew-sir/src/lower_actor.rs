@@ -444,12 +444,31 @@ impl InstanceService<'_> {
     }
 }
 
+enum ActorRequestPreparation {
+    Ready {
+        protocol: crate::ActorCallProtocol,
+        policy: hew_types::actor_delivery::SendPolicy,
+        deadline_ns: Option<i64>,
+        inputs: Vec<crate::BoundaryOperand>,
+    },
+    Diverged(ValueId),
+}
+
+pub(super) struct StartedActorCall {
+    pub protocol: crate::ActorCallProtocol,
+    pub target: ValueId,
+    pub operation: ValueId,
+}
+
 impl Builder<'_, '_> {
     #[allow(
         clippy::too_many_lines,
         reason = "one ask boundary evaluates its request and constructs normal, cancellation and fault cleanup edges"
     )]
-    pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    fn prepare_actor_request(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ActorRequestPreparation, String> {
         let HirExprKind::ActorAsk {
             receiver,
             method_id,
@@ -506,7 +525,7 @@ impl Builder<'_, '_> {
         let mut inputs = Vec::new();
         let (target, _) = self.delivery_target(receiver)?;
         if !self.is_open() {
-            return Ok(target);
+            return Ok(ActorRequestPreparation::Diverged(target));
         }
         // The call reads its target to address the actor and returns before
         // the handle could be needed again: it retains nothing, so the target
@@ -524,7 +543,7 @@ impl Builder<'_, '_> {
                 OwnedBindingUse::Copy,
             )?;
             if !self.is_open() {
-                return Ok(value);
+                return Ok(ActorRequestPreparation::Diverged(value));
             }
             inputs.push(crate::BoundaryOperand {
                 operand: Operand { value },
@@ -538,15 +557,72 @@ impl Builder<'_, '_> {
         for input in inputs.iter().skip(1) {
             self.owned_live.remove(&input.operand.value);
         }
-        self.finish_actor_ask(
-            expression,
-            actor,
-            message,
-            *policy,
-            *deadline_ns,
-            false,
+        Ok(ActorRequestPreparation::Ready {
+            protocol: crate::ActorCallProtocol {
+                actor,
+                message,
+                target: target_ty,
+                result: output,
+                policy: *policy,
+                deadline_ns: *deadline_ns,
+                sealed: false,
+            },
+            policy: *policy,
+            deadline_ns: *deadline_ns,
             inputs,
-        )
+        })
+    }
+
+    pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+        match self.prepare_actor_request(expression)? {
+            ActorRequestPreparation::Diverged(value) => Ok(value),
+            ActorRequestPreparation::Ready {
+                protocol,
+                policy,
+                deadline_ns,
+                inputs,
+            } => self.finish_actor_ask(
+                expression,
+                protocol.actor,
+                protocol.message,
+                policy,
+                deadline_ns,
+                false,
+                inputs,
+            ),
+        }
+    }
+
+    pub(super) fn lower_actor_select_start(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<Option<StartedActorCall>, String> {
+        if !matches!(expression.kind, HirExprKind::ActorAsk { .. }) {
+            return Err("native selection requires a checked local actor completion".into());
+        }
+        let ActorRequestPreparation::Ready {
+            protocol, inputs, ..
+        } = self.prepare_actor_request(expression)?
+        else {
+            return Ok(None);
+        };
+        self.service.require_type_facts(&protocol.result)?;
+        self.service.require_type_facts(&protocol.operation_ty())?;
+        let target = inputs[0].operand.value;
+        let operation = crate::ActorOperation::CallStart(protocol.clone());
+        let signature = self.actor_signature(&operation)?;
+        let operation = self
+            .emit_actor_call(
+                operation,
+                signature,
+                inputs.iter().map(|input| input.operand.value).collect(),
+            )?
+            .ok_or("completion start must return its operation owner")?;
+        Ok(Some(StartedActorCall {
+            protocol,
+            target,
+            operation,
+        }))
     }
 
     #[allow(
@@ -846,13 +922,19 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         let args: Vec<_> = args
             .into_iter()
-            .map(|value| crate::BoundaryOperand {
+            .zip(&signature.params)
+            .map(|(value, parameter)| crate::BoundaryOperand {
                 operand: Operand { value },
-                decision: crate::BoundaryDecision::Move,
+                decision: match parameter.passing {
+                    SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+                    _ => crate::BoundaryDecision::Move,
+                },
             })
             .collect();
         for arg in &args {
-            self.owned_live.remove(&arg.operand.value);
+            if arg.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&arg.operand.value);
+            }
         }
         let (result, normal, continuation) = if signature.return_ty == ResolvedTy::Unit {
             (

@@ -7394,11 +7394,8 @@ fn collect_call_sites_in_expr(
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_call_sites_in_expr(stream, out, trait_out);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_call_sites_in_expr(actor, out, trait_out);
-                        for a in args {
-                            collect_call_sites_in_expr(a, out, trait_out);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        collect_call_sites_in_expr(call, out, trait_out);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_call_sites_in_expr(task, out, trait_out);
@@ -11278,19 +11275,8 @@ impl LowerCtx {
                                 abi_return_ty,
                             );
                         }
-                        HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                            self.wrap_var_self_explicit_expr_returns(
-                                actor,
-                                receiver,
-                                abi_return_ty,
-                            );
-                            for arg in args {
-                                self.wrap_var_self_explicit_expr_returns(
-                                    arg,
-                                    receiver,
-                                    abi_return_ty,
-                                );
-                            }
+                        HirSelectArmKind::ActorAsk { call } => {
+                            self.wrap_var_self_explicit_expr_returns(call, receiver, abi_return_ty);
                         }
                         HirSelectArmKind::TaskAwait { task } => {
                             self.wrap_var_self_explicit_expr_returns(task, receiver, abi_return_ty);
@@ -19974,34 +19960,7 @@ impl LowerCtx {
         source_span: &std::ops::Range<usize>,
     ) -> Option<ResolvedTy> {
         match kind {
-            HirSelectArmKind::ActorAsk { .. } => {
-                match self
-                    .actor_method_dispatch
-                    .get(&self.mk_key(source_span))
-                    .cloned()
-                {
-                    Some(ActorMethodKind::Ask { method_id, .. }) => {
-                        let method_id = self.qualify_imported_actor_method_id(method_id);
-                        self.checked_actor_ask_result_ty(source_span, &method_id)
-                    }
-                    // A `receive gen fn` dispatch never reaches a `select`
-                    // ActorAsk arm — the `for` loop is its only consumer surface.
-                    Some(
-                        ActorMethodKind::Message { .. } | ActorMethodKind::StreamProducer(_, _),
-                    )
-                    | None => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "select actor-ask reply".to_string(),
-                                reason: "missing checker-authoritative ask dispatch".to_string(),
-                            },
-                            source_span.clone(),
-                            "a select actor-ask arm must carry an ask reply type",
-                        ));
-                        None
-                    }
-                }
-            }
+            HirSelectArmKind::ActorAsk { call } => Some(call.ty.clone()),
             HirSelectArmKind::ChannelRecv { receiver } => {
                 // The binding receives `Option<T>` — the same shape the awaited
                 // `rx.recv()` produces. `None` is the channel-closed signal.
@@ -20110,7 +20069,12 @@ impl LowerCtx {
         // second one triggers `SelectMultipleAfterArms`.
 
         let mut hir_arms: Vec<HirSelectArm> = Vec::with_capacity(arms.len() + 1);
-        let mut expected_ty: Option<ResolvedTy> = None;
+        let Some(result_ty) = self.checker_expr_ty(&span, "select result") else {
+            return (
+                HirExprKind::Unsupported("untyped select".into()),
+                ResolvedTy::Unit,
+            );
+        };
         let mut first_after_span: Option<std::ops::Range<usize>> = None;
 
         let checked_sources = self.select_sources.get(&self.mk_key(&span)).cloned();
@@ -20163,20 +20127,16 @@ impl LowerCtx {
                 self.current_scope_id = previous;
             }
             self.pop_scope();
-            if let Some(expected) = expected_ty.as_ref() {
-                if &body.ty != expected {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SelectArmTypeMismatch {
-                            arm_index: hir_arms.len(),
-                            expected: expected.clone(),
-                            actual: body.ty.clone(),
-                        },
-                        arm.body.1.clone(),
-                        "select arm body type differs from the first arm body type",
-                    ));
-                }
-            } else {
-                expected_ty = Some(body.ty.clone());
+            if body.ty != result_ty && body.ty != ResolvedTy::Never {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::SelectArmTypeMismatch {
+                        arm_index: hir_arms.len(),
+                        expected: result_ty.clone(),
+                        actual: body.ty.clone(),
+                    },
+                    arm.body.1.clone(),
+                    "select arm body type differs from the first arm body type",
+                ));
             }
             hir_arms.push(HirSelectArm {
                 scope: arm_scope,
@@ -20197,20 +20157,16 @@ impl LowerCtx {
             }
             let duration = self.lower_expr(&timeout.duration, IntentKind::Read);
             let body = self.lower_expr(&timeout.body, IntentKind::Read);
-            if let Some(expected) = expected_ty.as_ref() {
-                if &body.ty != expected {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SelectArmTypeMismatch {
-                            arm_index: hir_arms.len(),
-                            expected: expected.clone(),
-                            actual: body.ty.clone(),
-                        },
-                        timeout.body.1.clone(),
-                        "select after-arm body type differs from earlier arm body types",
-                    ));
-                }
-            } else {
-                expected_ty = Some(body.ty.clone());
+            if body.ty != result_ty && body.ty != ResolvedTy::Never {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::SelectArmTypeMismatch {
+                        arm_index: hir_arms.len(),
+                        expected: result_ty.clone(),
+                        actual: body.ty.clone(),
+                    },
+                    timeout.body.1.clone(),
+                    "select after-arm body type differs from earlier arm body types",
+                ));
             }
             hir_arms.push(HirSelectArm {
                 scope: None,
@@ -20223,7 +20179,6 @@ impl LowerCtx {
             });
         }
 
-        let result_ty = expected_ty.unwrap_or(ResolvedTy::Unit);
         (
             HirExprKind::Select(HirSelect {
                 order: crate::HirSelectionOrder::Source,
@@ -21133,26 +21088,9 @@ impl LowerCtx {
                 };
             }
             Some(CheckedSelectSource::ActorAsk { call }) if call == &key => {
-                if let Expr::MethodCall {
-                    receiver,
-                    method,
-                    args,
-                } = &operand.0
-                {
-                    let actor = self.lower_expr(receiver, IntentKind::Read);
-                    let args = args
-                        .iter()
-                        .map(|arg| {
-                            let arg = arg.expr();
-                            self.lower_expr(arg, self.actor_message_arg_intent(&arg.1))
-                        })
-                        .collect();
-                    return HirSelectArmKind::ActorAsk {
-                        actor: Box::new(actor),
-                        method: method.clone(),
-                        args,
-                    };
-                }
+                return HirSelectArmKind::ActorAsk {
+                    call: Box::new(self.lower_expr(operand, IntentKind::Read)),
+                };
             }
             Some(CheckedSelectSource::ChannelReceive { call }) if call == &key => {
                 if let Expr::MethodCall { receiver, .. } = &operand.0 {
@@ -30525,11 +30463,8 @@ fn collect_captures_walk(
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_captures_walk(stream, param_ids, seen, captures, self_id);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_captures_walk(actor, param_ids, seen, captures, self_id);
-                        for arg in args {
-                            collect_captures_walk(arg, param_ids, seen, captures, self_id);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        collect_captures_walk(call, param_ids, seen, captures, self_id);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_captures_walk(task, param_ids, seen, captures, self_id);
@@ -30795,21 +30730,8 @@ fn collect_general_closure_captures_walk(
                             captures,
                         );
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_general_closure_captures_walk(
-                            actor,
-                            outer_bindings,
-                            seen,
-                            captures,
-                        );
-                        for arg in args {
-                            collect_general_closure_captures_walk(
-                                arg,
-                                outer_bindings,
-                                seen,
-                                captures,
-                            );
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        collect_general_closure_captures_walk(call, outer_bindings, seen, captures);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_general_closure_captures_walk(task, outer_bindings, seen, captures);
@@ -32725,11 +32647,8 @@ fn scan_expr_for_call_shape(
                     HirSelectArmKind::StreamNext { stream } => {
                         scan_expr_for_call_shape(stream, callable, diagnostics);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        scan_expr_for_call_shape(actor, callable, diagnostics);
-                        for a in args {
-                            scan_expr_for_call_shape(a, callable, diagnostics);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        scan_expr_for_call_shape(call, callable, diagnostics);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         scan_expr_for_call_shape(task, callable, diagnostics);

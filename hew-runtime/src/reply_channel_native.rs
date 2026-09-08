@@ -45,6 +45,32 @@ pub unsafe extern "C" fn hew_reply_channel_poll_native(
     expected_size: usize,
     output: *mut c_void,
 ) -> i32 {
+    // SAFETY: observing shares the same unique receiver and expected layout.
+    let status = unsafe { hew_reply_channel_status_native(channel, expected_size) };
+    if status != AskError::None as i32 {
+        return status;
+    }
+    // SAFETY: readiness published the matching payload; this is the only take.
+    unsafe {
+        let value = take_ready_reply(channel, None);
+        if expected_size != 0 {
+            ptr::copy_nonoverlapping(value.cast::<u8>(), output.cast::<u8>(), expected_size);
+        }
+        hew_reply_payload_free(value.cast(), expected_size);
+    }
+    AskError::None as i32
+}
+
+/// Observe completion without taking a reply or its embedded resources.
+/// Repeated observations return the same result until the receiver takes it.
+///
+/// # Safety
+/// `channel` is a live receiver, with no concurrent consuming observer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_status_native(
+    channel: *mut HewReplyChannel,
+    expected_size: usize,
+) -> i32 {
     // SAFETY: the caller owns the receiver reference. The ready acquire publishes
     // the sender's payload and classification before either is inspected.
     unsafe {
@@ -69,11 +95,6 @@ pub unsafe extern "C" fn hew_reply_channel_poll_native(
         {
             return AskError::PayloadSizeMismatch as i32;
         }
-        let value = take_ready_reply(channel, None);
-        if expected_size != 0 {
-            ptr::copy_nonoverlapping(value.cast::<u8>(), output.cast::<u8>(), expected_size);
-        }
-        hew_reply_payload_free(value.cast(), expected_size);
         AskError::None as i32
     }
 }

@@ -1,0 +1,11 @@
+[[case]]
+id = "select-actor-dependencies"
+intent = "A select inside a strict actor turn accepts a timer escape and diagnoses an actor-only dependency cycle through the ordinary fault path."
+source = "cases/select-actor-dependencies.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "9\nactor cycle rejected\n"
+stderr = "hew: failure: UserPanic (212): local actor wait cycle at select: 1 -> 1\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 1

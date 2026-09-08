@@ -594,7 +594,7 @@ fn select_actor_await_uses_checked_dispatch() {
     );
     let select = find_first_select(&output);
     assert!(
-        matches!(&select.arms[0].kind, HirSelectArmKind::ActorAsk { method, args, .. } if method == "process" && args.len() == 1)
+        matches!(&select.arms[0].kind, HirSelectArmKind::ActorAsk { call } if matches!(&call.kind, HirExprKind::ActorAsk { method_id, args, .. } if method_id.ends_with("process") && args.len() == 1))
     );
 }
 

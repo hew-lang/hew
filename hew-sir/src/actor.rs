@@ -487,7 +487,35 @@ pub(crate) fn verify_operation(
 
 /// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCallProtocol {
+    pub actor: ActorId,
+    pub message: u32,
+    pub target: ResolvedTy,
+    pub result: ResolvedTy,
+    pub policy: hew_types::actor_delivery::SendPolicy,
+    pub deadline_ns: Option<i64>,
+    pub sealed: bool,
+}
+
+impl ActorCallProtocol {
+    /// The operation is an affine owner, distinct from a scope-owned task.
+    #[must_use]
+    pub fn operation_ty(&self) -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            hew_types::BuiltinType::ActorCall.canonical_name(),
+            hew_types::BuiltinType::ActorCall,
+            vec![self.result.clone()],
+        )
+    }
+}
+
+/// Actor boundary selected from an exact demanded protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
+    /// Start an owned completion operation without waiting for admission or reply.
+    CallStart(ActorCallProtocol),
+    /// Consume an operation selected as ready, materializing its checked result.
+    CallTake(ActorCallProtocol),
     Close(ActorId),
     AwaitClosed(ActorId),
     Spawn(ActorId),
@@ -576,6 +604,45 @@ impl ActorOperation {
         })
     }
 
+    fn completion_signature(&self, actors: &[SemActor]) -> Result<crate::SemSignature, String> {
+        let (Self::CallStart(protocol) | Self::CallTake(protocol)) = self else {
+            return Err("operation is not a completion boundary".into());
+        };
+        let actor = actors
+            .get(protocol.actor.0 as usize)
+            .filter(|actor| actor.id == protocol.actor)
+            .ok_or("unknown completion actor identity")?;
+        let sealed = matches!(self, Self::CallStart(_)) && protocol.sealed;
+        let mut signature = actor.ask_signature(
+            protocol.message,
+            &protocol.target,
+            protocol.result.clone(),
+            sealed,
+        )?;
+        match self {
+            Self::CallStart(_) => {
+                signature.params[0].passing = crate::SemParamPassing::Borrow;
+                signature.return_ty = protocol.operation_ty();
+            }
+            Self::CallTake(_) => {
+                signature.params = vec![
+                    crate::SemAbiParam {
+                        ty: protocol.operation_ty(),
+                        passing: crate::SemParamPassing::Consume,
+                        caller_visible_projection: false,
+                    },
+                    crate::SemAbiParam {
+                        ty: protocol.target.clone(),
+                        passing: crate::SemParamPassing::Borrow,
+                        caller_visible_projection: false,
+                    },
+                ];
+            }
+            _ => unreachable!(),
+        }
+        Ok(signature)
+    }
+
     /// Project the exact boundary ABI from the demanded actor protocol.
     ///
     /// # Errors
@@ -586,6 +653,9 @@ impl ActorOperation {
         supervisors: &[crate::SemSupervisor],
         callable: impl Fn(crate::CallableId) -> Option<crate::SemSignature>,
     ) -> Result<crate::SemSignature, String> {
+        if matches!(self, Self::CallStart(_) | Self::CallTake(_)) {
+            return self.completion_signature(actors);
+        }
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
             params: types
                 .into_iter()
@@ -598,6 +668,7 @@ impl ActorOperation {
             return_ty,
         };
         let id = match self {
+            Self::CallStart(_) | Self::CallTake(_) => unreachable!("completion returned above"),
             Self::Spawn(id)
             | Self::Close(id)
             | Self::AwaitClosed(id)
@@ -614,6 +685,7 @@ impl ActorOperation {
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
+            Self::CallStart(_) | Self::CallTake(_) => unreachable!("completion returned above"),
             Self::StreamStart {
                 message, target, ..
             } => {

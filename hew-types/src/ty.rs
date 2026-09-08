@@ -36,6 +36,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::VecIter
             | BuiltinType::HashMapIter
             | BuiltinType::Task
+            | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
             | BuiltinType::StreamPair

@@ -2683,6 +2683,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || crate::sink_element(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::Sender)
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
+        || ty.is_builtin(hew_types::BuiltinType::ActorCall)
         || hew_types::runtime_call::is_channel_pair_ty(ty)
         || *ty == hew_types::runtime_call::actor_request_owner_ty()
         || collection_type_arguments(ty).is_some()

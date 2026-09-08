@@ -3329,6 +3329,21 @@ fn activate_queued_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
+                // The call owner may withdraw until this exact dispatch claim.
+                // Once claimed, losing its select only tombstones the reply;
+                // it does not cancel a handler that has already started.
+                // SAFETY: this node retains its sender-side reply reference.
+                if !unsafe {
+                    crate::reply_channel::claim_native_request_dispatch(
+                        msg_ref.reply_channel.cast(),
+                    )
+                } {
+                    // SAFETY: this worker owns the unclaimed node and its typed
+                    // request; normal node retirement settles the sender debt.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
+                }
                 let observe_dispatch_ticket = crate::observe::observe_dispatch_begin();
                 // Check for injected crash fault (testing only).
                 if crate::deterministic::check_crash_fault(a.id) {

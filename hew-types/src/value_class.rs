@@ -799,7 +799,7 @@ fn classify(
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
             | BuiltinType::MonitorRef
-            | BuiltinType::CancellationToken | BuiltinType::Task => affine_none,
+            | BuiltinType::CancellationToken | BuiltinType::Task | BuiltinType::ActorCall => affine_none,
             // Never the type of a value: `Iterator` is the std trait name, and
             // `ActorState`/`MachineState` are compiler-internal payload carriers.
             BuiltinType::Iterator | BuiltinType::ActorState | BuiltinType::MachineState => {

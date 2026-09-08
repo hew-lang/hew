@@ -879,11 +879,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             for arm in &select.arms {
                 let kind_label = match &arm.kind {
                     crate::node::HirSelectArmKind::StreamNext { .. } => "stream-next",
-                    crate::node::HirSelectArmKind::ActorAsk { method, .. } => {
-                        // Borrow the method name into the label transiently.
-                        let _ = method;
-                        "actor-ask"
-                    }
+                    crate::node::HirSelectArmKind::ActorAsk { .. } => "actor-ask",
                     crate::node::HirSelectArmKind::TaskAwait { .. } => "task-await",
                     crate::node::HirSelectArmKind::ChannelRecv { .. } => "channel-recv",
                     crate::node::HirSelectArmKind::AfterTimer { .. } => "after-timer",

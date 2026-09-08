@@ -294,6 +294,17 @@ impl Builder<'_, '_> {
     ) -> Result<ValueId, String> {
         let mut loans = Vec::new();
         let channel = self.lower_borrowed_read(receiver, &mut loans)?;
+        self.lower_channel_recv_prepared(channel, output, park, &loans)
+    }
+
+    /// Receive from the source already evaluated and borrowed by a selection.
+    pub(super) fn lower_channel_recv_prepared(
+        &mut self,
+        channel: Operand,
+        output: ResolvedTy,
+        park: bool,
+        loans: &[ValueId],
+    ) -> Result<ValueId, String> {
         self.service.require_type_facts(&output)?;
         self.service.require_variant_shape(&output)?;
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
@@ -328,12 +339,12 @@ impl Builder<'_, '_> {
         for cleanup in [cancel, unwind] {
             self.current = cleanup;
             self.owned_live = live.clone();
-            self.end_call_loans(&loans)?;
+            self.end_call_loans(loans)?;
             self.finish_fault_exit()?;
         }
         self.current = resumed;
         self.owned_live = live;
-        self.end_call_loans(&loans)?;
+        self.end_call_loans(loans)?;
         if own == OwnKind::Owned {
             self.owned_live.insert(value, output);
         }

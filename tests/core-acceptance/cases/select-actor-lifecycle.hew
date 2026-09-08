@@ -1,0 +1,98 @@
+import std.channel.channel;
+
+actor Worker {
+    mailbox 1,
+    var handled: i64 = 0,
+
+    receive fn occupy(consume gate: channel.Receiver<i64>, consume entered: channel.Sender<i64>) {
+        entered.send(1);
+        entered.close();
+        let _ = gate.recv();
+        gate.close();
+    }
+
+    receive fn marker() {}
+
+    receive fn record(value: string) -> string {
+        handled = handled + 1;
+        value.to_upper()
+    }
+
+    receive fn delayed(value: string, consume gate: channel.Receiver<i64>, consume entered: channel.Sender<i64>) -> string {
+        entered.send(1);
+        entered.close();
+        let _ = gate.recv();
+        gate.close();
+        handled = handled + 1;
+        value.to_upper()
+    }
+
+    receive fn count() -> i64 { handled }
+}
+
+fn started(consume entered: channel.Receiver<i64>) -> duration {
+    let _ = entered.recv().expect("handler started");
+    entered.close();
+    0ns
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let inbox = mailbox(worker, on_full: .Wait);
+
+    // A handshake holds the actor inside a turn. A second accepted submission
+    // fills its one mailbox seat; the call arm must wait for admission without
+    // preventing the timer from winning.
+    let (release, gate): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (entered, waiting): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let _ = inbox.occupy(gate, entered).expect("occupy actor");
+    let _ = started(waiting);
+    let _ = inbox.marker().expect("fill mailbox");
+    let spare = spawn Worker;
+    let refusing = policy(worker, on_full: .Reject);
+    select {
+        reply from refusing.record("recovered\0owned request") => match reply {
+            .Err(ActorError.Rejected(failure)) => {
+                let recovered = failure.to(spare).expect("redirect selected rejection");
+                println(f"recovered {recovered == "RECOVERED\0OWNED REQUEST"}");
+            },
+            _ => panic("a full mailbox must reject"),
+        },
+        after 0ns => panic("the ready rejection must beat the timer"),
+    }
+    close(spare);
+    select {
+        value from worker.record("unadmitted owned request") => println(value.expect("unexpected admission")),
+        after 0ns => println("admission did not block"),
+    }
+    release.send(1);
+    release.close();
+    println(f"handled {worker.count().expect("count")}");
+
+    // This time the call is accepted into the empty queue, but the active turn
+    // still holds the actor. Losing selection must withdraw before dispatch.
+    let (release2, gate2): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (entered2, waiting2): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let _ = inbox.occupy(gate2, entered2).expect("occupy actor");
+    let _ = started(waiting2);
+    select {
+        value from worker.record("queued owned request") => println(value.expect("unexpected dispatch")),
+        after 0ns => println("queued request withdrawn"),
+    }
+    release2.send(1);
+    release2.close();
+    println(f"handled {worker.count().expect("count")}");
+
+    // Later-arm evaluation waits for this handler to start. Its losing call
+    // then owns a reply sink, while the dispatched handler keeps running.
+    let (release3, gate3): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (entered3, waiting3): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    select {
+        value from worker.delayed("late owned reply", gate3, entered3) => println(value.expect("unexpected reply")),
+        after started(waiting3) => println("dispatched reply abandoned"),
+    }
+    release3.send(1);
+    release3.close();
+    println(f"handled {worker.count().expect("count")}");
+    close(worker);
+}

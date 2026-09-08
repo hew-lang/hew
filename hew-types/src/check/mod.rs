@@ -400,7 +400,8 @@ pub(crate) fn resolve_member_ty(
             } else {
                 name
             };
-            let is_opaque = builtin.is_none() && (is_opaque || is_opaque_type(&name));
+            let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_channel_handle)
+                && (is_opaque || is_opaque_type(&name));
             ResolvedTy::Named {
                 name,
                 args,

@@ -773,7 +773,7 @@ pub trait Index<Idx> {
 impl<T> Index<i64> for Vec<T> {
     type Output = T;
     fn get(self, index: i64) -> Option<T> {}
-    fn at(self, index: i64) -> T {}
+    fn at(self, index: i64) -> T { self[index] }
 }
 
 impl<K, V> Index<K> for HashMap<K, V> {

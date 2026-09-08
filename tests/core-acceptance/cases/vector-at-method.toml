@@ -1,0 +1,10 @@
+[[case]]
+id = "vector-at-method"
+intent = "The Index.at method shares vector indexing ownership through direct and generic calls."
+source = "cases/vector-at-method.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "vector at preserves owned values\n"
+exit = 0

@@ -1,0 +1,14 @@
+fn visit<T>(values: Vec<T>) {
+    values.at(0);
+}
+
+fn main() {
+    var words = ["first".to_upper(), "second".to_upper()];
+    let saved = words.at(1);
+    words.set(1, "changed".to_upper());
+    assert(saved == "SECOND");
+    assert(words.at(1) == words[1]);
+    visit(words);
+    assert(words.at(0) == "FIRST");
+    println("vector at preserves owned values");
+}

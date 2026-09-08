@@ -1,7 +1,25 @@
 // A `fails` handler submitted one way through a mailbox view has no caller to
 // receive its declared error. The error becomes the actor's own fault, the
 // diagnostic carries the error's own text, and the supervisor restarts the
-// child once before the ledger answers again from a fresh state.
+// child once before it answers again from a fresh state.
+//
+// Two shapes of declared failure reach the same fault: `fails string`, where
+// the error is already its text, and a declared error type whose `Display`
+// body renders it.
+enum VaultError {
+    Overdrawn(i64),
+    Closed,
+}
+
+impl Display for VaultError {
+    fn fmt(problem: VaultError) -> string {
+        match problem {
+            VaultError.Overdrawn(short) => f"short by {short}",
+            VaultError.Closed => "the vault is closed",
+        }
+    }
+}
+
 actor Ledger {
     var balance: i64 = 100,
 
@@ -18,10 +36,27 @@ actor Ledger {
     receive fn balance_now() -> i64 { balance }
 }
 
+actor Vault {
+    var balance: i64 = 50,
+
+    #[on(start)]
+    fn opened() { println("vault"); }
+
+    receive fn take(amount: i64) -> () fails VaultError {
+        if amount > balance {
+            return error VaultError.Overdrawn(amount - balance);
+        }
+        balance = balance - amount;
+    }
+
+    receive fn balance_now() -> i64 { balance }
+}
+
 supervisor Bank {
     strategy: one_for_one,
-    intensity: 1 within 60s,
+    intensity: 4 within 60s,
     child ledger: Ledger,
+    child vault: Vault,
 }
 
 fn main() {
@@ -44,6 +79,19 @@ fn main() {
     }
     let _ = await_restart bank.ledger;
     match bank.ledger.balance_now() {
+        .Ok(left) => println(left),
+        .Err(_) => println("unavailable"),
+    }
+
+    // The same path with a declared error type: the fault text comes from the
+    // error's own `Display` body.
+    let drawer = mailbox(bank.vault, on_full: .Wait);
+    match drawer.take(80) {
+        .Ok(_) => {},
+        .Err(_) => println("refused"),
+    }
+    let _ = await_restart bank.vault;
+    match bank.vault.balance_now() {
         .Ok(left) => println(left),
         .Err(_) => println("unavailable"),
     }

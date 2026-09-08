@@ -2752,6 +2752,18 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     let a = unsafe { &*actor };
     let mailbox = a.mailbox.cast::<HewMailbox>();
 
+    if let Some(code) = crate::actor::take_deferred_external_trap(a) {
+        debug_assert!(
+            a.checked_invocation.load(Ordering::Acquire).is_null(),
+            "a deferred external trap must wait for the checked turn to drain"
+        );
+        // SAFETY: this activation has completed its checked cancellation and
+        // still owns the mailbox consumer. Publish the originally requested
+        // crash through the ordinary activation-owned terminal path.
+        unsafe { crate::actor::hew_actor_trap_from_activation(actor, code) };
+        return;
+    }
+
     let cur_state = a.actor_state.load(Ordering::Acquire);
     if cur_state == HewActorState::Stopped as i32 || cur_state == HewActorState::Crashed as i32 {
         // An external trap can publish the terminal state while this scheduler
@@ -6117,6 +6129,8 @@ mod tests {
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
             #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
@@ -8915,6 +8929,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         };

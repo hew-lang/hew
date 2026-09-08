@@ -2903,7 +2903,7 @@ mod tests {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
         unsafe {
             let mb = hew_mailbox_new();
-            for raw in [i32::MIN, -1, 0, 8, 99, 100, 101, 103, 104, 105, i32::MAX] {
+            for raw in [i32::MIN, -1, 0, 99, 100, 101, 103, 104, 105, i32::MAX] {
                 crate::hew_clear_error();
                 hew_mailbox_send_sys(mb, raw, ptr::null_mut(), 0);
                 assert_eq!(

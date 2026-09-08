@@ -1611,6 +1611,18 @@ pub struct HewActor {
     /// Retained terminal cleanup result for checked native actor observers.
     #[cfg(not(target_arch = "wasm32"))]
     pub native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
+    /// An externally requested crash deferred until a parked checked turn has
+    /// drained its coroutine-owned state. Zero means no deferred terminal.
+    ///
+    /// A parked checked turn cannot be made terminal in place: its invocation
+    /// owns lexical cleanup and the actor state borrow until cooperative
+    /// cancellation completes. The first external trap records its code here,
+    /// requests cancellation, and the resumed activation publishes `Crashed`
+    /// only after it has cleared [`Self::checked_invocation`].
+    ///
+    /// Appended at the tail so codegen-mirrored offsets remain stable.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub pending_external_trap_code: AtomicI32,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -3265,6 +3277,8 @@ fn build_spawned_actor(
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+        #[cfg(not(target_arch = "wasm32"))]
+        pending_external_trap_code: AtomicI32::new(0),
         #[cfg(not(target_arch = "wasm32"))]
         native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
             .then(|| {
@@ -7019,11 +7033,63 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
+    // A parked checked turn still owns its coroutine frame and state borrow.
+    // Drain it through the scheduler before publishing a terminal crash, so a
+    // supervisor cannot reclaim an incarnation with a live invocation.
+    if error_code != 0 {
+        // SAFETY: the public trap contract keeps `actor` valid throughout this
+        // terminal request.
+        if unsafe { defer_external_trap_until_checked_drain(actor, error_code) } {
+            return;
+        }
+    }
     // SAFETY: forwarded public contract. An external trap may race a live
     // activation, so it drains only when no scheduler frame owns the mailbox
     // consumer. Otherwise that frame observes the terminal state and performs
     // the deferred drain before releasing `dispatch_active`.
     unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::IfQuiescent) };
+}
+
+/// Request a terminal crash after a parked checked turn has cancelled itself.
+///
+/// Returns true only after recording the first external crash code and asking
+/// the existing cooperative-stop path to wake the parked continuation.
+///
+/// # Safety
+///
+/// `actor` must be valid for the duration of this call.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn defer_external_trap_until_checked_drain(actor: *mut HewActor, error_code: i32) -> bool {
+    if actor.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees a live actor allocation.
+    let a = unsafe { &*actor };
+    if a.checked_invocation.load(Ordering::Acquire).is_null()
+        || a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32
+    {
+        return false;
+    }
+    // The first terminal request owns the diagnostic. A second caller must not
+    // overwrite the cause whose cancellation it is joining.
+    if a.pending_external_trap_code
+        .compare_exchange(0, error_code, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return true;
+    }
+    // SAFETY: the pending code is published before this call can wake the
+    // parked continuation. `hew_actor_stop` latches cancellation and performs
+    // the Suspended -> Runnable hand-off when it still owns that transition.
+    unsafe { hew_actor_stop(actor) };
+    true
+}
+
+/// Consume a deferred external terminal request after its checked turn drains.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn take_deferred_external_trap(a: &HewActor) -> Option<i32> {
+    let code = a.pending_external_trap_code.swap(0, Ordering::AcqRel);
+    (code != 0).then_some(code)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7094,6 +7160,10 @@ fn publish_crash_fault_record(
 ///
 /// Same contract as [`hew_actor_trap`].
 #[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "terminal publication keeps its ordering proof beside every notification edge"
+)]
 unsafe fn hew_actor_trap_inner(
     actor: *mut HewActor,
     error_code: i32,
@@ -7102,6 +7172,14 @@ unsafe fn hew_actor_trap_inner(
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // A parked checked turn may already have accepted an external trap and be
+    // racing a separate terminal edge while it drains. Preserve that first
+    // cause if this caller wins publication before the scheduler consumes it.
+    let error_code = match a.pending_external_trap_code.load(Ordering::Acquire) {
+        0 => error_code,
+        deferred => deferred,
+    };
 
     // Choose terminal state: Crashed if error_code != 0, Stopped otherwise.
     let terminal = if error_code != 0 {
@@ -7190,6 +7268,9 @@ unsafe fn hew_actor_trap_inner(
             .compare_exchange(current, terminal, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
+            // This terminal edge has consumed any deferred request. The
+            // scheduler may now only observe its already-published terminal.
+            a.pending_external_trap_code.store(0, Ordering::Release);
             break;
         }
     }
@@ -8744,6 +8825,8 @@ pub mod composition_test_support {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         }))
@@ -10369,6 +10452,8 @@ mod tests {
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
                 checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
                 #[cfg(not(target_arch = "wasm32"))]
+                pending_external_trap_code: AtomicI32::new(0),
+                #[cfg(not(target_arch = "wasm32"))]
                 native_completion: None,
             }));
             (actor, mailbox)
@@ -11471,6 +11556,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         }));
@@ -16259,6 +16346,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         }));

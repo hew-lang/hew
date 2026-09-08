@@ -360,6 +360,8 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         #[cfg(not(target_arch = "wasm32"))]
+        pending_external_trap_code: AtomicI32::new(0),
+        #[cfg(not(target_arch = "wasm32"))]
         native_completion: None,
     })
 }

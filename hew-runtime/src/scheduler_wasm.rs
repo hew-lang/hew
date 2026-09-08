@@ -167,6 +167,10 @@ pub struct HewActor {
     /// Retained terminal cleanup result for checked native actor observers.
     #[cfg(not(target_arch = "wasm32"))]
     pub native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
+    /// Native-only deferred external terminal code. Present in native test
+    /// builds so this mirror retains the canonical actor layout.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub pending_external_trap_code: AtomicI32,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -2780,6 +2784,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         }
@@ -7690,6 +7696,8 @@ mod tests {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         }));

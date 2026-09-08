@@ -618,4 +618,70 @@ mod tests {
             crate::mailbox::hew_mailbox_free(mailbox);
         }
     }
+
+    #[test]
+    fn external_trap_drains_a_parked_checked_turn_before_crashing() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let (_, waker) = crate::wake::blocking::Readiness::new();
+        let mut actor = crate::test_actor::stub_actor();
+        let mut frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        frame.resume = Some(resume_checked_cleanup);
+        // SAFETY: this fixture exclusively owns its actor, invocation, frame,
+        // and mailbox until the checked cancellation has completed.
+        unsafe {
+            let state = crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+            actor
+                .checked_invocation
+                .store(state.cast(), Ordering::Release);
+            actor
+                .suspended_cont
+                .store(frame.handle(), Ordering::Release);
+            actor.cont_tag.store(
+                crate::internal::types::ContTag::Parked as i32,
+                Ordering::Release,
+            );
+            actor.actor_state.store(
+                crate::internal::types::HewActorState::Suspended as i32,
+                Ordering::Release,
+            );
+            let mailbox = crate::mailbox::hew_mailbox_new();
+            actor.mailbox = mailbox.cast();
+
+            crate::actor::hew_actor_trap(&raw mut actor, 91);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Runnable as i32,
+                "the external trap defers terminal publication until cleanup"
+            );
+            assert_eq!(actor.pending_external_trap_code.load(Ordering::Acquire), 91);
+
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_eq!(frame.resumes.load(Ordering::Acquire), 1);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Suspended as i32,
+                "the first cancellation poll remains live"
+            );
+            assert!(!actor.checked_invocation.load(Ordering::Acquire).is_null());
+
+            actor.actor_state.store(
+                crate::internal::types::HewActorState::Runnable as i32,
+                Ordering::Release,
+            );
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_eq!(frame.resumes.load(Ordering::Acquire), 2);
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Crashed as i32,
+                "the drained activation publishes the original crash"
+            );
+            assert_eq!(actor.error_code.load(Ordering::Acquire), 91);
+            assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());
+            assert!(actor.suspended_cont.load(Ordering::Acquire).is_null());
+            assert_eq!(actor.pending_external_trap_code.load(Ordering::Acquire), 0);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+    }
 }

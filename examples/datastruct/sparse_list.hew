@@ -13,15 +13,15 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 3 + 2]
 }
 
-fn set_val(n: Vec<i64>, i: i64, v: i64) {
+fn set_val(var n: Vec<i64>, i: i64, v: i64) {
     n.set(i * 3 + 1, v);
 }
 
-fn set_next(n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) {
     n.set(i * 3 + 2, nx);
 }
 
-fn alloc_node(n: Vec<i64>, idx: i64, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, idx: i64, val: i64) -> i64 {
     let node = n.len() / 3;
     n.push(idx);
     n.push(val);
@@ -93,7 +93,7 @@ fn sparse_get(n: Vec<i64>, head: i64, idx: i64, default_val: i64) -> i64 {
 }
 
 // Collect (idx, val) pairs into result vec as [idx0, val0, idx1, val1, ...]
-fn iterate(n: Vec<i64>, head: i64, result: Vec<i64>) {
+fn iterate(n: Vec<i64>, head: i64, var result: Vec<i64>) {
     var curr = head;
     while curr != -1 {
         result.push(node_idx(n, curr));
@@ -185,7 +185,7 @@ fn test_sorted_order() -> i64 {
     head = sparse_set(n, head, 50, 4);
     let r: Vec<i64> = Vec.new();
     iterate(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(2);
     e.push(50);

@@ -1,6 +1,6 @@
 #[resource]
 type Conn {
-    fd: i64;
+    fd: i64,
 }
 
 impl Conn {
@@ -13,7 +13,7 @@ impl Conn {
 }
 
 actor Holder {
-    var conn: Conn = Conn.open(1);
+    var conn: Conn = Conn.open(1),
 
     receive fn cycle() -> i64 {
         conn.close();
@@ -24,6 +24,6 @@ actor Holder {
 
 fn main() {
     let h = spawn Holder();
-    match await h.cycle() { .Ok(v) => println(f"{v}"), .Err(e) => println("err") };
+    match h.cycle() { .Ok(v) => println(f"{v}"), .Err(e) => println("err") };
     println("after");
 }

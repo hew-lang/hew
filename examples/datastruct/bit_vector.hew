@@ -1,7 +1,7 @@
 // Bit Vector using Vec<i64> where each i64 stores 32 bits
 // Operations: set_bit, clear_bit, get_bit, count_ones
 fn bv_create(num_bits: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     let num_words = (num_bits + 31) / 32;
     for i in 0 .. num_words {
         v.push(0);
@@ -9,7 +9,7 @@ fn bv_create(num_bits: i64) -> Vec<i64> {
     v
 }
 
-fn bv_set_bit(bv: Vec<i64>, bit: i64) -> i64 {
+fn bv_set_bit(var bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
@@ -18,7 +18,7 @@ fn bv_set_bit(bv: Vec<i64>, bit: i64) -> i64 {
     1
 }
 
-fn bv_clear_bit(bv: Vec<i64>, bit: i64) -> i64 {
+fn bv_clear_bit(var bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);

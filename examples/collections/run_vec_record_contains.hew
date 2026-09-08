@@ -5,7 +5,7 @@ type Point {
 }
 
 fn main() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 1, y: 2 });
     points.push(Point { x: 3, y: 4 });
     println(points.contains(Point { x: 1, y: 2 }));

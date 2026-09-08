@@ -1,14 +1,14 @@
 // Stack - LIFO data structure using Vec<i64>
 fn stack_new() -> Vec<i64> {
-    let s: Vec<i64> = Vec.new();
+    var s: Vec<i64> = Vec.new();
     s
 }
 
-fn stack_push(s: Vec<i64>, val: i64) {
+fn stack_push(var s: Vec<i64>, val: i64) {
     s.push(val);
 }
 
-fn stack_pop(s: Vec<i64>) -> i64 {
+fn stack_pop(var s: Vec<i64>) -> i64 {
     s.pop()
 }
 

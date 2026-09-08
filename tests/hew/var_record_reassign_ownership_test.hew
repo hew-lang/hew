@@ -27,7 +27,7 @@ fn mk() -> S {
     S { n: 0, v: Vec.new() }
 }
 
-fn grow(s: S) -> S {
+fn grow(var s: S) -> S {
     s.v.push(s.n);
     S { n: s.n + 1, v: s.v }
 }
@@ -36,7 +36,7 @@ fn _mk_pair() -> Pair {
     Pair { n: 0, a: Vec.new(), b: Vec.new() }
 }
 
-fn _grow_pair(p: Pair) -> Pair {
+fn _grow_pair(var p: Pair) -> Pair {
     p.a.push(p.n);
     p.b.push(p.n * 10);
     Pair { n: p.n + 1, a: p.a, b: p.b }
@@ -160,7 +160,7 @@ fn swap_w(w: W) -> W {
     W { a: w.b, b: w.a }
 }
 
-fn grow_vec(v: Vec<i64>, x: i64) -> Vec<i64> {
+fn grow_vec(var v: Vec<i64>, x: i64) -> Vec<i64> {
     v.push(x);
     v
 }

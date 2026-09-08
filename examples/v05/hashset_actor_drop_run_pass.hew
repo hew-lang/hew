@@ -49,7 +49,7 @@ fn main() {
     // Populate both sets so the state-drop path frees NON-EMPTY storage on
     // shutdown — an empty set never iterates occupied slots and so would not
     // exercise the corrupting free.
-    let ints = HashSet.new<i64>();
+    var ints = HashSet.new<i64>();
     ints.insert(1);
     ints.insert(2);
     ints.insert(3);
@@ -58,7 +58,7 @@ fn main() {
     ints.insert(6);
     ints.insert(7);
     ints.insert(8);
-    let names = HashSet.new<string>();
+    var names = HashSet.new<string>();
     names.insert("alpha");
     names.insert("beta");
     names.insert("gamma");

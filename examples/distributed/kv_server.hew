@@ -30,7 +30,7 @@ enum KvResp {
 }
 
 actor KeyValue {
-    let store: HashMap<string, string>,
+    var store: HashMap<string, string>,
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq.Put(kv) => {

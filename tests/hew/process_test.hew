@@ -17,7 +17,7 @@ fn cleanup_file(file_path: string) {
 }
 
 fn kill_zero_exit_code(pid: string) -> i64 {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("-0");
     args.push(pid);
     match process.run_argv("kill", args) {
@@ -54,7 +54,7 @@ fn spawn_child_for_implicit_drop(pid_path: string) -> string {
 
 #[test]
 fn test_run_argv_preserves_spaced_and_empty_arguments() {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("<%s>|<%s>|<%s>");
     args.push("hello world");
     args.push("");
@@ -85,7 +85,7 @@ fn test_run_args_rejects_mismatched_arg_count_with_guidance() {
 
 #[test]
 fn test_run_argv_replaces_legacy_run_args_usage() {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("<%s>|<%s>");
     args.push("alpha");
     args.push("beta");
@@ -170,7 +170,7 @@ fn test_child_drop_reaps_running_process() {
 // child that failed.
 #[test]
 fn test_start_argv_reports_a_missing_executable_as_launch_failed() {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("--version");
     match process.start_argv("hew-process-executable-that-does-not-exist", args) {
         .Ok(child) => {
@@ -189,7 +189,7 @@ fn test_start_argv_reports_a_missing_executable_as_launch_failed() {
 
 #[test]
 fn test_start_argv_returns_a_live_child_for_a_real_executable() {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("hew-process-start-argv-live");
     match process.start_argv("echo", args) {
         .Ok(child) => testing.assert_true(child.wait() == 0),

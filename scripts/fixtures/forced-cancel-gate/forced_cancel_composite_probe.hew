@@ -58,7 +58,7 @@ actor Driver {
             unsafe {
                 hew_test_pause_next_task_spawn_until_scope_cancel()
             };
-            fork t = compute();
+            let t = fork compute();
             after(1ms) {};
             let v = await t;
             out = v;
@@ -71,7 +71,7 @@ actor Driver {
             unsafe {
                 hew_test_pause_next_task_result_until_scope_cancel()
             };
-            fork owned = compute_owned();
+            let owned = fork compute_owned();
             after(1ms) {};
             let owned_value = await owned;
             out = owned_value;
@@ -81,7 +81,7 @@ actor Driver {
     receive fn run_zero() -> Point {
         var out: Point = Point { x: 9, y: 9 };
         scope {
-            fork t = compute_zero();
+            let t = fork compute_zero();
             let v = await t;
             out = v;
         };

@@ -2,7 +2,7 @@
 // Uses a Vec where index 0 = head pointer, rest is data
 // push_front shifts elements, push_back appends
 fn deque_new() -> Vec<i64> {
-    let d: Vec<i64> = Vec.new();
+    var d: Vec<i64> = Vec.new();
     d.push(0); // head pointer
     d
 }
@@ -20,11 +20,11 @@ fn deque_is_empty(d: Vec<i64>) -> i64 {
     }
 }
 
-fn deque_push_back(d: Vec<i64>, val: i64) {
+fn deque_push_back(var d: Vec<i64>, val: i64) {
     d.push(val);
 }
 
-fn deque_push_front(d: Vec<i64>, val: i64) {
+fn deque_push_front(var d: Vec<i64>, val: i64) {
     // If there's space before head, use it
     let head = d[0];
     if head > 0 {
@@ -45,11 +45,11 @@ fn deque_push_front(d: Vec<i64>, val: i64) {
     }
 }
 
-fn deque_pop_back(d: Vec<i64>) -> i64 {
+fn deque_pop_back(var d: Vec<i64>) -> i64 {
     d.pop()
 }
 
-fn deque_pop_front(d: Vec<i64>) -> i64 {
+fn deque_pop_front(var d: Vec<i64>) -> i64 {
     let head = d[0];
     let val = d[head + 1];
     d.set(0, head + 1);

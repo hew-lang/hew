@@ -1,18 +1,18 @@
 // Two-Stack Queue - Queue implemented with two stacks
 // inbox: push here, outbox: pop from here
 // When outbox empty, transfer all from inbox to outbox (reverses order = FIFO)
-fn transfer(inbox: Vec<i64>, outbox: Vec<i64>) {
+fn transfer(var inbox: Vec<i64>, var outbox: Vec<i64>) {
     while inbox.len() > 0 {
         let val = inbox.pop();
         outbox.push(val);
     }
 }
 
-fn tsq_enqueue(inbox: Vec<i64>, val: i64) {
+fn tsq_enqueue(var inbox: Vec<i64>, val: i64) {
     inbox.push(val);
 }
 
-fn tsq_dequeue(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
+fn tsq_dequeue(inbox: Vec<i64>, var outbox: Vec<i64>) -> i64 {
     if outbox.len() == 0 {
         transfer(inbox, outbox);
     }

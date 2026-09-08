@@ -26,7 +26,7 @@ fn test_nested_tuple_return_drops_cleanly() {
 
 #[test]
 fn test_vec_clone_deep_copies_nested_tuple_fields() {
-    let xs: Vec<((string, i64), bool)> = Vec.new();
+    var xs: Vec<((string, i64), bool)> = Vec.new();
     xs.push((("a", 1), true));
     xs.push((("b", 2), false));
     let ys = xs.clone();
@@ -54,7 +54,7 @@ fn test_vec_clone_deep_copies_nested_tuple_fields() {
 
 #[test]
 fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
-    let xs: Vec<((bytes, i64), bool)> = Vec.new();
+    var xs: Vec<((bytes, i64), bool)> = Vec.new();
     let a: bytes = unsafe {
         hew_bytes_from_str("ab")
     };
@@ -97,7 +97,7 @@ fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
 
 #[test]
 fn test_vec_clone_drops_nested_record_leaf_cleanly() {
-    let xs: Vec<((Rec, i64), bool)> = Vec.new();
+    var xs: Vec<((Rec, i64), bool)> = Vec.new();
     xs.push(((Rec { s: "hi" }, 21), true));
     xs.push(((Rec { s: "bye" }, 22), false));
     let ys = xs.clone();

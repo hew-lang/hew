@@ -1,4 +1,4 @@
-fn shell_sort(v: Vec<i64>) -> Vec<i64> {
+fn shell_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     var gap = n / 2;
     while gap > 0 {
@@ -23,7 +23,7 @@ fn shell_sort(v: Vec<i64>) -> Vec<i64> {
 }
 
 fn make_test_array() -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     var i = 100;
     while i > 0 {
         v.push(i);

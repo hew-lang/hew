@@ -4,7 +4,7 @@ impl Conn {
     fn close(c: Conn) { println(f"close {c.fd}"); }
 }
 fn main() {
-    let v: Vec<Conn> = Vec.new();
+    var v: Vec<Conn> = Vec.new();
     v.push(Conn { fd: 1 });
     v.push(Conn { fd: 2 });
     println(v.len());

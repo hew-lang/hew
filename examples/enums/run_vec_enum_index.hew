@@ -12,7 +12,7 @@ enum Colour {
 }
 
 fn main() {
-    let v: Vec<Colour> = Vec.new();
+    var v: Vec<Colour> = Vec.new();
     v.push(.Red);
     v.push(.Green(42));
     v.push(.Blue(10, 20));

@@ -13,15 +13,15 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 3 + 2]
 }
 
-fn set_prev(n: Vec<i64>, i: i64, p: i64) {
+fn set_prev(var n: Vec<i64>, i: i64, p: i64) {
     n.set(i * 3 + 1, p);
 }
 
-fn set_next(n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) {
     n.set(i * 3 + 2, nx);
 }
 
-fn alloc_node(n: Vec<i64>, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, val: i64) -> i64 {
     let idx = n.len() / 3;
     n.push(val);
     n.push(-1);
@@ -80,7 +80,7 @@ fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
     new_head
 }
 
-fn traverse_forward(n: Vec<i64>, head: i64, result: Vec<i64>) {
+fn traverse_forward(n: Vec<i64>, head: i64, var result: Vec<i64>) {
     var curr = head;
     while curr != -1 {
         result.push(node_val(n, curr));
@@ -88,7 +88,7 @@ fn traverse_forward(n: Vec<i64>, head: i64, result: Vec<i64>) {
     }
 }
 
-fn traverse_backward(n: Vec<i64>, head: i64, result: Vec<i64>) {
+fn traverse_backward(n: Vec<i64>, head: i64, var result: Vec<i64>) {
     if head == -1 {
         return;
     }
@@ -122,7 +122,7 @@ fn test_insert_front() -> i64 {
     head = insert_front(n, head, 10);
     let r: Vec<i64> = Vec.new();
     traverse_forward(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -142,7 +142,7 @@ fn test_insert_back() -> i64 {
     head = insert_back(n, head, 30);
     let r: Vec<i64> = Vec.new();
     traverse_forward(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -162,7 +162,7 @@ fn test_backward_traverse() -> i64 {
     head = insert_back(n, head, 30);
     let r: Vec<i64> = Vec.new();
     traverse_backward(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    var e: Vec<i64> = Vec.new();
     e.push(30);
     e.push(20);
     e.push(10);
@@ -183,12 +183,12 @@ fn test_delete() -> i64 {
     head = delete_val(n, head, 20);
     let fwd: Vec<i64> = Vec.new();
     traverse_forward(n, head, fwd);
-    let ef: Vec<i64> = Vec.new();
+    var ef: Vec<i64> = Vec.new();
     ef.push(10);
     ef.push(30);
     let bwd: Vec<i64> = Vec.new();
     traverse_backward(n, head, bwd);
-    let eb: Vec<i64> = Vec.new();
+    var eb: Vec<i64> = Vec.new();
     eb.push(30);
     eb.push(10);
     if vecs_equal(fwd, ef) == 1 {

@@ -61,7 +61,7 @@ fn parse_args() -> Result<Config, string> {
     var flag_r = false;
     var pattern: string = "";
     var pattern_set = false;
-    let files: Vec<string> = Vec.new();
+    var files: Vec<string> = Vec.new();
     var i = 1;
     while i < argc {
         let arg = match arguments.get(i) {

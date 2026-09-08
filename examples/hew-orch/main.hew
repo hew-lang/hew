@@ -53,7 +53,7 @@ fn is_id_head_str(c: string) -> bool {
 //
 // FC-P1-* / Lane-N forms are out of scope here — they need alternation
 // + capture groups (regex `find_all` is not in the public stdlib today).
-fn extract_ids_in_line(line: string, out: Vec<string>) {
+fn extract_ids_in_line(line: string, var out: Vec<string>) {
     let n = line.len();
     for i in 0 .. n {
         let head = line.slice(i, i + 1); // this should use [i] accessor when available
@@ -81,7 +81,7 @@ fn extract_ids_in_line(line: string, out: Vec<string>) {
 // Replaces the prior sketch's "name has no dot" heuristic with the real
 // `fs.is_dir` predicate (dialect authority §4 / std/fs.hew:495). No more
 // false negatives on README, Makefile, etc.
-fn collect_md_files(dir: string, out: Vec<string>) {
+fn collect_md_files(dir: string, var out: Vec<string>) {
     let entries = match fs.list_dir(dir) {
         .Ok(entries) => entries,
         .Err(_) => panic("failed to list orchestration directory"),
@@ -109,7 +109,7 @@ fn collect_md_files(dir: string, out: Vec<string>) {
 // HashMap today — typecheck rejects "cannot index into HashMap<string,
 // i32>". Closed by W3.4. We use `get` + `insert` and match on the
 // `Option<i32>` returned by `get`.
-fn ingest_file(path: string, index: HashMap<string, i32>) {
+fn ingest_file(path: string, var index: HashMap<string, i32>) {
     let content = match fs.read(path) {
         .Ok(content) => content,
         .Err(_) => panic("failed to read orchestration document"),

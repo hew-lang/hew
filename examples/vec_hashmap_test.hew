@@ -4,7 +4,7 @@
 // Vec and HashMap test
 // Exercises the core collection types from Hew programs
 fn test_vec() -> i32 {
-    let v: Vec<i32> = Vec.new();
+    var v: Vec<i32> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -24,7 +24,7 @@ fn test_vec() -> i32 {
 }
 
 fn test_hashmap() -> i32 {
-    let m: HashMap<string, i32> = HashMap.new();
+    var m: HashMap<string, i32> = HashMap.new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);

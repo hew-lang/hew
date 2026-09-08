@@ -17,22 +17,22 @@ fn node_height(nodes: Vec<i64>, i: i64) -> i64 {
     nodes[i * 4 + 3]
 }
 
-fn set_left(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_left(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 1, v);
     0
 }
 
-fn set_right(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_right(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 2, v);
     0
 }
 
-fn set_height(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_height(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 3, v);
     0
 }
 
-fn add_node(nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
+fn add_node(var nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
     let idx = nodes.len() / 4;
     nodes.push(val);
     nodes.push(NIL);
@@ -99,8 +99,8 @@ fn avl_insert(nodes: Vec<i64>, root: i64, val: i64, NIL: i64) -> i64 {
         return add_node(nodes, val, NIL);
     }
     // Track path from root to insertion point
-    let path: Vec<i64> = Vec.new();
-    let dirs: Vec<i64> = Vec.new(); // 0=left, 1=right
+    var path: Vec<i64> = Vec.new();
+    var dirs: Vec<i64> = Vec.new(); // 0=left, 1=right
     var cur = root;
     var placed = false;
     while !placed {
@@ -175,11 +175,11 @@ fn avl_insert(nodes: Vec<i64>, root: i64, val: i64, NIL: i64) -> i64 {
     new_root
 }
 
-fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
+fn inorder(nodes: Vec<i64>, root: i64, var result: Vec<i64>, NIL: i64) -> i64 {
     if root == NIL {
         return 0;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     var cur = root;
     var running = true;
     while running {
@@ -217,7 +217,7 @@ fn check_avl(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
     if root == NIL {
         return true;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     stack.push(root);
     var ok = true;
     while stack.len() > 0 {

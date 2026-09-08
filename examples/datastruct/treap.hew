@@ -17,17 +17,17 @@ fn node_right(nodes: Vec<i64>, i: i64) -> i64 {
     nodes[i * 4 + 3]
 }
 
-fn set_left(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_left(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 2, v);
     0
 }
 
-fn set_right(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_right(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 3, v);
     0
 }
 
-fn add_node(nodes: Vec<i64>, key: i64, pri: i64, NIL: i64) -> i64 {
+fn add_node(var nodes: Vec<i64>, key: i64, pri: i64, NIL: i64) -> i64 {
     let idx = nodes.len() / 4;
     nodes.push(key);
     nodes.push(pri);
@@ -60,8 +60,8 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
         return add_node(nodes, key, pri, NIL);
     }
     // Track path from root to insertion point
-    let path: Vec<i64> = Vec.new();
-    let dirs: Vec<i64> = Vec.new();
+    var path: Vec<i64> = Vec.new();
+    var dirs: Vec<i64> = Vec.new();
     var cur = root;
     var placed = false;
     while !placed {
@@ -133,11 +133,11 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
 }
 
 // Inorder traversal
-fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
+fn inorder(nodes: Vec<i64>, root: i64, var result: Vec<i64>, NIL: i64) -> i64 {
     if root == NIL {
         return 0;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     var cur = root;
     var running = true;
     while running {
@@ -178,7 +178,7 @@ fn check_heap(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
     if root == NIL {
         return true;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     stack.push(root);
     var ok = true;
     while stack.len() > 0 {

@@ -11,7 +11,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 
 // Hash table: maps key -> index into node arrays (head of linked list)
 fn make_ht_keys(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -20,7 +20,7 @@ fn make_ht_keys(capacity: i64) -> Vec<i64> {
 }
 
 fn make_ht_vals(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     let NONE = 0 - 1;
     for i in 0 .. capacity {
         v.push(NONE);
@@ -50,7 +50,7 @@ fn ht_find(ht_keys: Vec<i64>, key: i64) -> i64 {
 
 // Insert a value for a key into the multimap
 // node_vals, node_next are the linked list storage
-fn mm_insert(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, value: i64) {
+fn mm_insert(var ht_keys: Vec<i64>, var ht_heads: Vec<i64>, var node_vals: Vec<i64>, var node_next: Vec<i64>, key: i64, value: i64) {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);
@@ -75,7 +75,7 @@ fn mm_insert(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_ne
 }
 
 // Get all values for a key into result Vec, return count
-fn mm_get_all(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, result: Vec<i64>) -> i64 {
+fn mm_get_all(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, var result: Vec<i64>) -> i64 {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);
@@ -97,7 +97,7 @@ fn mm_get_all(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_n
 }
 
 // Remove one occurrence of value for key, return true if found
-fn mm_remove_one(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, value: i64) -> bool {
+fn mm_remove_one(ht_keys: Vec<i64>, var ht_heads: Vec<i64>, node_vals: Vec<i64>, var node_next: Vec<i64>, key: i64, value: i64) -> bool {
     let EMPTY = 0 - 1;
     let NONE = 0 - 1;
     let slot = ht_find(ht_keys, key);

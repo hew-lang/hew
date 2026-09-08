@@ -22,8 +22,8 @@
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
-    let replica_names: Vec<string>,
-    let replica_totals: Vec<i64>,
+    var replica_names: Vec<string>,
+    var replica_totals: Vec<i64>,
     var global_total: i64,
     var sync_count: i64,
     receive fn register_replica(name: string) {

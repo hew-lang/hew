@@ -18,13 +18,13 @@ fn checked_mir_colour_tag(c: CheckedMirColour) -> i64 {
 }
 
 fn main() {
-    let colours: Vec<CheckedMirColour> = Vec.new();
+    var colours: Vec<CheckedMirColour> = Vec.new();
     colours.push(CheckedMirColour.Red);
     colours.push(CheckedMirColour.Green);
     colours.push(CheckedMirColour.Blue);
     let colour_slice = colours[1..3];
     println(checked_mir_colour_tag(colour_slice[0]));
-    let points: Vec<CheckedMirPoint> = Vec.new();
+    var points: Vec<CheckedMirPoint> = Vec.new();
     points.push(CheckedMirPoint { x: 10, y: 20 });
     points.push(CheckedMirPoint { x: 30, y: 40 });
     let point_slice = points[0..2];

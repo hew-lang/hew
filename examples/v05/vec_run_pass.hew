@@ -9,7 +9,7 @@ type Point {
 }
 
 fn main() -> i64 {
-    let nums: Vec<i64> = Vec.new();
+    var nums: Vec<i64> = Vec.new();
     nums.push(1);
     nums.push(2);
     let _popped = nums.pop();
@@ -24,11 +24,11 @@ fn main() -> i64 {
     let more: Vec<i64> = Vec.new();
     nums.append(more);
     nums.clear();
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("a");
     words.push("b");
     let _joined = words.join(",");
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 1, y: 2 });
     let _point = points.get(0);
     points.set(0, Point { x: 3, y: 4 });

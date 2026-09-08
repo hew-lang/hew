@@ -18,7 +18,7 @@ type W<T> {
 }
 
 fn store_and_read<T>(x: T) -> T {
-    let items: Vec<W<T>> = Vec.new();
+    var items: Vec<W<T>> = Vec.new();
     items.push(W { v: x });
     match items.get(0) {
         .Some(w) => w.v,
@@ -42,7 +42,7 @@ fn test_generic_vec_heap_composite_reads_back() {
 }
 
 fn count_options<T>(x: T) -> i64 {
-    let items: Vec<Option<T>> = Vec.new();
+    var items: Vec<Option<T>> = Vec.new();
     items.push(Some(x));
     items.push(None);
     match items.get(0) {
@@ -62,7 +62,7 @@ fn test_generic_vec_option_element() {
 // first-class inline layout Vec element.
 #[test]
 fn test_concrete_vec_option_element() {
-    let items: Vec<Option<i64>> = Vec.new();
+    var items: Vec<Option<i64>> = Vec.new();
     items.push(Some(5));
     items.push(None);
     let got = match items.get(0) {

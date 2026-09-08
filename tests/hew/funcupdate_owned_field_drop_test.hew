@@ -78,12 +78,12 @@ fn test_funcupdate_bitcopy_field_override_carries_label() {
 /// Overriding a `Vec<i64>` field: old Vec buffer is released each iteration.
 #[test]
 fn test_funcupdate_vec_field_override_drops_old() {
-    let init: Vec<i64> = Vec.new();
+    var init: Vec<i64> = Vec.new();
     init.push(99);
     var s = VecHolder { items: init, tag: "initial" };
     var i = 0;
     while i < 15 {
-        let next: Vec<i64> = Vec.new();
+        var next: Vec<i64> = Vec.new();
         next.push(i);
         s = VecHolder { items: next, ..s };
         i = i + 1;
@@ -97,12 +97,12 @@ fn test_funcupdate_vec_field_override_drops_old() {
 /// Both `string` and `Vec` fields overridden simultaneously.
 #[test]
 fn test_funcupdate_multi_field_override_drops_old() {
-    let init: Vec<i64> = Vec.new();
+    var init: Vec<i64> = Vec.new();
     init.push(0);
     var s = VecHolder { items: init, tag: string.repeat("z", 8) };
     var i = 0;
     while i < 10 {
-        let next: Vec<i64> = Vec.new();
+        var next: Vec<i64> = Vec.new();
         next.push(i);
         s = VecHolder { items: next, tag: string.repeat("y", 8), ..s };
         i = i + 1;
@@ -116,12 +116,12 @@ fn test_funcupdate_multi_field_override_drops_old() {
 /// The non-overridden `tag` carries over from the base.
 #[test]
 fn test_funcupdate_hashmap_field_override_drops_old() {
-    let init: HashMap<string, i64> = HashMap.new();
+    var init: HashMap<string, i64> = HashMap.new();
     init.insert("seed", 1);
     var h = MapHolder { m: init, tag: 42 };
     var i = 0;
     while i < 12 {
-        let next: HashMap<string, i64> = HashMap.new();
+        var next: HashMap<string, i64> = HashMap.new();
         next.insert("k", i);
         h = MapHolder { m: next, ..h };
         i = i + 1;
@@ -136,12 +136,12 @@ fn test_funcupdate_hashmap_field_override_drops_old() {
 /// handle) via `RecordFieldDrop` (`hew_hashset_free_layout`) each iteration.
 #[test]
 fn test_funcupdate_hashset_field_override_drops_old() {
-    let init: HashSet<i64> = HashSet<i64>.new();
+    var init: HashSet<i64> = HashSet<i64>.new();
     init.insert(99);
     var h = SetHolder { s: init, tag: 7 };
     var i = 0;
     while i < 12 {
-        let next: HashSet<i64> = HashSet<i64>.new();
+        var next: HashSet<i64> = HashSet<i64>.new();
         next.insert(i);
         h = SetHolder { s: next, ..h };
         i = i + 1;

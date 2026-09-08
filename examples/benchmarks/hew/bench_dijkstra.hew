@@ -1,4 +1,4 @@
-fn build_weighted_graph(adj_nodes: Vec<i64>, adj_weights: Vec<i64>, adj_offsets: Vec<i64>, n: i64) -> i64 {
+fn build_weighted_graph(var adj_nodes: Vec<i64>, var adj_weights: Vec<i64>, var adj_offsets: Vec<i64>, n: i64) -> i64 {
     for i in 0 .. n + 1 {
         adj_offsets.push(0);
     }
@@ -24,8 +24,8 @@ fn build_weighted_graph(adj_nodes: Vec<i64>, adj_weights: Vec<i64>, adj_offsets:
 
 fn dijkstra(adj_nodes: Vec<i64>, adj_weights: Vec<i64>, adj_offsets: Vec<i64>, n: i64, start_node: i64) -> i64 {
     let INF = 999999;
-    let dist: Vec<i64> = Vec.new();
-    let used: Vec<i64> = Vec.new();
+    var dist: Vec<i64> = Vec.new();
+    var used: Vec<i64> = Vec.new();
     for i in 0 .. n {
         dist.push(INF);
         used.push(0);

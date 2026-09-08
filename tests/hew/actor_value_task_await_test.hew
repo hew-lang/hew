@@ -46,7 +46,7 @@ actor ValueWorker {
         var out: i64 = 0;
         let _initial_out = out;
         scope {
-            fork t = compute_i64();
+            let t = fork compute_i64();
             let x = await t;
             out = x;
         };
@@ -59,7 +59,7 @@ actor ValueWorker {
     receive fn run_string() -> string {
         var out: string = "";
         scope {
-            fork t = compute_string();
+            let t = fork compute_string();
             let s = await t;
             out = s;
         };
@@ -73,7 +73,7 @@ actor ValueWorker {
         var n: i64 = 0;
         let _initial_n = n;
         scope {
-            fork t = compute_pair();
+            let t = fork compute_pair();
             let p = await t;
             n = p.n;
         };
@@ -86,10 +86,10 @@ actor ValueWorker {
     receive fn run_twice() -> i64 {
         var sum: i64 = 0;
         scope {
-            fork a = compute_i64();
+            let a = fork compute_i64();
             let x = await a;
             sum = sum + x;
-            fork b = compute_i64();
+            let b = fork compute_i64();
             let y = await b;
             sum = sum + y;
         };
@@ -100,7 +100,7 @@ actor ValueWorker {
 #[test]
 fn _value_task_await_binds_i64_result() {
     let w = spawn ValueWorker(acc: 0);
-    match await w.run_i64() {
+    match w.run_i64() {
         .Ok(n) => testing.assert_eq(n, 42),
         .Err(_) => testing.assert_true(false),
     }
@@ -109,7 +109,7 @@ fn _value_task_await_binds_i64_result() {
 #[test]
 fn _value_task_await_binds_string_result() {
     let w = spawn ValueWorker(acc: 0);
-    match await w.run_string() {
+    match w.run_string() {
         .Ok(s) => testing.assert_eq_str(s, "forty-two"),
         .Err(_) => testing.assert_true(false),
     }
@@ -118,7 +118,7 @@ fn _value_task_await_binds_string_result() {
 #[test]
 fn _value_task_await_binds_record_result() {
     let w = spawn ValueWorker(acc: 0);
-    match await w.run_pair() {
+    match w.run_pair() {
         .Ok(n) => testing.assert_eq(n, 7),
         .Err(_) => testing.assert_true(false),
     }
@@ -127,7 +127,7 @@ fn _value_task_await_binds_record_result() {
 #[test]
 fn _two_value_awaits_in_one_handler_resume_in_order() {
     let w = spawn ValueWorker(acc: 0);
-    match await w.run_twice() {
+    match w.run_twice() {
         .Ok(n) => testing.assert_eq(n, 84),
         .Err(_) => testing.assert_true(false),
     }

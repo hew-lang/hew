@@ -14,7 +14,7 @@ fn mk(s: string) -> string {
 }
 
 fn owned_snapshot() -> Vec<(string, string)> {
-    let m: HashMap<string, string> = HashMap.new();
+    var m: HashMap<string, string> = HashMap.new();
     m.insert(mk("one"), mk("first"));
     m.insert(mk("two"), mk("second"));
     m.entries()

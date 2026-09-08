@@ -4,7 +4,7 @@
 // `actor |x: i64| { println(x); }` produces `LambdaPid<i64, ()>`.
 // `.send(42)` delivers the message; the explicit `.close()` in statement
 // context invokes `hew_lambda_actor_release` (routed by
-// `Place::LambdaActorHandle` in `lower_duplex_close`). Exit 0 proves
+// the LambdaPid handle type in `lower_duplex_close`). Exit 0 proves
 // the program ran to completion; stdout "42" proves the message was
 // delivered before the handle was released.
 //

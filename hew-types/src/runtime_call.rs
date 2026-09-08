@@ -4746,7 +4746,7 @@ impl std::error::Error for DescriptorError {}
 /// Closed-set descriptor for compiler-known runtime drop entries. Mirrors
 /// the `runtime_drop_symbol` table in `hew-codegen-rs/src/llvm.rs:18352`
 /// (today: `Duplex::close`, `Stream::close`, `Sink::close`,
-/// `Sender::close`, `Receiver::close`, `LambdaActorHandle::close`,
+/// `Sender::close`, `Receiver::close`,
 /// `SendHalf::close | RecvHalf::close`, `CancellationToken::release`).
 ///
 /// `non_exhaustive` is INTENTIONALLY OMITTED — same exhaustiveness
@@ -5992,7 +5992,6 @@ mod tests {
             (HewSendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
             (RecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
             (HewRecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
-            (LambdaActorHandle, None),
             (LambdaPid, None),
             (
                 CancellationToken,

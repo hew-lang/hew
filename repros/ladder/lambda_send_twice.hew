@@ -1,5 +1,5 @@
 actor Relay {
-    receive fn go(h: LambdaActorHandle<i64>) {
+    receive fn go(h: LambdaPid<i64, ()>) {
         h.send(7);
     }
 }

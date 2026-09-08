@@ -680,7 +680,7 @@ pub enum HirDiagnosticKind {
     /// `u32`, `i64`, `u64`, `f64`, `String` (retained/header-aware owner via
     /// `hew_vec_get_str`, balanced by the caller's scope-exit `hew_string_drop`),
     /// and any user-defined `Named` type (records, enums, `Duplex`,
-    /// `LambdaActorHandle`, etc., dispatched via `hew_vec_get_ptr` /
+    /// `LambdaPid`, etc., dispatched via `hew_vec_get_ptr` /
     /// `hew_vec_get_layout` / `hew_vec_get_owned`).
     VecIndexElementTypeUnsupported {
         /// User-facing rendering of the unsupported element type

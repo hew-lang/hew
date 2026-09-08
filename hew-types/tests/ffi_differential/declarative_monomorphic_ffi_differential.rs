@@ -2,7 +2,7 @@
 //!
 //! The assertions pin checker-owned method rewrites to the
 //! `#[extern_symbol]` annotations declared in stdlib source for
-//! `duration`, `instant`, and `LambdaActorHandle`.
+//! `duration` and `instant`.
 
 use crate::common;
 

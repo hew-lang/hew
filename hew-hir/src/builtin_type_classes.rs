@@ -218,7 +218,6 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(BoxedActor, BuiltinTypeShape::Opaque),
     registration!(ActorState, BuiltinTypeShape::Opaque),
     registration!(MachineState, BuiltinTypeShape::Opaque),
-    registration!(LambdaActorHandle, BuiltinTypeShape::Opaque),
     registration!(LambdaPid, BuiltinTypeShape::Opaque),
     registration!(SendHalf, BuiltinTypeShape::Opaque),
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
@@ -419,16 +418,6 @@ mod tests {
                 "user `{name}` without builtin identity must not receive channel endpoint teardown"
             );
         }
-    }
-
-    #[test]
-    fn lambda_actor_handle_is_seeded_as_resource() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        assert_eq!(
-            table.get("LambdaActorHandle"),
-            Some(&(ResourceMarker::Resource, Some("close".to_string())))
-        );
     }
 
     #[test]

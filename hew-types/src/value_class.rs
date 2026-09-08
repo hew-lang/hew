@@ -797,7 +797,6 @@ fn classify(
             | BuiltinType::HewRecvHalf
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaActorHandle
             | BuiltinType::MonitorRef
             | BuiltinType::CancellationToken | BuiltinType::Task => affine_none,
             // Never the type of a value: `Iterator` is the std trait name, and

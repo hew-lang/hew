@@ -1371,7 +1371,6 @@ mod tests {
                 | BuiltinType::HewRecvHalf
                 | BuiltinType::SendHalf
                 | BuiltinType::RecvHalf
-                | BuiltinType::LambdaActorHandle
                 | BuiltinType::MonitorRef
                 | BuiltinType::CancellationToken => {
                     Some((ValueClass::AffineResource, CloneKind::None))

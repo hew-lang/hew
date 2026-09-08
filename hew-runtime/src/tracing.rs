@@ -86,11 +86,6 @@ pub const SPAN_DUPLEX_CLOSED: i32 = 10;
 pub const SPAN_SINK_CLOSED: i32 = 11;
 /// Stream handle was closed (`hew_stream_close`). `actor_id` holds the pointer address.
 pub const SPAN_STREAM_CLOSED: i32 = 12;
-/// Lambda-actor was spawned (`hew_lambda_actor_new`). `actor_id` holds the pointer address.
-pub const SPAN_LAMBDA_SPAWNED: i32 = 13;
-/// Lambda-actor strong handle was released (`hew_lambda_actor_release`).
-/// `actor_id` holds the pointer address.
-pub const SPAN_LAMBDA_RELEASED: i32 = 14;
 
 // ── Supervisor lifecycle spans ─────────────────────────────────────────
 //
@@ -153,8 +148,6 @@ pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_DUPLEX_CLOSED, "duplex_closed"),
     (SPAN_SINK_CLOSED, "sink_closed"),
     (SPAN_STREAM_CLOSED, "stream_closed"),
-    (SPAN_LAMBDA_SPAWNED, "lambda_spawned"),
-    (SPAN_LAMBDA_RELEASED, "lambda_released"),
     (SPAN_SUPERVISOR_RESTART, "supervisor_restart"),
     (SPAN_SUPERVISOR_ESCALATE, "supervisor_escalate"),
     (SPAN_SUPERVISOR_CIRCUIT_OPEN, "supervisor_circuit_open"),
@@ -671,14 +664,14 @@ pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
     record_lifecycle_event(actor_id, SPAN_SEND, msg_type);
 }
 
-/// Record a channel or lambda-actor lifecycle event (created, split, closed, spawned, released).
+/// Record a channel lifecycle event (created, split, closed).
 ///
 /// `handle_addr` is the raw pointer address of the relevant handle cast to `u64`.
 /// It serves as the handle identity — there are no sequential IDs on channel substrate types.
 ///
-/// This is the emission point for `SPAN_DUPLEX_*`, `SPAN_SINK_CLOSED`,
-/// `SPAN_STREAM_CLOSED`, `SPAN_LAMBDA_SPAWNED`, and `SPAN_LAMBDA_RELEASED`.
-// live on not(wasm32) — stream/lambda_actor/duplex (native-only modules); dead on wasm32
+/// This is the emission point for `SPAN_DUPLEX_*`, `SPAN_SINK_CLOSED` and
+/// `SPAN_STREAM_CLOSED`.
+// live on not(wasm32) — stream/duplex (native-only modules); dead on wasm32
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
@@ -1208,8 +1201,6 @@ mod tests {
             SPAN_DUPLEX_CLOSED,
             SPAN_SINK_CLOSED,
             SPAN_STREAM_CLOSED,
-            SPAN_LAMBDA_SPAWNED,
-            SPAN_LAMBDA_RELEASED,
             SPAN_SUPERVISOR_RESTART,
             SPAN_SUPERVISOR_ESCALATE,
             SPAN_SUPERVISOR_CIRCUIT_OPEN,
@@ -2014,7 +2005,7 @@ mod tests {
         assert_ne!(events[0].timestamp_ns, 0, "timestamp must be populated");
     }
 
-    /// `drain_events_json` renders all 7 new channel `event_type` strings
+    /// `drain_events_json` renders every channel `event_type` string
     /// round-trippable through `serde_json`.
     #[cfg(feature = "profiler")]
     #[test]
@@ -2027,8 +2018,6 @@ mod tests {
             (SPAN_DUPLEX_CLOSED, "duplex_closed"),
             (SPAN_SINK_CLOSED, "sink_closed"),
             (SPAN_STREAM_CLOSED, "stream_closed"),
-            (SPAN_LAMBDA_SPAWNED, "lambda_spawned"),
-            (SPAN_LAMBDA_RELEASED, "lambda_released"),
         ];
 
         for (span_const, expected_str) in new_types {

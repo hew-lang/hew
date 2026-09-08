@@ -53,15 +53,14 @@ pub enum BuiltinType {
     MachineState,
     SendHalf,
     RecvHalf,
-    LambdaActorHandle,
     /// `LambdaPid<M, R>` — the user-visible handle for a lambda actor
     /// (`actor |m: M| -> R { .. }`). PID-like: "a pid you ask, M in → R out".
     /// Unifies the conceptual model with `LocalPid`/`RemotePid` (the `Pid`
     /// family) rather than the `Duplex` channel substrate. `handle_family =
     /// ActorPid` (not `Duplex`) so the channel-only surface (`.recv()`,
     /// `.send_half()`, `.recv_half()`) is never exposed on an actor handle.
-    /// Lowers to `*mut HewLambdaActorHandle`; the MIR routes it through
-    /// `Place::LambdaActorHandle` to `hew_lambda_actor_send` / `_ask`.
+    /// Lowers to `*mut HewLambdaActorHandle`; a call on it reaches the
+    /// lambda actor's one handler through the ordinary actor ask path.
     LambdaPid,
     CrashInfo,
     CrashAction,
@@ -237,7 +236,6 @@ builtin_types! {
     MachineState => "MachineState",
     SendHalf => "SendHalf",
     RecvHalf => "RecvHalf",
-    LambdaActorHandle => "LambdaActorHandle",
     LambdaPid => "LambdaPid",
     CrashInfo => "CrashInfo",
     CrashAction => "CrashAction",
@@ -332,7 +330,7 @@ impl BuiltinType {
     /// Everything else with a release contract transfers, including handles
     /// that merely LOOK like references:
     ///
-    /// * `LambdaPid` / `LambdaActorHandle` — refcounted wrappers. The runtime
+    /// * `LambdaPid` — a refcounted wrapper. The runtime
     ///   exposes `hew_lambda_actor_clone`, which allocates a distinct owning
     ///   wrapper precisely because a plain address copy is unsafe; two owners
     ///   of one wrapper release it twice (observed: SIGSEGV).
@@ -366,7 +364,6 @@ impl BuiltinType {
                 | Self::AsyncGenerator
                 | Self::CancellationToken
                 | Self::LambdaPid
-                | Self::LambdaActorHandle
                 | Self::BoxedActor
                 | Self::MonitorRef
         )
@@ -387,7 +384,6 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::SendHalf
             | Self::RecvHalf
-            | Self::LambdaActorHandle
             | Self::LambdaPid
             | Self::CancellationToken
             | Self::MonitorRef
@@ -453,7 +449,6 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::SendHalf
             | Self::RecvHalf
-            | Self::LambdaActorHandle
             | Self::LambdaPid
             | Self::MonitorRef => Some("close"),
             Self::CancellationToken => Some("release"),
@@ -491,9 +486,7 @@ impl BuiltinType {
                 Some(BuiltinHandleFamily::ActorPid)
             }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
-            Self::Duplex | Self::HewDuplex | Self::LambdaActorHandle => {
-                Some(BuiltinHandleFamily::Duplex)
-            }
+            Self::Duplex | Self::HewDuplex => Some(BuiltinHandleFamily::Duplex),
             Self::SendHalf | Self::RecvHalf | Self::HewSendHalf | Self::HewRecvHalf => {
                 Some(BuiltinHandleFamily::DuplexHalf)
             }
@@ -534,7 +527,6 @@ impl BuiltinType {
             | Self::Duplex
             | Self::SupervisorPool
             | Self::HewDuplex
-            | Self::LambdaActorHandle
             | Self::LambdaPid => 2,
             Self::JsonValue
             | Self::YamlValue

@@ -55,7 +55,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaActorHandle
             | BuiltinType::LambdaPid
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction

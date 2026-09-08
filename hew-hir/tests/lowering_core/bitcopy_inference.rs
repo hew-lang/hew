@@ -232,9 +232,8 @@ fn concrete_generic_type_with_string_field_is_not_inferred_bitcopy() {
 
 #[test]
 fn zero_field_extern_backed_record_is_bitcopy_handle_stand_in() {
-    // The FFI handle stand-in shape (`std::concurrency::lambda_actor`'s
-    // `LambdaActorHandle`): a zero-field record produced and consumed only by
-    // `#[extern_symbol]` methods. Its values exist behind the C ABI, so the
+    // The FFI handle stand-in shape: a zero-field record produced and
+    // consumed only by `#[extern_symbol]` methods. Its values exist behind the C ABI, so the
     // record classifies as a pointer-width `BitCopy` stand-in — the same class
     // the `#[opaque]` rule assigns — instead of falling to
     // `Strategy::UnknownBlocked` at the MIR boundary.

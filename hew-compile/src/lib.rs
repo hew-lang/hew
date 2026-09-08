@@ -4801,21 +4801,21 @@ fn main() {
             "direct compilation of the shipped TCP module must retain std.net identity"
         );
 
-        let shipped_lambda = repo_root.join("std/concurrency/lambda_actor.hew");
+        let shipped_lifecycle = repo_root.join("std/concurrency/lifecycle.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped_lambda)
+            super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
                 .map(|module| module.path),
             Some(vec!["std".to_string(), "concurrency".to_string()]),
             "a direct check of a canonical directory-module peer must retain std.concurrency identity"
         );
         fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
-        let user_lambda = write_source(
+        let user_lifecycle = write_source(
             &dir.path().join("concurrency"),
-            "lambda_actor.hew",
-            "pub type LambdaActorHandle {}\n",
+            "lifecycle.hew",
+            "pub type Marker {}\n",
         );
         assert!(
-            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lambda)).is_none(),
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lifecycle)).is_none(),
             "a same-named user directory peer must not acquire std.concurrency provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
@@ -6244,7 +6244,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn bundled_empty_type_decls_preserve_qualified_declaration_identity() {
+    fn bundled_type_decls_preserve_qualified_declaration_identity() {
         fn lower_to_hir(input: &str) -> hew_hir::HirModule {
             let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
                 .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
@@ -6270,7 +6270,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile lives below repository root");
-        let direct = repo_root.join("std/concurrency/lambda_actor.hew");
+        let direct = repo_root.join("std/concurrency/concurrency.hew");
         let direct = lower_to_hir(direct.to_str().expect("std path is UTF-8"));
 
         let dir = tempfile::tempdir().expect("create temp project");
@@ -6291,35 +6291,34 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             (&direct, Some("std.concurrency")),
             (&imported, Some("std.concurrency")),
         ] {
-            for leaf in ["LambdaActorHandle", "LambdaActorWeakHandle"] {
-                let expected =
-                    owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
-                assert!(
-                    pipeline
-                        .items
-                        .iter()
-                        .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected)),
-                    "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
-                    pipeline.items
-                );
-            }
+            let leaf = "ScopeError";
+            let expected =
+                owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
+            assert!(
+                pipeline
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected)),
+                "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
+                pipeline.items
+            );
         }
 
         // A user package can legally use the same leaf name, but its source
-        // identity must never acquire the bundled lambda-actor layout.
-        write_source(dir.path(), "spoofed.hew", "pub type LambdaActorHandle {}\n");
+        // identity must never acquire the bundled layout.
+        write_source(dir.path(), "spoofed.hew", "pub type ScopeError {}\n");
         let foreign_input = write_source(
             dir.path(),
             "foreign_main.hew",
-            "import spoofed.{LambdaActorHandle};\n\
-             fn main() { let _ = LambdaActorHandle {}; }\n",
+            "import spoofed.{ScopeError};\n\
+             fn main() { let _ = ScopeError {}; }\n",
         );
         let foreign = lower_to_hir(&foreign_input);
         assert!(
             foreign
                 .items
                 .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "spoofed.LambdaActorHandle")),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "spoofed.ScopeError")),
             "foreign declaration must retain its own owner: {:#?}",
             foreign.items
         );
@@ -6327,7 +6326,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             !foreign
                 .items
                 .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "std.concurrency.LambdaActorHandle")),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "std.concurrency.ScopeError")),
             "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
             foreign.items
         );

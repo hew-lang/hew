@@ -219,13 +219,6 @@ struct TraitSigCanonCtx<'a> {
 /// inline programs in tests).
 const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 
-/// Embedded source for `std/concurrency/lambda_actor.hew`.
-///
-/// Like `std::io::closable`, this is a pure-Hew stdlib surface whose
-/// methods must be visible to inline typechecker tests even when the
-/// module graph did not pre-populate `resolved_items`.
-const LAMBDA_ACTOR_HEW: &str = include_str!("../../../std/concurrency/lambda_actor.hew");
-
 /// Import-free projection generated from the owning declarations in
 /// `std/builtins.hew` and `std/link_monitor.hew`.
 const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_ref.hew"));
@@ -10723,33 +10716,6 @@ impl Checker {
                                 self.register_stdlib_hew_items(
                                     &short,
                                     "std.io.closable",
-                                    &items,
-                                    StdlibBarePublication::Prelude,
-                                );
-                            }
-                        }
-                    }
-
-                    if module_path == "std.concurrency.lambda_actor"
-                        && decl.resolved_items.is_none()
-                    {
-                        let identity = format!("module:{module_path}");
-                        if !self
-                            .registered_stdlib_hew_sources
-                            .contains(identity.as_str())
-                        {
-                            self.registered_stdlib_hew_sources.insert(identity);
-                            let parsed = hew_parser::parse(LAMBDA_ACTOR_HEW);
-                            debug_assert!(
-                                parsed.errors.is_empty(),
-                                "std/concurrency/lambda_actor.hew failed to parse: {:?}",
-                                parsed.errors,
-                            );
-                            if parsed.errors.is_empty() {
-                                let items: Vec<_> = parsed.program.items.into_iter().collect();
-                                self.register_stdlib_hew_items(
-                                    &short,
-                                    "std.concurrency.lambda_actor",
                                     &items,
                                     StdlibBarePublication::Prelude,
                                 );

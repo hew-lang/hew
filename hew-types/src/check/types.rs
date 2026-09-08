@@ -2961,6 +2961,10 @@ pub struct Checker {
     /// failure (which a completion call reports as `ActorError.Failed`) or an
     /// ordinary `Result` value the handler happens to return.
     pub(super) receive_fails_methods: HashSet<String>,
+    /// `Actor::handler` ids submitted one way through a mailbox view. Their
+    /// declared failure becomes the actor's own fault, so the checker must
+    /// prove the error renders before the program is published.
+    pub(super) view_submitted_fails_methods: HashMap<String, std::ops::Range<usize>>,
     /// Completion calls made from inside a receive fn body, as
     /// `(caller handler, callee handler, call span)`. A cycle among these is a
     /// deadlock every participant waits in, so it is reported once the whole
@@ -3952,6 +3956,7 @@ impl Checker {
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
             receive_fails_methods: HashSet::new(),
+            view_submitted_fails_methods: HashMap::new(),
             completion_call_edges: Vec::new(),
             actor_receive_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),

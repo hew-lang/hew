@@ -694,6 +694,12 @@ pub const HEW_TRAP_JOIN_BRANCH_FAILED: i32 = 211;
 /// Explicit user panic carried by the private logical-fault ABI.
 pub const HEW_TRAP_USER_PANIC: i32 = 212;
 
+/// A `fails` handler submitted through a mailbox view returned its declared
+/// error (error code 213). A one-way submission carries no reply channel, so
+/// the failure has no caller to answer: it becomes the actor's own fault and
+/// reaches its supervisor. The diagnostic carries the error's `Display` text.
+pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
+
 // ── Reply-failure classification ─────────────────────────────────────────
 //
 // Discriminants recorded on a reply channel (`HewReplyChannel.fail_reason`,
@@ -751,7 +757,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_MODULE_INIT_REGEX_FAILED
         | HEW_TRAP_WIRE_DECODE_FAILED
         | HEW_TRAP_JOIN_BRANCH_FAILED
-        | HEW_TRAP_USER_PANIC => Some(code),
+        | HEW_TRAP_USER_PANIC
+        | HEW_TRAP_ACTOR_UNHANDLED_FAILURE => Some(code),
         _ => None,
     }
 }
@@ -807,6 +814,9 @@ pub enum ExitReason {
     JoinBranchFailed,
     /// Explicit user panic (logical error code 212).
     UserPanic,
+    /// A `fails` handler submitted through a mailbox view returned its
+    /// declared error with no caller to receive it (error code 213).
+    ActorUnhandledFailure,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -838,6 +848,7 @@ impl ExitReason {
             ExitReason::WireDecodeFailed => "WireDecodeFailed",
             ExitReason::JoinBranchFailed => "JoinBranchFailed",
             ExitReason::UserPanic => "UserPanic",
+            ExitReason::ActorUnhandledFailure => "ActorUnhandledFailure",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -862,6 +873,7 @@ impl ExitReason {
             HEW_TRAP_WIRE_DECODE_FAILED => ExitReason::WireDecodeFailed,
             HEW_TRAP_JOIN_BRANCH_FAILED => ExitReason::JoinBranchFailed,
             HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
+            HEW_TRAP_ACTOR_UNHANDLED_FAILURE => ExitReason::ActorUnhandledFailure,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -909,6 +921,7 @@ impl ExitReason {
             | ExitReason::WireDecodeFailed
             | ExitReason::JoinBranchFailed
             | ExitReason::UserPanic
+            | ExitReason::ActorUnhandledFailure
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
         }

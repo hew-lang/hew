@@ -48,7 +48,7 @@ pub use hew_parser::ast::{CallableCallMode, CallableCapabilities};
 
 pub use actor_protocol::{
     compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
-    ActorProtocolCollision, ActorProtocolDescriptor,
+    ActorProtocolCollision, ActorProtocolDescriptor, ReceiveFailureDisplay,
 };
 pub use builtin_type::{
     builtin_types, has_builtin_associated_item_identity, lookup_builtin_type,

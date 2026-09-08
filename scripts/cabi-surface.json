@@ -6663,6 +6663,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fault_new_unhandled_failure( *const HewString, ) -> *mut HewFault"
+      },
+      "symbol": "hew_fault_new_unhandled_failure"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fault_report( *const HewFault) -> i32"
       },
       "symbol": "hew_fault_report"

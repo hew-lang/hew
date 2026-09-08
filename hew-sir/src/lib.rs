@@ -26,6 +26,7 @@ mod verify;
 
 pub use actor::{
     ActorId, ActorOperation, SemActor, SemActorField, SemActorHandler, SemActorOverflow,
+    SemFailureDisplay,
 };
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,

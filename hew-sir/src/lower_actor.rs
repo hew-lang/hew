@@ -318,6 +318,21 @@ impl InstanceService<'_> {
                 sink.as_ref(),
             )?;
             params.extend(sink);
+            // A one-way submission leaves a `fails` handler's error with no
+            // caller, so its rendering is demanded here — the same demand the
+            // process entry's error Display makes.
+            let failure_display = match &row.failure_display {
+                None => None,
+                Some(hew_types::ReceiveFailureDisplay::Identity) => {
+                    Some(crate::SemFailureDisplay::Identity)
+                }
+                Some(hew_types::ReceiveFailureDisplay::Declared {
+                    declaration,
+                    instance,
+                }) => Some(crate::SemFailureDisplay::Callable(
+                    self.resolve_entry_display(declaration, instance)?.id,
+                )),
+            };
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
@@ -328,6 +343,7 @@ impl InstanceService<'_> {
                     params,
                     return_ty,
                     stream,
+                    failure_display,
                 });
         }
         Ok(())
@@ -969,7 +985,7 @@ impl Builder<'_, '_> {
             .find(|handler| handler.declaration.full_path() == method_id.as_str())
             .ok_or("message description has no exact receive member")?
             .clone();
-        if handler.return_ty != ResolvedTy::Unit
+        if !handler.owes_no_reply()
             || handler.params.len() != args.len()
             || argument_order.len() != args.len()
             || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()

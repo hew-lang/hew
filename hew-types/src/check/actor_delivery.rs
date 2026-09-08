@@ -268,23 +268,38 @@ impl Checker {
                     .map_or(Ty::Error, |ty| self.subst.resolve(ty))
             })
             .collect::<Vec<_>>();
+        // A `fails` handler whose success is unit owes the caller no value, so
+        // a mailbox view may submit it one way. Its declared failure then has
+        // no caller to answer and becomes the actor's own fault; the fault
+        // text comes from the error's rendering, so record the site for the
+        // checker's later renderability proof.
+        let fails_one_way = matches!(&reply_ty, Some(ty)
+            if self.receive_fails_methods.contains(&method_id)
+                && matches!(ty.as_result(), Some((success, _)) if matches!(self.subst.resolve(success), Ty::Unit)));
+        if through_view && fails_one_way {
+            self.view_submitted_fails_methods
+                .insert(method_id.clone(), span.clone());
+        }
         if let Some(reply_ty) = reply_ty {
             if through_view {
-                self.reject_replying_handler_through_view(&method_id, span);
-                return Ty::Error;
+                if !fails_one_way {
+                    self.reject_replying_handler_through_view(&method_id, span);
+                    return Ty::Error;
+                }
+            } else {
+                let completion = self.completion_call_type(&method_id, &reply_ty);
+                self.record_completion_call_edge(&method_id, span);
+                self.actor_method_dispatch.insert(
+                    key,
+                    ActorMethodKind::Ask {
+                        method_id,
+                        reply_ty,
+                        policy: completion_policy,
+                        argument_order,
+                    },
+                );
+                return completion;
             }
-            let completion = self.completion_call_type(&method_id, &reply_ty);
-            self.record_completion_call_edge(&method_id, span);
-            self.actor_method_dispatch.insert(
-                key,
-                ActorMethodKind::Ask {
-                    method_id,
-                    reply_ty,
-                    policy: completion_policy,
-                    argument_order,
-                },
-            );
-            return completion;
         }
         if !through_view {
             // The call on an actor handle is a completion call: it waits for
@@ -378,22 +393,18 @@ impl Checker {
     }
 
     /// A mailbox view submits and nothing more, so a handler that owes the
-    /// caller a reply or a declared failure cannot be called through one.
+    /// caller a value cannot be called through one.
     fn reject_replying_handler_through_view(&mut self, method_id: &str, span: &Span) {
         let handler = method_id
             .rsplit_once("::")
             .map_or("this handler", |(_, name)| name);
-        let subject = if self.receive_fails_methods.contains(method_id) {
-            "declares `fails`, so its failure has nowhere to go through a mailbox view"
-        } else {
-            "returns a value, so it cannot be called through a mailbox view"
-        };
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "`{handler}` {subject}, which only submits; call it on the actor handle to wait \
-                 for the reply, or `fork target.{handler}(..)` to run it concurrently"
+                "`{handler}` returns a value, so it cannot be called through a mailbox view, \
+                 which only submits; call it on the actor handle to wait for the reply, or \
+                 `fork target.{handler}(..)` to run it concurrently"
             ),
         );
     }

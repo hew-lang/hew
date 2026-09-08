@@ -472,7 +472,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1646] = {
      "{\"native\": \"fn hew_actor_spawn_native( *mut c_void, usize, "
      "HewDispatchFn, unsafe extern \\\"C\\\" fn(*mut c_void), HewStateCloneFn, "
      "Option<unsafe extern \\\"C-unwind\\\" fn(*mut c_void)>, i32, i32, usize, "
-     "*mut *mut HewFault, ) -> HewLocalPidId\"}",
+     "*const HewNativePeriodicHandler, usize, *mut *mut HewFault, ) -> "
+     "HewLocalPidId\"}",
      "native", "non-declarable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_spawn_opts",

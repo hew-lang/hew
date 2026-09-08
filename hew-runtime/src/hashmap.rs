@@ -503,8 +503,8 @@ pub unsafe fn validate_val_layout(val_layout: *const HewValueLayout) {
 /// # Panics
 ///
 /// Panics with message
-/// `"HewLayoutHashMap: {key_layout|val_layout} ownership_kind={String|LayoutManaged} requires drop_fn"`
-/// on any of the four rejection cases.
+/// `"HewLayoutHashMap: {key_layout|val_layout} ownership_kind={String|Bytes|LayoutManaged} requires drop_fn"`
+/// when an owning descriptor has no drop thunk.
 ///
 /// # Safety
 ///
@@ -539,10 +539,12 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::Bytes => {
-            // The Bytes kind belongs to the channel/stream element witness;
-            // map descriptors never carry it. Fail closed.
-            crate::set_last_error("HewLayoutHashMap: key_layout ownership_kind=Bytes is not valid");
-            panic!("HewLayoutHashMap: key_layout ownership_kind=Bytes is not valid");
+            if kl.value.drop_fn.is_none() {
+                crate::set_last_error(
+                    "HewLayoutHashMap: key_layout ownership_kind=Bytes requires drop_fn",
+                );
+                panic!("HewLayoutHashMap: key_layout ownership_kind=Bytes requires drop_fn");
+            }
         }
     }
     match vl.ownership_kind {
@@ -566,10 +568,12 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::Bytes => {
-            // The Bytes kind belongs to the channel/stream element witness;
-            // map descriptors never carry it. Fail closed.
-            crate::set_last_error("HewLayoutHashMap: val_layout ownership_kind=Bytes is not valid");
-            panic!("HewLayoutHashMap: val_layout ownership_kind=Bytes is not valid");
+            if vl.drop_fn.is_none() {
+                crate::set_last_error(
+                    "HewLayoutHashMap: val_layout ownership_kind=Bytes requires drop_fn",
+                );
+                panic!("HewLayoutHashMap: val_layout ownership_kind=Bytes requires drop_fn");
+            }
         }
     }
 }

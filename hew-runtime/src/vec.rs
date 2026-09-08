@@ -285,11 +285,6 @@ unsafe fn validate_elem_layout(layout: *const HewValueLayout) {
             write_stderr(b"PANIC: HewValueLayout size must preserve element alignment\n");
             libc::abort();
         }
-        if descriptor.ownership_kind == HewTypeOwnershipKind::Bytes {
-            let msg = b"PANIC: HewValueLayout ownership_kind=Bytes is not valid for Vec\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        }
         if descriptor.ownership_kind != HewTypeOwnershipKind::Plain && descriptor.drop_fn.is_none()
         {
             let msg = b"PANIC: HewValueLayout non-Plain ownership requires drop_fn\n\0";
@@ -575,8 +570,8 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
             HewTypeOwnershipKind::String | HewTypeOwnershipKind::Plain => ElemKind::Plain,
             HewTypeOwnershipKind::LayoutManaged => unreachable!(),
             HewTypeOwnershipKind::Bytes => {
-                // The Bytes kind belongs to the channel/stream element
-                // witness; Vec descriptors never carry it. Fail closed.
+                // Bytes need clone/drop thunks and must use the complete
+                // HewValueLayout entry rather than this thunk-less ABI.
                 let msg = b"PANIC: HewTypeLayout ownership_kind=Bytes is not valid for Vec\n\0";
                 write_stderr(&msg[..msg.len() - 1]);
                 libc::abort();

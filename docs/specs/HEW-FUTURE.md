@@ -65,17 +65,17 @@ drafts is not: it parses today but lacks end-to-end implementation and has
 not been audited against the actor mailbox protocol's failure modes. Track
 under #1236.
 
-### 1.4 Deferred `select{}` arms: stream-next and task-await
+### 1.4 Deferred `select{}` arm: stream-next
 
 **[Target: returns with its substrate]**
 
-Edition 2026's `select{}` is a **three-form** sealed construct: actor
-ask (`<id> from <actor>.<method>(...)`), channel receive
-(`<id> from <rx>.recv()`), and timer (`after <duration>`) — see
-HEW-SPEC-2026 §4.11.1. Two arm forms from earlier drafts are deferred,
-each blocked on a missing first-class substrate, not on the `select`
-machinery (the select winner/loser-cleanup codegen seam is already live
-for the shipped arms):
+Edition 2026's `select{}` is a **four-form** sealed construct: actor
+call (`<id> from <actor>.<method>(...)`), channel receive
+(`<id> from <rx>.recv()`), forked task (`<id> from <task>`), and timer
+(`after <duration>`) — see HEW-SPEC-2026 §4.11.1. One arm form from
+earlier drafts is deferred, blocked on a missing first-class substrate
+rather than on the `select` machinery (the select winner/loser-cleanup
+codegen seam is already live for the shipped arms):
 
 - **Stream-next arm** (`<id> from <stream>.recv()` over `Stream<T>`,
   binding `Option<T>`). Deferred because no usable `Stream<T>` handle can
@@ -84,13 +84,10 @@ for the shipped arms):
   owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`),
   and a bare `Stream<T>.recv()` is not yet ABI-wired in codegen. Returns
   once stream-handle binding lands.
-- **Task-await arm** (`<id> = await <task>`, binding `T` for `Task<T>`).
-  Deferred until the `fork`/`Task` substrate consumes a bound task in a
-  value position. Returns with that substrate.
 
-Both forms are rejected at **check** time today (the type checker
-restricts the arm set; codegen is not involved), so re-introducing them
-is purely additive.
+The form is rejected at **check** time today (the type checker restricts
+the arm set; codegen is not involved), so re-introducing it is purely
+additive.
 
 First-completion-wins is `race { ... }`, a construct of its own
 (HEW-SPEC-2026 §4.11.2), not a `select` arm.

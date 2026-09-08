@@ -15040,19 +15040,6 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_sink_send_native( *mut HewSink, *const HewWaker, *const c_void, usize, ) -> i32"
-      },
-      "symbol": "hew_sink_send_native"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -15360,6 +15347,19 @@
       "availability": [
         "native"
       ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_cancel_native( *mut HewNativeStream)"
+      },
+      "symbol": "hew_stream_cancel_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -15394,6 +15394,19 @@
         "native": "fn hew_stream_chunks( *mut HewStream, i64, ) -> *mut HewStream"
       },
       "symbol": "hew_stream_chunks"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_cleanup_status_native( *mut HewNativeStream, *const HewWaker, ) -> i32"
+      },
+      "symbol": "hew_stream_cleanup_status_native"
     },
     {
       "availability": [
@@ -15654,19 +15667,6 @@
       "availability": [
         "native"
       ],
-      "classification": "codegen-stable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_stream_next_native( *mut HewStream, *const HewWaker, *mut c_void, usize, ) -> i32"
-      },
-      "symbol": "hew_stream_next_native"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -15688,6 +15688,19 @@
         "native": "fn hew_stream_next_view( *mut HewStream, *mut *mut u8, *mut usize, ) -> i64"
       },
       "symbol": "hew_stream_next_view"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_operation_free_native( *mut HewNativeStream)"
+      },
+      "symbol": "hew_stream_operation_free_native"
     },
     {
       "availability": [
@@ -15789,7 +15802,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stream_pipe_native( i64, usize, Option<hew_cabi::vec::HewValueDropThunk>, *mut *mut HewSink, ) -> *mut HewStream"
+        "native": "fn hew_stream_pipe_native( i64, *const hew_cabi::vec::HewValueLayout, *mut *mut HewSink, ) -> *mut HewStream"
       },
       "symbol": "hew_stream_pipe_native"
     },
@@ -15818,6 +15831,45 @@
         "native": "fn hew_stream_pop_layout( *mut HewStream, *mut c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_pop_layout"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_read_poll_native( *mut HewNativeStream) -> i32"
+      },
+      "symbol": "hew_stream_read_poll_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_read_start_native( *mut HewStream, *const HewWaker, *const HewValueLayout, ) -> *mut HewNativeStream"
+      },
+      "symbol": "hew_stream_read_start_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_read_take_native( *mut HewNativeStream, *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_stream_read_take_native"
     },
     {
       "availability": [
@@ -15900,6 +15952,32 @@
         "native": "fn hew_stream_try_next_layout( *mut HewStream, *mut c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_try_next_layout"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_write_poll_native( *mut HewNativeStream) -> i32"
+      },
+      "symbol": "hew_stream_write_poll_native"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_write_start_native( *mut HewSink, *const HewWaker, *mut c_void, *const HewValueLayout, ) -> *mut HewNativeStream"
+      },
+      "symbol": "hew_stream_write_start_native"
     },
     {
       "availability": [

@@ -2965,6 +2965,12 @@ impl Checker {
                 return_type,
                 body,
             } => {
+                // A lambda actor is an actor declaration without a source
+                // name. Mint its identity here, keyed by the exact span of
+                // the `actor` expression, so HIR can synthesize the actor
+                // declaration and its single receive handler against a
+                // resolver-owned `DefId` like every named actor.
+                self.declare_lambda_actor(span);
                 // Synthesise the body without propagating the return-type annotation as
                 // a contextual hint.  This lets us extract the actual body return type
                 // and emit targeted diagnostics rather than generic Mismatch errors:

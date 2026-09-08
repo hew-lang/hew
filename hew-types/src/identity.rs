@@ -166,6 +166,27 @@ impl std::error::Error for DeclarationIdentityError {}
 #[derive(Debug)]
 pub(crate) struct MintingAuthority(());
 
+/// The declaration paths a lambda actor (`actor |msg| { .. }`) is minted under.
+///
+/// A lambda actor has no source name, so its identity is keyed by the exact
+/// source span of its `actor` expression: unique within a module by
+/// construction, and stable across every stage that re-derives it. HIR
+/// synthesizes the actor declaration these identities belong to.
+#[must_use]
+pub fn lambda_actor_declaration_path(
+    module: Option<&str>,
+    span: &std::ops::Range<usize>,
+) -> String {
+    let leaf = format!("#lambda@{}_{}", span.start, span.end);
+    module.map_or(leaf.clone(), |module| format!("{module}.{leaf}"))
+}
+
+/// The single receive handler of a lambda actor, under its actor's path.
+#[must_use]
+pub fn lambda_actor_handler_path(actor_path: &str) -> String {
+    format!("{actor_path}::call")
+}
+
 /// Mint a declaration identity from the canonical path determined by the
 /// resolver/checker. This crate-private entry point is the only production
 /// constructor that accepts a bare declaration path.

@@ -333,3 +333,19 @@ mod tests {
         assert!(descriptor.msg_id_for("missing").is_none());
     }
 }
+
+/// The resolver-minted identities of one lambda actor (`actor |msg| { .. }`).
+///
+/// A lambda actor has no source name, so the checker mints its declaration
+/// and its single receive handler keyed by the exact span of the `actor`
+/// expression. HIR synthesizes the actor declaration these belong to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaActorIdentity {
+    /// The synthesized actor declaration.
+    pub actor: crate::DefId,
+    /// Its one receive handler.
+    pub handler: crate::DefId,
+    /// The declaration path the actor is registered under, which is also the
+    /// name its synthesized declaration carries.
+    pub path: String,
+}

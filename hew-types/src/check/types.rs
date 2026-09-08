@@ -745,6 +745,9 @@ pub struct TypeCheckOutput {
     /// through this side-table — see `hew_mir::lower` where the actor
     /// layout is constructed.
     pub actor_protocol_descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
+    /// Resolver-minted identities for every lambda actor, keyed by the span of
+    /// its `actor` expression. HIR synthesizes one actor declaration per entry.
+    pub lambda_actor_declarations: HashMap<SpanKey, crate::actor_protocol::LambdaActorIdentity>,
     /// Intrinsic-declaration side-table: function name → intrinsic key.
     ///
     /// Populated for every `#[intrinsic("key")] pub fn name(...)` declaration
@@ -1453,6 +1456,7 @@ impl Default for TypeCheckOutput {
             select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            lambda_actor_declarations: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
@@ -3547,6 +3551,8 @@ pub struct Checker {
     /// `check_program` (no rebuild — see `actor_satisfies_handler_trait`).
     pub(super) actor_protocol_descriptors:
         HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
+    pub(super) lambda_actor_declarations:
+        HashMap<SpanKey, crate::actor_protocol::LambdaActorIdentity>,
     pub(super) impl_alias_scopes: Vec<ImplAliasScope>,
     /// When set, the resolver is inside a trait-body context that gives
     /// meaning to `Self::Bar` as a projection into this trait's associated
@@ -4058,6 +4064,7 @@ impl Checker {
             place_base_depth: 0,
             place_write_depth: 0,
             actor_protocol_descriptors: HashMap::new(),
+            lambda_actor_declarations: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),

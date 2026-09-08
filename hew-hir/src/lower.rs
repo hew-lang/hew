@@ -750,6 +750,9 @@ impl BuiltinEnumSpec {
     }
 }
 
+/// The one receive handler every synthesized lambda actor declares.
+const LAMBDA_ACTOR_HANDLER: &str = "call";
+
 const MONOMORPHIC_BUILTIN_ENUMS: &[hew_types::builtin_enums::BuiltinMonomorphicEnum] =
     hew_types::builtin_enums::monomorphic_builtin_enums();
 const BUILTIN_ENUM_SPEC_COUNT: usize = 2 + MONOMORPHIC_BUILTIN_ENUMS.len();
@@ -5723,6 +5726,15 @@ pub fn lower_program_with_mono_cap(
         ctx.current_module_name = None;
     }
 
+    // Every `actor |msg| { .. }` lowered above synthesized an ordinary actor
+    // declaration. Publish them as items so the mono closure, the layout
+    // passes and SIR see them exactly as they see a named actor.
+    items.extend(
+        std::mem::take(&mut ctx.pending_lambda_actors)
+            .into_iter()
+            .map(HirItem::Actor),
+    );
+
     // Inject executable std builtins.hew impls through the same lowering path
     // as user and imported impls so direct method rewrites and the
     // static-dispatch index see them. Keep them after source items to avoid
@@ -7815,6 +7827,12 @@ struct LowerCtx {
     /// the lowered HIR carries `protocol_descriptor: None` and downstream
     /// MIR fails closed when it tries to derive a `msg_id`.
     actor_protocol_descriptors: HashMap<String, hew_types::ActorProtocolDescriptor>,
+    /// Resolver-minted identities for each `actor |msg| { .. }` expression,
+    /// keyed by its span. See `TypeCheckOutput::lambda_actor_declarations`.
+    lambda_actor_declarations: HashMap<SpanKey, hew_types::actor_protocol::LambdaActorIdentity>,
+    /// Actor declarations synthesized from lambda actors during body
+    /// lowering, appended to the module's items once lowering finishes.
+    pending_lambda_actors: Vec<HirActorDecl>,
     /// Names of every `TypeDefKind::Actor` declaration in the program, lifted
     /// from `TypeCheckOutput.type_defs`. Consumed by `lower_actor` to recognise
     /// an actor-state field whose annotated type is a bare actor name (e.g.
@@ -8437,6 +8455,8 @@ impl LowerCtx {
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
+            lambda_actor_declarations: tc_output.lambda_actor_declarations.clone(),
+            pending_lambda_actors: Vec::new(),
             actor_type_names: tc_output
                 .type_defs
                 .iter()
@@ -15054,6 +15074,7 @@ impl LowerCtx {
             overflow_policy: decl.overflow_policy.clone(),
             cycle_capable,
             protocol_descriptor,
+            lambda_handle_ty: None,
             span,
         })
     }
@@ -18902,7 +18923,7 @@ impl LowerCtx {
                 return_type,
                 body,
                 ..
-            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
+            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body, &span),
             Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),
             Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
             Expr::Yield(value) => {
@@ -20569,6 +20590,7 @@ impl LowerCtx {
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
+        span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let actor_ty = self.actor_lambda_handle_ty(params, return_type);
         let reply_ty = match &actor_ty {
@@ -20610,14 +20632,186 @@ impl LowerCtx {
         self.current_actor_self = my_self_id;
         self.pop_scope();
         let captures = self.collect_lambda_captures(&lowered_body, &param_ids);
+        self.synthesize_lambda_actor(span, hir_params, lowered_body, captures, actor_ty)
+    }
+
+    /// Build and record the actor declaration one lambda actor lowers to.
+    fn push_lambda_actor_declaration(
+        &mut self,
+        span: &Span,
+        identity: &hew_types::actor_protocol::LambdaActorIdentity,
+        params: Vec<HirBinding>,
+        body: HirExpr,
+        captures: &[HirLambdaCapture],
+        handle_ty: &ResolvedTy,
+    ) {
+        // The handle carries the protocol: `LambdaPid<Msg, Reply>`.
+        let reply_ty = match handle_ty {
+            ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
+            _ => ResolvedTy::Unit,
+        };
+        let state_fields: Vec<HirField> = captures
+            .iter()
+            .map(|capture| HirField {
+                name: capture.name.clone(),
+                ty: capture.ty.clone(),
+                default: None,
+                is_mutable: false,
+                span: span.clone(),
+            })
+            .collect();
+        // The body already refers to each capture by its original binding id;
+        // binding the state seat to those same ids is what makes the captured
+        // environment and the actor's state one thing.
+        let state_bindings: Vec<HirBinding> = captures
+            .iter()
+            .map(|capture| HirBinding {
+                id: capture.binding,
+                name: capture.name.clone(),
+                ty: capture.ty.clone(),
+                mutable: false,
+                span: span.clone(),
+                is_consume: false,
+            })
+            .collect();
+
+        let param_tys: Vec<ResolvedTy> = params.iter().map(|param| param.ty.clone()).collect();
+        let handler_name = LAMBDA_ACTOR_HANDLER.to_string();
+        let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers(
+            identity.path.clone(),
+            &[hew_types::actor_protocol::ActorHandlerSpec {
+                name: handler_name.clone(),
+                param_tys,
+                return_ty: reply_ty.clone(),
+                symbol: format!("{}__{handler_name}", identity.path),
+            }],
+        )
+        .ok();
+
+        let body_block = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements: Vec::new(),
+            ty: body.ty.clone(),
+            tail: Some(Box::new(body)),
+            span: span.clone(),
+        };
+        self.pending_lambda_actors.push(HirActorDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            declaration: identity.actor.clone(),
+            name: identity.path.clone(),
+            defining_module: None,
+            type_params: Vec::new(),
+            state_fields,
+            init: None,
+            receive_handlers: vec![HirActorReceiveFn {
+                declaration: identity.handler.clone(),
+                state_bindings,
+                name: handler_name,
+                is_generator: false,
+                params,
+                return_ty: reply_ty,
+                body: body_block,
+                state_guard: HirActorStateGuard::Exclusive,
+                every_ns: None,
+                span: span.clone(),
+            }],
+            methods: Vec::new(),
+            lifecycle_hooks: Vec::new(),
+            max_heap_bytes: None,
+            is_isolated: false,
+            mailbox_capacity: None,
+            overflow_policy: None,
+            cycle_capable: false,
+            protocol_descriptor,
+            lambda_handle_ty: Some(Box::new(handle_ty.clone())),
+            span: span.clone(),
+        });
+    }
+
+    /// Turn one lowered lambda actor into an ordinary actor declaration plus
+    /// the spawn that starts it.
+    ///
+    /// The captures become the actor's state fields in capture order, and the
+    /// body becomes its single receive handler. The handler's state bindings
+    /// carry the captures' original `BindingId`s, so every reference the body
+    /// already lowered resolves to the state seat with no rewriting: a
+    /// capture and an actor state field are the same thing to the body.
+    fn synthesize_lambda_actor(
+        &mut self,
+        span: &Span,
+        params: Vec<HirBinding>,
+        body: HirExpr,
+        captures: Vec<HirLambdaCapture>,
+        handle_ty: ResolvedTy,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some(identity) = self
+            .lambda_actor_declarations
+            .get(&SpanKey::from(span))
+            .cloned()
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "lambda actor".to_string(),
+                    reason: "the checker minted no declaration identity for this `actor |..|` expression"
+                        .to_string(),
+                },
+                span.clone(),
+                "a lambda actor lowers to a synthesized actor declaration, which needs the resolver-minted identity for its span",
+            ));
+            return (HirExprKind::Literal(HirLiteral::Unit), handle_ty);
+        };
+        if let Some(weak) = captures
+            .iter()
+            .find(|capture| capture.kind == HirCaptureKind::Weak)
+        {
+            // A lambda that names itself is a reference cycle between the
+            // handle and its own state seat. The named-actor path has no
+            // equivalent, so refuse it rather than synthesize a declaration
+            // whose state owns its own handle.
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "lambda actor".to_string(),
+                    reason: format!(
+                        "the lambda captures its own handle (`{}`), so its state would own the handle that addresses it",
+                        weak.name
+                    ),
+                },
+                span.clone(),
+                "give the recursive actor a name and spawn it, so the handle and the state it reaches are separate declarations",
+            ));
+            return (HirExprKind::Literal(HirLiteral::Unit), handle_ty);
+        }
+
+        self.push_lambda_actor_declaration(span, &identity, params, body, &captures, &handle_ty);
+
+        // The spawn supplies the captured environment as the actor's state,
+        // field by field, exactly as a named actor's spawn supplies its own.
+        let args = captures
+            .into_iter()
+            .map(|capture| {
+                let value = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&capture.ty, &self.type_classes),
+                    ty: capture.ty.clone(),
+                    intent: IntentKind::Consume,
+                    kind: HirExprKind::BindingRef {
+                        name: capture.name.clone(),
+                        resolved: ResolvedRef::Binding(capture.binding),
+                    },
+                    span: span.clone(),
+                };
+                (capture.name, value)
+            })
+            .collect();
         (
-            HirExprKind::SpawnLambdaActor {
-                params: hir_params,
-                reply_ty,
-                body: Box::new(lowered_body),
-                captures,
+            HirExprKind::Spawn {
+                actor_name: identity.path,
+                args,
             },
-            actor_ty,
+            handle_ty,
         )
     }
 
@@ -29867,6 +30061,7 @@ fn collect_captures_walk(
             captures.push(HirLambdaCapture {
                 binding: *id,
                 name: name.clone(),
+                ty: expr.ty.clone(),
                 kind,
             });
         }

@@ -14,6 +14,20 @@ pub(super) fn declaration<'a>(
     module: &'a HirModule,
     ty: &ResolvedTy,
 ) -> Option<&'a hew_hir::HirActorDecl> {
+    // A lambda actor's handle is spelled `LambdaPid<M, R>`, not `LocalPid<A>`:
+    // the declaration HIR synthesized for it records the handle it answers to.
+    if matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::LambdaPid),
+            ..
+        }
+    ) {
+        return module.items.iter().find_map(|item| match item {
+            HirItem::Actor(actor) if actor.lambda_handle_ty.as_deref() == Some(ty) => Some(actor),
+            _ => None,
+        });
+    }
     let ResolvedTy::Named {
         builtin: Some(hew_types::BuiltinType::LocalPid | hew_types::BuiltinType::ChildRef),
         args,
@@ -58,14 +72,20 @@ impl InstanceService<'_> {
         let source = declaration(self.module, ty)
             .ok_or("local actor handle lacks its exact declaration")?
             .clone();
-        let ty = &ResolvedTy::named_builtin(
-            hew_types::BuiltinType::LocalPid.canonical_name(),
-            hew_types::BuiltinType::LocalPid,
-            match ty {
-                ResolvedTy::Named { args, .. } => args.clone(),
-                _ => unreachable!("declaration() matched a named handle"),
-            },
-        );
+        // A `ChildRef<A>` role and a `LocalPid<A>` handle address one actor, so
+        // the descriptor is keyed by the pid spelling. A lambda actor's handle
+        // is already its own spelling and has no separate role.
+        let lambda_handle = source.lambda_handle_ty.clone().map(|ty| *ty);
+        let ty = &lambda_handle.unwrap_or_else(|| {
+            ResolvedTy::named_builtin(
+                hew_types::BuiltinType::LocalPid.canonical_name(),
+                hew_types::BuiltinType::LocalPid,
+                match ty {
+                    ResolvedTy::Named { args, .. } => args.clone(),
+                    _ => unreachable!("declaration() matched a named handle"),
+                },
+            )
+        });
         if !source.type_params.is_empty() {
             return Err("generic actors need their instance contracts".into());
         }

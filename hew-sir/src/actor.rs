@@ -87,10 +87,25 @@ impl SemActor {
         )
     }
 
+    /// Whether this actor's handle is a lambda actor's `LambdaPid<M, R>`.
+    ///
+    /// A lambda actor is spawned from an expression, never supervised as a
+    /// named role, so it has no `ChildRef` spelling.
+    #[must_use]
+    pub fn is_lambda(&self) -> bool {
+        matches!(
+            self.handle_ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::LambdaPid),
+                ..
+            }
+        )
+    }
+
     /// A message may address this actor through its handle or its role.
     #[must_use]
     pub fn admits_target(&self, ty: &ResolvedTy) -> bool {
-        *ty == self.handle_ty || *ty == self.child_ref_ty()
+        *ty == self.handle_ty || (!self.is_lambda() && *ty == self.child_ref_ty())
     }
 
     /// Every private body entered with this actor's exclusive state seat.
@@ -155,23 +170,54 @@ impl SemActor {
         })
     }
 
+    /// Check the handle spelling this descriptor answers to.
+    fn validate_handle(&self) -> Result<(), String> {
+        // A named actor is addressed by `LocalPid<A>` naming its own
+        // declaration. A lambda actor has no source nominal to name, so its
+        // handle is `LambdaPid<Msg, Reply>` and the protocol it must agree
+        // with is its single handler's.
+        match &self.handle_ty {
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::LocalPid),
+                args,
+                ..
+            } => {
+                if !matches!(args.as_slice(), [ty] if ty.nominal_instance().is_some_and(|instance|
+                    instance.nominal.declaration() == &self.declaration && instance.args.is_empty()))
+                {
+                    return Err("actor handle refers to another declaration".into());
+                }
+            }
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::LambdaPid),
+                args,
+                ..
+            } => {
+                let [msg, reply] = args.as_slice() else {
+                    return Err("a lambda actor handle carries its message and reply".into());
+                };
+                let [handler] = self.handlers.as_slice() else {
+                    return Err("a lambda actor declares exactly one handler".into());
+                };
+                let expected_msg = match handler.params.as_slice() {
+                    [] => ResolvedTy::Unit,
+                    [only] => only.clone(),
+                    many => ResolvedTy::Tuple(many.to_vec()),
+                };
+                if *msg != expected_msg || *reply != handler.return_ty {
+                    return Err("lambda actor handle differs from its handler's protocol".into());
+                }
+            }
+            _ => return Err("actor descriptor requires a typed local handle".into()),
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.actor(self.id) != Some(self) {
             return Err("actor descriptor is not at its canonical index".into());
         }
-        let ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::LocalPid),
-            args,
-            ..
-        } = &self.handle_ty
-        else {
-            return Err("actor descriptor requires a typed local handle".into());
-        };
-        if !matches!(args.as_slice(), [ty] if ty.nominal_instance().is_some_and(|instance|
-            instance.nominal.declaration() == &self.declaration && instance.args.is_empty()))
-        {
-            return Err("actor handle refers to another declaration".into());
-        }
+        self.validate_handle()?;
         if self.state_ty
             != ResolvedTy::Tuple(self.fields.iter().map(|field| field.ty.clone()).collect())
         {

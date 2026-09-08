@@ -1096,6 +1096,49 @@ impl Checker {
         None
     }
 
+    /// Mint the actor and receive-handler identities for one lambda actor.
+    ///
+    /// The `actor |msg| { .. }` expression has no source name, so its exact
+    /// span is its occurrence key. Both identities are established here, in
+    /// the resolver that owns declaration minting; HIR looks them up by
+    /// re-deriving the same paths from the same span.
+    pub(super) fn declare_lambda_actor(&mut self, span: &std::ops::Range<usize>) {
+        let module = self.current_declaration_module();
+        let actor_path =
+            crate::identity::lambda_actor_declaration_path(self.current_module.as_deref(), span);
+        let handler_path = crate::identity::lambda_actor_handler_path(&actor_path);
+        let mut minted = Vec::new();
+        for (kind, path) in [
+            (crate::DeclarationKind::Actor, actor_path.clone()),
+            (crate::DeclarationKind::ActorReceive, handler_path),
+        ] {
+            let occurrence = crate::DeclarationOccurrence::new(module, span, kind, 0);
+            match self.identity.declare(occurrence, path) {
+                Ok(declaration) => minted.push(declaration),
+                Err(error) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "lambda actor identity conflicts with an existing declaration: {error}"
+                        ),
+                    ));
+                    return;
+                }
+            }
+        }
+        let [actor, handler] = <[crate::DefId; 2]>::try_from(minted)
+            .expect("one actor and one handler identity per lambda actor");
+        self.lambda_actor_declarations.insert(
+            SpanKey::from(span),
+            crate::actor_protocol::LambdaActorIdentity {
+                actor,
+                handler,
+                path: actor_path,
+            },
+        );
+    }
+
     pub(super) fn require_declaration_occurrence(
         &mut self,
         span: &std::ops::Range<usize>,
@@ -2408,6 +2451,7 @@ impl Checker {
             closure_capture_facts: resolved_closure_capture_facts,
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,
+            lambda_actor_declarations: std::mem::take(&mut self.lambda_actor_declarations),
             intrinsic_declarations: std::mem::take(&mut self.intrinsic_declarations),
             pattern_resolutions: std::mem::take(&mut self.pending_pattern_resolutions)
                 .into_iter()

@@ -494,6 +494,14 @@ pub struct HirActorDecl {
     /// as fail-closed; the produced `msg_id` is no longer derivable from
     /// source order.
     pub protocol_descriptor: Option<hew_types::ActorProtocolDescriptor>,
+    /// `Some(LambdaPid<M, R>)` when this declaration was synthesized from an
+    /// `actor |msg| { .. }` expression rather than written in source.
+    ///
+    /// A lambda actor is an ordinary actor with one handler and its captures
+    /// as state; only its handle spelling differs, because the checker types
+    /// the expression `LambdaPid<M, R>` rather than `LocalPid<A>`. SIR
+    /// resolves a `LambdaPid` target to the declaration answering to it.
+    pub lambda_handle_ty: Option<Box<ResolvedTy>>,
     pub span: Span,
 }
 
@@ -2373,6 +2381,10 @@ pub struct HirLambdaCapture {
     /// self-binding case — a `Weak` capture's name matches the
     /// lambda's own let-binding name.
     pub name: String,
+    /// The captured binding's type, taken from the reference that captured
+    /// it. This is the state-field type of the synthesized actor the lambda
+    /// lowers to, so the capture set is a complete state declaration.
+    pub ty: ResolvedTy,
     /// Capture-strength discriminator.
     pub kind: HirCaptureKind,
 }

@@ -3956,7 +3956,7 @@ fn bounded_generic_clone_instantiated_with_resource_is_refused() {
 type Token { id: i64, }
 
 impl Token {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {

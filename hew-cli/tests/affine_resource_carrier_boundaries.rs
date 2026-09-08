@@ -24,7 +24,7 @@ type Token {
 }
 
 impl Token {
-    fn close(self) {
+    fn close(consume self) {
         println(f"closing token id={self.id}");
     }
 }

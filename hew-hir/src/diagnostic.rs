@@ -185,7 +185,7 @@ pub enum HirDiagnosticKind {
     /// `#[resource]` type declares its `close` method inline inside the
     /// type body (`TypeBodyItem::Method`). In v0.5 the supported surface
     /// for user-resource `close` lowering is an **inherent impl block**
-    /// (`impl T { fn close(self) { ... } }`). The inline form is a silent
+    /// (`impl T { fn close(consume self) { ... } }`). The inline form is a silent
     /// trap today — the method body is not lowered to HIR/MIR, the drop
     /// elaborator still emits `drop_fn: Some("T::close")`, and codegen
     /// would resolve to a missing symbol at link time. Fail-closing here

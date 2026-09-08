@@ -22,7 +22,7 @@ type Handle {{ raw: Dq, }}\n\
 impl Handle {{\n\
     fn value(self) -> i64 {{ 7 }}\n\
     fn sink(self) {{ self.close(); }}\n\
-    fn close(self) {{ unsafe {{ hew_deque_free(self.raw) }}; print(\"C\"); }}\n\
+    fn close(consume self) {{ unsafe {{ hew_deque_free(self.raw) }}; print(\"C\"); }}\n\
 }}\n\
 extern \"C\" {{\n\
     fn hew_deque_new() -> Dq;\n\

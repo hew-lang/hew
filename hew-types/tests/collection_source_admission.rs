@@ -251,9 +251,9 @@ fn map_iteration_uses_the_same_recursive_snapshot_admission() {
 #[test]
 fn map_snapshots_preserve_resource_and_function_value_refusals() {
     for (declarations, value, reason) in [
-        ("#[resource] type Token { id: i64 } impl Token { fn close(self) {} }", "Token", "resource/linear"),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(self) {} } type Holder { token: Token }", "Holder", "resource/linear"),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(self) {} }", "Vec<Token>", "resource/linear"),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Token", "resource/linear"),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} } type Holder { token: Token }", "Holder", "resource/linear"),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Vec<Token>", "resource/linear"),
         ("", "fn(i64) -> i64", "closure value"),
         ("type Holder { callback: fn(i64) -> i64 }", "Holder", "closure value"),
         ("", "Vec<fn(i64) -> i64>", "closure value"),
@@ -316,7 +316,7 @@ fn generic_keys_keep_owned_values_and_projection_types() {
 fn key_hash_override_does_not_invent_eq_or_resource_copy() {
     for (declarations, key) in [
         (
-            "#[resource] type Token { id: i64 } impl Token { fn close(self) {} }",
+            "#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }",
             "Token",
         ),
         ("type Key<T> { value: T }", "Key<fn(i64) -> i64>"),
@@ -358,8 +358,8 @@ fn forward_declared_map_values_are_checked_after_registration() {
         ));
     }
     for declarations in [
-        "type First { values: HashMap<string, Second> } #[resource] type Second { id: i64 } impl Second { fn close(self) {} }",
-        "#[resource] type Second { id: i64 } impl Second { fn close(self) {} } type First { values: HashMap<string, Second> }",
+        "type First { values: HashMap<string, Second> } #[resource] type Second { id: i64 } impl Second { fn close(consume self) {} }",
+        "#[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } type First { values: HashMap<string, Second> }",
     ] {
         let output = check(&format!("{declarations} fn main() {{}}"));
         assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation && error.message.contains("resource/linear")), "forward resource member must fail even without construction: {:#?}", output.errors);
@@ -368,7 +368,7 @@ fn forward_declared_map_values_are_checked_after_registration() {
 
 #[test]
 fn abstract_map_key_does_not_hide_a_forward_resource_value() {
-    let output = check("type First<K> { values: HashMap<K, Second> } #[resource] type Second { id: i64 } impl Second { fn close(self) {} } fn main() {}");
+    let output = check("type First<K> { values: HashMap<K, Second> } #[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } fn main() {}");
     assert!(
         output
             .errors

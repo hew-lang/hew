@@ -4,7 +4,7 @@ type Tok {
 }
 
 impl Tok {
-    fn close(self) {
+    fn close(consume self) {
         println(f"close {self.id}");
     }
 }

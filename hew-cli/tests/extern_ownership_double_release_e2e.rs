@@ -574,7 +574,7 @@ fn scalar_argument_io_handle_payload_still_compiles_and_runs() {
 /// once (no missing close, no double close) and three `Err` frames each read
 /// their payload intact.
 const RESOURCE_PAYLOAD_WITH_INTERPOLATED_ERR: &str = r#"#[resource] type Conn { fd: i64 }
-impl Conn { fn close(self) { println(f"closed-{self.fd}"); } }
+impl Conn { fn close(consume self) { println(f"closed-{self.fd}"); } }
 
 fn attempt(i: i64) -> Result<Conn, string> {
     if i % 2 == 0 { Ok(Conn { fd: i }) } else { Err(f"refused{i}") }

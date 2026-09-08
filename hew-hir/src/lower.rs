@@ -14255,7 +14255,7 @@ impl LowerCtx {
                 },
                 span.clone(),
                 "`#[resource]` types must declare `close` in a sibling \
-                 inherent-impl block (`impl T { fn close(self) { ... } }`); \
+                 inherent-impl block (`impl T { fn close(consume self) { ... } }`); \
                  the inline `type T { fn close(consume self) ... }` \
                  surface is not lowered in v0.5 and would silently fail \
                  link-time drop dispatch",
@@ -14289,8 +14289,8 @@ impl LowerCtx {
                 name: decl.name.clone(),
             },
             span.clone(),
-            "`#[resource]` type must declare `fn close(self) { ... }` in a \
-             sibling inherent-impl block (`impl T { fn close(self) { ... } }`); \
+            "`#[resource]` type must declare `fn close(consume self) { ... }` in a \
+             sibling inherent-impl block (`impl T { fn close(consume self) { ... } }`); \
              the implicit drop contract dispatches to this method on every \
              scope-exit path",
         ));

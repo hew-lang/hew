@@ -59,7 +59,7 @@ fn ownership_markers_on_nominal_types_still_check_clean() {
         r"#[resource]
 type ResourceToken { id: i64 }
 impl ResourceToken {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 #[linear]

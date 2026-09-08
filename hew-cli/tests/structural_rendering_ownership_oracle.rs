@@ -17,7 +17,7 @@ const SOURCE: &str = r#"
 type Dq {}
 
 impl Dq {
-    fn close(self) {
+    fn close(consume self) {
         unsafe { hew_deque_free(self) };
         println("closed");
     }

@@ -3535,6 +3535,19 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_channel_recv_native( *mut HewChannelReceiver, *const HewWaker, *mut c_void, *const HewValueLayout, ) -> i32"
+      },
+      "symbol": "hew_channel_recv_native"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -3547,6 +3560,19 @@
         "wasm32-wasip1": "fn hew_channel_send_layout( *mut HewWasmChannelSender, *const c_void, *const HewValueLayout, )"
       },
       "symbol": "hew_channel_send_layout"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_channel_send_native( *mut HewChannelSender, *const HewWaker, *const c_void, *const HewValueLayout, ) -> i32"
+      },
+      "symbol": "hew_channel_send_native"
     },
     {
       "availability": [

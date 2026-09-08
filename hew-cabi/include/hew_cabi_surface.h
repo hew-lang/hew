@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1623u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1625u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1625] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -1325,6 +1325,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_channel_recv_native",
+     "{\"native\": \"fn hew_channel_recv_native( *mut HewChannelReceiver, "
+     "*const HewWaker, *mut c_void, *const HewValueLayout, ) -> i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_channel_send_layout",
      "{\"native\": \"fn hew_channel_send_layout( *mut HewChannelSender, *const "
      "c_void, *const HewValueLayout, )\", \"wasm32-wasip1\": \"fn "
@@ -1332,6 +1337,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "*const HewValueLayout, )\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_channel_send_native",
+     "{\"native\": \"fn hew_channel_send_native( *mut HewChannelSender, *const "
+     "HewWaker, *const c_void, *const HewValueLayout, ) -> i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_channel_sender_clone",
      "{\"native\": \"fn hew_channel_sender_clone( *mut HewChannelSender, ) -> "
      "*mut HewChannelSender\", \"wasm32-wasip1\": \"fn "

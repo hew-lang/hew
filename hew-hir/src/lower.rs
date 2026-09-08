@@ -7730,6 +7730,9 @@ struct LowerCtx {
     borrowed_element_for_loops: HashSet<SpanKey>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
     borrowed_element_index_reads: HashSet<SpanKey>,
+    /// `get` sites whose element has no semantic clone: `Some` carries a loan
+    /// of the slot the collection still owns.
+    borrowed_element_option_reads: HashSet<SpanKey>,
     /// `VecIter` cursor sites whose element has no semantic clone: `next()`
     /// moves each element out instead of copying it.
     owning_take_vec_cursors: HashSet<SpanKey>,
@@ -8413,6 +8416,7 @@ impl LowerCtx {
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
+            borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -21325,8 +21329,17 @@ impl LowerCtx {
                 args,
                 ..
             } if Self::semantic_collection_method(method).is_some() => {
-                let family = Self::semantic_collection_method(method)
+                let mut family = Self::semantic_collection_method(method)
                     .expect("matched semantic collection method");
+                // The checker admitted this read in borrow mode, so `Some`
+                // carries a loan of the slot the collection still owns.
+                if family == Family::Vector(VecValueOp::Get)
+                    && self
+                        .borrowed_element_option_reads
+                        .contains(&SpanKey::in_module(span, self.current_module_idx))
+                {
+                    family = Family::Vector(VecValueOp::GetBorrow);
+                }
                 let mut operands = vec![*receiver];
                 operands.extend(args);
                 self.collection_call_kind(family, operands, ty, span)

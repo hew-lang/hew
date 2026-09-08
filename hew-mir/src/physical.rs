@@ -527,6 +527,11 @@ pub enum PhysicalVectorOp {
     /// A loan of the element the vector still owns: the slot bytes are read
     /// without a clone and the result carries no release obligation.
     IndexBorrow,
+    /// `Some` carries a loan of the element the vector still owns; the result
+    /// carries no release obligation.
+    GetBorrow {
+        result: PhysicalVariantId,
+    },
     /// The consuming iterator's step: the first element moves out to the caller
     /// and the vector shrinks by one.
     TakeFirst {
@@ -548,6 +553,7 @@ impl PhysicalVectorOp {
             Self::Pop { .. } => VecValueOp::Pop,
             Self::Clear => VecValueOp::Clear,
             Self::IndexBorrow => VecValueOp::IndexBorrow,
+            Self::GetBorrow { .. } => VecValueOp::GetBorrow,
             Self::TakeFirst { .. } => VecValueOp::TakeFirst,
             Self::Slice => VecValueOp::Slice,
             Self::SliceFrom => VecValueOp::SliceFrom,
@@ -2211,6 +2217,38 @@ fn lower_function(
         }
     }
 
+    // A switch over a loaned scrutinee names it as the owner its payloads
+    // depend on: the arm's parameters are loans of the same region.
+    for block in &function.blocks {
+        let hew_sir::SemTerminator::SwitchVariant {
+            scrutinee, arms, ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        let source = lowerer.value(scrutinee.value)?;
+        if lowerer.storage[source.0 as usize].own != OwnKind::Guaranteed {
+            continue;
+        }
+        for arm in arms {
+            for field in &arm.fields {
+                let dest = lowerer.value(field.id)?;
+                if lowerer.storage[dest.0 as usize].own == OwnKind::Guaranteed {
+                    lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
+                }
+            }
+            for parameter in blocks_by_id(function, arm.target.target)
+                .map(|target| target.args.iter().map(|arg| arg.value).collect::<Vec<_>>())
+                .unwrap_or_default()
+            {
+                let parameter = lowerer.value(parameter)?;
+                if lowerer.storage[parameter.0 as usize].own == OwnKind::Guaranteed {
+                    lowerer.storage[parameter.0 as usize].borrow_parent = Some(source);
+                }
+            }
+        }
+    }
+
     let cfg = hew_sir::build_cfg_index(function);
     let blocks = function
         .blocks
@@ -3558,6 +3596,9 @@ impl FunctionLowerer<'_> {
                 },
                 VecValueOp::Clear => PhysicalVectorOp::Clear,
                 VecValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
+                VecValueOp::GetBorrow => PhysicalVectorOp::GetBorrow {
+                    result: self.variant_id(&value.ty)?,
+                },
                 VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
                     result: self.aggregate_id(&value.ty)?,
                 },
@@ -6784,7 +6825,10 @@ fn verify_terminator(
         } => {
             let scrutinee = slot(*scrutinee)?;
             let recipe = variant_glue(module, *glue)?;
-            if scrutinee.ty != recipe.ty || scrutinee.own != recipe.own {
+            // A loaned scrutinee reads the same descriptor without taking the
+            // recipe's release obligation.
+            let own_agrees = scrutinee.own == recipe.own || scrutinee.own == OwnKind::Guaranteed;
+            if scrutinee.ty != recipe.ty || !own_agrees {
                 return Err(PhysicalError::new(
                     "physical variant switch source disagrees with its glue recipe",
                 ));
@@ -6820,7 +6864,12 @@ fn verify_terminator(
                 }
                 for (field, expected) in arm.fields.iter().zip(&case.fields) {
                     let field = slot(*field)?;
-                    if field.ty != expected.ty || field.own != expected.own {
+                    // A loaned scrutinee hands its payloads out as loans of the
+                    // same region rather than as the recipe's owners.
+                    let own_agrees = field.own == expected.own
+                        || (scrutinee.own == OwnKind::Guaranteed
+                            && field.own == OwnKind::Guaranteed);
+                    if field.ty != expected.ty || !own_agrees {
                         return Err(PhysicalError::new(format!(
                             "physical variant switch tag {} payload disagrees with its recipe",
                             arm.variant
@@ -7318,7 +7367,8 @@ fn verify_vector_call(
         ));
     }
     match operation {
-        PhysicalVectorOp::Get { result: option } => {
+        PhysicalVectorOp::Get { result: option }
+        | PhysicalVectorOp::GetBorrow { result: option } => {
             let option = variant_glue(module, option)?;
             if &option.ty != result
                 || option.is_indirect

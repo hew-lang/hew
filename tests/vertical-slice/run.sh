@@ -706,6 +706,19 @@ expect_check_fail_contains \
     "cannot be reassigned" \
     "collection_borrow_rebind"
 
+# The borrowed `get` has the same two walls: its `Some` payload is a loan, so
+# consuming it is refused, and the loan it holds on the vector is live for the
+# match, so mutating the vector inside an arm is refused by name. The
+# accept-side twin is the `vector-get-borrowed` acceptance case.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/collection_get_borrow_consume.hew" \
+    "is borrowed here" \
+    "collection_get_borrow_consume"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/collection_get_borrow_mutate.hew" \
+    "borrowed by a live element loan" \
+    "collection_get_borrow_mutate"
+
 # Imported std.bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.
 run_accept_expect_stdout_contains \

@@ -1066,22 +1066,50 @@ fn check_function_with_context(
         types.insert(param.value, param.ty.clone());
         definitions.insert(param.value, (function.entry, DefinitionPoint::BlockEntry));
     }
+    // Values the lowering declared as loans. Each one's own kind is audited
+    // against its own producer; this index only says which *consumers* inherit
+    // a loan rather than an owner.
+    let loaned_values: HashSet<ValueId> = function
+        .params
+        .iter()
+        .filter(|param| param.own == crate::OwnKind::Guaranteed)
+        .map(|param| param.value)
+        .chain(function.blocks.iter().flat_map(|block| {
+            block
+                .args
+                .iter()
+                .filter(|arg| arg.own == crate::OwnKind::Guaranteed)
+                .map(|arg| arg.value)
+                .chain(block.ops.iter().flat_map(|op| {
+                    op.results
+                        .iter()
+                        .filter(|result| result.own == crate::OwnKind::Guaranteed)
+                        .map(|result| result.id)
+                }))
+        }))
+        .collect();
     // Blocks that receive a loan through their block arguments: the normal
-    // successor of a runtime call whose contract result is `Borrowed`. A loan's
-    // kind comes from the borrow, not from its type's class.
+    // successor of a runtime call whose contract result is `Borrowed`, and the
+    // arms of a switch over a loaned scrutinee. A loan's kind comes from the
+    // borrow, not from its type's class.
     let borrow_continuations: HashSet<BlockId> = function
         .blocks
         .iter()
-        .filter_map(|block| match &block.terminator {
+        .flat_map(|block| match &block.terminator {
             crate::SemTerminator::RtCall { family, normal, .. }
                 if matches!(
                     family.semantic_contract().map(|contract| contract.result),
                     Some(hew_types::RuntimeResultEffect::Borrowed(_))
                 ) =>
             {
-                Some(normal.target)
+                vec![normal.target]
             }
-            _ => None,
+            crate::SemTerminator::SwitchVariant {
+                scrutinee, arms, ..
+            } if loaned_values.contains(&scrutinee.value) => {
+                arms.iter().map(|arm| arm.target.target).collect()
+            }
+            _ => Vec::new(),
         })
         .collect();
     for block in &function.blocks {
@@ -1150,6 +1178,10 @@ fn check_function_with_context(
                     family.semantic_contract().map(|contract| contract.result),
                     Some(hew_types::RuntimeResultEffect::Borrowed(_))
                 )
+        ) || matches!(
+            &block.terminator,
+            crate::SemTerminator::SwitchVariant { scrutinee, .. }
+                if loaned_values.contains(&scrutinee.value)
         );
         block.terminator.visit_results(|result| {
             record_value(function, result.id, &mut values, &mut diagnostics);

@@ -6584,6 +6584,9 @@ impl Checker {
                     }
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                // A trait object stays refused: dispatching on a loaned `dyn`
+                // payload has no working lowering yet, so the consuming
+                // iterator remains the trait-object surface.
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -6602,10 +6605,27 @@ impl Checker {
                         canonical_receiver: "Vec".to_string(),
                     },
                 );
-                // Records the `hew_vec_get_clone` resolved call through the
-                // shared Vec authority. Function/closure elements fail closed,
-                // so no resolved call is recorded.
+                // D432: an element with no clone is read as a loan of the slot
+                // the vector still owns, so `Some` carries the loan and the
+                // owning removal stays the way to move an element out.
+                let Some(mode) = self.vec_iteration_element_mode(&resolved_elem, span) else {
+                    return Ty::Error;
+                };
+                // Records the resolved call through the shared Vec authority.
                 self.record_resolved_vec_call("get", &resolved_elem, span);
+                if mode == super::types::VecIterationMode::Borrow {
+                    let key = SpanKey::in_module(span, self.current_module_idx);
+                    self.borrowed_element_option_reads.insert(key);
+                    if let Some(call) = self
+                        .resolved_calls
+                        .get_mut(&SpanKey::in_module(span, self.current_module_idx))
+                    {
+                        call.method_target.symbol_name =
+                            crate::RuntimeCallFamily::Vector(crate::VecValueOp::GetBorrow)
+                                .c_symbol()
+                                .to_string();
+                    }
+                }
                 // `<Vec<T> as Index>::Output` is `T`, so the projected return
                 // is `Option<T>`.
                 Ty::option(resolved_elem)

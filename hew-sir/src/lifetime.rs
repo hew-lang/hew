@@ -424,6 +424,35 @@ impl<'a> Flow<'a> {
                 local_borrows.insert(parameter);
             }
         }
+        // A loaned scrutinee's variant payloads name the same region: the arm
+        // reads them and ending the scrutinee's loan is what releases it.
+        for block in &function.blocks {
+            let crate::SemTerminator::SwitchVariant {
+                scrutinee, arms, ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            if !guaranteed.contains(&scrutinee.value) {
+                continue;
+            }
+            // Only the arm's block parameters are the names the body reads;
+            // the edge values are the switch's own transfer form.
+            let owner = PlaceBase::Value(scrutinee.value);
+            for parameter in arms
+                .iter()
+                .flat_map(|arm| {
+                    function
+                        .blocks
+                        .iter()
+                        .filter(move |target| target.id == arm.target.target)
+                })
+                .flat_map(|target| target.args.iter().map(|arg| arg.value))
+            {
+                parents.insert(parameter, owner);
+                local_borrows.insert(parameter);
+            }
+        }
         let mut dependents = BTreeMap::<_, Vec<_>>::new();
         for (&value, &base) in &parents {
             dependents
@@ -1541,7 +1570,10 @@ impl<'a> Flow<'a> {
         let mut successors = Vec::with_capacity(arms.len());
         for arm in arms {
             let mut arm_state = state.clone();
-            self.access(id, scrutinee.value, true, &mut arm_state, emit);
+            // A loaned scrutinee is read, not consumed: its payloads name the
+            // same loan rather than taking ownership from it.
+            let consume = !self.guaranteed.contains(&scrutinee.value);
+            self.access(id, scrutinee.value, consume, &mut arm_state, emit);
             for field in &arm.fields {
                 self.define(id, field.id, &mut arm_state, emit);
             }

@@ -1,0 +1,22 @@
+// `v.get(i)` over a clone-free element hands `Some` a loan of the slot the
+// vector still owns. Consuming that payload would release an element the
+// vector still holds, so it meets the consume wall.
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    var v: Vec<Tok> = Vec.new();
+    v.push(Tok { id: 1 });
+    match v.get(0) {
+        Option.Some(e) => e.close(),
+        Option.None => println("none"),
+    }
+}

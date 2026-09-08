@@ -8,11 +8,14 @@ actor Gate {
     mailbox 1,
     var done: i64 = 0,
 
-    receive fn hold(ms: i64) -> i64 {
+    // A one-way handler the mailbox view can submit to, and a value-returning
+    // one the completion views call.
+    receive fn occupy(ms: i64) {
         sleep(ms * 1ms);
         done = done + 1;
-        done
     }
+
+    receive fn tally() -> i64 { done }
 }
 
 fn describe(problem: ActorError<Never>) -> string {
@@ -35,38 +38,31 @@ fn describe(problem: ActorError<Never>) -> string {
 fn main() {
     let gate = spawn Gate();
     let refusing = policy(gate, on_full: .Reject);
-    let waiting = policy(gate, on_full: .Wait);
-    scope {
-        // One call occupies the actor's turn and a second fills its single
-        // mailbox seat, so a third has nowhere to go.
-        let busy = fork gate.hold(400);
-        let queued = fork gate.hold(0);
-        sleep(120ms);
-        match refusing.hold(0) {
-            .Ok(v) => println(v),
-            .Err(problem) => println(describe(problem)),
-        }
-        match await busy {
-            .Ok(v) => println(v),
-            .Err(problem) => println(describe(problem)),
-        }
-        match await queued {
-            .Ok(v) => println(v),
-            .Err(problem) => println(describe(problem)),
-        }
+    let inbox = mailbox(gate, on_full: .Wait);
+    // Two accepted submissions: one the actor is running for a long turn, one
+    // occupying its single mailbox seat. Both return only once accepted, so
+    // the seat is provably taken before the next call is made.
+    match inbox.occupy(2000) {
+        .Ok(_) => {},
+        .Err(_) => panic("the first submission was refused"),
     }
-    // Nothing was accepted, so the same call is safe to make again; the queue
-    // has drained, so it is admitted and the handler's own count continues.
-    match refusing.hold(0) {
+    match inbox.occupy(0) {
+        .Ok(_) => {},
+        .Err(_) => panic("the queued submission was refused"),
+    }
+    // No seat left while the long turn runs, so the refusing view refuses.
+    match refusing.tally() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
     }
-    // A `.Wait` view completes exactly as the bare handle does.
-    match waiting.hold(0) {
+    // A bare-handle call waits for a seat instead, and completes.
+    match gate.tally() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
     }
-    match gate.hold(0) {
+    // Nothing was accepted from the refusal, so the same call is safe to make
+    // again; the queue has drained and it is admitted.
+    match refusing.tally() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
     }

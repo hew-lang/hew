@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "channel payload-with-owned-heap\nscope joined\nafter second\n"
+stdout = "channel payload-with-owned-heap\nslow finished\nscope joined\nafter second\n"
 exit = 0

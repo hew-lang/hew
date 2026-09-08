@@ -6,6 +6,9 @@ import std.channel.channel;
 
 fn slow() -> i64 {
     sleep(60ms);
+    // Printed only if the losing task runs to completion. A cancelled task
+    // would join too, so this line is what separates joined from cancelled.
+    println("slow finished");
     return 7;
 }
 

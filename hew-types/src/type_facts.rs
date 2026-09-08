@@ -1338,6 +1338,8 @@ mod tests {
                 | BuiltinType::MonitorError
                 | BuiltinType::CloseError
                 | BuiltinType::LocalPid
+                // A lambda actor's handle is a pid under another spelling.
+                | BuiltinType::LambdaPid
                 | BuiltinType::HewActor => Some((ValueClass::BitCopy, CloneKind::Bits)),
                 // `Option<i64>` / `Result<i64, string>` join their payloads.
                 BuiltinType::Option => Some((ValueClass::BitCopy, CloneKind::Bits)),
@@ -1352,7 +1354,7 @@ mod tests {
                 }
                 BuiltinType::CrashInfo => Some((ValueClass::CowValue, CloneKind::FieldWise)),
                 BuiltinType::CrashNotification => Some((ValueClass::BitCopy, CloneKind::Bits)),
-                BuiltinType::Rc | BuiltinType::Weak | BuiltinType::LambdaPid => {
+                BuiltinType::Rc | BuiltinType::Weak => {
                     Some((ValueClass::AffineResource, CloneKind::Retain))
                 }
                 BuiltinType::Generator
@@ -1442,7 +1444,10 @@ mod tests {
             // exception rather than a hole the table can grow into.
             if matches!(
                 info.kind,
-                BuiltinType::LocalPid | BuiltinType::HewActor | BuiltinType::BoxedActor
+                BuiltinType::LocalPid
+                    | BuiltinType::LambdaPid
+                    | BuiltinType::HewActor
+                    | BuiltinType::BoxedActor
             ) {
                 assert_eq!(BuiltinTypeMarker::Resource, info.kind.marker());
                 continue;

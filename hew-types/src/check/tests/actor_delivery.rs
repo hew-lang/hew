@@ -117,9 +117,11 @@ fn statement_position_delivery_outcomes_are_refused() {
         ("mailbox(d, on_full: .Reject).tell(1);", "SendFailure"),
         ("d.tell(1);", "ActorError"),
         ("d.process(5);", "ActorError"),
+        // A call on a lambda actor's handle is the completion call, so its
+        // dropped outcome is the same envelope a named actor's call drops.
         (
             "let log = actor |n: i64| { let _ = n; }; log(5);",
-            "SendError",
+            "ActorError",
         ),
     ] {
         let source = format!("{ACTOR} fn main() {{ let d = spawn Doubler; {body} }}");

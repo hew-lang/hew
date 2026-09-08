@@ -2916,6 +2916,10 @@ struct BindingLoans {
     /// loop is defined by ops that do not dominate the code after it, so it
     /// only ends early at the same loop depth.
     loop_depth: usize,
+    /// The conditional nesting the binding was declared in. Ending a loan
+    /// inside a branch would leave it live on the sibling path, so it only
+    /// ends early where control has not diverged since.
+    branch_depth: usize,
 }
 
 struct MatchExit {
@@ -3077,6 +3081,8 @@ struct Builder<'hir, 'service> {
     binding_loans: Vec<BindingLoans>,
     /// Scope loans already ended ahead of their scope's exit.
     ended_loans: std::collections::HashSet<ValueId>,
+    /// Open conditional constructs: `if`, and every form of `match`.
+    branch_depth: usize,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -3216,6 +3222,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             scope_loan_floors: vec![0],
             binding_loans: Vec::new(),
             ended_loans: std::collections::HashSet::new(),
+            branch_depth: 0,
             scopes: vec![Vec::new()],
             source_bindings,
             params,
@@ -4217,6 +4224,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 root,
                 loans,
                 loop_depth: self.loops.len(),
+                branch_depth: self.branch_depth,
             });
         }
         self.bind_source_value(binding, value)
@@ -6146,6 +6154,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut exits = Vec::new();
 
         let borrowed_scrutinee = self.value_own_kind(scrutinee) == Some(OwnKind::Guaranteed);
+        self.branch_depth += 1;
         for branch in branches {
             self.restore_control_state(&inherited);
             self.current = branch.block;
@@ -6250,6 +6259,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
 
+        self.branch_depth -= 1;
         let result = self.merge_match_exits(exits, &result_ty)?;
         if self.scope_loans.len() > scrutinee_loan_floor {
             let loans = self.scope_loans.split_off(scrutinee_loan_floor);
@@ -7087,13 +7097,33 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// they borrow is taken. The take is past the binding's last use, so the
     /// loan ends here; a read of the binding afterwards is refused by name.
     fn end_binding_loans_on(&mut self, root: crate::OwnerRoot) -> Result<(), String> {
-        let ending: Vec<ValueId> = self
-            .binding_loans
-            .iter()
-            .filter(|group| group.root == root && group.loop_depth == self.loops.len())
-            .flat_map(|group| group.loans.iter().copied())
-            .filter(|loan| !self.ended_loans.contains(loan))
-            .collect();
+        let mut ending = Vec::new();
+        for group in &self.binding_loans {
+            if group.root != root {
+                continue;
+            }
+            // A loan its scope already ended is not this take's concern.
+            let live: Vec<ValueId> = group
+                .loans
+                .iter()
+                .copied()
+                .filter(|loan| !self.ended_loans.contains(loan) && self.scope_loans.contains(loan))
+                .collect();
+            if live.is_empty() {
+                continue;
+            }
+            // Ending it inside a branch or a loop would leave it live on the
+            // sibling path, so a take there meets the loan instead.
+            if group.loop_depth != self.loops.len() || group.branch_depth != self.branch_depth {
+                return Err(
+                    "E_OWN_CONSUME_BORROWED: this collection is borrowed by a live element \
+                     loan; the loop or read holding it must end before the collection is \
+                     mutated or drained"
+                        .to_string(),
+                );
+            }
+            ending.extend(live);
+        }
         if ending.is_empty() {
             return Ok(());
         }
@@ -8681,6 +8711,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
 
         let before = self.control_state();
+        // Both bodies are conditional paths: a loan may not end inside one.
+        self.branch_depth += 1;
         self.current = then_block;
         self.lower_discarded_expr(then_expr)?;
         let then_state = self.is_open().then(|| self.control_state());
@@ -8691,6 +8723,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.lower_discarded_expr(else_expr)?;
         }
         let else_state = self.is_open().then(|| self.control_state());
+        self.branch_depth -= 1;
 
         match (then_state, else_state) {
             (Some(then_state), Some(else_state)) => {
@@ -8731,6 +8764,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
         let before = self.control_state();
         let mut exits = Vec::new();
+        self.branch_depth += 1;
         for (block, expression) in [(then_block, then_expr), (else_block, else_expr)] {
             self.restore_control_state(&before);
             self.current = block;
@@ -8757,6 +8791,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 result: Some(Operand { value }),
             });
         }
+        self.branch_depth -= 1;
         self.merge_match_exits(exits, &join_ty)?
             .ok_or_else(|| "divergent if expression cannot produce an SSA value".to_string())
     }

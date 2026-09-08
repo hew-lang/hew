@@ -727,6 +727,10 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/collection_get_borrow_let_mutate.hew" \
     "the loan ended there and cannot be read again" \
     "collection_get_borrow_let_mutate"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/collection_get_borrow_branch_drain.hew" \
+    "borrowed by a live element loan" \
+    "collection_get_borrow_branch_drain"
 
 # Imported std.bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.

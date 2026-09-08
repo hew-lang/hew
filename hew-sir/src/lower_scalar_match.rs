@@ -19,6 +19,8 @@ impl Builder<'_, '_> {
         if arms.is_empty() {
             return Err("scalar match has no source arms".to_string());
         }
+        // Every arm is a conditional path: a loan may not end inside one.
+        self.branch_depth += 1;
         let scrutinee_ty = self.ty(&scrutinee.ty);
         let selected = Operand {
             value: lower_initial_value_transfer(
@@ -130,6 +132,7 @@ impl Builder<'_, '_> {
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::Unreachable)?;
         }
+        self.branch_depth -= 1;
         self.merge_match_exits(exits, &result_ty)
     }
 

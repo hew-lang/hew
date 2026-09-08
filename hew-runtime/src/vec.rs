@@ -2789,18 +2789,24 @@ pub unsafe extern "C" fn hew_vec_get_clone(
     }
 }
 
-/// Copy the bytes of one descriptor-owned element into `out` without cloning
-/// it and without changing the Vec's length.
+/// Copy the bytes of one element into `out` without cloning it and without
+/// changing the Vec's length.
 ///
 /// This is the borrowed element read (D432): the Vec keeps ownership of the
 /// slot and `out` is a readable alias of it, valid only while the Vec is not
 /// mutated or reallocated. The compiler proves that window with a loan on the
 /// receiver, and checks the index before calling.
 ///
+/// Every element class copies the same way, because a borrow acquires nothing:
+/// a string element aliases the same `HewString` with no retain, an owned
+/// element aliases the same heap with no clone thunk, and a scalar's bits are
+/// their own value. `elem_size` is the descriptor size for a Vec that has one
+/// and the requested size otherwise, so one path covers all three.
+///
 /// # Safety
 ///
-/// `v` must be an owned-element Vec and `out` must point to at least
-/// `descriptor.size` writable bytes.
+/// `v` must be a valid `HewVec` and `out` must point to at least
+/// `elem_size` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_borrow_owned(
     v: *const HewVec,
@@ -2808,14 +2814,12 @@ pub unsafe extern "C" fn hew_vec_borrow_owned(
     out: *mut core::ffi::c_void,
 ) -> bool {
     cabi_guard!(v.is_null() || out.is_null(), false);
-    // SAFETY: null pointers were rejected and owned_descriptor validates the
-    // descriptor-backed representation.
+    // SAFETY: null pointers were rejected above.
     unsafe {
         if index < 0 || index as usize >= (*v).len {
             return false;
         }
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
+        let elem_size = (*v).elem_size;
         let src = (*v).data.add(index as usize * elem_size);
         core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
         true

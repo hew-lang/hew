@@ -1227,7 +1227,7 @@ fn needless_range_loop_flags_index_access() {
 }
 
 #[test]
-fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
+fn needless_range_loop_flagged_when_vec_element_lacks_semantic_clone() {
     let (errors, warnings) = parse_and_check(
         r"
         fn drain(inputs: Vec<Stream<i64>>) {
@@ -1243,13 +1243,14 @@ fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
-        0,
-        "the lint must not suggest direct Vec iteration when VecIter cannot clone the element: {warnings:?}"
+        1,
+        "a clone-free element iterates by borrow, which is what `inputs[i]` already \
+         reads, so the direct-iteration rewrite compiles: {warnings:?}"
     );
 }
 
 #[test]
-fn needless_range_loop_not_flagged_for_unbounded_generic_element() {
+fn needless_range_loop_flagged_for_unbounded_generic_element() {
     let (errors, warnings) = parse_and_check(
         r"
         fn scan<T>(xs: Vec<T>) -> i64 {
@@ -1268,9 +1269,9 @@ fn needless_range_loop_not_flagged_for_unbounded_generic_element() {
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
-        0,
-        "an unbounded `T` has no proven clone, so the direct-iteration rewrite is not \
-         guaranteed to compile at every monomorphisation: {warnings:?}"
+        1,
+        "an unbounded `T` iterates by borrow at every monomorphisation, so the \
+         direct-iteration rewrite compiles: {warnings:?}"
     );
 }
 
@@ -1300,7 +1301,7 @@ fn needless_range_loop_flags_clone_bounded_generic_element() {
 }
 
 #[test]
-fn needless_range_loop_not_flagged_for_unbounded_generic_inside_container() {
+fn needless_range_loop_flagged_for_unbounded_generic_inside_container() {
     let (errors, warnings) = parse_and_check(
         r"
         fn scan<T>(xs: Vec<Option<T>>) -> i64 {
@@ -1319,8 +1320,39 @@ fn needless_range_loop_not_flagged_for_unbounded_generic_inside_container() {
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
+        1,
+        "an unbounded `T` nested in the element type iterates by borrow too: {warnings:?}"
+    );
+}
+
+/// Negative control for the three cases above: `Vec<dyn Trait>` is the one
+/// element the direct loop refuses, so it keeps its indexed walk.
+#[test]
+fn needless_range_loop_not_flagged_for_trait_object_element() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        trait Shape {
+            fn area(self) -> i64;
+        }
+
+        fn total(shapes: Vec<dyn Shape>) -> i64 {
+            var sum = 0;
+            for i in 0..shapes.len() {
+                sum = sum + shapes[i].area();
+            }
+            sum
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the indexed trait-object walk must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
         0,
-        "an unbounded `T` nested in the element type is equally unproven: {warnings:?}"
+        "direct `for` over `Vec<dyn Trait>` is refused in favour of `into_iter()`, \
+         so no rewrite is suggested: {warnings:?}"
     );
 }
 

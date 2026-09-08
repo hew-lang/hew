@@ -1,0 +1,53 @@
+// A generic template picks its element mode from the bound, not from an
+// instantiation it cannot see: an unbounded `T` is a resource at some
+// monomorphisation, so `for value in values` binds each element by borrow at
+// every one. The same template runs over a clone-free `#[resource]` element
+// and over `i64`, and both vectors are whole afterwards.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+}
+
+fn count_all<T>(values: Vec<T>) -> i64 {
+    var n = 0;
+    for _ in values {
+        n = n + 1;
+    }
+    return n
+}
+
+fn main() -> i64 {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "t", id: 1 });
+    tokens.push(Token { label: "t", id: 2 });
+
+    var numbers: Vec<i64> = Vec.new();
+    numbers.push(10);
+    numbers.push(20);
+    numbers.push(30);
+
+    println(f"tokens={count_all(tokens)}");
+    println(f"numbers={count_all(numbers)}");
+
+    // A borrowed pass leaves every slot in place, so both vectors still hold
+    // their elements and the scalar one still reads back its values.
+    var sum = 0;
+    for value in numbers {
+        sum = sum + value;
+    }
+    println(f"sum={sum}");
+
+    while !tokens.is_empty() {
+        let token = tokens.pop();
+        token.close();
+    }
+    println("drained");
+    0
+}

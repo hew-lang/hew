@@ -1,0 +1,11 @@
+[[case]]
+id = "generic-clone-free-iteration"
+intent = "A generic function iterating `Vec<T>` binds each element by borrow for an unbounded `T`, and the same template runs over a clone-free `#[resource]` element and over `i64` with both vectors intact afterwards."
+source = "cases/generic-clone-free-iteration.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "tokens=2\nnumbers=3\nsum=60\nclose t2\nclose t1\ndrained\n"
+exit = 0
+stderr = ""

@@ -3,12 +3,11 @@
 //! Flags `for i in 0 .. xs.len() { ... }` loops where the index `i` is used
 //! for nothing but indexing `xs` (`xs[i]` or `xs.get(i)`), so the loop is
 //! exactly equivalent to iterating the collection directly
-//! (`for x in xs { ... }`) for elements with semantic clone support.
+//! (`for x in xs { ... }`).
 //!
-//! The clone qualifier is load-bearing: direct iteration clones each element
-//! out through `VecIter::next`, so an element with no semantic clone (a
-//! resource handle, or a generic parameter with no `Clone` bound to prove one)
-//! gets no suggestion — the rewrite would not compile.
+//! A clone-free element iterates by borrow (D432), which is what `xs[i]` reads
+//! anyway, so the suggestion holds for it too. A `Vec<dyn Trait>` is the one
+//! exclusion: direct `for` over it is refused in favour of `into_iter()`.
 //!
 //! This is the compiler-side analogue of Clippy's `needless_range_loop`: a
 //! *use* check, not a global dataflow analysis. It runs on the typed AST in
@@ -282,14 +281,14 @@ fn try_flag(
     };
     // `coll` must be a collection where direct iteration is executable and
     // yields exactly the elements that `coll[i]` / `coll.get(i)` produce.
-    // Inside a generic template that is a question about the element type's
-    // declared bounds, not about the unsubstituted parameter — see
-    // `Checker::supports_direct_vec_iteration`.
+    // Since D432 that is every Vec element except a trait object: a clone-free
+    // element iterates by borrow, exactly as `coll[i]` reads it.
     let Some(coll_ty) = ctx.resolved_type_at(&receiver.1) else {
         return;
     };
     if !is_lintable_collection(&coll_ty)
-        || !vec_element_type(&coll_ty).is_some_and(|elem| ctx.supports_direct_vec_iteration(elem))
+        || vec_element_type(&coll_ty)
+            .is_none_or(|elem| matches!(elem, Ty::Error | Ty::TraitObject { .. }))
     {
         return;
     }

@@ -113,6 +113,19 @@ struct LocalHandleState {
     controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
     #[cfg(not(target_arch = "wasm32"))]
     supervisor_tokens: HashMap<usize, HewLocalPidId>,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor_role_tokens: HashMap<(HewLocalPidId, u32), HewLocalPidId>,
+}
+
+/// An internal owner path used by `ChildRef`, never an incarnation `LocalPid`.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct SupervisorRole {
+    root: HewLocalPidId,
+    owner: HewLocalPidId,
+    slot: u32,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -754,6 +767,30 @@ impl LocalHandles {
         runtime_id: RuntimeId,
         token: HewLocalPidId,
     ) -> Option<SupervisorPin> {
+        let (root, path) = self.state.access(|state| {
+            let mut current = token;
+            let mut path = Vec::new();
+            while let Some(role) = state.supervisor_roles.get(&current) {
+                path.push(role.slot);
+                current = role.owner;
+            }
+            (current, path)
+        });
+        let mut pin = self.pin_direct_supervisor(runtime_id, root)?;
+        for slot in path.into_iter().rev() {
+            let child = crate::supervisor::nested_child_token(pin.supervisor(), slot)?;
+            let child_pin = self.pin_direct_supervisor(runtime_id, child)?;
+            pin = child_pin;
+        }
+        Some(pin)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pin_direct_supervisor(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> Option<SupervisorPin> {
         let control = self.state.access(|state| match state.routes.get(&token) {
             Some(Route::Supervisor {
                 runtime_id: owner,
@@ -764,6 +801,34 @@ impl LocalHandles {
             _ => None,
         })?;
         control.try_pin()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supervisor_role_owner(
+        &self,
+        runtime_id: RuntimeId,
+        owner: HewLocalPidId,
+        slot: u32,
+    ) -> Option<HewLocalPidId> {
+        self.state.access(|state| {
+            let root = state
+                .supervisor_roles
+                .get(&owner)
+                .map_or(owner, |role| role.root);
+            let control = state.controls.get(&root)?;
+            if control.runtime_id() != runtime_id || !state.routes.contains_key(&root) {
+                return None;
+            }
+            if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot)) {
+                return Some(*token);
+            }
+            let token = allocate()?;
+            state
+                .supervisor_roles
+                .insert(token, SupervisorRole { root, owner, slot });
+            state.supervisor_role_tokens.insert((owner, slot), token);
+            Some(token)
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -804,6 +869,12 @@ impl LocalHandles {
                 .is_some_and(|stored| std::ptr::eq(stored.as_ref(), control));
             if matches {
                 state.controls.remove(&control.direct_id());
+                state
+                    .supervisor_roles
+                    .retain(|_, role| role.root != control.direct_id());
+                state
+                    .supervisor_role_tokens
+                    .retain(|_, token| state.supervisor_roles.contains_key(token));
             }
         });
     }
@@ -829,7 +900,8 @@ impl LocalHandles {
                 .routes
                 .values()
                 .filter(|route| matches!(route, Route::Supervisor { .. }))
-                .count();
+                .count()
+                + state.supervisor_roles.len();
             (routes, state.controls.len())
         })
     }
@@ -1005,6 +1077,17 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
     runtime
         .local_handles
         .pin_supervisor(runtime.runtime_id(), token)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_role_owner(owner: HewLocalPidId, slot: u32) -> HewLocalPidId {
+    let Some(runtime) = crate::runtime::rt_current_opt() else {
+        return HewLocalPidId::INVALID;
+    };
+    runtime
+        .local_handles
+        .supervisor_role_owner(runtime.runtime_id(), owner, slot)
+        .unwrap_or(HewLocalPidId::INVALID)
 }
 
 /// Observe the stable control even after close has retired the direct route.

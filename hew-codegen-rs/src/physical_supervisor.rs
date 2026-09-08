@@ -38,17 +38,6 @@ fn restart_code(policy: SemRestartPolicy) -> u64 {
     }
 }
 
-/// The supervised role a child occupies, refusing what has no native
-/// realization yet.
-fn actor_role(supervisor: &SemSupervisor, child: usize) -> CodegenResult<()> {
-    match supervisor.children[child].role {
-        SemSupervisedRole::Actor(_) => Ok(()),
-        SemSupervisedRole::Supervisor(_) => Err(CodegenError::FailClosed(
-            "a nested supervisor child needs its own supervised-role realization".into(),
-        )),
-    }
-}
-
 /// The config allocation's LLVM shape, in declaration order.
 fn config_type<'ctx>(
     module: &PhysicalModule,
@@ -81,7 +70,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         for supervisor in &self.module.supervisors {
             self.emit_supervisor_config_drop(supervisor)?;
             for child in 0..supervisor.children.len() {
-                actor_role(supervisor, child)?;
                 self.emit_supervisor_child_spawn(supervisor, child)?;
             }
             self.emit_supervisor_children(supervisor)?;
@@ -93,9 +81,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     /// adapter that produces each incarnation.
     fn emit_supervisor_children(&self, supervisor: &SemSupervisor) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let entry_ty = self
-            .ctx
-            .struct_type(&[self.ctx.i32_type().into(), ptr.into()], false);
+        let entry_ty = self.ctx.struct_type(
+            &[
+                self.ctx.i32_type().into(),
+                self.ctx.i32_type().into(),
+                ptr.into(),
+            ],
+            false,
+        );
         let mut entries = Vec::new();
         for (index, child) in supervisor.children.iter().enumerate() {
             let spawn = self
@@ -109,6 +102,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     self.ctx
                         .i32_type()
                         .const_int(restart_code(child.restart), false)
+                        .into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(
+                            u64::from(matches!(child.role, SemSupervisedRole::Supervisor(_))),
+                            false,
+                        )
                         .into(),
                     spawn.as_global_value().as_pointer_value().into(),
                 ]),
@@ -290,10 +290,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::SupervisorSpawn(id) => {
                 self.emit_supervisor_spawn(*id, sources, result).map(Some)
             }
-            ActorOperation::SupervisorChild { supervisor, child } => self
+            ActorOperation::SupervisorChild {
+                supervisor, child, ..
+            } => self
                 .emit_supervisor_child(*supervisor, *child, sources, result, false)
                 .map(Some),
-            ActorOperation::SupervisorAwaitRestart { supervisor, child } => self
+            ActorOperation::SupervisorAwaitRestart {
+                supervisor, child, ..
+            } => self
                 .emit_supervisor_child(*supervisor, *child, sources, result, true)
                 .map(Some),
             ActorOperation::SupervisorStop(_) => self.emit_supervisor_stop(sources).map(Some),
@@ -446,7 +450,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         await_restart: bool,
     ) -> CodegenResult<IntValue<'ctx>> {
         let supervisor = self.supervisor(id)?;
-        actor_role(supervisor, child as usize)?;
         let [source] = sources else {
             return Err(CodegenError::FailClosed(
                 "child lookup requires one supervisor handle".into(),
@@ -457,13 +460,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let slot = supervisor
             .slot(child as usize)
             .ok_or_else(|| CodegenError::FailClosed("declared child has no runtime slot".into()))?;
-        let token = self.load(*source, "role.supervisor")?;
+        let token = self.load_supervisor_owner(*source)?;
         if await_restart {
             let wait = get_or_declare_external(
                 self.llvm,
                 "hew_supervisor_native_await_restart",
                 self.ctx.void_type().fn_type(
-                    &[token.get_type().into(), self.ctx.i32_type().into()],
+                    &[
+                        token.get_type().into(),
+                        self.ctx.i32_type().into(),
+                        self.ctx.i32_type().into(),
+                    ],
                     false,
                 ),
             )?;
@@ -473,6 +480,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     &[
                         token.into(),
                         self.ctx.i32_type().const_int(u64::from(slot), false).into(),
+                        self.ctx
+                            .i32_type()
+                            .const_int(
+                                u64::from(matches!(
+                                    supervisor.children[child as usize].role,
+                                    SemSupervisedRole::Supervisor(_)
+                                )),
+                                false,
+                            )
+                            .into(),
                     ],
                     "",
                 )
@@ -497,6 +514,43 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_store(key, self.ctx.i32_type().const_int(u64::from(slot), false))
             .llvm_ctx("record the role's slot")?;
         Ok(self.ctx.i32_type().const_zero())
+    }
+
+    /// A nested projection retains its complete owner path instead of resolving
+    /// the enclosing supervisor to an incarnation during field access.
+    fn load_supervisor_owner(&self, source: StorageId) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let owner = self.load(source, "role.supervisor")?;
+        if self
+            .storage(source)?
+            .ty
+            .is_builtin(hew_types::BuiltinType::ChildRef)
+        {
+            let owner = owner.into_struct_value();
+            let handle = self
+                .builder
+                .build_extract_value(owner, 0, "role.owner")
+                .llvm_ctx("read the enclosing supervisor role")?;
+            let slot = self
+                .builder
+                .build_extract_value(owner, 1, "role.owner.slot")
+                .llvm_ctx("read the enclosing supervisor slot")?;
+            let compose = get_or_declare_external(
+                self.llvm,
+                "hew_supervisor_native_role_owner",
+                handle
+                    .into_int_value()
+                    .get_type()
+                    .fn_type(&[handle.get_type().into(), slot.get_type().into()], false),
+            )?;
+            self.builder
+                .build_call(compose, &[handle.into(), slot.into()], "role.path")
+                .llvm_ctx("retain the enclosing supervisor role path")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("role composition returned void".into()))
+        } else {
+            Ok(owner)
+        }
     }
 
     /// `supervisor_stop(sup)`: stop every child, then the supervisor.

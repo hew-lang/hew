@@ -769,6 +769,12 @@ impl Builder<'_, '_> {
                 if !closing
                     && super::supervisor::declaration(self.service.module, &target_ty).is_some()
                 {
+                    if target_ty.is_builtin(hew_types::BuiltinType::ChildRef) {
+                        return Err(
+                            "observing a nested supervisor role needs its role lifecycle contract"
+                                .into(),
+                        );
+                    }
                     let supervisor = self.service.require_supervisor(&target_ty)?;
                     return Ok((
                         crate::ActorOperation::SupervisorAwaitClosed(supervisor),

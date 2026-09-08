@@ -543,12 +543,12 @@ pub enum ActorOperation {
     /// through its spawn callable and start supervising. The result is the
     /// supervisor's handle.
     SupervisorSpawn(crate::SupervisorId),
-    /// Resolve one declared child: an actor child yields its stable role, a
-    /// nested supervisor its current handle. A dead occupant never yields a
-    /// live-looking handle.
+    /// Produce one declared child's stable role, composing the owner role
+    /// when the supervisor is itself a nested child.
     SupervisorChild {
         supervisor: crate::SupervisorId,
         child: u32,
+        owner_is_role: bool,
     },
     /// Stop the supervisor and every child; each child's stop hooks run before
     /// its terminal cleanup.
@@ -561,6 +561,7 @@ pub enum ActorOperation {
     SupervisorAwaitRestart {
         supervisor: crate::SupervisorId,
         child: u32,
+        owner_is_role: bool,
     },
 }
 
@@ -599,12 +600,23 @@ impl ActorOperation {
             Self::SupervisorSpawn(_) => {
                 consume(supervisor.config.clone(), supervisor.handle_ty.clone())
             }
-            Self::SupervisorChild { child, .. } | Self::SupervisorAwaitRestart { child, .. } => {
-                consume(
-                    vec![supervisor.handle_ty.clone()],
-                    supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
-                )
+            Self::SupervisorChild {
+                child,
+                owner_is_role,
+                ..
             }
+            | Self::SupervisorAwaitRestart {
+                child,
+                owner_is_role,
+                ..
+            } => consume(
+                vec![if *owner_is_role {
+                    supervisor.child_ref_ty()
+                } else {
+                    supervisor.handle_ty.clone()
+                }],
+                supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
+            ),
             _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
         })
     }

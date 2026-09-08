@@ -7168,11 +7168,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// a field chain therefore protects its root without copying intermediate
     /// owning records. Whole-value operands already have the call's borrow
     /// boundary and do not need an additional projection loan.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one borrow boundary covers bindings, projections and computed supervisor roles"
+    )]
     fn lower_borrowed_read(
         &mut self,
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
     ) -> Result<Operand, String> {
+        // Declared child access computes a stable role; it does not borrow a
+        // field from the supervisor handle's physical representation.
+        if self
+            .service
+            .module
+            .supervisor_child_slots
+            .contains_key(&expr.site)
+        {
+            return self.lower_expr(expr).map(|value| Operand { value });
+        }
         if let Some(place) = self.expression_projection(expr)? {
             let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
                 == OwnKind::Owned;

@@ -1,0 +1,80 @@
+actor Counter {
+    var value: i64 = 0,
+    receive fn put(next: i64) { value = next; }
+    receive fn get() -> i64 { value }
+    receive fn fail() { panic("restart mixed child"); }
+}
+
+supervisor Branch {
+    intensity: 1 within 60s,
+    child leaf: Counter,
+}
+
+supervisor All {
+    strategy: one_for_all,
+    intensity: 5 within 60s,
+    child before: Counter,
+    child branch: Branch,
+    child after: Counter,
+}
+
+supervisor Rest {
+    strategy: rest_for_one,
+    intensity: 5 within 60s,
+    child before: Counter,
+    child branch: Branch,
+    child after: Counter,
+}
+
+fn mark(before: ChildRef<Counter>, leaf: ChildRef<Counter>, after: ChildRef<Counter>) {
+    before.put(11).expect("mark before");
+    leaf.put(22).expect("mark nested leaf");
+    after.put(33).expect("mark after");
+}
+
+fn main() {
+    let all = spawn All();
+    let all_leaf = all.branch.leaf;
+    mark(all.before, all_leaf, all.after);
+    let _ = all.before.fail();
+    let _ = await_restart all.before;
+    assert(all.before.get().expect("all before") == 0);
+    assert(all_leaf.get().expect("all nested after actor failure") == 0);
+    assert(all.after.get().expect("all after") == 0);
+    mark(all.before, all_leaf, all.after);
+    let _ = all_leaf.fail();
+    let _ = await_restart all.branch.leaf;
+    assert(all.before.get().expect("local restart before") == 11);
+    assert(all.after.get().expect("local restart after") == 33);
+    let _ = all_leaf.fail();
+    let _ = await_restart all.branch;
+    assert(all.before.get().expect("all before after nested failure") == 0);
+    assert(all_leaf.get().expect("all nested replacement") == 0);
+    assert(all.after.get().expect("all after nested failure") == 0);
+    close(all);
+
+    let rest = spawn Rest();
+    let rest_leaf = rest.branch.leaf;
+    mark(rest.before, rest_leaf, rest.after);
+    let _ = rest.after.fail();
+    let _ = await_restart rest.after;
+    assert(rest.before.get().expect("rest earlier actor") == 11);
+    assert(rest_leaf.get().expect("rest earlier subtree") == 22);
+    assert(rest.after.get().expect("rest final actor") == 0);
+    rest.after.put(33).expect("remark later actor");
+    let _ = rest_leaf.fail();
+    let _ = await_restart rest.branch.leaf;
+    let _ = rest_leaf.fail();
+    let _ = await_restart rest.branch;
+    assert(rest.before.get().expect("rest preserves earlier actor") == 11);
+    assert(rest_leaf.get().expect("rest replaces nested subtree") == 0);
+    assert(rest.after.get().expect("rest replaces later actor") == 0);
+    mark(rest.before, rest_leaf, rest.after);
+    let _ = rest.before.fail();
+    let _ = await_restart rest.before;
+    assert(rest.before.get().expect("rest first actor") == 0);
+    assert(rest_leaf.get().expect("rest later subtree") == 0);
+    assert(rest.after.get().expect("rest later actor") == 0);
+    close(rest);
+    println("mixed child kinds obey declaration-ordered restart strategies");
+}

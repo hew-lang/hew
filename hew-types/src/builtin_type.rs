@@ -37,9 +37,9 @@ pub enum BuiltinType {
     /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
     /// supervisor `S`. Runtime representation is `{ LocalPid<S>, i64 pool_key }`.
     SupervisorPool,
-    /// `ChildRef<T>` — a stable reference to a supervised actor role.
-    /// Runtime representation is two `i64` words: stable supervisor token and
-    /// static child slot. Pool accessors translate an index to that same slot.
+    /// `ChildRef<T>` — a stable reference to a declared actor or supervisor role.
+    /// It carries an opaque owner identity and static child slot; nested owners
+    /// preserve the complete role path across supervisor replacement.
     ChildRef,
     LocalPid,
     NodeId,

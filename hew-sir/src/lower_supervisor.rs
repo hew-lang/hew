@@ -52,6 +52,18 @@ impl InstanceService<'_> {
         reason = "one supervisor instance owns its config, restart budget and child spawn contracts"
     )]
     pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
+        if let ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::ChildRef),
+            args,
+            ..
+        } = ty
+        {
+            return self.require_supervisor(&ResolvedTy::named_builtin(
+                hew_types::BuiltinType::LocalPid.canonical_name(),
+                hew_types::BuiltinType::LocalPid,
+                args.clone(),
+            ));
+        }
         if let Some(supervisor) = self
             .supervisors
             .iter()
@@ -311,10 +323,21 @@ impl Builder<'_, '_> {
             .position(|child| child.name == slot.child_name)
             .ok_or("supervisor child lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
+        let owner_is_role = self
+            .ty(&object.ty)
+            .is_builtin(hew_types::BuiltinType::ChildRef);
         let operation = if await_restart {
-            ActorOperation::SupervisorAwaitRestart { supervisor, child }
+            ActorOperation::SupervisorAwaitRestart {
+                supervisor,
+                child,
+                owner_is_role,
+            }
         } else {
-            ActorOperation::SupervisorChild { supervisor, child }
+            ActorOperation::SupervisorChild {
+                supervisor,
+                child,
+                owner_is_role,
+            }
         };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
@@ -334,6 +357,14 @@ impl Builder<'_, '_> {
         &mut self,
         handle: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
+        if self
+            .ty(&handle.ty)
+            .is_builtin(hew_types::BuiltinType::ChildRef)
+        {
+            return Err(
+                "closing a nested supervisor role needs its role lifecycle contract".into(),
+            );
+        }
         let supervisor = self.service.require_supervisor(&self.ty(&handle.ty))?;
         let operation = ActorOperation::SupervisorStop(supervisor);
         let signature = self.actor_signature(&operation)?;

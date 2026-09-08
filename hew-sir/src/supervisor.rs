@@ -1,8 +1,9 @@
 //! Supervisor declarations: restart policy, budget and the child roles the
 //! supervisor owns.
 //!
-//! A supervisor is a nominal with no value members; its `LocalPid<S>` handle is
-//! the only value. Every child is reconstructed from its declaration and the
+//! A supervisor is a nominal with no value members; values name its incarnation
+//! through `LocalPid<S>` or its declared role through `ChildRef<S>`. Every child
+//! is reconstructed from its declaration and the
 //! supervisor's config on each incarnation through a verified spawn callable,
 //! so restart never preserves mutable state.
 
@@ -95,8 +96,7 @@ impl SemSupervisor {
         .ok()
     }
 
-    /// The value a lookup of one child produces: a stable role for an actor,
-    /// the current handle for a nested supervisor.
+    /// The stable role a lookup produces, for either child kind.
     pub(crate) fn child_handle_ty(
         &self,
         child: usize,
@@ -117,16 +117,30 @@ impl SemSupervisor {
             SemSupervisedRole::Supervisor(id) => supervisors
                 .get(id.0 as usize)
                 .filter(|supervisor| supervisor.id == id)
-                .map(|supervisor| supervisor.handle_ty.clone())
+                .map(Self::child_ref_ty)
                 .ok_or_else(|| "nested supervisor role has no descriptor".into()),
         }
+    }
+
+    #[must_use]
+    pub fn child_ref_ty(&self) -> ResolvedTy {
+        let ResolvedTy::Named { args, .. } = &self.handle_ty else {
+            unreachable!("supervisor handle is validated as LocalPid<S>");
+        };
+        ResolvedTy::named_builtin(
+            hew_types::BuiltinType::ChildRef.canonical_name(),
+            hew_types::BuiltinType::ChildRef,
+            args.clone(),
+        )
     }
 
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.supervisor(self.id) != Some(self) {
             return Err("supervisor descriptor is not at its canonical index".into());
         }
-        if declared_handle(&self.handle_ty).as_ref() != Some(&self.declaration) {
+        if !self.handle_ty.is_builtin(hew_types::BuiltinType::LocalPid)
+            || declared_handle(&self.handle_ty).as_ref() != Some(&self.declaration)
+        {
             return Err("supervisor handle refers to another declaration".into());
         }
         if self.max_restarts == 0 || self.window_secs == 0 {
@@ -180,10 +194,10 @@ impl SemSupervisor {
     }
 }
 
-/// The declaration a `LocalPid<S>` handle names.
+/// The declaration a direct handle or stable supervisor role names.
 pub(crate) fn declared_handle(ty: &ResolvedTy) -> Option<DefId> {
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::LocalPid),
+        builtin: Some(hew_types::BuiltinType::LocalPid | hew_types::BuiltinType::ChildRef),
         args,
         ..
     } = ty

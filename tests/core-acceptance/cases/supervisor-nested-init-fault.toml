@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-nested-init-fault"
+intent = "A failed nested child start tears down earlier subtrees and releases owned config and child state before propagating the original fault."
+source = "cases/supervisor-nested-init-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "COMPLETED CHILD RELEASED\n"
+stderr = "hew: failure: UserPanic (212): nested start failed\n"
+exit = 1

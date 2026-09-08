@@ -7275,10 +7275,6 @@ impl Checker {
                                     child_ty,
                                 );
                             }
-                            if matches!(&child_ty, Ty::Named { name, .. } if self.supervisor_children.contains_key(name))
-                            {
-                                return Ty::local_pid(child_ty);
-                            }
                             return Ty::child_ref(child_ty);
                         }
                         let names = children

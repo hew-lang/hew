@@ -18,6 +18,10 @@ pub struct NativeActorCompletion {
 }
 
 impl NativeActorCompletion {
+    pub(crate) fn is_finished(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == 2
+    }
+
     /// Publish after the unique terminal owner has released all target state.
     pub(crate) fn finish(&self, code: i32) {
         self.code.store(code, Ordering::Relaxed);
@@ -281,5 +285,133 @@ mod tests {
             assert_eq!(hew_actor_wait_poll(completed), 1);
             hew_actor_wait_free(completed);
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture owns both config allocations, concurrent cleanup owners and the observer"
+    )]
+    fn parent_closed_waits_for_a_concurrent_nested_cleanup_owner() {
+        use crate::supervisor::{
+            hew_local_pid_supervisor_stop, hew_supervisor_native_spawn, HewNativeChildSpec,
+        };
+        use std::ffi::c_void;
+
+        struct ChildConfig {
+            entered: Arc<std::sync::Barrier>,
+            release: Arc<std::sync::Barrier>,
+        }
+        struct ParentConfig {
+            child: local_handles::HewLocalPidId,
+            drops: Arc<AtomicUsize>,
+        }
+        unsafe extern "C" fn drop_child(config: *mut c_void) {
+            // SAFETY: the child owns the initialized config allocation.
+            let config = unsafe { config.cast::<ChildConfig>().read() };
+            config.entered.wait();
+            config.release.wait();
+        }
+        unsafe extern "C" fn drop_parent(config: *mut c_void) {
+            // SAFETY: the parent owns the initialized config allocation.
+            let config = unsafe { config.cast::<ParentConfig>().read() };
+            config.drops.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C-unwind" fn adopt_child(
+            config: *const c_void,
+            _fault: *mut *mut crate::fault::HewFault,
+        ) -> local_handles::HewLocalPidId {
+            // SAFETY: this initial-spawn adapter transfers the prepared child once.
+            unsafe { (*config.cast::<ParentConfig>()).child }
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let drops = Arc::new(AtomicUsize::new(0));
+        // SAFETY: each config is initialized, then uniquely adopted by its supervisor.
+        let (child, parent) = unsafe {
+            let child_config =
+                libc::malloc(std::mem::size_of::<ChildConfig>()).cast::<ChildConfig>();
+            assert!(!child_config.is_null());
+            child_config.write(ChildConfig {
+                entered: entered.clone(),
+                release: release.clone(),
+            });
+            let mut fault = std::ptr::null_mut();
+            let child = hew_supervisor_native_spawn(
+                0,
+                3,
+                5,
+                child_config.cast(),
+                Some(drop_child),
+                [].as_ptr(),
+                0,
+                &raw mut fault,
+            );
+            assert!(fault.is_null());
+            let parent_config =
+                libc::malloc(std::mem::size_of::<ParentConfig>()).cast::<ParentConfig>();
+            assert!(!parent_config.is_null());
+            parent_config.write(ParentConfig {
+                child,
+                drops: drops.clone(),
+            });
+            let children = [HewNativeChildSpec {
+                restart_policy: 0,
+                role_kind: 1,
+                spawn: adopt_child,
+            }];
+            let parent = hew_supervisor_native_spawn(
+                0,
+                3,
+                5,
+                parent_config.cast(),
+                Some(drop_parent),
+                children.as_ptr(),
+                children.len(),
+                &raw mut fault,
+            );
+            assert!(fault.is_null());
+            (child, parent)
+        };
+        let (_, wake) = crate::wake::blocking::Readiness::new();
+        let role = local_handles::current_supervisor_role_owner(parent, 0);
+        assert_eq!(
+            role,
+            local_handles::current_supervisor_role_owner(parent, 0)
+        );
+        assert!(local_handles::pin_current_supervisor(role).is_some());
+        // SAFETY: the wake descriptor stays live and this test owns the observer.
+        let observer = unsafe { hew_actor_wait_new(parent, wake.descriptor()) };
+        let child_close = std::thread::spawn(move || hew_local_pid_supervisor_stop(child));
+        entered.wait();
+        let (finished, completion) = std::sync::mpsc::channel();
+        let parent_close = std::thread::spawn(move || {
+            let result = hew_local_pid_supervisor_stop(parent);
+            finished.send(result).expect("parent completion receiver");
+        });
+        let early = completion.recv_timeout(std::time::Duration::from_millis(100));
+        let early_drops = drops.load(Ordering::SeqCst);
+        // SAFETY: the observer remains owned by this test through its last poll.
+        let early_ready = unsafe { hew_actor_wait_poll(observer) };
+        release.wait();
+        assert_eq!(child_close.join().expect("child cleanup owner"), 0);
+        parent_close.join().expect("parent cleanup owner");
+        assert!(matches!(
+            early,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(early_drops, 0);
+        assert_eq!(early_ready, 0);
+        assert_eq!(completion.recv().expect("parent result"), 0);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        // SAFETY: the observer has one owner and the cleanup threads have finished.
+        unsafe {
+            assert_eq!(hew_actor_wait_poll(observer), 1);
+            hew_actor_wait_free(observer);
+        }
+        assert!(local_handles::pin_current_supervisor(role).is_none());
+        assert_eq!(local_handles::current_supervisor_counts_for_test(), (0, 0));
     }
 }

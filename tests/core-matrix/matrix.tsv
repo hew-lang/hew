@@ -124,7 +124,7 @@ generator__iterate	PASS
 generator__map_key	NYI-CLEAN	tests/core-matrix/cells/generator__map_key.hew:7:5: error: `Generator<i64, ()>` does not satisfy the required bounds for `Map.insert` (K: Hash, K: Eq)
 generator__move	PASS
 generator__pass_fn	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_use_it` is not implemented: E_OWN_CONSUME_BORROWED: `v` is borrowed here; a value with no copy operation transfers only from an owning binding
-generator__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime read cannot copy an affine element; use an owning removal
+generator__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: E_OWN_CONSUME_BORROWED: `e` is borrowed here; a value with no copy operation transfers only from an owning binding
 generator__return_fn	PASS
 generator__store_map_value	NYI-CLEAN	tests/core-matrix/cells/generator__store_map_value.hew:6:12: error: `HashMap<_, Generator<i64, ()>>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Generator<i64, ()>` contains unregister
 generator__store_vec	PASS
@@ -229,7 +229,7 @@ opaque__map_key	NYI-CLEAN	tests/core-matrix/cells/opaque__map_key.hew:27:5: erro
 opaque__move	PASS
 opaque__mutate	PASS
 opaque__pass_fn	PASS
-opaque__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime read cannot copy an affine element; use an owning removal
+opaque__read_back	PASS
 opaque__return_fn	PASS
 opaque__store_map_value	NYI-CLEAN	tests/core-matrix/cells/opaque__store_map_value.hew:26:12: error: `HashMap<_, Dq>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Dq` contains resource/linear value `Dq` which has no sema
 opaque__store_vec	PASS
@@ -286,7 +286,7 @@ resource__map_key	NYI-CLEAN	tests/core-matrix/cells/resource__map_key.hew:15:5: 
 resource__move	PASS
 resource__mutate	PASS
 resource__pass_fn	PASS
-resource__read_back	CRASH	compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime read cannot copy an affine element; use an owning removal
+resource__read_back	PASS
 resource__return_fn	PASS
 resource__store_map_value	NYI-CLEAN	tests/core-matrix/cells/resource__store_map_value.hew:14:12: error: `HashMap<_, Tok>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `Tok` contains resource/linear value `Tok` which has no
 resource__store_vec	PASS

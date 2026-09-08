@@ -579,7 +579,7 @@ struct InstanceService<'a> {
     by_instance: HashMap<SirInstanceKey, CallableId>,
     closures: Vec<crate::SemClosure>,
     actors: Vec<crate::SemActor>,
-    actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>)>,
+    actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>, TypeSubstitution)>,
     supervisors: Vec<crate::SemSupervisor>,
     /// Bodies the lowering synthesizes outside the HIR item table.
     synthetic_sources: HashMap<CallableId, HirFn>,
@@ -1732,14 +1732,14 @@ impl<'a> InstanceService<'a> {
             });
         }
         if let SemCallableKind::HewActor(actor) = callable_meta.kind {
-            let (function, state_bindings) = self
+            let (function, state_bindings, substitution) = self
                 .actor_sources
                 .get(&callable)
                 .ok_or_else(|| "actor body has no checked HIR source".to_string())?;
             return Ok(LoweringInput {
                 function: Cow::Owned(function.clone()),
                 callable: callable_meta,
-                substitution: TypeSubstitution::empty(),
+                substitution: substitution.clone(),
                 source: BodySource::Actor {
                     actor,
                     state_bindings: state_bindings.clone(),
@@ -1773,7 +1773,8 @@ impl<'a> InstanceService<'a> {
             });
         }
         let substitution = match &callable_meta.instance {
-            CallableInstance::Closure(_)
+            CallableInstance::ActorMember
+            | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
             | CallableInstance::SupervisorChild { .. } => {
                 unreachable!("closure, entry adapter and child spawn inputs are resolved above")
@@ -3438,6 +3439,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.function.type_params.is_empty(),
         ) {
             (CallableInstance::Monomorphic | CallableInstance::SupervisorChild { .. }, true) => {}
+            (CallableInstance::ActorMember, true) if matches!(source, BodySource::Actor { .. }) => {
+            }
             (CallableInstance::Closure(_), _) if matches!(source, BodySource::Closure(_)) => {}
             (CallableInstance::EntryAdapter, _)
                 if matches!(source, BodySource::EntryAdapter(_)) => {}
@@ -7770,9 +7773,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut loans = Vec::new();
         let (callee, signature, actor) = match target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
-                let target =
-                    self.service
-                        .resolve_direct_call(declaration, expr.site, &self.substitution)?;
+                let local_actor_method =
+                    if let SemCallableKind::HewActor(actor) = self.callable.kind {
+                        self.service.actors[actor.0 as usize]
+                            .methods
+                            .iter()
+                            .find_map(|id| {
+                                self.service
+                                    .callable(*id)
+                                    .filter(|method| &method.declaration == declaration)
+                                    .cloned()
+                            })
+                    } else {
+                        None
+                    };
+                let target = match local_actor_method {
+                    Some(method) => method,
+                    None => self.service.resolve_direct_call(
+                        declaration,
+                        expr.site,
+                        &self.substitution,
+                    )?,
+                };
                 let actor = match target.kind {
                     SemCallableKind::HewActor(actor) => Some(actor),
                     SemCallableKind::HewDirect | SemCallableKind::HewClosure => None,

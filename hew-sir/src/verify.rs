@@ -1393,10 +1393,10 @@ fn verify_callable_table<'a>(
     let mut actor_declarations = HashSet::new();
     for actor in &module.actors {
         let checked = actor.validate(module).and_then(|()| {
-            if actor_declarations.insert(&actor.declaration) {
+            if actor_declarations.insert((&actor.declaration, &actor.handle_ty)) {
                 Ok(())
             } else {
-                Err("actor declaration is repeated".into())
+                Err("actor instance is repeated".into())
             }
         });
         if let Err(reason) = checked {
@@ -1438,6 +1438,7 @@ fn verify_callable_table<'a>(
     let mut monomorphic_declarations = HashSet::new();
     let mut generic_declarations = HashSet::new();
     let mut generic_instances = HashSet::new();
+    let mut actor_members = HashSet::new();
     let mut symbols = HashSet::new();
     for (index, callable) in module.callables.iter().enumerate() {
         let expected = CallableId(
@@ -1492,6 +1493,23 @@ fn verify_callable_table<'a>(
                         callable: callable.id,
                         reason: "a declaration with a generic semantic template header cannot also be a monomorphic SIR body"
                             .to_string(),
+                    }));
+                }
+            }
+            CallableInstance::ActorMember => {
+                let valid = if let SemCallableKind::HewActor(actor) = callable.kind {
+                    actor_members.insert((actor, callable.declaration.clone()))
+                        && module
+                            .actor(actor)
+                            .is_some_and(|actor| actor.bodies().any(|body| body == callable.id))
+                } else {
+                    false
+                };
+                if !valid {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "actor member lacks a unique declaration in its concrete actor"
+                            .into(),
                     }));
                 }
             }

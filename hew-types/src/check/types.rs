@@ -790,20 +790,6 @@ pub struct TypeCheckOutput {
     /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
     /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
     pub lang_items: crate::LangItemRegistry,
-    /// Per-spawn-site type arguments for generic actor instantiations.
-    ///
-    /// Keyed by the `SpanKey` of the `spawn` expression. Each entry holds the
-    /// actor name and the checker-resolved type arguments supplied at that
-    /// spawn site (`spawn Foo<i64>(...)` → `("Foo", [Ty::I64])`).
-    ///
-    /// Populated by `check_spawn` when non-empty type args are resolved.
-    /// Empty for non-generic actors (no entry) or for generic actors that
-    /// triggered a `MissingActorTypeArgs` diagnostic (also no entry).
-    ///
-    /// Consumed by the actor-mono discovery pass (blocked on
-    /// `MachineMonoPass` infra) to build per-instantiation `ActorLayout`
-    /// records keyed by `mangle_instantiation(SymbolClass::Actor, …)`.
-    pub actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
     /// Checker-authored unified-dispatch table keyed by method-call span.
     ///
     /// This is the substrate introduced by W4.001 Stage A. It will, in
@@ -1461,7 +1447,6 @@ impl Default for TypeCheckOutput {
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             import_type_name_aliases: HashMap::new(),
             module_import_bindings: HashMap::new(),
@@ -3098,20 +3083,6 @@ pub struct Checker {
     /// during registration and again at its use, so the unknown-trait refusal
     /// reports each written spelling once.
     pub(super) reported_unknown_dyn_traits: HashSet<(String, SpanKey)>,
-    /// Trait bounds declared on each actor's generic type parameters, keyed by
-    /// actor name. Populated during `register_actor_decl` from
-    /// `ActorDecl.type_params`. Consulted at the use site by
-    /// `check_spawn` to enforce bounds on explicitly supplied type args.
-    ///
-    /// Mirrors `machine_type_param_bounds` — the clone-pattern is deliberate;
-    /// actors and machines share bound-enforcement semantics but are separate
-    /// declaration kinds. Do not collapse: actor and machine bound tables have
-    /// distinct lookup scopes.
-    pub(super) actor_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
-    /// Dedup set for `enforce_actor_instantiation_bounds`. Mirrors
-    /// `reported_machine_bound_violations` but scoped to actor spawns so
-    /// that machine and actor violations cannot accidentally suppress each other.
-    pub(super) reported_actor_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
     /// Actors declaring at least one `#[every(duration)]` periodic receive
     /// handler, keyed by actor name; the value is the first periodic
     /// handler's name (for diagnostics). Populated during
@@ -3765,13 +3736,6 @@ pub struct Checker {
     /// WHEN OBSOLETE: if a `let rec` or fixed-point surface is ratified.
     /// REAL SOLUTION: a proper `letrec`/`fix`-point binder in the type checker.
     pub(super) pending_let_closure_name: Option<String>,
-    /// Per-spawn-site type arguments for generic actor instantiations.
-    ///
-    /// Mirrors [`TypeCheckOutput::actor_spawn_type_args`]. Populated in
-    /// `check_spawn` when explicit type args are resolved for a generic actor.
-    /// Moved into the output at `check_program` exit after `subst.resolve`
-    /// settles inference variables.
-    pub(super) actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
     /// Canonical builtin `Result`/`Option` receiver method signatures, snapshotted
     /// from the compiled-in `std/result.hew` / `std/option.hew` impl blocks at
     /// builtin-registration time, keyed by `(builtin discriminant, method name)`.
@@ -3995,8 +3959,6 @@ impl Checker {
             reported_machine_bound_violations: HashSet::new(),
             reported_type_def_bound_violations: HashSet::new(),
             reported_unknown_dyn_traits: HashSet::new(),
-            actor_type_param_bounds: HashMap::new(),
-            reported_actor_bound_violations: HashSet::new(),
             actors_with_periodic_handlers: HashMap::new(),
             current_return_type: None,
             inferred_lambda_returns: None,
@@ -4114,7 +4076,6 @@ impl Checker {
             pending_pattern_resolutions: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
             lang_item_spans: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             builtin_result_option_method_sigs: HashMap::new(),
             builtin_vec_method_sigs: HashMap::new(),
             lint_levels: super::LintLevels::from_defaults(),

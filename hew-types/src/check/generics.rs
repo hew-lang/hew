@@ -430,54 +430,6 @@ impl Checker {
         self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
     }
 
-    /// Actor-spawn-site bound enforcement.
-    ///
-    /// Called from `check_spawn` when explicit type args are supplied for a
-    /// generic actor. Clones the pattern of `enforce_machine_instantiation_bounds`
-    /// verbatim — actors and machines share the same bound-enforcement semantics
-    /// but are stored in separate tables so the two categories cannot suppress
-    /// each other's violations via the shared dedup set.
-    ///
-    /// The dedup key includes the actor name, resolved type args, and span.
-    /// Identical `(actor, args, span)` triples across repeated checker passes
-    /// emit exactly one diagnostic.
-    pub(super) fn enforce_actor_instantiation_bounds(
-        &mut self,
-        actor_name: &str,
-        type_args: &[Ty],
-        span: &Span,
-    ) {
-        if type_args.is_empty() {
-            return;
-        }
-        let Some(bounds) = self.actor_type_param_bounds.get(actor_name).cloned() else {
-            return;
-        };
-        let dedup_key = (
-            actor_name.to_string(),
-            type_args.to_vec(),
-            SpanKey::in_module(span, self.current_module_idx),
-        );
-        if !self.reported_actor_bound_violations.insert(dedup_key) {
-            return;
-        }
-        // Recover positional type-param names from the registered TypeDef so
-        // that `enforce_named_type_param_bounds` can look up bounds by name.
-        // Falls back to placeholder names for positions without a TypeDef entry
-        // (defensive; should not occur for a registered actor).
-        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
-        for (idx, _) in type_args.iter().enumerate() {
-            if let Some(td) = self.type_defs.get(actor_name) {
-                if let Some(name) = td.type_params.get(idx) {
-                    type_params.push(name.clone());
-                    continue;
-                }
-            }
-            type_params.push(format!("__unbounded_{idx}"));
-        }
-        self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
-    }
-
     /// Generic bound-enforcement entry point parameterised by type-param names
     /// and a bounds map.  Used by `enforce_type_param_bounds` (`FnSig` calls)
     /// and by use-site enforcement for machine generic constructors that do
@@ -1140,6 +1092,10 @@ impl Checker {
                 return true;
             }
             return self.display_impl_type(ty).is_some();
+        }
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
+            return self.registry.implements_marker(ty, MarkerTrait::Send)
+                || matches!(ty, Ty::Named { name, args, builtin: None } if args.is_empty() && self.type_param_carries_bound(name, trait_name));
         }
         if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
             && !Self::ty_mentions_type_params(

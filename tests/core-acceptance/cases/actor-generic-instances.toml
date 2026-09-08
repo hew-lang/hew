@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-generic-instances"
+intent = "Scalar, string and inferred owned-record actor instances specialize state, init, hooks, internal methods, replies, self handles, yielded values and Display bounds independently."
+source = "cases/actor-generic-instances.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "distinct generic actors and owned replies\n"
+exit = 0

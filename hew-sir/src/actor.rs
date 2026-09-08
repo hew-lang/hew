@@ -252,7 +252,7 @@ impl SemActor {
                 ..
             } => {
                 if !matches!(args.as_slice(), [ty] if ty.nominal_instance().is_some_and(|instance|
-                    instance.nominal.declaration() == &self.declaration && instance.args.is_empty()))
+                    instance.nominal.declaration() == &self.declaration))
                 {
                     return Err("actor handle refers to another declaration".into());
                 }

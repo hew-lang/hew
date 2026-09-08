@@ -6,7 +6,7 @@ use super::{
     DefId, Edge, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirModule,
     InstanceService, OpId, Operand, OwnKind, OwnedBindingUse, PlaceId, PlaceOrigin, ResolvedTy,
     SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemParamPassing, SemSignature,
-    SemTerminator, ValueDef, ValueId,
+    SemTerminator, TypeSubstitution, ValueDef, ValueId,
 };
 use std::collections::BTreeSet;
 
@@ -42,11 +42,39 @@ pub(super) fn declaration<'a>(
     let instance = actor_ty.nominal_instance()?;
     module.items.iter().find_map(|item| match item {
         HirItem::Actor(actor)
-            if &actor.declaration == instance.nominal.declaration() && instance.args.is_empty() =>
+            if &actor.declaration == instance.nominal.declaration()
+                && actor.type_params.len() == instance.args.len() =>
         {
             Some(actor)
         }
         _ => None,
+    })
+}
+
+fn actor_substitution(
+    source: &hew_hir::HirActorDecl,
+    ty: &ResolvedTy,
+) -> Result<TypeSubstitution, String> {
+    let args = if source.lambda_handle_ty.is_some() {
+        Vec::new()
+    } else {
+        let ResolvedTy::Named { args, .. } = ty else {
+            return Err("actor instance requires its checked handle type".into());
+        };
+        let [actor] = args.as_slice() else {
+            return Err("actor handle requires one concrete actor type".into());
+        };
+        actor
+            .nominal_instance()
+            .ok_or("actor instance lacks its nominal identity")?
+            .args
+    };
+    if args.len() != source.type_params.len() {
+        return Err("actor instance type arguments differ from its declared parameters".into());
+    }
+    Ok(TypeSubstitution {
+        params: source.type_params.clone(),
+        args,
     })
 }
 
@@ -113,8 +141,9 @@ impl InstanceService<'_> {
                 },
             )
         });
-        if !source.type_params.is_empty() {
-            return Err("generic actors need their instance contracts".into());
+        let substitution = actor_substitution(&source, ty)?;
+        for argument in &substitution.args {
+            self.require_type_facts(argument)?;
         }
         if source
             .receive_handlers
@@ -136,11 +165,9 @@ impl InstanceService<'_> {
             .to_lowercase());
         }
         let overflow = actor_overflow(&source)?;
-        if let Some(field) = source
-            .state_fields
-            .iter()
-            .find(|field| super::generators::value_needs_close(self, &field.ty))
-        {
+        if let Some(field) = source.state_fields.iter().find(|field| {
+            super::generators::value_needs_close(self, &substitution.apply(&field.ty))
+        }) {
             // Terminal cleanup releases state synchronously; a value that must
             // drain cooperatively first cannot live there yet.
             return Err(format!(
@@ -152,7 +179,7 @@ impl InstanceService<'_> {
             .state_fields
             .iter()
             .map(|field| crate::SemActorField {
-                ty: field.ty.clone(),
+                ty: substitution.apply(&field.ty),
                 mutable: field.is_mutable,
             })
             .collect();
@@ -177,7 +204,7 @@ impl InstanceService<'_> {
             overflow,
             max_heap_bytes: source.max_heap_bytes,
         });
-        self.register_actor_bodies(id, &source)?;
+        self.register_actor_bodies(id, &source, &substitution)?;
         Ok(id)
     }
 
@@ -185,11 +212,13 @@ impl InstanceService<'_> {
         &mut self,
         id: crate::ActorId,
         source: &hew_hir::HirActorDecl,
+        substitution: &TypeSubstitution,
     ) -> Result<(), String> {
         if let Some(init) = &source.init {
             let body = self.register_actor_body(
                 id,
                 source,
+                substitution,
                 init.declaration.clone(),
                 &init.state_bindings,
                 &init.params,
@@ -208,6 +237,7 @@ impl InstanceService<'_> {
             let body = self.register_actor_body(
                 id,
                 source,
+                substitution,
                 hook.declaration.clone(),
                 &hook.state_bindings,
                 &[],
@@ -233,29 +263,32 @@ impl InstanceService<'_> {
             let body = self.register_actor_body(
                 id,
                 source,
+                substitution,
                 method.declaration.clone(),
                 &method.state_bindings,
                 &method.params,
-                method.return_ty.clone(),
+                substitution.apply(&method.return_ty),
                 &method.body,
                 &format!("method_{}", method.name),
                 false,
                 None,
             )?;
-            // Bare calls from this actor's bodies resolve through the ordinary
-            // direct-call table; the call site supplies the state seat.
-            self.table
-                .monomorphic_by_declaration
-                .insert(method.declaration.clone(), body);
+            // Internal calls select a method from this actor's descriptor;
+            // generic actor instances never overwrite a declaration-wide row.
             self.actors[id.0 as usize].methods.push(body);
         }
-        self.register_actor_handlers(id, source)
+        self.register_actor_handlers(id, source, substitution)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each protocol member is registered together with its concrete body and failure contract"
+    )]
     fn register_actor_handlers(
         &mut self,
         id: crate::ActorId,
         source: &hew_hir::HirActorDecl,
+        substitution: &TypeSubstitution,
     ) -> Result<(), String> {
         for handler in &source.receive_handlers {
             let row = source
@@ -271,7 +304,7 @@ impl InstanceService<'_> {
             let mut params: Vec<_> = handler
                 .params
                 .iter()
-                .map(|param| param.ty.clone())
+                .map(|param| substitution.apply(&param.ty))
                 .collect();
             // The protocol names a generator receive by its stream type; the
             // body is checked against the element it yields.
@@ -279,17 +312,19 @@ impl InstanceService<'_> {
                 ResolvedTy::named_builtin(
                     "Stream",
                     hew_types::BuiltinType::Stream,
-                    vec![handler.return_ty.clone()],
+                    vec![substitution.apply(&handler.return_ty)],
                 )
             } else {
-                handler.return_ty.clone()
+                substitution.apply(&handler.return_ty)
             };
             if params.len() != row.param_tys.len()
-                || params
-                    .iter()
-                    .zip(&row.param_tys)
-                    .any(|(param, row)| !crate::call_boundary_types_match(param, row))
-                || !crate::call_boundary_types_match(&checked_return, &row.return_ty)
+                || params.iter().zip(&row.param_tys).any(|(param, row)| {
+                    !crate::call_boundary_types_match(param, &substitution.apply(row))
+                })
+                || !crate::call_boundary_types_match(
+                    &checked_return,
+                    &substitution.apply(&row.return_ty),
+                )
             {
                 return Err(format!(
                     "actor protocol member `{}` ({:?} -> {}) differs from its checked body ({:?} -> {})",
@@ -302,18 +337,21 @@ impl InstanceService<'_> {
             }
             // A stream producer's request carries the consumer's sink and
             // replies through it, so its body returns unit.
-            let stream = handler.is_generator.then(|| handler.return_ty.clone());
+            let stream = handler
+                .is_generator
+                .then(|| substitution.apply(&handler.return_ty));
             let sink = stream.clone().map(|element| {
                 ResolvedTy::named_builtin("Sink", hew_types::BuiltinType::Sink, vec![element])
             });
             let return_ty = if stream.is_some() {
                 ResolvedTy::Unit
             } else {
-                handler.return_ty.clone()
+                substitution.apply(&handler.return_ty)
             };
             let callable = self.register_actor_body(
                 id,
                 source,
+                substitution,
                 handler.declaration.clone(),
                 &handler.state_bindings,
                 &handler.params,
@@ -335,9 +373,22 @@ impl InstanceService<'_> {
                 Some(hew_types::ReceiveFailureDisplay::Declared {
                     declaration,
                     instance,
-                }) => Some(crate::SemFailureDisplay::Callable(
-                    self.resolve_entry_display(declaration, instance)?.id,
-                )),
+                }) => {
+                    let instance = match instance {
+                        hew_types::EntryCallableInstance::Declared => instance.clone(),
+                        hew_types::EntryCallableInstance::Generic { type_args } => {
+                            hew_types::EntryCallableInstance::Generic {
+                                type_args: type_args
+                                    .iter()
+                                    .map(|argument| substitution.apply(argument))
+                                    .collect(),
+                            }
+                        }
+                    };
+                    Some(crate::SemFailureDisplay::Callable(
+                        self.resolve_entry_display(declaration, &instance)?.id,
+                    ))
+                }
             };
             self.actors[id.0 as usize]
                 .handlers
@@ -363,6 +414,7 @@ impl InstanceService<'_> {
         &mut self,
         actor: crate::ActorId,
         source: &hew_hir::HirActorDecl,
+        substitution: &TypeSubstitution,
         declaration: DefId,
         state_bindings: &[HirBinding],
         params: &[HirBinding],
@@ -398,13 +450,14 @@ impl InstanceService<'_> {
             return_ty,
         };
         for parameter in params {
-            self.require_type_facts(&parameter.ty)?;
+            let ty = substitution.apply(&parameter.ty);
+            self.require_type_facts(&ty)?;
             // Messages and spawn arguments transfer every owning field. A
             // method call is an ordinary call and lends unless the source
             // consumes.
-            let owned = OwnKind::of_ty(&parameter.ty, self.checked_facts.rows())? == OwnKind::Owned;
+            let owned = OwnKind::of_ty(&ty, self.checked_facts.rows())? == OwnKind::Owned;
             signature.params.push(SemAbiParam {
-                ty: parameter.ty.clone(),
+                ty,
                 caller_visible_projection: false,
                 passing: if !owned {
                     SemParamPassing::ReadOnly
@@ -428,15 +481,17 @@ impl InstanceService<'_> {
             id,
             function: source.id,
             declaration,
-            instance: CallableInstance::Monomorphic,
+            instance: CallableInstance::ActorMember,
             symbol: format!("__hew_actor_{}_{}", actor.0, symbol),
             source_origin: function_source_origin(self.module, &function),
             signature,
             call_conv: SemCallConv::Default,
             kind: SemCallableKind::HewActor(actor),
         });
-        self.actor_sources
-            .insert(id, (function, state_bindings.to_vec()));
+        self.actor_sources.insert(
+            id,
+            (function, state_bindings.to_vec(), substitution.clone()),
+        );
         self.states.push(CallableState::Unreached);
         self.statuses.push(None);
         self.request_body(id);
@@ -876,13 +931,30 @@ impl Builder<'_, '_> {
         let mut values = Vec::new();
         // Evaluate explicit arguments in source order, then defaults. Only the
         // completed values are rearranged into state and init parameter order.
-        for source in &sources {
+        for (index, source) in sources.iter().enumerate() {
+            let owner_substitution = match (&operation, &expression.kind) {
+                (crate::ActorOperation::Spawn(actor), HirExprKind::Spawn { args, .. })
+                    if index >= args.len() =>
+                {
+                    let actor = &self.service.actors[actor.0 as usize];
+                    let declaration = declaration(self.service.module, &actor.handle_ty)
+                        .ok_or("spawn default lacks its actor declaration")?;
+                    Some(actor_substitution(declaration, &actor.handle_ty)?)
+                }
+                _ => None,
+            };
+            let previous = owner_substitution
+                .map(|substitution| std::mem::replace(&mut self.substitution, substitution));
             let value = lower_initial_value_transfer(
                 self,
                 source,
                 "actor message boundary",
                 OwnedBindingUse::Copy,
-            )?;
+            );
+            if let Some(previous) = previous {
+                self.substitution = previous;
+            }
+            let value = value?;
             if !self.is_open() {
                 return Ok(None);
             }
@@ -893,7 +965,7 @@ impl Builder<'_, '_> {
         }
         let mut args = Vec::new();
         for (index, parameter) in argument_order.into_iter().zip(&signature.params) {
-            if self.ty(&sources[index].ty) != parameter.ty {
+            if self.value_ty(values[index]).as_ref() != Some(&parameter.ty) {
                 return Err("actor argument changes its protocol type".into());
             }
             args.push(values[index]);
@@ -1025,7 +1097,7 @@ impl Builder<'_, '_> {
             },
         );
         for (index, (binding, field)) in state_bindings.iter().zip(&descriptor.fields).enumerate() {
-            if binding.ty != field.ty {
+            if self.ty(&binding.ty) != field.ty {
                 return Err("actor field binding changes its declared type".into());
             }
             let place =

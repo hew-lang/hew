@@ -115,7 +115,8 @@ pub(crate) fn verify_value_capability(
         return Err("selected capability declaration disagrees with its callable".to_string());
     }
     let exact_instance = match &selected.instance {
-        CallableInstance::Closure(_)
+        CallableInstance::ActorMember
+        | CallableInstance::Closure(_)
         | CallableInstance::EntryAdapter
         | CallableInstance::SupervisorChild { .. } => false,
         CallableInstance::Monomorphic => type_args.is_empty(),

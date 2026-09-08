@@ -4792,12 +4792,17 @@ impl Checker {
         }
 
         // Extract type-param names from the declaration so the TypeDef's
-        // positional `type_params` vector is populated for bound lookups in
-        // `enforce_actor_instantiation_bounds`. This mirrors the machine
-        // registration path; actors without type params get an empty vec.
+        // positional `type_params` vector and ordinary nominal bounds share
+        // one declaration authority. Actor arguments must also be Send.
         let type_param_names: Vec<String> =
             ad.type_params.iter().map(|tp| tp.name.clone()).collect();
-        let type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
+        let mut type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
+        for parameter in &type_param_names {
+            let bounds = type_param_bounds.entry(parameter.clone()).or_default();
+            if !bounds.iter().any(|bound| bound == "Send") {
+                bounds.push("Send".into());
+            }
+        }
 
         let type_def = TypeDef {
             kind: TypeDefKind::Actor,
@@ -4811,15 +4816,6 @@ impl Checker {
             doc_comment: ad.doc_comment.clone(),
             is_indirect: false,
         };
-
-        // Record trait bounds for generic type parameters (e.g. `<T: Send>`).
-        // The bounds table is keyed by actor name and consulted at spawn sites
-        // by `enforce_actor_instantiation_bounds`. Non-generic actors produce
-        // an empty map; the helper short-circuits on empty `type_args` anyway.
-        if !type_param_bounds.is_empty() {
-            self.actor_type_param_bounds
-                .insert(identity.to_string(), type_param_bounds);
-        }
 
         // `#[every]` periodic handlers are armed by spawn-site codegen
         // (`emit_periodic_handler_arming`); record which actors declare them

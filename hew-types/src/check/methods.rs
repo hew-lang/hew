@@ -8568,7 +8568,9 @@ impl Checker {
                 // Fall through to actor receive-fn dispatch on the inner type.
                 let inner = resolved.as_local_actor_ref().unwrap();
                 if let Ty::Named {
-                    name: actor_name, ..
+                    name: actor_name,
+                    args: actor_type_args,
+                    ..
                 } = inner
                 {
                     // An annotation-derived `LocalPid<Account>` carries the
@@ -8613,7 +8615,9 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
+                    if let Some(sig) =
+                        self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
+                    {
                         // Route through the one application authority rather
                         // than checking args against `sig.params` directly: a
                         // generic `receive fn keep<T>(..)` needs its type
@@ -8637,7 +8641,7 @@ impl Checker {
                             Some(GenericCallee::Method {
                                 type_name: &actor_identity,
                                 method,
-                                owner_type_args: &[],
+                                owner_type_args: actor_type_args,
                             }),
                         );
                         // Every argument crosses the mailbox boundary. This is

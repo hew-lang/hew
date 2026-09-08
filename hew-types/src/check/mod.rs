@@ -2546,20 +2546,6 @@ impl Checker {
                 })
                 .collect(),
             lang_items: std::mem::take(&mut self.lang_items),
-            actor_spawn_type_args: {
-                // Resolve any lingering inference variables in the type args
-                // before publishing to the output table.
-                std::mem::take(&mut self.actor_spawn_type_args)
-                    .into_iter()
-                    .map(|(k, (name, args))| {
-                        let resolved_args = args
-                            .into_iter()
-                            .map(|ty| self.finalize_type_for_handoff(&ty))
-                            .collect();
-                        (k, (name, resolved_args))
-                    })
-                    .collect()
-            },
         };
 
         // Detect actor reference cycles and emit warnings.

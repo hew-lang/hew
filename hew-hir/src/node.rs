@@ -437,10 +437,9 @@ pub struct HirActorDecl {
     pub defining_module: Option<String>,
     /// Generic type parameters declared on the actor (`actor Worker<T>`).
     ///
-    /// Names only, threaded verbatim from `ActorDecl::type_params`. MIR reads
-    /// it to tell a generic ORIGIN from a monomorphic actor: an origin's member
-    /// signatures may name a type parameter that has no `ValueClass` at the MIR
-    /// boundary, so nothing that would have to type one may be emitted for it.
+    /// SIR uses these names to specialize the actor's state and member bodies
+    /// for each demanded closed handle type. Generic origins remain templates;
+    /// only their concrete instances reach physical lowering.
     pub type_params: Vec<String>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.

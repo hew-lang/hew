@@ -1,11 +1,5 @@
-/// Checker tests for generic-actor spawn type-arg handling.
-///
-/// Covers:
-///   • `checker_generic_actor_spawn_substitutes_type_args` — PID type carries resolved args
-///   • `checker_missing_turbofish_on_generic_actor_diagnostic` — `MissingActorTypeArgs` fires
-///   • `checker_actor_bound_enforcement_reuses_machine_helper` — `BoundsNotSatisfied` fires
-///   • `checker_actor_type_arg_arity_mismatch` — wrong count → `ActorTypeArgArityMismatch`
-///   • `checker_non_generic_actor_spawn_no_diagnostic` — regression: no error for bare `spawn Foo()`
+//! Generic actor constructor, bound and handler substitution contracts.
+
 use crate::common;
 
 use hew_types::error::TypeErrorKind;
@@ -124,53 +118,26 @@ fn main() {
     );
 }
 
-// ── checker_actor_bound_enforcement_reuses_machine_helper ───────────────────
-
-/// Generic actor with `<T: Send>` bound: spawning with a non-Send type
-/// fires `BoundsNotSatisfied` via `enforce_actor_instantiation_bounds`.
-///
-/// This test exercises the clone-pattern: `enforce_actor_instantiation_bounds`
-/// is a copy of `enforce_machine_instantiation_bounds` scoped to the actor
-/// bound table — both helpers route through `enforce_named_type_param_bounds`.
 #[test]
-fn checker_actor_bound_enforcement_reuses_machine_helper() {
-    // `Closure` is not a Send type in the hew type system, but for an
-    // isolated checker test we just need any type that is NOT in the
-    // `Send` impl set.  Using `fn(i32) -> i32` as a function-pointer
-    // type is the safest choice: it resolves cleanly but does not carry
-    // a `Send` impl.
-    //
-    // However, since function-pointer syntax is complex in Hew, we instead
-    // declare a local record type that has no `Send` impl and verify that
-    // the checker correctly rejects it.
-    //
-    // Note: For the isolated checker, only built-in types have `Send`.
-    // A user-declared record without `impl Send` is non-Send by default.
-    let source = r"
-type Plain { value: i32 }
-
-actor Holder<T: Send> {
-    receive fn put(item: T) {}
-}
-
-fn main() {
-    let _pid = spawn Holder<Plain>();
-}
-";
-    let (_prog, output) = common::parse_and_typecheck_isolated(source);
-
-    let bounds_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| matches!(&e.kind, TypeErrorKind::BoundsNotSatisfied))
-        .collect();
-
+fn checker_actor_rejects_non_send_type_argument_at_spawn() {
+    let source = "actor Holder<T> { receive fn put(item: T) {} } fn main() { let _pid = spawn Holder<Rc<i64>>(); }";
+    let (_, output) = common::parse_and_typecheck_isolated(source);
     assert!(
-        !bounds_errors.is_empty(),
-        "expected BoundsNotSatisfied for Holder<Plain> where T: Send; \
-         errors present: {:#?}",
+        output.errors.iter().any(
+            |error| matches!(error.kind, TypeErrorKind::BoundsNotSatisfied)
+                && error.message.contains("Send")
+                && error.message.contains("Rc")
+        ),
+        "{:#?}",
         output.errors
     );
+}
+
+#[test]
+fn checker_actor_accepts_structurally_send_record_argument() {
+    let source = "type Packet { value: i64 } actor Holder<T> { receive fn put(item: T) {} } fn main() { let _pid = spawn Holder<Packet>(); }";
+    let (_, output) = common::parse_and_typecheck_isolated(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
 // ── checker_actor_type_arg_arity_mismatch ───────────────────────────────────
@@ -251,47 +218,18 @@ fn main() {
     );
 }
 
-// ── checker_actor_spawn_type_args_recorded_in_output ────────────────────────
-
-/// Explicit type args on a generic spawn are recorded in
-/// `output.actor_spawn_type_args` for actor-mono discovery consumption.
 #[test]
-fn checker_actor_spawn_type_args_recorded_in_output() {
-    let source = r"
-actor Worker<T> {
-    receive fn run(task: T) {}
+fn checker_actor_infers_owner_from_init_and_substitutes_handler_reply() {
+    let source = "actor Holder<T> { var value: Option<T> = .None, init(seed: T) { value = .Some(seed); } receive fn get() -> Option<T> { value } } fn main() { let holder = spawn Holder(seed: 41); let result: i64 = holder.get().expect(\"reply\").expect(\"set\"); }";
+    let (_, output) = common::parse_and_typecheck_inline(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
-fn main() {
-    let _pid = spawn Worker<i32>();
-}
-";
-    let (_prog, output) = common::parse_and_typecheck_isolated(source);
-    assert!(
-        output.errors.is_empty(),
-        "should type-check cleanly: {:#?}",
-        output.errors
-    );
-
-    // At least one entry in actor_spawn_type_args for Worker<i32>.
-    let worker_entry = output
-        .actor_spawn_type_args
-        .values()
-        .find(|(name, args)| name == "Worker" && !args.is_empty());
-
-    assert!(
-        worker_entry.is_some(),
-        "expected actor_spawn_type_args entry for Worker<i32>; table: {:#?}",
-        output.actor_spawn_type_args
-    );
-
-    let (_, args) = worker_entry.unwrap();
-    assert_eq!(args.len(), 1);
-    assert!(
-        matches!(args[0], Ty::I32),
-        "expected i32, got {:?}",
-        args[0]
-    );
+#[test]
+fn checker_actor_handler_rejects_another_instances_payload() {
+    let source = "actor Holder<T> { receive fn put(value: T) {} } fn main() { let holder = spawn Holder<i64>(); holder.put(\"wrong instance\"); }";
+    let (_, output) = common::parse_and_typecheck_inline(source);
+    assert!(output.errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::Mismatch { expected, actual } if expected == "i64" && actual == "string")), "{:#?}", output.errors);
 }
 
 // ── checker_spawn_hashmap_new_infers_from_field_type ─────────────────────────

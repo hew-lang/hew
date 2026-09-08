@@ -66,6 +66,10 @@ pub struct SirInstanceKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallableInstance {
     Monomorphic,
+    /// A private member of the concrete actor named by `SemCallableKind::HewActor`.
+    /// Source declaration plus that actor owner distinguishes its body, including
+    /// when multiple actor instances share the same generic source declaration.
+    ActorMember,
     Generic(SirInstanceKey),
     /// A concrete closure body, resolved by its environment descriptor.
     Closure(ClosureId),

@@ -13556,7 +13556,13 @@ impl LowerCtx {
                         .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
                 },
             ),
-            _ => base_symbol_self_name.to_string(),
+            _ => {
+                crate::dispatch::receiver_self_type_for_impl_lookup_instance(&resolved_impl_self_ty)
+                    .map_or_else(
+                        || base_symbol_self_name.to_string(),
+                        |instance| instance.nominal.declaration().full_path().to_string(),
+                    )
+            }
         };
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
@@ -14978,12 +14984,11 @@ impl LowerCtx {
         {
             if let [ResolvedTy::Named {
                 name: actor_name,
-                args: actor_args,
                 builtin: None,
                 ..
             }] = args.as_mut_slice()
             {
-                if actor_args.is_empty() && !actor_name.contains('.') {
+                if !actor_name.contains('.') {
                     if let Some(module) = decl_module {
                         let qualified = format!("{module}.{actor_name}");
                         if self.actor_type_names.contains(&qualified) {
@@ -15006,7 +15011,7 @@ impl LowerCtx {
             ..
         } = &ty
         {
-            if builtin.is_none() && args.is_empty() {
+            if builtin.is_none() && !self.current_fn_type_params.contains(name) {
                 let actor_name = if self.actor_type_names.contains(name) {
                     Some(name.clone())
                 } else if !name.contains('.') {
@@ -15023,7 +15028,7 @@ impl LowerCtx {
                 if let Some(actor_name) = actor_name {
                     return ResolvedTy::Named {
                         name: BuiltinType::LocalPid.canonical_name().to_string(),
-                        args: vec![ResolvedTy::named_user(actor_name, Vec::new())],
+                        args: vec![ResolvedTy::named_user(actor_name, args.clone())],
                         builtin: Some(BuiltinType::LocalPid),
                         is_opaque: false,
                     };
@@ -15040,6 +15045,10 @@ impl LowerCtx {
     /// an actor lowered via [`lower_imported_actor`](Self::lower_imported_actor);
     /// it scopes `canonicalize_actor_ref_field_ty`'s bare-name resolution to
     /// the module the actor is actually declared in.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the actor declaration owns one generic scope across all of its members"
+    )]
     fn lower_actor(
         &mut self,
         decl: &ActorDecl,
@@ -15081,6 +15090,13 @@ impl LowerCtx {
             let key = crate::mangle_dotted_name(&format!("{registry_owner}::{}", method.name));
             self.register_fn_entry(&key, method);
         }
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            decl.type_params
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
+        );
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -15139,6 +15155,8 @@ impl LowerCtx {
             .get(&actor_identity)
             .cloned();
         let cycle_capable = self.cycle_capable_actors.contains(&actor_identity);
+
+        self.current_fn_type_params = previous_type_params;
 
         Some(HirActorDecl {
             id: self.ids.item(),

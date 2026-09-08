@@ -1280,8 +1280,40 @@ impl Checker {
         let actor_ty = Ty::Named {
             builtin: None,
             name: identity.clone(),
-            args: vec![],
+            args: ad
+                .type_params
+                .iter()
+                .map(|parameter| Ty::Named {
+                    builtin: None,
+                    name: parameter.name.clone(),
+                    args: Vec::new(),
+                })
+                .collect(),
         };
+        let generic_bindings: HashMap<_, _> = ad
+            .type_params
+            .iter()
+            .map(|parameter| {
+                (
+                    parameter.name.clone(),
+                    Ty::Named {
+                        builtin: None,
+                        name: parameter.name.clone(),
+                        args: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        let has_parameters = !generic_bindings.is_empty();
+        if has_parameters {
+            self.generic_ctx.push(generic_bindings);
+            let bounds = self
+                .type_defs
+                .get(&identity)
+                .map_or_else(HashMap::new, |definition| definition.bounds.clone());
+            self.current_type_param_bounds
+                .push(TypeParamScope::new(bounds, HashMap::new()));
+        }
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
         let prev_actor_fields = std::mem::replace(
             &mut self.current_actor_fields,
@@ -1304,7 +1336,9 @@ impl Checker {
             self.actor_max_heap.insert(identity.clone(), cap);
         }
 
+        let previous_function = self.current_function.replace(format!("{identity}::init"));
         self.check_actor_field_defaults(ad);
+        self.current_function = previous_function;
 
         // Type-check init body if present
         if let Some(init) = &ad.init {
@@ -1326,6 +1360,10 @@ impl Checker {
         // run order — see HEW-SPEC-2026 §9.1.2).
         self.check_actor_methods(ad, &identity);
 
+        if has_parameters {
+            self.current_type_param_bounds.pop();
+            self.generic_ctx.pop();
+        }
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
     }

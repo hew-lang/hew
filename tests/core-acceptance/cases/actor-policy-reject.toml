@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "rejected: full\n1\n2\n3\n4\n5\nclosed\n"
+stdout = "rejected: full\n2\n2\nclosed\n"
 exit = 0

@@ -94,3 +94,23 @@ pub unsafe extern "C" fn hew_async_tcp_write(
         }
     }
 }
+
+/// Submit an owned stream envelope through the same TCP readiness authority.
+///
+/// # Safety
+/// The backing's transport loan remains live through producer quiescence.
+pub(crate) unsafe fn start_tcp_stream_write(
+    connection: i32,
+    bytes: Vec<u8>,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    if bytes.is_empty() {
+        // SAFETY: caller lends the descriptor during operation construction.
+        let operation = unsafe { HewAsyncIo::new(waker) };
+        operation.complete(Ok(IoValue::Count(0)));
+        Arc::into_raw(operation)
+    } else {
+        // SAFETY: the caller retains the transport loan until this producer drains.
+        unsafe { start(connection, AsyncIoAction::write(bytes), waker) }
+    }
+}

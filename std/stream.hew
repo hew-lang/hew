@@ -10,11 +10,11 @@
 //!   values are valid items
 //! - `sink.close()` or drop yields graceful EOF; `stream.close()` or drop is a
 //!   local cancel/discard of unread items
-//! - Call `input.recv()` and `sink.send(value)` directly. Pipe operations can
-//!   suspend while waiting for data or capacity; file wrappers can block.
+//! - Call `input.recv()` and `sink.write(value)` directly. Native operations
+//!   wait for data or capacity while allowing other tasks to run on the worker.
 //!   `await` is reserved for tasks created by `fork`.
-//! - Constructors report errors; read/write error handling depends on the
-//!   wrapper. Check each operation rather than assuming a shared error type.
+//! - Constructor/open failures return errors; native read/write failures
+//!   propagate through the caller's runtime fault path.
 //!
 //! Current stdlib scope:
 //! - `bytes_pipe()` is the canonical in-memory constructor
@@ -53,13 +53,12 @@ pub type Sink<T> {
 
 // ── Stream<T> methods ─────────────────────────────────────────────────
 //
-// Method resolution is handled by the compiler intrinsic in
-// `hew-types/src/stdlib.rs`.  The enricher dispatches `.recv()` and
-// other methods to the correct C symbol based on `T`.
+// The checked element type selects the value transfer and cleanup descriptor.
+// Native receives suspend until a value, EOF or failure is ready.
 
 // ── Sink<T> methods ───────────────────────────────────────────────────
 //
-// `.send(value)` dispatches to the element-specific sink write entry.
+// `.write(value)` transfers a typed value through native backpressure.
 // `.close()` releases the sink; no public sink flush method is registered.
 
 // ── Constructors ──────────────────────────────────────────────────────

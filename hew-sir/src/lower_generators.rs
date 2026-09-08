@@ -113,7 +113,7 @@ impl Builder<'_, '_> {
                 return Err("yield differs from its stream producer's element type".into());
             }
             let value = self.lower_yield_value(expression, value)?;
-            return self.lower_stream_send(sink, value);
+            return self.lower_stream_send(sink, value, &[], true);
         }
         let CallableInstance::Closure(closure) = self.callable.instance else {
             return Err("yield requires a checked generator body".into());
@@ -177,11 +177,45 @@ impl Builder<'_, '_> {
     /// A stream producer parks on the consumer's capacity. A consumer that
     /// closed its half ends this turn normally: the sink and every local
     /// release through the ordinary return path.
-    fn lower_stream_send(&mut self, sink: ValueId, value: ValueId) -> Result<(), String> {
+    pub(super) fn lower_sink_write(
+        &mut self,
+        sink: &HirExpr,
+        value: &HirExpr,
+    ) -> Result<(), String> {
+        let mut loans = Vec::new();
+        let sink = self.lower_borrowed_read(sink, &mut loans)?;
+        let loan_depth = self.argument_receiver_loans.len();
+        self.argument_receiver_loans.extend(loans.iter().copied());
+        let mut transferred = value.clone();
+        transferred.intent = IntentKind::Consume;
+        let value = lower_initial_value_transfer(
+            self,
+            &transferred,
+            "stream element",
+            OwnedBindingUse::Copy,
+        )?;
+        self.argument_receiver_loans.truncate(loan_depth);
+        if !self.is_open() {
+            return Ok(());
+        }
+        self.lower_stream_send(sink.value, value, &loans, false)
+    }
+
+    fn lower_stream_send(
+        &mut self,
+        sink: ValueId,
+        value: ValueId,
+        loans: &[ValueId],
+        producer: bool,
+    ) -> Result<(), String> {
         self.owned_live.remove(&value);
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
-        let closed = self.new_block(Vec::new());
+        let closed = if producer {
+            self.new_block(Vec::new())
+        } else {
+            normal
+        };
         let cancel = self.new_block(Vec::new());
         let unwind = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Suspend {
@@ -204,14 +238,18 @@ impl Builder<'_, '_> {
         for cleanup in [cancel, unwind] {
             self.current = cleanup;
             self.owned_live = live.clone();
+            self.end_call_loans(loans)?;
             self.finish_fault_exit()?;
         }
-        self.current = closed;
-        self.owned_live = live.clone();
-        self.finish_return_value(None)?;
+        if producer {
+            self.current = closed;
+            self.owned_live = live.clone();
+            self.end_call_loans(loans)?;
+            self.finish_return_value(None)?;
+        }
         self.current = normal;
         self.owned_live = live;
-        Ok(())
+        self.end_call_loans(loans)
     }
 
     pub(super) fn lower_stream_next(

@@ -22,6 +22,8 @@ mod file;
 mod net;
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 pub use file::{hew_async_file_read, hew_async_file_write, hew_async_file_write_string};
+pub(crate) use file::{start_sink_write, start_stream_read};
+pub(crate) use net::start_tcp_stream_write;
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 
 #[cfg(test)]
@@ -82,6 +84,7 @@ impl Drop for AcceptedConnection {
 
 pub(crate) enum IoValue {
     Bytes(Vec<u8>),
+    StreamItem(Option<Vec<u8>>),
     Count(i64),
     Connection(AcceptedConnection),
 }
@@ -383,6 +386,34 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
     unsafe { out.write(crate::bytes::hew_bytes_from_static(bytes.as_ptr(), len)) };
     *state = State::Taken;
     AsyncIoStatus::Success as i32
+}
+
+/// Take one content-backed stream result without conflating an empty item
+/// with EOF. The operation retains an untaken result through cancellation.
+///
+/// # Safety
+/// `operation` is the live result of a stream-read submission.
+pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
+    // SAFETY: the caller lends a live operation reference.
+    let Some(operation) = (unsafe { operation.as_ref() }) else {
+        return (3, None);
+    };
+    let mut state = operation.state.lock_or_recover();
+    if matches!(*state, State::Pending(_)) {
+        return (0, None);
+    }
+    if !matches!(
+        *state,
+        State::Ready(Ok(IoValue::StreamItem(_) | IoValue::Bytes(_)))
+    ) {
+        return (3, None);
+    }
+    let item = match std::mem::replace(&mut *state, State::Taken) {
+        State::Ready(Ok(IoValue::StreamItem(item))) => item,
+        State::Ready(Ok(IoValue::Bytes(bytes))) => (!bytes.is_empty()).then_some(bytes),
+        _ => unreachable!(),
+    };
+    (if item.is_some() { 1 } else { 2 }, item)
 }
 
 /// Transfer a count from a completed write. The output is untouched on failure.

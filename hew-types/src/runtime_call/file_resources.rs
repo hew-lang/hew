@@ -144,17 +144,6 @@ impl FileReadOp {
     }
 }
 
-pub(super) const fn stream_close_contract() -> RuntimeSemanticContract {
-    runtime_semantic_contract(
-        &[RuntimeArgumentContract {
-            ty: RuntimeValueKind::FileReadHandle(FileReadHandleKind::Stream),
-            effect: RuntimeArgumentEffect::Move,
-        }],
-        RuntimeResultEffect::Unit,
-        &[],
-    )
-}
-
 impl RuntimeCallFamily {
     /// Admit file operations only through their exact shipped source declaration.
     /// The checker separately proves the module's canonical source provenance.

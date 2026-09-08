@@ -73,10 +73,7 @@ pub(crate) fn abort_elem_witness(context: &str, reason: &str) -> ! {
 ///
 /// `layout`, when non-null, must point to a `HewValueLayout` that lives for
 /// the duration of the caller's operation (in practice a codegen static).
-pub(crate) unsafe fn elem_layout_witness<'a>(
-    layout: *const HewValueLayout,
-    context: &str,
-) -> &'a HewValueLayout {
+unsafe fn element_layout<'a>(layout: *const HewValueLayout, context: &str) -> &'a HewValueLayout {
     if layout.is_null() {
         abort_elem_witness(context, "element layout witness must be non-null");
     }
@@ -91,6 +88,19 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
             "element layout align must be a non-zero power of two",
         );
     }
+    l
+}
+
+/// Validate a descriptor used by a copy-in queue operation.
+///
+/// # Safety
+/// `layout` points to a live descriptor for the duration of the operation.
+pub(crate) unsafe fn elem_layout_witness<'a>(
+    layout: *const HewValueLayout,
+    context: &str,
+) -> &'a HewValueLayout {
+    // SAFETY: descriptor validity is the caller's contract.
+    let l = unsafe { element_layout(layout, context) };
     if l.ownership_kind == HewTypeOwnershipKind::LayoutManaged
         && (l.clone_fn.is_none() || l.drop_fn.is_none())
     {
@@ -100,6 +110,51 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
         );
     }
     l
+}
+
+/// Validate a descriptor used by an owned-value transfer. A move-only value
+/// needs its destructor but does not need a clone operation.
+///
+/// # Safety
+/// `layout` points to a live descriptor for the duration of the operation.
+pub(crate) unsafe fn move_elem_layout_witness<'a>(
+    layout: *const HewValueLayout,
+    context: &str,
+) -> &'a HewValueLayout {
+    // SAFETY: descriptor validity is the caller's contract.
+    let layout = unsafe { element_layout(layout, context) };
+    if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.drop_fn.is_none() {
+        abort_elem_witness(context, "owned element witness is missing its drop thunk");
+    }
+    layout
+}
+
+/// Move a value into its descriptor-selected queue envelope. Content-backed
+/// strings and bytes release their source only after encoding succeeds;
+/// layout-managed values transfer their slot image without cloning.
+///
+/// # Safety
+/// `data` is a writable live element slot. `layout` passed the move validator.
+/// The caller must abandon the source slot after this function returns.
+pub(crate) unsafe fn move_elem_envelope(
+    data: *mut c_void,
+    layout: &HewValueLayout,
+    context: &str,
+) -> Vec<u8> {
+    if matches!(
+        layout.ownership_kind,
+        HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged
+    ) {
+        // SAFETY: data contains the live element described by the witness.
+        return unsafe { std::slice::from_raw_parts(data.cast::<u8>(), layout.size) }.to_vec();
+    }
+    // SAFETY: content encoding reads the source without changing ownership.
+    let envelope = unsafe { encode_elem_envelope(data, layout, context) };
+    let drop = layout.drop_fn.expect("validated owned element destructor");
+    // SAFETY: encoding succeeded, so the envelope now owns the content and
+    // this is the sole release of the transferred source value.
+    unsafe { drop(data) };
+    envelope
 }
 
 /// Release one queue envelope that never reached a consumer.
@@ -204,8 +259,8 @@ pub(crate) unsafe fn encode_elem_envelope(
 
 /// Decode one queue envelope into the consumer's out slot (the recv side).
 ///
-/// Returns 1 when a value was written to `out`, 0 when no value is available
-/// (`item` was `None`, or the documented bytes empty-item narrowing applied).
+/// Returns 1 when a value was written to `out`, including empty string or
+/// bytes content, and 0 at EOF or after a decoding failure.
 /// Ownership of a decoded `LayoutManaged` element MOVES to the consumer: no
 /// clone runs, no drop runs, and the envelope bytes are dead afterwards.
 ///
@@ -240,16 +295,12 @@ pub(crate) unsafe fn decode_elem_envelope(
             1
         }
         HewTypeOwnershipKind::Bytes => {
-            if item.is_empty() {
-                // Documented bytes narrowing: a present zero-length item is
-                // indistinguishable from EOF (matches `hew_stream_next_bytes`).
+            let Ok(len) = u32::try_from(item.len()) else {
+                crate::stream_error::set_last_error(format!(
+                    "{context}: bytes element exceeds its length representation"
+                ));
                 return 0;
-            }
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "stream item lengths carry the u32 bytes-ABI width"
-            )]
-            let len = item.len() as u32;
+            };
             // SAFETY: item is valid for len bytes; from_static copies it into a
             // fresh refcount-1 buffer the consumer owns.
             let triple = unsafe { crate::bytes::hew_bytes_from_static(item.as_ptr(), len) };

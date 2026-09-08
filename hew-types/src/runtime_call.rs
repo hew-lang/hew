@@ -540,6 +540,11 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
     match ty {
         ResolvedTy::Named {
+            builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink)),
+            args,
+            ..
+        } if args.len() == 1 => Some(*kind),
+        ResolvedTy::Named {
             name,
             builtin: Some(builtin),
             args,
@@ -4068,7 +4073,22 @@ impl RuntimeCallFamily {
             Self::AsyncIo(op) => op.contract(),
             Self::FileRead(op) => op.contract(),
             Self::Tcp(op) => op.contract(),
-            Self::StreamClose => file_resources::stream_close_contract(),
+            Self::StreamClose => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::Receiver(BuiltinType::Stream),
+                    effect: RuntimeArgumentEffect::Move,
+                }],
+                RuntimeResultEffect::Unit,
+                &[],
+            ),
+            Self::SinkClose => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::Receiver(BuiltinType::Sink),
+                    effect: RuntimeArgumentEffect::Move,
+                }],
+                RuntimeResultEffect::Unit,
+                &[],
+            ),
             Self::ChannelSenderClone => runtime_semantic_contract(
                 &[RuntimeArgumentContract {
                     ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Sender),

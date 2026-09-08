@@ -8228,6 +8228,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             return self.lower_native_io(expr, operation, args);
         }
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::SinkWrite(_)
+                | hew_types::RuntimeCallFamily::StreamSendLayout
+        ) {
+            let [sink, value] = args else {
+                return Err("stream write takes one sink and one element".into());
+            };
+            self.lower_sink_write(sink, value)?;
+            return Ok(None);
+        }
         if family == hew_types::RuntimeCallFamily::StreamNextLayout {
             let [stream] = args else {
                 return Err("stream receive takes exactly one stream".into());
@@ -8257,7 +8268,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
         })?;
         let parameter_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
-        let instantiated = contract.instantiate(&parameter_types, &self.ty(&expr.ty))?;
+        let instantiated = contract
+            .instantiate(&parameter_types, &self.ty(&expr.ty))
+            .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
         if matches!(
             family,
             hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::New)

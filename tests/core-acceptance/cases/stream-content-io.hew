@@ -1,0 +1,26 @@
+import std.fs;
+import std.os;
+import std.stream;
+
+fn main() {
+    let path = f"{os.temp_dir()}/hew-stream-content-{os.pid()}.bin";
+    let output = stream.to_file(path).expect("open output");
+    output.write("first\0");
+    output.write("");
+    output.write("last 🌲");
+    output.close();
+    assert(fs.read(path).expect("read output") == "first\0last 🌲");
+
+    let input = stream.from_file(path).expect("open input");
+    var content = "";
+    loop {
+        match input.recv() {
+            .Some(chunk) => { content = content + chunk; },
+            .None => { break; },
+        }
+    }
+    assert(content == "first\0last 🌲");
+    input.close();
+    fs.delete(path).expect("remove output");
+    println("native stream content I/O");
+}

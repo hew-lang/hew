@@ -1913,6 +1913,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             HewTypeOwnershipKind::Plain
         } else if recipe.ty == ResolvedTy::String {
             HewTypeOwnershipKind::String
+        } else if recipe.ty == ResolvedTy::Bytes {
+            HewTypeOwnershipKind::Bytes
         } else {
             HewTypeOwnershipKind::LayoutManaged
         };
@@ -2437,8 +2439,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 capacity,
                 stream,
                 sink,
-                element,
-            } => self.emit_stream_pipe(*capacity, *stream, *sink, element),
+                ..
+            } => self.emit_stream_pipe(*capacity, *stream, *sink),
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
             PhysicalOp::TaskScopeEnter {
@@ -3175,24 +3177,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
-            PhysicalTerminator::StreamNext {
-                stream,
-                result,
-                normal,
-                cancel,
-                unwind,
-            } => self.emit_stream_next(stream, *result, normal, cancel, unwind),
+            PhysicalTerminator::StreamNext { .. } => self.emit_stream_next(block),
             PhysicalTerminator::ChannelRecv { .. } => self.emit_channel_recv(block),
             PhysicalTerminator::ChannelSend { .. } => self.emit_channel_send(block),
-            PhysicalTerminator::StreamSend {
-                sink,
-                value,
-                element,
-                normal,
-                closed,
-                cancel,
-                unwind,
-            } => self.emit_stream_send(sink, value, element, normal, closed, cancel, unwind),
+            PhysicalTerminator::StreamSend { .. } => self.emit_stream_send(block),
             PhysicalTerminator::ValueClose {
                 index,
                 destroy,
@@ -3933,6 +3921,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalRuntimeAction::StreamClose => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::SinkClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::SinkClose,
                     transfers,
                     result,
                 )?;

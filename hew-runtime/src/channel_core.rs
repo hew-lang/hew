@@ -34,8 +34,6 @@
 //! does not exist on `wasm32`.
 
 use std::collections::VecDeque;
-use std::ffi::c_void;
-use std::ptr;
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -77,18 +75,25 @@ struct Waiter {
     item: Option<Vec<u8>>,
 }
 
-/// A receive owns its notification until it completes; a select borrows a
-/// registration owned by that selection. Dropping a losing observation releases
-/// its target immediately without clearing a subsequent receiver registration.
-enum NativeConsumer {
-    Receive(Arc<OwnedWaker>),
+/// Inline polls retain their notification; owned operations and selections
+/// lend a weak registration. Dropping an observer releases its target without
+/// clearing a later registration on the same queue.
+enum NativeRegistration {
+    Retained(Arc<OwnedWaker>),
     Observe(std::sync::Weak<OwnedWaker>),
 }
 
-impl NativeConsumer {
+impl NativeRegistration {
+    fn is_live(&self) -> bool {
+        match self {
+            Self::Retained(_) => true,
+            Self::Observe(waker) => waker.strong_count() != 0,
+        }
+    }
+
     fn into_waker(self) -> Option<Arc<OwnedWaker>> {
         match self {
-            Self::Receive(waker) => Some(waker),
+            Self::Retained(waker) => Some(waker),
             Self::Observe(waker) => waker.upgrade(),
         }
     }
@@ -124,10 +129,10 @@ struct Inner {
     /// `None` for Plain/String/Bytes elements — their envelopes own no heap
     /// beyond the `Vec<u8>` itself.
     elem_layout: Option<HewValueLayout>,
-    /// The checked consumer parked by [`ChannelCore::next_native`].
-    native_consumer: Option<NativeConsumer>,
-    /// Checked producers parked on a full ring by [`ChannelCore::send_native`].
-    native_producers: Vec<Arc<OwnedWaker>>,
+    /// The checked consumer parked by [`ChannelCore::poll_recv_envelope`].
+    native_consumer: Option<NativeRegistration>,
+    /// Checked producers parked on a full ring by [`ChannelCore::poll_send_envelope`].
+    native_producers: Vec<NativeRegistration>,
 }
 
 /// Shared in-memory pipe state, held by `Arc` from BOTH the stream backing and
@@ -294,60 +299,6 @@ impl ChannelCore {
     // slot: the element bytes move straight between the caller's storage and
     // the queue, and a parked peer is woken through the waker it left here.
 
-    /// Whether `size` matches the element witness stamped on this pipe.
-    fn element_size_matches(inner: &Inner, size: usize) -> bool {
-        inner.elem_layout.is_some_and(|layout| layout.size == size)
-    }
-
-    /// Transfer the next element into `out`. Returns 1 with the element
-    /// written, 2 at end of stream, 3 after a producer fault, or 0 after
-    /// retaining `waker` for the next deposit or close.
-    ///
-    /// # Safety
-    /// `out` is writable for the stamped element size and `waker` obeys the
-    /// [`HewWaker`] contract.
-    pub unsafe fn next_native(&self, waker: &HewWaker, out: *mut c_void, size: usize) -> i32 {
-        let item;
-        let producer_wake;
-        let native_producers;
-        {
-            let mut inner = self.locked();
-            if !Self::element_size_matches(&inner, size) {
-                crate::channel_common::abort_elem_witness(
-                    "ChannelCore::next_native",
-                    "element size differs from the stamped pipe witness",
-                );
-            }
-            match inner.queue.pop_front() {
-                Some(bytes) => {
-                    item = bytes;
-                    producer_wake = Self::drain_one_producer(&mut inner);
-                    native_producers = std::mem::take(&mut inner.native_producers);
-                }
-                None if inner.sink_fault => return 3,
-                None if inner.sink_closed => return 2,
-                None => {
-                    // SAFETY: the caller keeps the descriptor live during retain.
-                    inner.native_consumer = Some(NativeConsumer::Receive(Arc::new(unsafe {
-                        OwnedWaker::retain(waker)
-                    })));
-                    return 0;
-                }
-            }
-        }
-        // SAFETY: `out` receives exactly the stamped element size per contract.
-        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), out.cast::<u8>(), size) };
-        if let Some(w) = producer_wake {
-            // SAFETY: removed under the lock; we own its in-flight ref.
-            unsafe { Self::wake(w) };
-        }
-        for producer in native_producers {
-            producer.wake();
-        }
-        self.cv.notify_all();
-        1
-    }
-
     /// Take the next queue envelope for a checked coroutine consumer,
     /// retaining `waker` when nothing is available yet.
     ///
@@ -360,6 +311,17 @@ impl ChannelCore {
     /// # Safety
     /// `waker` obeys the [`HewWaker`] contract.
     pub unsafe fn poll_recv_envelope(&self, waker: &HewWaker) -> (i32, Option<Vec<u8>>) {
+        // SAFETY: the caller lends a live descriptor for this retain.
+        let registration =
+            NativeRegistration::Retained(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+        self.poll_recv_registered(registration)
+    }
+
+    pub(crate) fn poll_recv_observed(&self, waker: &Arc<OwnedWaker>) -> (i32, Option<Vec<u8>>) {
+        self.poll_recv_registered(NativeRegistration::Observe(Arc::downgrade(waker)))
+    }
+
+    fn poll_recv_registered(&self, registration: NativeRegistration) -> (i32, Option<Vec<u8>>) {
         let item;
         let producer_wake;
         let native_producers;
@@ -374,10 +336,9 @@ impl ChannelCore {
                 None if inner.sink_fault => return (3, None),
                 None if inner.sink_closed => return (2, None),
                 None => {
-                    // SAFETY: the caller keeps the descriptor live during retain.
-                    inner.native_consumer = Some(NativeConsumer::Receive(Arc::new(unsafe {
-                        OwnedWaker::retain(waker)
-                    })));
+                    let previous = inner.native_consumer.replace(registration);
+                    drop(inner);
+                    drop(previous);
                     return (0, None);
                 }
             }
@@ -387,7 +348,9 @@ impl ChannelCore {
             unsafe { Self::wake(w) };
         }
         for producer in native_producers {
-            producer.wake();
+            if let Some(producer) = producer.into_waker() {
+                producer.wake();
+            }
         }
         self.cv.notify_all();
         (1, Some(item))
@@ -412,7 +375,11 @@ impl ChannelCore {
         if inner.sink_closed {
             return 2;
         }
-        inner.native_consumer = Some(NativeConsumer::Observe(Arc::downgrade(waker)));
+        let previous = inner
+            .native_consumer
+            .replace(NativeRegistration::Observe(Arc::downgrade(waker)));
+        drop(inner);
+        drop(previous);
         0
     }
 
@@ -430,6 +397,25 @@ impl ChannelCore {
         waker: &HewWaker,
         envelope: Vec<u8>,
     ) -> (i32, Option<Vec<u8>>) {
+        // SAFETY: the caller lends a live descriptor for this retain.
+        let registration =
+            NativeRegistration::Retained(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+        self.poll_send_registered(registration, envelope)
+    }
+
+    pub(crate) fn poll_send_observed(
+        &self,
+        waker: &Arc<OwnedWaker>,
+        envelope: Vec<u8>,
+    ) -> (i32, Option<Vec<u8>>) {
+        self.poll_send_registered(NativeRegistration::Observe(Arc::downgrade(waker)), envelope)
+    }
+
+    fn poll_send_registered(
+        &self,
+        registration: NativeRegistration,
+        envelope: Vec<u8>,
+    ) -> (i32, Option<Vec<u8>>) {
         let consumer_wake;
         let native_consumer;
         {
@@ -438,10 +424,8 @@ impl ChannelCore {
                 return (2, Some(envelope));
             }
             if inner.queue.len() >= inner.capacity {
-                // SAFETY: the caller keeps the descriptor live during retain.
-                inner
-                    .native_producers
-                    .push(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+                inner.native_producers.retain(NativeRegistration::is_live);
+                inner.native_producers.push(registration);
                 return (0, Some(envelope));
             }
             inner.queue.push_back(envelope);
@@ -449,7 +433,7 @@ impl ChannelCore {
             native_consumer = inner
                 .native_consumer
                 .take()
-                .and_then(NativeConsumer::into_waker);
+                .and_then(NativeRegistration::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -460,54 +444,6 @@ impl ChannelCore {
         }
         self.cv.notify_all();
         (1, None)
-    }
-
-    /// Move one element into the ring. Returns 1 after the transfer, 2 when
-    /// either half is closed or faulted, or 0 after retaining `waker` until the
-    /// consumer frees capacity or closes.
-    ///
-    /// # Safety
-    /// `data` points to one live element of the stamped size and `waker` obeys
-    /// the [`HewWaker`] contract.
-    pub unsafe fn send_native(&self, waker: &HewWaker, data: *const c_void, size: usize) -> i32 {
-        let consumer_wake;
-        let native_consumer;
-        {
-            let mut inner = self.locked();
-            if !Self::element_size_matches(&inner, size) {
-                crate::channel_common::abort_elem_witness(
-                    "ChannelCore::send_native",
-                    "element size differs from the stamped pipe witness",
-                );
-            }
-            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
-                return 2;
-            }
-            if inner.queue.len() >= inner.capacity {
-                // SAFETY: the caller keeps the descriptor live during retain.
-                inner
-                    .native_producers
-                    .push(Arc::new(unsafe { OwnedWaker::retain(waker) }));
-                return 0;
-            }
-            // SAFETY: `data` is readable for the stamped element size.
-            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
-            inner.queue.push_back(bytes);
-            consumer_wake = inner.consumer.take();
-            native_consumer = inner
-                .native_consumer
-                .take()
-                .and_then(NativeConsumer::into_waker);
-        }
-        if let Some(w) = consumer_wake {
-            // SAFETY: removed under the lock; we own its in-flight ref.
-            unsafe { Self::wake(w) };
-        }
-        if let Some(consumer) = native_consumer {
-            consumer.wake();
-        }
-        self.cv.notify_all();
-        1
     }
 
     // ── Consumer side ────────────────────────────────────────────────────────
@@ -912,7 +848,7 @@ impl ChannelCore {
             native_consumer = inner
                 .native_consumer
                 .take()
-                .and_then(NativeConsumer::into_waker);
+                .and_then(NativeRegistration::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -945,7 +881,9 @@ impl ChannelCore {
             }
         }
         for producer in native_producers {
-            producer.wake();
+            if let Some(producer) = producer.into_waker() {
+                producer.wake();
+            }
         }
         for w in wakes {
             // SAFETY: removed under the lock; we own each in-flight ref. The
@@ -999,9 +937,13 @@ impl ChannelCore {
             native_wakes = inner
                 .native_consumer
                 .take()
-                .and_then(NativeConsumer::into_waker)
+                .and_then(NativeRegistration::into_waker)
                 .into_iter()
-                .chain(std::mem::take(&mut inner.native_producers))
+                .chain(
+                    std::mem::take(&mut inner.native_producers)
+                        .into_iter()
+                        .filter_map(NativeRegistration::into_waker),
+                )
                 .collect::<Vec<_>>();
         }
         for peer in native_wakes {

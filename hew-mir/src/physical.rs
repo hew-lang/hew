@@ -915,6 +915,7 @@ pub enum PhysicalRuntimeAction {
     FileRead(hew_types::runtime_call::FileReadOp),
     Tcp(hew_types::runtime_call::TcpOp),
     StreamClose,
+    SinkClose,
     /// The channel substrate's non-suspending entries: allocating and
     /// splitting a pair, and closing either half.
     ChannelSenderClone,
@@ -1009,6 +1010,7 @@ impl PhysicalRuntimeAction {
             Self::FileRead(op) => RuntimeCallFamily::FileRead(op),
             Self::Tcp(op) => RuntimeCallFamily::Tcp(op),
             Self::StreamClose => RuntimeCallFamily::StreamClose,
+            Self::SinkClose => RuntimeCallFamily::SinkClose,
             Self::ChannelSenderClone => RuntimeCallFamily::ChannelSenderClone,
             Self::ChannelSenderClose => RuntimeCallFamily::ChannelSenderClose,
             Self::ChannelReceiverClose => RuntimeCallFamily::ChannelReceiverClose,
@@ -1081,6 +1083,7 @@ pub enum PhysicalTerminator {
     /// Park until the exclusively borrowed stream yields an element or ends.
     StreamNext {
         stream: ArgumentTransfer,
+        element: PhysicalValueRecipe,
         result: StorageId,
         normal: PhysicalEdge,
         cancel: PhysicalEdge,
@@ -2504,6 +2507,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::FileRead(op) => PhysicalRuntimeAction::FileRead(op),
         RuntimeCallFamily::Tcp(op) => PhysicalRuntimeAction::Tcp(op),
         RuntimeCallFamily::StreamClose => PhysicalRuntimeAction::StreamClose,
+        RuntimeCallFamily::SinkClose => PhysicalRuntimeAction::SinkClose,
         RuntimeCallFamily::ChannelSenderClone => PhysicalRuntimeAction::ChannelSenderClone,
         RuntimeCallFamily::ChannelSenderClose => PhysicalRuntimeAction::ChannelSenderClose,
         RuntimeCallFamily::ChannelReceiverClose => PhysicalRuntimeAction::ChannelReceiverClose,
@@ -3529,13 +3533,28 @@ impl FunctionLowerer<'_> {
                 resumes,
                 cancel,
                 unwind,
-            } => Ok(PhysicalTerminator::StreamNext {
-                stream: self.argument_transfers(inputs)?[0],
-                result: self.value(result.id)?,
-                normal: self.lower_edge(&resumes[0])?,
-                cancel: self.lower_edge(cancel)?,
-                unwind: self.lower_edge(unwind)?,
-            }),
+            } => {
+                let shape = self
+                    .module
+                    .variant_shape_for_type(&result.ty)
+                    .ok_or_else(|| {
+                        PhysicalError::new("stream receive lacks its Option descriptor")
+                    })?;
+                let element = shape
+                    .variants
+                    .first()
+                    .and_then(|variant| variant.fields.first())
+                    .map(|field| field.ty.clone())
+                    .ok_or_else(|| PhysicalError::new("stream receive lacks its element type"))?;
+                Ok(PhysicalTerminator::StreamNext {
+                    stream: self.argument_transfers(inputs)?[0],
+                    element: physical_value_recipe(self.module, self.glue_ids, &element)?,
+                    result: self.value(result.id)?,
+                    normal: self.lower_edge(&resumes[0])?,
+                    cancel: self.lower_edge(cancel)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::ChannelRecv { park },
                 inputs,
@@ -6414,6 +6433,7 @@ fn terminator_successors(
             normal,
             cancel,
             unwind,
+            ..
         } => {
             let ArgumentTransfer::BorrowMut(stream) = stream else {
                 return Err(PhysicalError::new(
@@ -7180,7 +7200,12 @@ fn verify_terminator(
             }
             Ok(())
         }
-        PhysicalTerminator::StreamNext { stream, result, .. } => {
+        PhysicalTerminator::StreamNext {
+            stream,
+            element: recipe,
+            result,
+            ..
+        } => {
             let ArgumentTransfer::BorrowMut(stream) = stream else {
                 return Err(PhysicalError::new(
                     "stream receive requires an exclusive stream",
@@ -7188,13 +7213,19 @@ fn verify_terminator(
             };
             let element = hew_sir::stream_element(&slot(*stream)?.ty)
                 .ok_or_else(|| PhysicalError::new("stream receive has no stream input"))?;
-            if slot(*result)?.ty
-                != ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![element.clone()])
+            if recipe.ty != *element
+                || slot(*result)?.ty
+                    != ResolvedTy::named_builtin(
+                        "Option",
+                        BuiltinType::Option,
+                        vec![element.clone()],
+                    )
             {
                 return Err(PhysicalError::new(
                     "stream receive changes its element type",
                 ));
             }
+            verify_value_recipe(module, recipe)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
             }
@@ -7211,11 +7242,7 @@ fn verify_terminator(
                     "channel receive requires an exclusive receiver",
                 ));
             };
-            // The message type is a caller-side fact: `std.channel` declares
-            // the endpoint bare, so a receiver spelled with its element must
-            // agree and a bare one imposes nothing.
-            if hew_sir::receiver_element(&slot(*channel)?.ty)
-                .is_some_and(|message| *message != element.ty)
+            if hew_sir::receiver_element(&slot(*channel)?.ty) != Some(&element.ty)
                 || slot(*result)?.ty
                     != ResolvedTy::named_builtin(
                         "Option",
@@ -7246,8 +7273,7 @@ fn verify_terminator(
                     "channel send borrows its sender exclusively and reads its element",
                 ));
             };
-            if hew_sir::sender_element(&slot(*channel)?.ty)
-                .is_some_and(|message| *message != element.ty)
+            if hew_sir::sender_element(&slot(*channel)?.ty) != Some(&element.ty)
                 || slot(*value)?.ty != element.ty
             {
                 return Err(PhysicalError::new(

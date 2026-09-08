@@ -1,0 +1,34 @@
+import std.net;
+import std.stream;
+
+fn drain(consume input: Stream<bytes>) -> bytes {
+    var result = "".to_bytes();
+    for chunk in input {
+        for byte in chunk { result.push(byte); }
+    }
+    result
+}
+
+fn client(address: string) -> bytes {
+    let connection = net.connect(address).expect("connect client");
+    let (input, output) = connection.into_stream_sink();
+    output.write("request\0bytes".to_bytes());
+    output.close();
+    drain(input)
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let address = f"127.0.0.1:{listener.local_port()}";
+    scope {
+        let response = fork client(address);
+        let connection = listener.accept();
+        let (input, output) = connection.into_stream_sink();
+        assert(drain(input) == "request\0bytes".to_bytes());
+        output.write("reply\0bytes".to_bytes());
+        output.close();
+        assert(await response == "reply\0bytes".to_bytes());
+    }
+    listener.close();
+    println("TCP streams use native readiness");
+}

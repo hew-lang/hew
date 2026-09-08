@@ -978,6 +978,12 @@ static TCP_API_STATE: LazyLock<PoisonSafe<TcpApiState>> =
 pub(crate) fn tcp_adopt_connection(stream: TcpStream) -> c_int {
     let _ = stream.set_nodelay(true);
     tcp_counters().connect_count.fetch_add(1, Ordering::Relaxed);
+    tcp_register_owned_stream(stream)
+}
+
+/// Register an already-connected stream owner, including a cloned stream half.
+/// Splitting ownership does not report another network connection event.
+pub(crate) fn tcp_register_owned_stream(stream: TcpStream) -> c_int {
     TCP_API_STATE.access(|state| {
         let handle = state.alloc_handle();
         state.streams.insert(handle, stream);

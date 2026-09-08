@@ -5125,27 +5125,16 @@ fn verify_terminator_shape(
                             && value.decision == crate::BoundaryDecision::Borrow
                             && types.get(&channel.operand.value)
                                 .and_then(crate::sender_element)
-                                .is_none_or(|element| types.get(&value.operand.value) == Some(element)))
+                                .is_some_and(|element| types.get(&value.operand.value) == Some(element)))
                 }
                 crate::SuspendKind::StreamSend => {
-                    // Only a stream producer body sends: its owned sink is
-                    // lent and the element transfers to the consumer.
-                    let element = callable_context.and_then(|context| {
-                        context
-                            .actors
-                            .iter()
-                            .flat_map(|actor| &actor.handlers)
-                            .find(|handler| handler.callable == function.callable)
-                            .and_then(|handler| handler.stream.as_ref())
-                    });
                     resumes.len() == 2
                         && matches!(result, crate::CallResult::Unit)
                         && matches!(inputs.as_slice(), [sink, value]
                             if sink.decision == crate::BoundaryDecision::Borrow
                             && value.decision == crate::BoundaryDecision::Move
-                            && element.is_some()
-                            && types.get(&sink.operand.value).and_then(crate::sink_element) == element
-                            && types.get(&value.operand.value) == element)
+                            && types.get(&sink.operand.value).and_then(crate::sink_element)
+                                .is_some_and(|element| types.get(&value.operand.value) == Some(element)))
                 }
                 crate::SuspendKind::ValueClose { place, selection } => {
                     resumes.len() == 1

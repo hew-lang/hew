@@ -183,6 +183,8 @@ pub struct HewSink {
     /// the `dyn SinkOps` backing. The pointer borrows the `Arc<ChannelCore>`
     /// owned by the backing, so it stays valid for the lifetime of the sink.
     channel_core: *const std::ffi::c_void,
+    /// Borrowed transport handle owned by a TCP backing, cleared on close.
+    native_connection: Option<i32>,
 }
 
 impl std::fmt::Debug for HewSink {
@@ -192,6 +194,18 @@ impl std::fmt::Debug for HewSink {
 }
 
 impl HewSink {
+    /// Associate the TCP backing's live transport handle with native I/O.
+    /// The backing remains the sole resource owner.
+    pub fn set_native_connection(&mut self, connection: i32) {
+        self.native_connection = Some(connection);
+    }
+
+    /// Borrow the TCP backing's transport identity until this sink closes.
+    #[must_use]
+    pub fn native_connection(&self) -> Option<i32> {
+        self.native_connection
+    }
+
     /// Attach an opaque suspending-channel-core borrow (NEW-7). Called by the
     /// runtime pipe constructor after building the channel sink backing.
     pub fn set_channel_core(&mut self, core: *const std::ffi::c_void) {
@@ -243,6 +257,7 @@ impl HewSink {
         // Nulling it forces a later `hew_stream_await_send` onto the closed-sink
         // (fail-closed) path instead of dereferencing a possibly-freed core.
         self.channel_core = std::ptr::null();
+        self.native_connection = None;
         let Some(mut inner) = self.inner.take() else {
             return;
         };
@@ -272,6 +287,7 @@ pub fn into_sink_ptr<T: Send + 'static>(
             close,
         })),
         channel_core: std::ptr::null(),
+        native_connection: None,
     }))
 }
 
@@ -309,6 +325,7 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
             close: close_via_write::<_>,
         })),
         channel_core: std::ptr::null(),
+        native_connection: None,
     }))
 }
 
@@ -367,6 +384,7 @@ pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut H
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(ChannelSinkBacking { tx })),
         channel_core: std::ptr::null(),
+        native_connection: None,
     }))
 }
 

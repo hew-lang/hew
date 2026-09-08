@@ -73,6 +73,8 @@ pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
 
 use hew_cabi::vec::HewVec;
 
+pub(crate) mod native;
+
 /// Returns 1 if the stream pointer is non-null (valid), 0 otherwise.
 #[no_mangle]
 pub extern "C" fn hew_stream_is_valid(stream: *const HewStream) -> i32 {
@@ -99,6 +101,11 @@ type Item = Vec<u8>;
 // ── Backing traits ────────────────────────────────────────────────────────────
 
 trait StreamBacking: Send + std::fmt::Debug {
+    /// The backing owns this transport handle; native operations only borrow it.
+    fn native_connection(&self) -> Option<i32> {
+        None
+    }
+
     /// Return the next item, or `None` on EOF. Blocks until an item is available.
     fn next(&mut self) -> Option<Item>;
     /// Non-blocking item poll. Returns `Some(item)` if one is immediately
@@ -320,7 +327,23 @@ impl StreamBacking for FileReadStream {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct TcpStreamBacking {
-    stream: TcpStream,
+    connection: i32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl TcpStreamBacking {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            connection: crate::transport::tcp_register_owned_stream(stream),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for TcpStreamBacking {
+    fn drop(&mut self) {
+        crate::transport::tcp_release_conn(self.connection);
+    }
 }
 
 /// TCP read backing size, matching `hew_tcp_read`'s buffer (transport.rs:1216).
@@ -329,10 +352,18 @@ const TCP_BACKING_BUF_SIZE: usize = 8192;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl StreamBacking for TcpStreamBacking {
+    fn native_connection(&self) -> Option<i32> {
+        Some(self.connection)
+    }
+
     fn next(&mut self) -> Option<Item> {
+        if crate::runtime::rt_current_opt().is_some() {
+            return native::blocking_tcp_read(self.connection);
+        }
+        let mut stream = crate::transport::tcp_clone_stream(self.connection)?;
         let mut buf = [0u8; TCP_BACKING_BUF_SIZE];
         loop {
-            match self.stream.read(&mut buf) {
+            match stream.read(&mut buf) {
                 Ok(0) => {
                     // Peer closed the connection — clean EOF.
                     return None;
@@ -375,11 +406,8 @@ impl StreamBacking for TcpStreamBacking {
     }
 
     fn close(&mut self) {
-        // The cloned TcpStream fd closes when this struct is dropped.
-        // No explicit action needed; document the drop-on-drop contract:
-        //   TcpStreamBacking::drop → TcpStream::drop → OS fd table entry removed.
-        // Callers that want eager half-close should set a read timeout
-        // before bridging (Risk R1 in the R45 plan).
+        // Dropping this backing releases its transport entry and socket clone.
+        // Closing the readable half does not shut down the paired write half.
     }
 
     fn is_closed(&self) -> bool {
@@ -951,8 +979,7 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_pipe_native(
     capacity: i64,
-    elem_size: usize,
-    elem_drop: Option<hew_cabi::vec::HewValueDropThunk>,
+    layout: *const hew_cabi::vec::HewValueLayout,
     sink_out: *mut *mut HewSink,
 ) -> *mut HewStream {
     // SAFETY: the pair constructor accepts any capacity.
@@ -962,22 +989,14 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     }
     // SAFETY: the pair was just allocated by `hew_stream_channel`.
     let mut pair = unsafe { Box::from_raw(pair) };
-    let layout = hew_cabi::vec::HewValueLayout {
-        size: elem_size,
-        align: 1,
-        ownership_kind: if elem_drop.is_some() {
-            hew_cabi::vec::HewTypeOwnershipKind::LayoutManaged
-        } else {
-            hew_cabi::vec::HewTypeOwnershipKind::Plain
-        },
-        clone_fn: None,
-        drop_fn: elem_drop,
-        visit_close: None,
+    // SAFETY: the compiler lends a static descriptor for the owned element.
+    let layout = unsafe {
+        crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
     // SAFETY: both halves are live and share the core this pair created.
     unsafe {
         if let Some(core) = (*pair.stream).channel.as_ref() {
-            core.stamp_elem_layout(&layout);
+            core.stamp_elem_layout(layout);
         }
         *sink_out = pair.sink;
     }
@@ -987,51 +1006,6 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     pair.stream = std::ptr::null_mut();
     drop(pair);
     stream
-}
-
-/// Poll the checked consumer side of a pipe: 1 with an element written to
-/// `out`, 2 at end of stream, 3 after a producer fault, 0 while parked.
-///
-/// # Safety
-/// `stream` is a live pipe read half, `waker` obeys the waker contract, and
-/// `out` is writable for `size` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_next_native(
-    stream: *mut HewStream,
-    waker: *const crate::wake::HewWaker,
-    out: *mut c_void,
-    size: usize,
-) -> i32 {
-    // SAFETY: stream is a live handle per caller contract.
-    let Some(core) = (unsafe { &*stream }).channel.as_ref() else {
-        return 2;
-    };
-    // SAFETY: forwarded from the caller's contract.
-    unsafe { core.next_native(&*waker, out, size) }
-}
-
-/// Poll the checked producer side of a pipe: 1 after the element transferred,
-/// 2 when the consumer is gone, 0 while parked on capacity.
-///
-/// # Safety
-/// `sink` is a live pipe write half, `waker` obeys the waker contract, and
-/// `data` points to one live element of `size` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_sink_send_native(
-    sink: *mut HewSink,
-    waker: *const crate::wake::HewWaker,
-    data: *const c_void,
-    size: usize,
-) -> i32 {
-    // SAFETY: sink is a live handle per caller contract.
-    let core_raw = unsafe { (*sink).channel_core_ptr() };
-    if core_raw.is_null() {
-        return 2;
-    }
-    // SAFETY: the borrow stays valid for the sink's lifetime.
-    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
-    // SAFETY: forwarded from the caller's contract.
-    unsafe { core.send_native(&*waker, data, size) }
 }
 
 /// Return whether `pair` is a valid stream-pair handle.
@@ -1055,22 +1029,26 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
     core.close_sink();
 }
 
-fn tcp_sink_write(stream: &mut TcpStream, data: &[u8]) {
-    if let Err(error) = stream.write_all(data) {
-        set_last_error(format!("TCP sink write failed: {error}"));
+#[cfg(not(target_arch = "wasm32"))]
+fn tcp_sink_write(backing: &mut TcpStreamBacking, data: &[u8]) {
+    if crate::runtime::rt_current_opt().is_some() {
+        native::blocking_tcp_write(backing.connection, data);
+    } else if let Some(mut stream) = crate::transport::tcp_clone_stream(backing.connection) {
+        if let Err(error) = stream.write_all(data) {
+            set_last_error(format!("TCP sink write failed: {error}"));
+        }
     }
 }
 
-fn tcp_sink_flush(stream: &mut TcpStream) {
-    if let Err(error) = stream.flush() {
-        set_last_error(format!("TCP sink flush failed: {error}"));
-    }
-}
+#[cfg(not(target_arch = "wasm32"))]
+fn tcp_sink_flush(_backing: &mut TcpStreamBacking) {}
 
-fn tcp_sink_close(stream: &mut TcpStream) {
-    tcp_sink_flush(stream);
-    if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
-        set_last_error(format!("TCP sink shutdown failed: {error}"));
+#[cfg(not(target_arch = "wasm32"))]
+fn tcp_sink_close(backing: &mut TcpStreamBacking) {
+    if let Some(stream) = crate::transport::tcp_clone_stream(backing.connection) {
+        if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
+            set_last_error(format!("TCP sink shutdown failed: {error}"));
+        }
     }
 }
 
@@ -1201,23 +1179,30 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
     }
 
     // Release the original handle from the connection table WITHOUT calling
-    // shutdown.  TcpStream clones share a single OS file descriptor on Unix;
-    // calling shutdown on any clone shuts down the shared socket, which would
+    // shutdown. TcpStream clones refer to the same underlying socket;
+    // calling shutdown on any clone shuts down that socket, which would
     // immediately invalidate the two backings we just created.
     // `tcp_release_conn` only removes the table entry — the two clones keep
     // the socket alive.
     tcp_release_conn(conn);
 
     // Build the stream (read) half via the canonical helper.
-    let stream_ptr = into_stream_ptr(TcpStreamBacking {
-        stream: read_stream,
-    });
+    let stream_ptr = into_stream_ptr(TcpStreamBacking::new(read_stream));
 
     // Build the sink (write) half with a TCP-specific close callback. Closing
     // one duplicated descriptor is not enough to publish FIN while the read
     // half still owns another clone; `shutdown(Write)` makes eager sink closure
     // observable to the peer without disturbing the live read half.
-    let sink_ptr = into_sink_ptr(write_stream, tcp_sink_write, tcp_sink_flush, tcp_sink_close);
+    let write_backing = TcpStreamBacking::new(write_stream);
+    let write_connection = write_backing.connection;
+    let sink_ptr = into_sink_ptr(
+        write_backing,
+        tcp_sink_write,
+        tcp_sink_flush,
+        tcp_sink_close,
+    );
+    // SAFETY: the new sink backing owns this handle until close/drop.
+    unsafe { (*sink_ptr).set_native_connection(write_connection) };
 
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
@@ -5447,7 +5432,7 @@ mod tests {
         });
 
         let (accepted, _) = listener.accept().unwrap();
-        let mut backing = TcpStreamBacking { stream: accepted };
+        let mut backing = TcpStreamBacking::new(accepted);
 
         // Read all items until EOF.
         let mut collected = Vec::new();
@@ -5523,7 +5508,7 @@ mod tests {
         // "give the RST time to arrive" sleep is a jitter window, not a wait.
         t.join().unwrap();
 
-        let mut backing = TcpStreamBacking { stream: accepted };
+        let mut backing = TcpStreamBacking::new(accepted);
         // RST produces either ConnectionReset or Ok(0) EOF — either way None.
         // The read blocks until that event arrives (the deterministic wait).
         let result = backing.next();
@@ -5802,7 +5787,7 @@ mod tests {
     /// an owned `BytesTriple`. A present zero-length item keeps the documented
     /// EOF narrowing (rc 0), matching `hew_stream_next_bytes`.
     #[test]
-    fn layout_stream_bytes_roundtrip_with_empty_narrowing() {
+    fn layout_stream_bytes_roundtrip_preserves_empty() {
         // SAFETY: hew_stream_channel returns a valid pair; slots are locals.
         unsafe {
             let pair = hew_stream_channel(4);
@@ -5845,9 +5830,17 @@ mod tests {
                 std::ptr::addr_of_mut!(out).cast(),
                 &raw const layout,
             );
+            assert_eq!(rc, 1, "a present empty item is distinct from EOF");
+            assert_eq!(out.len, 0);
+            crate::bytes::hew_bytes_drop(out.ptr);
             assert_eq!(
-                rc, 0,
-                "present zero-length bytes item keeps the EOF narrowing"
+                hew_stream_pop_layout(
+                    stream,
+                    std::ptr::addr_of_mut!(out).cast(),
+                    &raw const layout
+                ),
+                0,
+                "only the following receive reaches EOF"
             );
 
             hew_stream_close(stream);

@@ -54,7 +54,7 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(self, name: string, iterations: i64, f: fn());
+    fn add(var self, name: string, iterations: i64, f: fn());
 
     /// Print results as a human-readable table.
     fn report(self);
@@ -65,7 +65,7 @@ trait SuiteMethods {
 
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
-    fn add(suite: Suite, name: string, iterations: i64, f: fn()) {
+    fn add(var suite: Suite, name: string, iterations: i64, f: fn()) {
 
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;

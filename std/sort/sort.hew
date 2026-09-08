@@ -40,25 +40,25 @@ fn copy_floats(v: Vec<f64>) -> Vec<f64> {
     out
 }
 
-fn swap_ints(v: Vec<i64>, i: i64, j: i64) {
+fn swap_ints(var v: Vec<i64>, i: i64, j: i64) {
     let tmp = v[i];
     v.set(i, v[j]);
     v.set(j, tmp);
 }
 
-fn swap_strings(v: Vec<string>, i: i64, j: i64) {
+fn swap_strings(var v: Vec<string>, i: i64, j: i64) {
     let tmp = v[i];
     v.set(i, v[j]);
     v.set(j, tmp);
 }
 
-fn swap_floats(v: Vec<f64>, i: i64, j: i64) {
+fn swap_floats(var v: Vec<f64>, i: i64, j: i64) {
     let tmp = v[i];
     v.set(i, v[j]);
     v.set(j, tmp);
 }
 
-fn merge_int_run(v: Vec<i64>, scratch: Vec<i64>, start: i64, mid: i64, end: i64) -> i64 {
+fn merge_int_run(v: Vec<i64>, var scratch: Vec<i64>, start: i64, mid: i64, end: i64) -> i64 {
     var left = start;
     var right = mid;
     var write = start;
@@ -92,7 +92,7 @@ fn merge_int_run(v: Vec<i64>, scratch: Vec<i64>, start: i64, mid: i64, end: i64)
     comparisons
 }
 
-fn merge_string_run(v: Vec<string>, scratch: Vec<string>, start: i64, mid: i64, end: i64) -> i64 {
+fn merge_string_run(v: Vec<string>, var scratch: Vec<string>, start: i64, mid: i64, end: i64) -> i64 {
     var left = start;
     var right = mid;
     var write = start;
@@ -126,7 +126,7 @@ fn merge_string_run(v: Vec<string>, scratch: Vec<string>, start: i64, mid: i64, 
     comparisons
 }
 
-fn sort_ints_in_place(v: Vec<i64>) -> i64 {
+fn sort_ints_in_place(var v: Vec<i64>) -> i64 {
     let n = v.len();
     if n < 2 {
         return 0;
@@ -167,7 +167,7 @@ fn sort_ints_in_place(v: Vec<i64>) -> i64 {
     comparisons
 }
 
-fn sort_strings_in_place(v: Vec<string>) -> i64 {
+fn sort_strings_in_place(var v: Vec<string>) -> i64 {
     let n = v.len();
     if n < 2 {
         return 0;
@@ -206,7 +206,7 @@ fn sort_strings_in_place(v: Vec<string>) -> i64 {
     comparisons
 }
 
-fn reverse_ints_in_place(v: Vec<i64>) {
+fn reverse_ints_in_place(var v: Vec<i64>) {
     let n = v.len();
     if n < 2 {
         return;
@@ -220,7 +220,7 @@ fn reverse_ints_in_place(v: Vec<i64>) {
     }
 }
 
-fn reverse_strings_in_place(v: Vec<string>) {
+fn reverse_strings_in_place(var v: Vec<string>) {
     let n = v.len();
     if n < 2 {
         return;
@@ -234,7 +234,7 @@ fn reverse_strings_in_place(v: Vec<string>) {
     }
 }
 
-fn reverse_floats_in_place(v: Vec<f64>) {
+fn reverse_floats_in_place(var v: Vec<f64>) {
     let n = v.len();
     if n < 2 {
         return;

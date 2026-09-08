@@ -330,7 +330,7 @@ find_expected_diagnostic() {
 }
 
 require_expected_failures_file() {
-    if [[ ! -f "$EXPECTED_FAILURES_FILE" ]]; then
+    if [[ ! -e "$EXPECTED_FAILURES_FILE" ]]; then
         echo "error: expected-failures file not found: $EXPECTED_FAILURES_FILE" >&2
         exit 1
     fi

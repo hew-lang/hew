@@ -447,7 +447,7 @@ fn unclosed_block_error(block: string) -> TemplateError {
 }
 
 fn validate(tmpl: string) -> Result<i64, TemplateError> {
-    let stack: Vec<string> = Vec.new();
+    var stack: Vec<string> = Vec.new();
     var range_depth = 0;
     var pos = 0;
     let tlen = tmpl.len();
@@ -571,7 +571,7 @@ pub fn new_ctx() -> Ctx {
 ///     template.ctx_set_str(ctx, "name", "Alice");
 /// }
 /// ```
-pub fn ctx_set_str(ctx: Ctx, key: string, val: string) {
+pub fn ctx_set_str(var ctx: Ctx, key: string, val: string) {
     ctx.skeys.push(key);
     ctx.svals.push(val);
 }
@@ -588,7 +588,7 @@ pub fn ctx_set_str(ctx: Ctx, key: string, val: string) {
 ///     template.ctx_set_int(ctx, "count", 42);
 /// }
 /// ```
-pub fn ctx_set_int(ctx: Ctx, key: string, val: i64) {
+pub fn ctx_set_int(var ctx: Ctx, key: string, val: i64) {
     ctx.skeys.push(key);
     ctx.svals.push(f"{val}");
 }
@@ -605,7 +605,7 @@ pub fn ctx_set_int(ctx: Ctx, key: string, val: i64) {
 ///     template.ctx_set_bool(ctx, "active", true);
 /// }
 /// ```
-pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
+pub fn ctx_set_bool(var ctx: Ctx, key: string, val: bool) {
     ctx.skeys.push(key);
     ctx.svals.push(if val {
         "true"
@@ -631,7 +631,7 @@ pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
 ///     template.ctx_set_list(ctx, "colours", colours);
 /// }
 /// ```
-pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
+pub fn ctx_set_list(var ctx: Ctx, key: string, items: Vec<string>) {
     let n = items.len();
     let start = ctx.litems.len();
     ctx.lkeys.push(key);

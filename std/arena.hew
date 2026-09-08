@@ -100,7 +100,7 @@ impl<T> Arena<T> {
     ///
     /// Reuses a freed slot when one is available; otherwise appends a new slot.
     /// Every insertion receives a fresh monotonic generation. O(1).
-    fn insert(self, value: T) -> Key<T> {
+    fn insert(var self, value: T) -> Key<T> {
         let generation = self.generation_counter[0];
         if generation == 9223372036854775807 {
             panic("arena.insert: key generation space exhausted");
@@ -142,7 +142,7 @@ impl<T> Arena<T> {
     /// insertion mints a fresh generation. On a stale, already-removed, or
     /// out-of-range key: returns `None`. Double-remove is idempotent — the
     /// second call returns `None`.
-    fn remove(self, key: Key<T>) -> Option<T> {
+    fn remove(var self, key: Key<T>) -> Option<T> {
         if key.arena_id != self.arena_id {
             return None;
         }

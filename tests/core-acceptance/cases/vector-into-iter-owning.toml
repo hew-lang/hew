@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-into-iter-owning"
+intent = "`into_iter()` over a Vec of a clone-free `#[resource]` type moves each element out to the loop body, an early `break` releases the untaken remainder through the cursor, and every element is closed exactly once."
+source = "cases/vector-into-iter-owning.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "show a1\nclose a1\nshow a2\nclose a2\nshow a3\nclose a3\ndrained\nshow b1\nclose b1\nshow b2\nclose b2\nclose b3\nstopped\nshow c3\nclose c3\nshow c2\nclose c2\nshow c1\nclose c1\npopped\n"
+exit = 0
+stderr = ""

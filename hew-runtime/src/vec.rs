@@ -2119,8 +2119,8 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64
 ///
 /// # Safety
 ///
-/// `v` must be an owned-element `HewVec`. `out` must point to at least
-/// `descriptor.size` writable bytes.
+/// `v` must be a valid `HewVec`. `out` must point to at least `elem_size`
+/// writable bytes.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
     v: *mut HewVec,
@@ -2128,10 +2128,11 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
     out: *mut core::ffi::c_void,
 ) -> i32 {
     cabi_guard!(v.is_null() || out.is_null(), 0);
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    // SAFETY: guards reject null pointers.
     unsafe {
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
+        // Moving bytes out acquires nothing, so every element class removes the
+        // same way and `elem_size` answers for all of them.
+        let elem_size = (*v).elem_size;
         let len = (*v).len;
         let idx = index as usize;
         if idx >= len {

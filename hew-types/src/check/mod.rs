@@ -2335,6 +2335,7 @@ impl Checker {
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
             borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
             borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),
+            owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),
             type_facts,
             type_fact_context,
             resolved_expr_types: resolved_expr_types_typed,

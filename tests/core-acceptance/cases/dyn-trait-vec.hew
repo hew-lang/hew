@@ -29,11 +29,11 @@ fn main() {
     crowd.push(Person { label: "lin" });
     println(f"count={crowd.len()}");
     var seen = 0;
-    while crowd.len() > 1 {
-        let member = crowd.pop();
+    // A trait object has no semantic clone, so the consuming iterator moves
+    // each one out of the vector it owns.
+    for member in crowd.into_iter() {
         seen = seen + 1;
         println(member.name());
     }
     println(f"seen={seen}");
-    println(f"left={crowd.len()}");
 }

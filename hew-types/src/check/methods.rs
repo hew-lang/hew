@@ -6524,7 +6524,7 @@ impl Checker {
             "into_iter" => {
                 self.check_arity(args, 0, "`Vec.into_iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                if !self.record_vec_iter_element_mode(&resolved_elem, span) {
                     return Ty::Error;
                 }
                 self.record_method_call_receiver_kind(
@@ -6554,7 +6554,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                if !self.record_vec_iter_element_mode(&resolved_elem, span) {
                     return Ty::Error;
                 }
                 self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIter);
@@ -9730,7 +9730,7 @@ impl Checker {
                         } else if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next"
                         {
                             if let Some(elem_ty) = type_args.first() {
-                                if !self.validate_vec_iter_element_clone_type(elem_ty, span) {
+                                if !self.record_vec_iter_element_mode(elem_ty, span) {
                                     return Ty::Error;
                                 }
                                 self.record_method_call_rewrite(

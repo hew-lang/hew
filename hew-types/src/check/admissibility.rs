@@ -1,4 +1,4 @@
-use super::types::VecIterationMode;
+use super::types::{VecCursorMode, VecIterationMode};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -1241,34 +1241,46 @@ impl Checker {
         }
     }
 
-    /// Checker boundary for every operation that constructs or advances a
-    /// `VecIter<T>`. Most elements need a semantic clone. A trait object is the
-    /// consuming-iterator exception: its cursor moves and nulls each slot.
-    pub(super) fn validate_vec_iter_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+    /// How a `VecIter<T>` cursor produces each element.
+    ///
+    /// An element with a semantic clone is copied out per step, leaving the
+    /// vector whole. An element without one — a `#[resource]` or `#[linear]`
+    /// type, an opaque handle, a channel half, a generator, a trait object, an
+    /// unbounded type parameter — is moved out instead, so `into_iter()` drains
+    /// the vector and it ends empty. The cursor owns the vector, so an early
+    /// exit releases whatever the drain did not reach.
+    ///
+    /// `None` means the element is not iterable at all and a diagnostic was
+    /// reported.
+    pub(super) fn vec_iter_element_mode(&mut self, ty: &Ty, span: &Span) -> Option<VecCursorMode> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::Error) {
-            return false;
-        }
-        // Consuming Vec iteration moves a heap-boxed trait object out of its
-        // descriptor slot and nulls that slot; it does not require a clone.
-        if matches!(resolved, Ty::TraitObject { .. }) {
-            return true;
+            return None;
         }
         let mut visiting = CollectionClonePath::default();
-        let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {
-            return true;
-        };
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "`VecIter<{}>` is not supported: `VecIter.next()` clones each element \
-                 into an independent owner, but {blocker} has no semantic clone/retain \
-                 operation",
-                resolved.user_facing()
-            ),
-        );
-        false
+        if self.clone_proven_element(&resolved)
+            && self
+                .vec_iter_clone_blocker(&resolved, &mut visiting)
+                .is_none()
+        {
+            return Some(VecCursorMode::Clone);
+        }
+        let _ = span;
+        Some(VecCursorMode::Take)
+    }
+
+    /// Record `span` as a cursor site that moves each element out, and report
+    /// whether the cursor is admitted at all.
+    pub(super) fn record_vec_iter_element_mode(&mut self, ty: &Ty, span: &Span) -> bool {
+        match self.vec_iter_element_mode(ty, span) {
+            Some(VecCursorMode::Take) => {
+                self.owning_take_vec_cursors
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
+                true
+            }
+            Some(VecCursorMode::Clone) => true,
+            None => false,
+        }
     }
 
     /// How `for value in vec` binds each element (D432).

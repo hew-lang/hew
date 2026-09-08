@@ -1,7 +1,6 @@
 // Historical supervisor-stop fixture; its executable spelling needs migration.
 // The decided public lifecycle forms are close(sup) and closed(sup), including
 // waiting for child cleanup. Their implementation is still pending.
-
 actor Worker {
     receive fn ping(_n: i64) {
         _n;

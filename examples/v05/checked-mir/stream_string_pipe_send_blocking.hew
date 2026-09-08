@@ -1,6 +1,5 @@
 // Send a string through a pipe from main. A plain call waits for capacity;
 // main is a resumable caller too. This example fits within the pipe capacity.
-
 import std.stream;
 
 fn main() {

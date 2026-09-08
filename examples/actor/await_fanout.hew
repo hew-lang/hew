@@ -1,6 +1,5 @@
 // Repeated actor completion calls from a hub. Each call waits for its reply
 // and can suspend the caller so other work can run.
-
 actor Worker {
     let base: i64,
     receive fn work(n: i64) -> i64 {

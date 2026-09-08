@@ -1,5 +1,4 @@
 // Nested actor completion calls: Top waits for Mid, which waits for Bottom.
-
 actor Bottom {
     let base: i64,
     receive fn leaf(n: i64) -> i64 {

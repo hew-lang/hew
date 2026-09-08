@@ -1,6 +1,5 @@
 // Closure probe that reads a captured connection and discards the value.
 // The ordinary read can suspend; this probe checks the captured handle lifetime.
-
 import std.net.{Listener};
 
 extern "C" {

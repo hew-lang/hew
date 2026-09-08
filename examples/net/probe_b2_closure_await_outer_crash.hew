@@ -1,6 +1,5 @@
 // Probe an outer fault while a closure using a captured connection is active.
 // The trigger keeps the fault and suspended read paths observable.
-
 import std.encoding.utf8;
 
 import std.net.{Listener};

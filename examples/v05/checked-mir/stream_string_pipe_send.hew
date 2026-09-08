@@ -1,6 +1,5 @@
 // Send a string through a pipe from an actor handler.
 // The plain send call can suspend while the pipe is full.
-
 import std.stream;
 
 actor Echo {

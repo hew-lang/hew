@@ -1,6 +1,5 @@
 // After an actor completion call, fork work in a scope and read actor state.
 // The scope waits for the forked child before it returns.
-
 fn _background() {
     println("background-ran");
 }

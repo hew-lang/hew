@@ -1,5 +1,4 @@
 // An actor completion call can suspend its caller and resume with the reply.
-
 actor Worker {
     let factor: i64,
     receive fn compute(n: i64) -> i64 {

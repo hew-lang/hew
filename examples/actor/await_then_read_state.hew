@@ -1,6 +1,5 @@
 // Read live actor state after a completion call returns.
 // The reply and the state field must both contribute to the result.
-
 actor Worker {
     let factor: i64,
     receive fn compute(n: i64) -> i64 {

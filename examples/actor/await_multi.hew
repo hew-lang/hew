@@ -1,6 +1,5 @@
 // Sequential actor completion calls, including calls inside a loop.
 // Each call returns its own Result before the next call begins.
-
 actor Worker {
     let factor: i64,
     receive fn compute(n: i64) -> i64 {

@@ -22,22 +22,22 @@ fn node_right(nodes: Vec<i64>, i: i64) -> i64 {
     nodes[i * 5 + 4]
 }
 
-fn set_max(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_max(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 5 + 2, v);
     0
 }
 
-fn set_left(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_left(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 5 + 3, v);
     0
 }
 
-fn set_right(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_right(var nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 5 + 4, v);
     0
 }
 
-fn add_node(nodes: Vec<i64>, low: i64, high: i64, NIL: i64) -> i64 {
+fn add_node(var nodes: Vec<i64>, low: i64, high: i64, NIL: i64) -> i64 {
     let idx = nodes.len() / 5;
     nodes.push(low);
     nodes.push(high);
@@ -74,8 +74,8 @@ fn interval_insert(nodes: Vec<i64>, root: i64, low: i64, high: i64, NIL: i64) ->
     if root == NIL {
         return add_node(nodes, low, high, NIL);
     }
-    let path: Vec<i64> = Vec.new();
-    let dirs: Vec<i64> = Vec.new();
+    var path: Vec<i64> = Vec.new();
+    var dirs: Vec<i64> = Vec.new();
     var cur = root;
     var placed = false;
     while !placed {
@@ -119,12 +119,12 @@ fn interval_insert(nodes: Vec<i64>, root: i64, low: i64, high: i64, NIL: i64) ->
 
 // Query: find all intervals overlapping point p
 // An interval [low, high] overlaps point p if low <= p AND p <= high
-fn query_point(nodes: Vec<i64>, root: i64, p: i64, result: Vec<i64>, NIL: i64) -> i64 {
+fn query_point(nodes: Vec<i64>, root: i64, p: i64, var result: Vec<i64>, NIL: i64) -> i64 {
     if root == NIL {
         return 0;
     }
     // Use iterative DFS with stack
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     stack.push(root);
     while stack.len() > 0 {
         let cur = stack.pop();
@@ -160,11 +160,11 @@ fn query_point(nodes: Vec<i64>, root: i64, p: i64, result: Vec<i64>, NIL: i64) -
 
 // Query: find all intervals overlapping range [ql, qh]
 // Interval [low, high] overlaps [ql, qh] if low <= qh AND ql <= high
-fn query_range(nodes: Vec<i64>, root: i64, ql: i64, qh: i64, result: Vec<i64>, NIL: i64) -> i64 {
+fn query_range(nodes: Vec<i64>, root: i64, ql: i64, qh: i64, var result: Vec<i64>, NIL: i64) -> i64 {
     if root == NIL {
         return 0;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     stack.push(root);
     while stack.len() > 0 {
         let cur = stack.pop();

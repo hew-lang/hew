@@ -15,7 +15,7 @@ fn sa_find_insert_pos(arr: Vec<i64>, val: i64) -> i64 {
     lo
 }
 
-fn sa_insert(arr: Vec<i64>, val: i64) {
+fn sa_insert(var arr: Vec<i64>, val: i64) {
     let pos = sa_find_insert_pos(arr, val);
     // Append and shift right
     arr.push(0);
@@ -47,7 +47,7 @@ fn sa_search(arr: Vec<i64>, val: i64) -> i64 {
     0 - 1
 }
 
-fn sa_remove(arr: Vec<i64>, val: i64) -> i64 {
+fn sa_remove(var arr: Vec<i64>, val: i64) -> i64 {
     let idx = sa_search(arr, val);
     if idx < 0 {
         return 0;

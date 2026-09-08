@@ -1,5 +1,5 @@
 fn main() {
-    let pairs: Vec<(i64, i64)> = Vec.new();
+    var pairs: Vec<(i64, i64)> = Vec.new();
     pairs.push((10, 20));
     pairs.push((30, 40));
     let first = pairs[0];

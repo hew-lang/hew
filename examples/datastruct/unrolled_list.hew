@@ -14,19 +14,19 @@ fn block_next(n: Vec<i64>, b: i64) -> i64 {
     n[b * 6 + 5]
 }
 
-fn set_count(n: Vec<i64>, b: i64, c: i64) {
+fn set_count(var n: Vec<i64>, b: i64, c: i64) {
     n.set(b * 6, c);
 }
 
-fn set_elem(n: Vec<i64>, b: i64, idx: i64, val: i64) {
+fn set_elem(var n: Vec<i64>, b: i64, idx: i64, val: i64) {
     n.set(b * 6 + 1 + idx, val);
 }
 
-fn set_block_next(n: Vec<i64>, b: i64, nx: i64) {
+fn set_block_next(var n: Vec<i64>, b: i64, nx: i64) {
     n.set(b * 6 + 5, nx);
 }
 
-fn alloc_block(n: Vec<i64>) -> i64 {
+fn alloc_block(var n: Vec<i64>) -> i64 {
     let b = n.len() / 6;
     n.push(0);
     n.push(0);
@@ -64,7 +64,7 @@ fn unrolled_insert(n: Vec<i64>, head: i64, val: i64) -> i64 {
 }
 
 // Iterate all elements in order into result vec
-fn unrolled_iterate(n: Vec<i64>, head: i64, result: Vec<i64>) {
+fn unrolled_iterate(n: Vec<i64>, head: i64, var result: Vec<i64>) {
     var b = head;
     while b != -1 {
         let cnt = block_count(n, b);
@@ -133,7 +133,7 @@ fn test_insert_and_iterate() -> i64 {
     head = unrolled_insert(n, head, 30);
     let r: Vec<i64> = Vec.new();
     unrolled_iterate(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);

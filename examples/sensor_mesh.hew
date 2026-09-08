@@ -37,7 +37,7 @@ actor Logger {
 }
 
 actor Monitor {
-    let readings: Vec<i32>,
+    var readings: Vec<i32>,
     let logger: LocalPid<Logger>,
     let threshold: i32,
     receive fn reading(sensor_id: string, temp: i32) {

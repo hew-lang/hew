@@ -10,7 +10,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 }
 
 fn make_keys(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -19,14 +19,14 @@ fn make_keys(capacity: i64) -> Vec<i64> {
 }
 
 fn make_vals(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     for i in 0 .. capacity {
         v.push(0);
     }
     v
 }
 
-fn map_insert(keys: Vec<i64>, vals: Vec<i64>, key: i64, value: i64) -> bool {
+fn map_insert(var keys: Vec<i64>, var vals: Vec<i64>, key: i64, value: i64) -> bool {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -87,7 +87,7 @@ fn map_contains_key(keys: Vec<i64>, key: i64) -> bool {
     false
 }
 
-fn map_remove(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> bool {
+fn map_remove(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) -> bool {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;

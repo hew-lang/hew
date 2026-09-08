@@ -15,14 +15,14 @@
 import std.testing;
 
 fn make_vec() -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(40);
     v.push(2);
     return v;
 }
 
 fn make_strs() -> Vec<string> {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     return v;
@@ -131,7 +131,7 @@ fn test_array_literal_chain_conditional_move() {
 #[test]
 fn test_hashmap_conditional_move() {
     let take = true;
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("k", 42);
     var out: i64 = 0;
     if take {
@@ -144,7 +144,7 @@ fn test_hashmap_conditional_move() {
 #[test]
 fn test_hashmap_conditional_move_not_taken() {
     let take = false;
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("k", 42);
     var out: i64 = 0;
     if take {

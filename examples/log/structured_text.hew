@@ -15,26 +15,26 @@ import std.misc.log;
 
 fn main() {
     log.setup(); // INFO threshold, TEXT format
-    let info_fields: Vec<string> = Vec.new();
+    var info_fields: Vec<string> = Vec.new();
     info_fields.push(log.field_int("port", 8080));
     info_fields.push(log.field("env", "prod"));
     log.info_with("server started", info_fields);
 
     // DEBUG is filtered at the default INFO threshold
-    let debug_fields: Vec<string> = Vec.new();
+    var debug_fields: Vec<string> = Vec.new();
     debug_fields.push(log.field("key", "user:42"));
     log.debug_with("cache miss", debug_fields);
-    let warn_fields: Vec<string> = Vec.new();
+    var warn_fields: Vec<string> = Vec.new();
     warn_fields.push(log.field("usage", "90%"));
     log.warn_with("high cpu", warn_fields);
-    let error_fields: Vec<string> = Vec.new();
+    var error_fields: Vec<string> = Vec.new();
     error_fields.push(log.field_int("status", 500));
     error_fields.push(log.field("path", "/api"));
     log.error_with("request failed", error_fields);
 
     // Raise level to TRACE so this appears
     log.set_level(log.TRACE);
-    let trace_fields: Vec<string> = Vec.new();
+    var trace_fields: Vec<string> = Vec.new();
     trace_fields.push(log.field_float("elapsed_ms", 1.234));
     log.trace_with("span end", trace_fields);
 }

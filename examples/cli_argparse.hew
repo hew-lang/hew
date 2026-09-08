@@ -57,10 +57,10 @@ fn main() {
         print_help();
         return;
     }
-    let flags: Vec<string> = Vec.new();
-    let opt_keys: Vec<string> = Vec.new();
-    let opt_vals: Vec<string> = Vec.new();
-    let positional: Vec<string> = Vec.new();
+    var flags: Vec<string> = Vec.new();
+    var opt_keys: Vec<string> = Vec.new();
+    var opt_vals: Vec<string> = Vec.new();
+    var positional: Vec<string> = Vec.new();
     var show_help = 0;
     // Parse arguments (skip argv[0] which is the program name)
     for i in 1 .. argc {

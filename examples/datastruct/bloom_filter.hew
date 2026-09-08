@@ -28,14 +28,14 @@ fn h3(key: i64, m: i64) -> i64 {
 }
 
 fn make_bloom(size: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     for i in 0 .. size {
         v.push(0);
     }
     v
 }
 
-fn bloom_add(filter: Vec<i64>, key: i64) {
+fn bloom_add(var filter: Vec<i64>, key: i64) {
     let m = filter.len();
     filter.set(h1(key, m), 1);
     filter.set(h2(key, m), 1);

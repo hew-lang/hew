@@ -1,7 +1,7 @@
 // Priority Queue - using sorted insertion into Vec<i64>
 // Smallest element is at the end (easy to pop)
 // Insert maintains descending order so extract_min is O(1) pop
-fn pq_insert(pq: Vec<i64>, val: i64) {
+fn pq_insert(var pq: Vec<i64>, val: i64) {
     // Insert val maintaining descending order (largest first, smallest last)
     pq.push(val);
     var i = pq.len() - 1;
@@ -25,7 +25,7 @@ fn pq_insert(pq: Vec<i64>, val: i64) {
     }
 }
 
-fn pq_extract_min(pq: Vec<i64>) -> i64 {
+fn pq_extract_min(var pq: Vec<i64>) -> i64 {
     pq.pop()
 }
 

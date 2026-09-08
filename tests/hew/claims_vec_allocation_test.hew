@@ -16,7 +16,7 @@ type ClaimView {
 }
 
 fn active_claims() -> Vec<ClaimView> {
-    let claims: Vec<ClaimView> = Vec.new();
+    var claims: Vec<ClaimView> = Vec.new();
     for n in 0 .. 4 {
         claims.push(ClaimView { item: "gitea:owner:repo:issue:" + string.from_int(n), run_id: "run-" + string.from_int(n), fence: n + 1, expires_at: 9000 + n, lifecycle_state: "Completed", checkpoint: n, exact_head_verifying: n == 2 });
     }

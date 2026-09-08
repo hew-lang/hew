@@ -11,7 +11,7 @@ fn ps_new() -> i64 {
 }
 
 // Push value onto stack version 'head', return new version (new head index)
-fn ps_push(store: Vec<i64>, head: i64, value: i64) -> i64 {
+fn ps_push(var store: Vec<i64>, head: i64, value: i64) -> i64 {
     let idx = store.len() / 2;
     store.push(value);
     store.push(head);
@@ -52,7 +52,7 @@ fn ps_size(store: Vec<i64>, head: i64) -> i64 {
 
 // Collect stack elements into a Vec (top to bottom order)
 fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
-    let result: Vec<i64> = Vec.new();
+    var result: Vec<i64> = Vec.new();
     var curr = head;
     while curr >= 0 {
         result.push(store[curr * 2]);

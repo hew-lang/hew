@@ -109,7 +109,7 @@ fn _xnew() -> XArena {
 
 #[test]
 fn _exercised_nested_option_field_roundtrips_value() {
-    let a: XArena = _xnew();
+    var a: XArena = _xnew();
     a.slots.push(XSlot { generation: 0, value: Some("hello") });
     let got = match a.slots.get(0) {
         .Some(slot) => match slot.value {

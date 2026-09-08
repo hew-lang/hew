@@ -10,7 +10,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 }
 
 fn make_keys(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -19,7 +19,7 @@ fn make_keys(capacity: i64) -> Vec<i64> {
 }
 
 fn make_vals(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     for i in 0 .. capacity {
         v.push(0);
     }
@@ -45,7 +45,7 @@ fn cm_find_slot(keys: Vec<i64>, key: i64) -> i64 {
     0 - 1
 }
 
-fn cm_increment(keys: Vec<i64>, vals: Vec<i64>, key: i64) {
+fn cm_increment(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) {
     let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {

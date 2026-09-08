@@ -10,7 +10,7 @@ fn main() {
     let sink = spawn TestSink;
     let n = 1;
     let text = "shared";
-    let boxed = Boxed { payload: [2, 3] };
+    var boxed = Boxed { payload: [2, 3] };
     let last = "last";
     let _ = sink.take(n, text, boxed, last);
     println(text);

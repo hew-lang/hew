@@ -2,7 +2,7 @@
 // Layout: Vec<i64> = [capacity, head, tail, count, data...]
 // head = read position, tail = write position
 fn rb_create(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(capacity); // index 0: capacity
     v.push(0); // index 1: head (read pos)
     v.push(0); // index 2: tail (write pos)
@@ -33,7 +33,7 @@ fn rb_available(rb: Vec<i64>) -> i64 {
     rb[0] - rb[3]
 }
 
-fn rb_write(rb: Vec<i64>, val: i64) -> bool {
+fn rb_write(var rb: Vec<i64>, val: i64) -> bool {
     let cap = rb[0];
     let count = rb[3];
     if count == cap {
@@ -47,7 +47,7 @@ fn rb_write(rb: Vec<i64>, val: i64) -> bool {
     true
 }
 
-fn rb_read(rb: Vec<i64>) -> i64 {
+fn rb_read(var rb: Vec<i64>) -> i64 {
     let count = rb[3];
     if count == 0 {
         return 0 - 1;

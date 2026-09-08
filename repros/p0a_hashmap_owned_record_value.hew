@@ -4,7 +4,7 @@ type Payload {
 }
 
 fn main() {
-    let m: HashMap<string, Payload> = HashMap.new();
+    var m: HashMap<string, Payload> = HashMap.new();
     let n: i64 = 77;
     let payload = Payload { label: f"record-value-{n}-heap-owned", count: n };
     m.insert("record", payload);

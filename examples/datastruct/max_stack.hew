@@ -9,7 +9,7 @@ fn run_test(name: string, passed: i64) -> i64 {
     passed
 }
 
-fn ms_push(data: Vec<i64>, maxs: Vec<i64>, val: i64) {
+fn ms_push(var data: Vec<i64>, var maxs: Vec<i64>, val: i64) {
     data.push(val);
     if maxs.len() == 0 {
         maxs.push(val);
@@ -23,7 +23,7 @@ fn ms_push(data: Vec<i64>, maxs: Vec<i64>, val: i64) {
     }
 }
 
-fn ms_pop(data: Vec<i64>, maxs: Vec<i64>) -> i64 {
+fn ms_pop(var data: Vec<i64>, var maxs: Vec<i64>) -> i64 {
     maxs.pop();
     data.pop()
 }

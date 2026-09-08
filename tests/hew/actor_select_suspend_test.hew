@@ -62,7 +62,7 @@ fn select_binds_first_ready_arm_in_handler() {
     // Fast replies immediately (7 + 100 = 107) before Slow wakes; the select
     // resumes with the Fast arm's value. The exact value (107) proves the
     // winner arm bound correctly and the Slow loser did not overwrite it.
-    match await c.race_two(7) {
+    match c.race_two(7) {
         .Ok(v) => testing.assert_eq(v, 107),
         .Err(_) => testing.assert_true(false),
     }
@@ -76,7 +76,7 @@ fn select_after_deadline_fires_timeout_branch_in_handler() {
     // The only ask arm is Slow (sleeps 60ms); the 20ms deadline fires first.
     // The select resumes into the AfterTimer winner block (cancelling the
     // pending Slow ask) and binds the deadline body's value (-7).
-    match await c.race_deadline(5) {
+    match c.race_deadline(5) {
         .Ok(v) => testing.assert_eq(v, -7),
         .Err(_) => testing.assert_true(false),
     }
@@ -92,8 +92,8 @@ fn many_coordinators_each_select_then_resume() {
     let s = spawn Slow;
     let a = spawn Coordinator(fast: f, slow: s);
     let b = spawn Coordinator(fast: f, slow: s);
-    let ra = await a.race_two(1);
-    let rb = await b.race_two(2);
+    let ra = a.race_two(1);
+    let rb = b.race_two(2);
     match ra {
         .Ok(va) => testing.assert_eq(va, 101),
         .Err(_) => testing.assert_true(false),

@@ -1,7 +1,7 @@
 // Trie for integer digit sequences using Vec<i64>
 // Each node: 10 children (digits 0-9) + is_end flag = 11 slots per node
 // NIL = -1 means no child
-fn new_trie_node(nodes: Vec<i64>, NIL: i64) -> i64 {
+fn new_trie_node(var nodes: Vec<i64>, NIL: i64) -> i64 {
     let idx = nodes.len() / 11;
     for i in 0 .. 10 {
         nodes.push(NIL);
@@ -14,12 +14,12 @@ fn get_child(nodes: Vec<i64>, node: i64, digit: i64) -> i64 {
     nodes[node * 11 + digit]
 }
 
-fn set_child(nodes: Vec<i64>, node: i64, digit: i64, child: i64) -> i64 {
+fn set_child(var nodes: Vec<i64>, node: i64, digit: i64, child: i64) -> i64 {
     nodes.set(node * 11 + digit, child);
     0
 }
 
-fn set_end(nodes: Vec<i64>, node: i64) -> i64 {
+fn set_end(var nodes: Vec<i64>, node: i64) -> i64 {
     nodes.set(node * 11 + 10, 1);
     0
 }
@@ -29,13 +29,13 @@ fn is_end(nodes: Vec<i64>, node: i64) -> bool {
 }
 
 // Get digits of a number into a vec (handles 0 specially)
-fn get_digits(num: i64, digits: Vec<i64>) -> i64 {
+fn get_digits(num: i64, var digits: Vec<i64>) -> i64 {
     if num == 0 {
         digits.push(0);
         return 0;
     }
     var n = num;
-    let tmp: Vec<i64> = Vec.new();
+    var tmp: Vec<i64> = Vec.new();
     while n > 0 {
         tmp.push(n - n / 10 * 10);
         n = n / 10;

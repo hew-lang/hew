@@ -13,7 +13,7 @@ import std.testing;
 
 #[test]
 fn test_iter_count() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -22,7 +22,7 @@ fn test_iter_count() {
 
 #[test]
 fn test_iter_fold_sums_elements() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -33,7 +33,7 @@ fn test_iter_fold_sums_elements() {
 
 #[test]
 fn test_iter_map_then_fold() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -44,7 +44,7 @@ fn test_iter_map_then_fold() {
 
 #[test]
 fn test_iter_for_in_accumulates() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(4);
     v.push(5);
     v.push(6);
@@ -57,7 +57,7 @@ fn test_iter_for_in_accumulates() {
 
 #[test]
 fn test_iter_leaves_source_live() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(7);
     v.push(8);
     // Iterating by reference must not consume the source.
@@ -70,7 +70,7 @@ fn test_iter_leaves_source_live() {
 
 #[test]
 fn test_iter_owned_elements() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("aa");
     v.push("bbb");
     v.push("cccc");

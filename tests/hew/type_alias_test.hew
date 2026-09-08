@@ -35,7 +35,7 @@ fn test_parameterized_alias() {
 
 #[test]
 fn test_generic_rhs_alias_in_signatures() {
-    let values: MyMap = HashMap.new();
+    var values: MyMap = HashMap.new();
     values.insert("answer", 42);
     let _returned: MyMap = roundtrip(values);
     testing.assert_true(true);

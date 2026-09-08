@@ -32,7 +32,7 @@ fn is_leaf(nodes: Vec<i64>, node: i64) -> bool {
 }
 
 // Add a new node, return its index
-fn add_node(nodes: Vec<i64>, left: i64, right: i64, weight: i64, dstart: i64, dlen: i64) -> i64 {
+fn add_node(var nodes: Vec<i64>, left: i64, right: i64, weight: i64, dstart: i64, dlen: i64) -> i64 {
     let idx = nodes.len() / 5;
     nodes.push(left);
     nodes.push(right);
@@ -84,7 +84,7 @@ fn rope_index(nodes: Vec<i64>, data: Vec<i64>, node: i64, idx: i64) -> i64 {
 }
 
 // Collect all elements in order into a result Vec
-fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, result: Vec<i64>) -> i64 {
+fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, var result: Vec<i64>) -> i64 {
     if node < 0 {
         return 0;
     }
@@ -107,7 +107,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Data array: [10, 20, 30, 40, 50, 60, 70, 80]
-    let data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new();
     data.push(10);
     data.push(20);
     data.push(30);
@@ -240,7 +240,7 @@ fn main() {
     }
     // Test 8: Build rope with different tree shape (right-heavy)
     let nodes2: Vec<i64> = Vec.new();
-    let data2: Vec<i64> = Vec.new();
+    var data2: Vec<i64> = Vec.new();
     data2.push(1);
     data2.push(2);
     data2.push(3);
@@ -278,7 +278,7 @@ fn main() {
     }
     // Test 9: Single element rope
     let nodes3: Vec<i64> = Vec.new();
-    let data3: Vec<i64> = Vec.new();
+    var data3: Vec<i64> = Vec.new();
     data3.push(99);
     let single = make_leaf(nodes3, 0, 1);
     if rope_length(nodes3, single) == 1 {
@@ -295,7 +295,7 @@ fn main() {
     }
     // Test 10: Concat single elements
     let nodes4: Vec<i64> = Vec.new();
-    let data4: Vec<i64> = Vec.new();
+    var data4: Vec<i64> = Vec.new();
     data4.push(100);
     data4.push(200);
     data4.push(300);

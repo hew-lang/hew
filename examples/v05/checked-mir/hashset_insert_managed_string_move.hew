@@ -7,17 +7,17 @@
 // `string.retain` instead of a consume. `add_renamed` pins the generation
 // boundary: the parameter slot is reassigned to a fresh frame-owned string
 // first, so its ingress consumes (no retain).
-fn add_member(words: HashSet<string>, member: string) {
+fn add_member(var words: HashSet<string>, member: string) {
     words.insert(member);
 }
 
-fn add_renamed(words: HashSet<string>, var member: string) {
+fn add_renamed(var words: HashSet<string>, var member: string) {
     member = member.to_upper();
     words.insert(member);
 }
 
 fn main() {
-    let words: HashSet<string> = HashSet.new();
+    var words: HashSet<string> = HashSet.new();
     let word = "behaviour";
     words.insert(word);
     add_member(words, "colour");

@@ -2,7 +2,7 @@
 // Layout: Vec<i64> where index 0 = logical size, index 1 = capacity, rest is data
 // Data starts at index 2
 fn da_new(initial_cap: i64) -> Vec<i64> {
-    let arr: Vec<i64> = Vec.new();
+    var arr: Vec<i64> = Vec.new();
     arr.push(0); // index 0: logical size
     arr.push(initial_cap); // index 1: capacity
     // Pre-allocate slots
@@ -20,7 +20,7 @@ fn da_capacity(arr: Vec<i64>) -> i64 {
     arr[1]
 }
 
-fn da_grow(arr: Vec<i64>) {
+fn da_grow(var arr: Vec<i64>) {
     let old_cap = arr[1];
     let new_cap = old_cap * 2;
     // Add more slots
@@ -30,7 +30,7 @@ fn da_grow(arr: Vec<i64>) {
     arr.set(1, new_cap);
 }
 
-fn da_push(arr: Vec<i64>, val: i64) {
+fn da_push(var arr: Vec<i64>, val: i64) {
     let sz = arr[0];
     let cap = arr[1];
     if sz == cap {
@@ -45,11 +45,11 @@ fn da_get(arr: Vec<i64>, idx: i64) -> i64 {
     arr[2 + idx]
 }
 
-fn da_set(arr: Vec<i64>, idx: i64, val: i64) {
+fn da_set(var arr: Vec<i64>, idx: i64, val: i64) {
     arr.set(2 + idx, val);
 }
 
-fn da_pop(arr: Vec<i64>) -> i64 {
+fn da_pop(var arr: Vec<i64>) -> i64 {
     let sz = arr[0];
     let val = arr[2 + sz - 1];
     arr.set(0, sz - 1);

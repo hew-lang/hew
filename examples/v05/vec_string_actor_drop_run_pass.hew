@@ -36,7 +36,7 @@ actor WordHolder {
 fn main() {
     // Populate with heap-owned strings so state-drop frees NON-EMPTY per-slot
     // storage through `hew_vec_free_managed`.
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("alpha");
     words.push("beta");
     words.push("gamma");

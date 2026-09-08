@@ -9,7 +9,7 @@ import std.testing;
 // ── Happy-path parse ──────────────────────────────────────────────────
 #[test]
 fn test_parse_rows_count() {
-    let tbl = match csv.parse("name,age\nAlice,30\nBob,25") {
+    var tbl = match csv.parse("name,age\nAlice,30\nBob,25") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -20,7 +20,7 @@ fn test_parse_rows_count() {
 
 #[test]
 fn test_parse_cols_count() {
-    let tbl = match csv.parse("name,age\nAlice,30") {
+    var tbl = match csv.parse("name,age\nAlice,30") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -30,7 +30,7 @@ fn test_parse_cols_count() {
 
 #[test]
 fn test_parse_get_by_index() {
-    let tbl = match csv.parse("name,age\nAlice,30\nBob,25") {
+    var tbl = match csv.parse("name,age\nAlice,30\nBob,25") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -41,7 +41,7 @@ fn test_parse_get_by_index() {
 
 #[test]
 fn test_parse_get_by_name() {
-    let tbl = match csv.parse("name,age\nAlice,30") {
+    var tbl = match csv.parse("name,age\nAlice,30") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -52,7 +52,7 @@ fn test_parse_get_by_name() {
 
 #[test]
 fn test_parse_header_names() {
-    let tbl = match csv.parse("first,last\nJane,Doe") {
+    var tbl = match csv.parse("first,last\nJane,Doe") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -64,7 +64,7 @@ fn test_parse_header_names() {
 // ── Boundary / error ─────────────────────────────────────────────────
 #[test]
 fn test_parse_get_out_of_bounds_returns_empty() {
-    let tbl = match csv.parse("x\n1") {
+    var tbl = match csv.parse("x\n1") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -75,7 +75,7 @@ fn test_parse_get_out_of_bounds_returns_empty() {
 
 #[test]
 fn test_parse_get_by_name_missing_column_returns_empty() {
-    let tbl = match csv.parse("name\nAlice") {
+    var tbl = match csv.parse("name\nAlice") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -101,7 +101,7 @@ fn test_parse_file_missing_path_returns_err() {
 #[test]
 fn test_parse_quoted_field_with_comma_parses_as_one_field() {
     // "city" field contains a comma — must remain a single field, not split
-    let tbl = match csv.parse("name,city\nAlice,\"Portland, OR\"") {
+    var tbl = match csv.parse("name,city\nAlice,\"Portland, OR\"") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -113,7 +113,7 @@ fn test_parse_quoted_field_with_comma_parses_as_one_field() {
 #[test]
 fn test_parse_escaped_quote_in_quoted_field_decoded() {
     // "" inside a quoted field → literal '"' in the decoded value
-    let tbl = match csv.parse("name,quote\nAlice,\"say \"\"hi\"\"\"") {
+    var tbl = match csv.parse("name,quote\nAlice,\"say \"\"hi\"\"\"") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -124,7 +124,7 @@ fn test_parse_escaped_quote_in_quoted_field_decoded() {
 // ── Property round-trip (parse_no_headers → header naming) ───────────
 #[test]
 fn test_parse_no_headers_generates_synthetic_headers() {
-    let tbl = match csv.parse_no_headers("a,b\nc,d") {
+    var tbl = match csv.parse_no_headers("a,b\nc,d") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -140,7 +140,7 @@ fn test_parse_no_headers_generates_synthetic_headers() {
 fn test_parse_empty_string_returns_zero_rows_and_cols() {
     // parse("") → input.len() == 0 → no lines processed →
     // Table { hdrs: empty, data: empty } → rows == 0, cols == 0.
-    let tbl = match csv.parse("") {
+    var tbl = match csv.parse("") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -151,7 +151,7 @@ fn test_parse_empty_string_returns_zero_rows_and_cols() {
 
 #[test]
 fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
-    let tbl = match csv.parse_no_headers("") {
+    var tbl = match csv.parse_no_headers("") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };
@@ -165,7 +165,7 @@ fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
 fn test_parse_trailing_newline_yields_one_data_row() {
     // parse_impl strips a trailing newline before splitting lines, so
     // "a,b\n1,2\n" must produce exactly one data row (not two, and not zero).
-    let tbl = match csv.parse("a,b\n1,2\n") {
+    var tbl = match csv.parse("a,b\n1,2\n") {
         .Ok(tbl) => tbl,
         .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
     };

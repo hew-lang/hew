@@ -1,6 +1,6 @@
 // Max-Heap using implicit array representation
 // Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
-fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
+fn heap_push(var heap: Vec<i32>, val: i32) -> i32 {
     heap.push(val);
     var i = heap.len() - 1;
     while i > 0 {
@@ -21,7 +21,7 @@ fn heap_peek(heap: Vec<i32>) -> i32 {
     heap[0]
 }
 
-fn heap_pop(heap: Vec<i32>) -> i32 {
+fn heap_pop(var heap: Vec<i32>) -> i32 {
     let max_val = heap[0];
     let last = heap.pop();
     if heap.len() > 0 {
@@ -56,7 +56,7 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
 }
 
 // Build heap from array (heapify)
-fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
+fn build_heap(arr: Vec<i32>, var heap: Vec<i32>) -> i32 {
     for x in arr {
         heap.push(x);
     }
@@ -191,7 +191,7 @@ fn test_extract_max_order() -> i32 {
 }
 
 fn test_build_heap() -> i32 {
-    let arr: Vec<i32> = Vec.new();
+    var arr: Vec<i32> = Vec.new();
     arr.push(3);
     arr.push(1);
     arr.push(6);
@@ -240,7 +240,7 @@ fn test_heapsort() -> i32 {
     let _ = heap_push(heap, 5);
     let _ = heap_push(heap, 7);
     // Extract all to get sorted descending
-    let sorted: Vec<i32> = Vec.new();
+    var sorted: Vec<i32> = Vec.new();
     while heap.len() > 0 {
         sorted.push(heap_pop(heap));
     }

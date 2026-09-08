@@ -4,7 +4,7 @@ fn mat_get(matrix: Vec<i64>, n: i64, i: i64, j: i64) -> i64 {
     matrix[i * n + j]
 }
 
-fn mat_set(matrix: Vec<i64>, n: i64, i: i64, j: i64, val: i64) {
+fn mat_set(var matrix: Vec<i64>, n: i64, i: i64, j: i64, val: i64) {
     matrix.set(i * n + j, val);
 }
 
@@ -48,7 +48,7 @@ fn main() {
     var failed = 0;
     let n = 6;
     // Initialize n*n matrix to 0
-    let matrix: Vec<i64> = Vec.new();
+    var matrix: Vec<i64> = Vec.new();
     for i in 0 .. n * n {
         matrix.push(0);
     }

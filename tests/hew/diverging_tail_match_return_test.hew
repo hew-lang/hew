@@ -57,18 +57,18 @@ fn test_string_return_from_all_diverging_tail_match() {
 fn action_codes(a: Action) -> Vec<i64> {
     match a {
         Action.Move => {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(10);
             v.push(11);
             return v;
         },
         Action.Left => {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(20);
             return v;
         },
         Action.Right => {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(30);
             v.push(31);
             v.push(32);
@@ -189,12 +189,12 @@ fn routed_codes(a: Action, c: bool) -> Vec<i64> {
     match a {
         Action.Move => {
             if c {
-                let v: Vec<i64> = Vec.new();
+                var v: Vec<i64> = Vec.new();
                 v.push(1);
                 v.push(2);
                 return v;
             } else {
-                let v: Vec<i64> = Vec.new();
+                var v: Vec<i64> = Vec.new();
                 v.push(9);
                 return v;
             }

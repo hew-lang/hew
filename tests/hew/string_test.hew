@@ -214,7 +214,7 @@ fn test_count_counts_non_overlapping_occurrences() {
 
 #[test]
 fn test_split_splits_and_keeps_trailing_empty_segment() {
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("a");
     expected.push("b");
     expected.push("");
@@ -225,7 +225,7 @@ fn test_split_splits_and_keeps_trailing_empty_segment() {
 fn test_split_empty_separator_returns_codepoints() {
     // split(s, "") splits into one element per Unicode codepoint.
     // "abc" is 3 ASCII codepoints → ["a", "b", "c"].
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("a");
     expected.push("b");
     expected.push("c");
@@ -234,7 +234,7 @@ fn test_split_empty_separator_returns_codepoints() {
 
 #[test]
 fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("alpha");
     expected.push("beta");
     expected.push("");
@@ -243,7 +243,7 @@ fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
 
 #[test]
 fn test_lines_normalizes_crlf_sequences() {
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("alpha");
     expected.push("beta");
     assert_string_vec_eq(string.lines("alpha\r\nbeta"), expected);
@@ -251,7 +251,7 @@ fn test_lines_normalizes_crlf_sequences() {
 
 #[test]
 fn test_lines_returns_single_empty_line_for_empty_input() {
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("");
     assert_string_vec_eq(string.lines(""), expected);
 }
@@ -260,14 +260,14 @@ fn test_lines_returns_single_empty_line_for_empty_input() {
 fn test_join_handles_empty_and_single_element_inputs() {
     let empty: Vec<string> = Vec.new();
     testing.assert_eq_str(string.join(empty, ","), "");
-    let single: Vec<string> = Vec.new();
+    var single: Vec<string> = Vec.new();
     single.push("solo");
     testing.assert_eq_str(string.join(single, ","), "solo");
 }
 
 #[test]
 fn test_join_inserts_separator_between_elements() {
-    let parts: Vec<string> = Vec.new();
+    var parts: Vec<string> = Vec.new();
     parts.push("red");
     parts.push("green");
     parts.push("blue");
@@ -319,7 +319,7 @@ fn test_split_empty_separator_returns_multibyte_codepoints_as_individual_element
     // "café" is 5 bytes but 4 Unicode codepoints. The empty-separator split
     // must yield 4 elements with "é" as a single two-byte string, never split
     // at the byte boundary.
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("c");
     expected.push("a");
     expected.push("f");
@@ -332,7 +332,7 @@ fn test_split_empty_separator_returns_multibyte_codepoints_as_individual_element
 fn test_split_returns_exact_element_values_for_nonempty_separator() {
     // Checks each element, not just the count, to catch off-by-one errors in
     // the split position that a len()-only assertion would miss.
-    let expected: Vec<string> = Vec.new();
+    var expected: Vec<string> = Vec.new();
     expected.push("red");
     expected.push("green");
     expected.push("blue");

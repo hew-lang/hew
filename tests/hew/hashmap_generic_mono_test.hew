@@ -2,7 +2,7 @@
 
 import std.testing;
 
-fn fill<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, v: V) {
+fn fill<K: Hash + Eq, V>(var m: HashMap<K, V>, k: K, v: V) {
     m.insert(k, v);
 }
 
@@ -10,7 +10,7 @@ fn has_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
     m.contains_key(k)
 }
 
-fn drop_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
+fn drop_key<K: Hash + Eq, V>(var m: HashMap<K, V>, k: K) -> bool {
     m.remove(k).is_some()
 }
 

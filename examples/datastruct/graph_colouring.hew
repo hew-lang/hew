@@ -1,8 +1,8 @@
 // Greedy Graph Colouring
 // Assign colours (ints starting from 0) so no two adjacent nodes share a colour
-fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, adj_nodes: Vec<i64>, adj_offsets: Vec<i64>) {
+fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_nodes: Vec<i64>, var adj_offsets: Vec<i64>) {
     let num_edges = esrc.len();
-    let degree: Vec<i64> = Vec.new();
+    var degree: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         degree.push(0);
     }
@@ -20,7 +20,7 @@ fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, adj_nodes: V
     for i in 0 .. total {
         adj_nodes.push(0);
     }
-    let pos: Vec<i64> = Vec.new();
+    var pos: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         pos.push(adj_offsets[i]);
     }
@@ -34,13 +34,13 @@ fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, adj_nodes: V
     }
 }
 
-fn greedy_colour(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, colours: Vec<i64>) {
+fn greedy_colour(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, var colours: Vec<i64>) {
     // Initialize all colours to -1 (uncoloured)
     for i in 0 .. num_nodes {
         colours.push(0 - 1);
     }
     // Track which colours are used by neighbours
-    let used: Vec<i64> = Vec.new();
+    var used: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         used.push(0);
     }
@@ -118,8 +118,8 @@ fn main() {
     // Graph 1: Petersen-like structure, 6 nodes
     // 0-1, 0-2, 0-3, 1-2, 1-4, 2-5, 3-4, 3-5, 4-5
     let n1 = 6;
-    let s1: Vec<i64> = Vec.new();
-    let d1: Vec<i64> = Vec.new();
+    var s1: Vec<i64> = Vec.new();
+    var d1: Vec<i64> = Vec.new();
     s1.push(0);
     d1.push(1);
     s1.push(0);
@@ -163,8 +163,8 @@ fn main() {
     }
     // Graph 2: Bipartite (4-cycle: 0-1-2-3-0), should need exactly 2 colours
     let n2 = 4;
-    let s2: Vec<i64> = Vec.new();
-    let d2: Vec<i64> = Vec.new();
+    var s2: Vec<i64> = Vec.new();
+    var d2: Vec<i64> = Vec.new();
     s2.push(0);
     d2.push(1);
     s2.push(1);
@@ -198,8 +198,8 @@ fn main() {
     }
     // Graph 3: Triangle (K3), needs exactly 3 colours
     let n3 = 3;
-    let s3: Vec<i64> = Vec.new();
-    let d3: Vec<i64> = Vec.new();
+    var s3: Vec<i64> = Vec.new();
+    var d3: Vec<i64> = Vec.new();
     s3.push(0);
     d3.push(1);
     s3.push(1);
@@ -231,8 +231,8 @@ fn main() {
     }
     // Graph 4: Star graph (0 connected to 1,2,3,4), needs 2 colours
     let n4 = 5;
-    let s4: Vec<i64> = Vec.new();
-    let d4: Vec<i64> = Vec.new();
+    var s4: Vec<i64> = Vec.new();
+    var d4: Vec<i64> = Vec.new();
     s4.push(0);
     d4.push(1);
     s4.push(0);

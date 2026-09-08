@@ -20,8 +20,8 @@ actor Runner {
     // Asserts the exact computed value from both tasks.
     receive fn run_value() -> i64 {
         scope {
-            fork t1 = compute<i64>();
-            fork t2 = compute<string>();
+            let t1 = fork compute<i64>();
+            let t2 = fork compute<string>();
             let v1 = await t1;
             let v2 = await t2;
             total = v1 + v2;
@@ -59,17 +59,17 @@ actor Runner {
 fn main() -> i64 {
     let r = spawn Runner(total: 0);
     // Value task: compute$$i64 + compute$$string both return 42 → sum 84
-    let v = match await r.run_value() {
+    let v = match r.run_value() {
         .Ok(n) => n,
         .Err(_) => -1,
     };
     // Unit fork: no values, just join-all correctness → sentinel 7
-    let u = match await r.run_unit() {
+    let u = match r.run_unit() {
         .Ok(n) => n,
         .Err(_) => -1,
     };
     // Arg fork: shim packs args into env, callee runs → sentinel 55
-    let a = match await r.run_args() {
+    let a = match r.run_args() {
         .Ok(n) => n,
         .Err(_) => -1,
     };

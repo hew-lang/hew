@@ -34,7 +34,7 @@ fn sorted_insert(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64) {
     sorted_insert_at(positions, nodes, pos, node_id, insert_at);
 }
 
-fn sorted_insert_at(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64, insert_at: i64) {
+fn sorted_insert_at(var positions: Vec<i64>, var nodes: Vec<i64>, pos: i64, node_id: i64, insert_at: i64) {
     let len = positions.len();
     // Add placeholder at end
     positions.push(0);
@@ -57,7 +57,7 @@ fn add_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64, ring_size: i64, 
     }
 }
 
-fn remove_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64) {
+fn remove_node(var positions: Vec<i64>, var nodes: Vec<i64>, node_id: i64) {
     // Remove all entries for this node (compact in place)
     let len = positions.len();
     var write = 0;
@@ -160,7 +160,7 @@ fn main() {
         failed = failed + 1;
     }
     // Record mappings before adding a node
-    let before: Vec<i64> = Vec.new();
+    var before: Vec<i64> = Vec.new();
     var num_keys = 100;
     for k in 0 .. num_keys {
         let key = k * 37;

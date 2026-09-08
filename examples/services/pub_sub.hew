@@ -34,8 +34,8 @@ actor Subscriber {
 // Parallel arrays: sub_topics[i] corresponds to sub_actors[i].
 // A subscriber can register for multiple topics (one entry per topic).
 actor Broker {
-    let sub_topics: Vec<string>,
-    let sub_actors: Vec<LocalPid<Subscriber>>,
+    var sub_topics: Vec<string>,
+    var sub_actors: Vec<LocalPid<Subscriber>>,
     var published: i64,
 
     // Register a subscriber for a topic.

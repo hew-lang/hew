@@ -1,6 +1,6 @@
 // Min-Heap using implicit array representation
 // Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
-fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
+fn heap_push(var heap: Vec<i32>, val: i32) -> i32 {
     heap.push(val);
     // Sift up
     var i = heap.len() - 1;
@@ -22,7 +22,7 @@ fn heap_peek(heap: Vec<i32>) -> i32 {
     heap[0]
 }
 
-fn heap_pop(heap: Vec<i32>) -> i32 {
+fn heap_pop(var heap: Vec<i32>) -> i32 {
     let min_val = heap[0];
     let last = heap.pop();
     if heap.len() > 0 {

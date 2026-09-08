@@ -11,7 +11,7 @@ fn bot_next(bot: Vec<i64>, i: i64) -> i64 {
     bot[i * 2 + 1]
 }
 
-fn set_bot_next(bot: Vec<i64>, i: i64, nx: i64) {
+fn set_bot_next(var bot: Vec<i64>, i: i64, nx: i64) {
     bot.set(i * 2 + 1, nx);
 }
 
@@ -23,18 +23,18 @@ fn top_next(top: Vec<i64>, i: i64) -> i64 {
     top[i * 2 + 1]
 }
 
-fn set_top_next(top: Vec<i64>, i: i64, nx: i64) {
+fn set_top_next(var top: Vec<i64>, i: i64, nx: i64) {
     top.set(i * 2 + 1, nx);
 }
 
-fn alloc_bot(bot: Vec<i64>, val: i64) -> i64 {
+fn alloc_bot(var bot: Vec<i64>, val: i64) -> i64 {
     let idx = bot.len() / 2;
     bot.push(val);
     bot.push(-1);
     idx
 }
 
-fn alloc_top(top: Vec<i64>, bot_idx: i64) -> i64 {
+fn alloc_top(var top: Vec<i64>, bot_idx: i64) -> i64 {
     let idx = top.len() / 2;
     top.push(bot_idx);
     top.push(-1);
@@ -102,7 +102,7 @@ fn rebuild_top(bot: Vec<i64>, top: Vec<i64>, bot_head: i64) -> i64 {
 
 // Search using skip list. Stores comparison count in out_comps[0].
 // Returns found node index or -1.
-fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64, out_comps: Vec<i64>) -> i64 {
+fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64, var out_comps: Vec<i64>) -> i64 {
     var comps = 0;
     var top_curr = top_head;
     var drop_bot = -1;
@@ -149,7 +149,7 @@ fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64, out_comps:
 }
 
 // Linear search. Stores comparison count in out_comps[0].
-fn search_linear(bot: Vec<i64>, head: i64, val: i64, out_comps: Vec<i64>) -> i64 {
+fn search_linear(bot: Vec<i64>, head: i64, val: i64, var out_comps: Vec<i64>) -> i64 {
     var comps = 0;
     var curr = head;
     while curr != -1 {

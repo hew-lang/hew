@@ -241,7 +241,7 @@ fn glob_scratch_dir(name: string) -> string {
 }
 
 fn chmod_dir(mode: string, dir: string) -> i64 {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push(mode);
     args.push(dir);
     process.run_argv("chmod", args).expect("run_argv succeeds").exit_code
@@ -288,7 +288,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
 }
 
 fn rm_rf_args(dir: string) -> Vec<string> {
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("-rf");
     args.push(dir);
     args

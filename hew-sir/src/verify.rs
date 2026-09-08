@@ -318,7 +318,18 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
                 expected.0, shape.id.0
             ));
         }
-        if shape.aggregate_ty.nominal_instance().as_ref() != Some(&shape.instance) {
+        let carries_instance = shape.aggregate_ty.nominal_instance().as_ref()
+            == Some(&shape.instance)
+            || matches!(
+                &shape.aggregate_ty,
+                ResolvedTy::Named {
+                    name,
+                    args,
+                    builtin: Some(_),
+                    ..
+                } if shape.instance.args == *args && shape.instance.nominal.full_path() == name
+            );
+        if !carries_instance {
             refuse(format!(
                 "concrete type `{}` does not carry the descriptor's nominal instance",
                 shape.aggregate_ty.user_facing()
@@ -331,7 +342,11 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
             ));
         }
         if !instances.insert(shape.instance.clone()) {
-            refuse("nominal instance has more than one descriptor".to_string());
+            refuse(format!(
+                "nominal instance `{}` has more than one descriptor ({:?})",
+                shape.aggregate_ty.user_facing(),
+                shape.aggregate_ty
+            ));
         }
         let mut names = HashSet::new();
         if shape.fields.iter().any(|field| !names.insert(&field.name)) {

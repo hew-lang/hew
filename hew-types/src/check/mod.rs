@@ -401,6 +401,14 @@ pub(crate) fn resolve_member_ty(
             } else {
                 name
             };
+            // Source-owned lifecycle fields retain the same exact declaration
+            // discriminator as annotations and constructed values. The lookup
+            // requires the qualified declaration already present in this scope.
+            let builtin = builtin.or_else(|| {
+                (name.contains('.') && type_defs.contains_key(&name))
+                    .then(|| crate::lookup_source_owned_lifecycle_type(&name))
+                    .flatten()
+            });
             let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_channel_handle)
                 && (is_opaque || is_opaque_type(&name));
             ResolvedTy::Named {

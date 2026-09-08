@@ -706,6 +706,15 @@ fn concrete_variant_shape(
             enum_ty.user_facing()
         ));
     };
+    if enum_ty.nominal_instance().is_some_and(|instance| {
+        module.items.iter().any(|item| {
+            matches!(item, HirItem::TypeDecl(decl)
+            if decl.declaration == *instance.nominal.declaration()
+                && decl.kind == hew_hir::HirTypeDeclKind::Enum)
+        })
+    }) {
+        return concrete_user_variant_shape(module, enum_ty);
+    }
     builtin.map_or_else(
         || concrete_user_variant_shape(module, enum_ty),
         |builtin| concrete_builtin_variant_shape(enum_ty, args, builtin),

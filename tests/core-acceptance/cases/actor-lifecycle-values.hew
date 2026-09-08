@@ -1,0 +1,13 @@
+import std.failure;
+import std.link_monitor;
+fn info(value: failure.CrashInfo) -> i64 { println(value.message); value.code }
+fn note(value: link_monitor.DownNotification) -> u64 { value.monitor.value }
+fn main() {
+    assert(info(failure.CrashInfo { code: 1, message: "hello".to_upper() }) == 1);
+    let value = link_monitor.DownNotification {
+        monitor: link_monitor.MonitorId { value: 7 },
+        target: .Local(4),
+        reason: .Crashed(failure.CrashKind.Crashed),
+    };
+    assert(note(value) == 7);
+}

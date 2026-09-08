@@ -5252,6 +5252,12 @@ specified in this section.
 
 Unknown hook kinds (e.g. `#[on(restart)]`, `#[on(upgrade)]`) are rejected with a diagnostic listing the valid set. `upgrade` is not among them: hot code upgrade is refused permanently, so the hook list holds no place for it.
 
+`#[on(crash)]` runs on the crashing incarnation's last valid state, before
+that state's cleanup. Completed changes from earlier turns and valid changes
+made before the current turn's failure remain visible to the hook. A subsequent
+restart constructs fresh state from the supervisor's configuration; the hook
+does not run on that restart state.
+
 `#[on(crash)]` is a defined hook. The handler ABI is `(CrashInfo) -> CrashAction`;
 the returned `CrashAction` is currently side-effects-only — supervisors honour each
 child's `restart_policy` instead. `CrashAction` as a supervisor control surface is

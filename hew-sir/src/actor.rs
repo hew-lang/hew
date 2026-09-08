@@ -85,6 +85,13 @@ pub struct SemActor {
     /// `#[on(stop)]` bodies in lexical order, run at the terminal transition
     /// with the state still initialized and before its cleanup.
     pub stop: Vec<CallableId>,
+    /// `#[on(crash)]`: runs in the supervising context after a child trap is
+    /// classified. The hook receives `CrashInfo` and returns `CrashAction`.
+    pub crash: Option<CallableId>,
+    /// `#[on(exit)]`: receives the typed link-exit notification.
+    pub exit: Option<CallableId>,
+    /// `#[on(down)]`: receives the typed monitor DOWN notification.
+    pub down: Option<CallableId>,
     /// Plain `fn` items, entered only from this actor's own bodies with the
     /// same exclusive state seat.
     pub methods: Vec<CallableId>,
@@ -146,6 +153,9 @@ impl SemActor {
             .into_iter()
             .chain(self.start)
             .chain(self.stop.iter().copied())
+            .chain(self.crash)
+            .chain(self.exit)
+            .chain(self.down)
             .chain(self.methods.iter().copied())
             .chain(self.handlers.iter().map(|handler| handler.callable))
     }
@@ -284,6 +294,59 @@ impl SemActor {
         Ok(())
     }
 
+    fn validate_lifecycle_signature(
+        &self,
+        body: crate::CallableId,
+        callable: &crate::SemCallable,
+    ) -> Result<(), String> {
+        let typed = if self.crash == Some(body) {
+            Some((
+                hew_types::BuiltinType::CrashInfo,
+                hew_types::BuiltinType::CrashAction,
+            ))
+        } else if self.exit == Some(body) {
+            Some((
+                hew_types::BuiltinType::CrashNotification,
+                hew_types::BuiltinType::Unit,
+            ))
+        } else if self.down == Some(body) {
+            Some((
+                hew_types::BuiltinType::DownNotification,
+                hew_types::BuiltinType::Unit,
+            ))
+        } else {
+            None
+        };
+        let expected_params = usize::from(typed.is_some()) + 1;
+        let expected_return = match typed {
+            Some((_, hew_types::BuiltinType::CrashAction)) => ResolvedTy::named_builtin(
+                "std.failure.CrashAction",
+                hew_types::BuiltinType::CrashAction,
+                Vec::new(),
+            ),
+            _ => ResolvedTy::Unit,
+        };
+        let return_matches = match (&callable.signature.return_ty, &expected_return) {
+            (
+                ResolvedTy::Named {
+                    builtin: Some(actual),
+                    args: actual_args,
+                    ..
+                },
+                ResolvedTy::Named {
+                    builtin: Some(expected),
+                    args: expected_args,
+                    ..
+                },
+            ) => actual == expected && actual_args == expected_args,
+            (actual, expected) => actual == expected,
+        };
+        if callable.signature.params.len() != expected_params || !return_matches {
+            return Err("lifecycle hook signature differs from its declared kind".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.actor(self.id) != Some(self) {
             return Err("actor descriptor is not at its canonical index".into());
@@ -296,7 +359,13 @@ impl SemActor {
         }
         let mut messages = std::collections::BTreeSet::new();
         let mut bodies = std::collections::BTreeSet::new();
-        let hooks = self.start.iter().chain(&self.stop);
+        let hooks = self
+            .start
+            .iter()
+            .chain(&self.stop)
+            .chain(self.crash.iter())
+            .chain(self.exit.iter())
+            .chain(self.down.iter());
         for (body, handler) in self
             .init
             .iter()
@@ -346,11 +415,8 @@ impl SemActor {
                 if callable.signature.return_ty != ResolvedTy::Unit {
                     return Err("actor init must return unit".into());
                 }
-            } else if hooks.clone().any(|hook| *hook == body)
-                && (callable.signature.return_ty != ResolvedTy::Unit
-                    || callable.signature.params.len() != 1)
-            {
-                return Err("lifecycle hook takes no parameters and returns unit".into());
+            } else if hooks.clone().any(|hook| *hook == body) {
+                self.validate_lifecycle_signature(body, callable)?;
             }
             let lends = self.methods.contains(&body);
             for parameter in callable.signature.params.iter().skip(1) {

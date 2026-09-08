@@ -7,6 +7,9 @@ use inkwell::types::StructType;
 
 #[path = "physical_actor_ask.rs"]
 mod ask;
+#[path = "physical_actor_lifecycle.rs"]
+mod lifecycle;
+
 #[path = "physical_actor_wait.rs"]
 mod wait;
 
@@ -421,6 +424,12 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
             }
             self.emit_actor_dispatch(actor)?;
+            if actor.crash.is_some() {
+                self.emit_actor_crash(actor)?;
+            }
+            if actor.exit.is_some() || actor.down.is_some() {
+                self.emit_actor_sys_dispatch(actor)?;
+            }
             if !actor.stop.is_empty() {
                 self.emit_actor_terminate(actor)?;
             }
@@ -1327,6 +1336,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     size_ty.into(),
                     ptr.into(),
+                    ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -1369,6 +1380,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .into(),
                     periodic_table.into(),
                     size_ty.const_int(u64::from(periodic_count), false).into(),
+                    if actor.exit.is_some() || actor.down.is_some() {
+                        callback("sys_dispatch")?
+                    } else {
+                        ptr.const_null()
+                    }
+                    .into(),
+                    if actor.crash.is_some() {
+                        callback("on_crash")?
+                    } else {
+                        ptr.const_null()
+                    }
+                    .into(),
                     self.active_fault.into(),
                 ],
                 "spawn.token",

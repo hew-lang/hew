@@ -3067,7 +3067,12 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
 ///
 /// All three public spawn functions build one of these and delegate to
 /// [`spawn_actor_internal`].
+/// A native crash hook borrows initialized state and a managed diagnostic.
+pub type HewNativeCrashFn =
+    unsafe extern "C" fn(*mut c_void, i64, *const hew_cabi::string::HewString) -> i32;
+
 struct ActorSpawnConfig {
+    native_crash: Option<HewNativeCrashFn>,
     dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
     /// no stop request can observe an actor without its hooks.
@@ -3262,7 +3267,11 @@ fn build_spawned_actor(
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         #[cfg(not(target_arch = "wasm32"))]
         native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
-            .then(|| std::sync::Arc::new(crate::actor_native::NativeActorCompletion::default())),
+            .then(|| {
+                std::sync::Arc::new(crate::actor_native::NativeActorCompletion::with_crash(
+                    config.native_crash,
+                ))
+            }),
     })
 }
 
@@ -3545,6 +3554,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -3611,6 +3621,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -3713,6 +3724,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -3767,6 +3779,8 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     cap_bytes: usize,
     periodic: *const HewNativePeriodicHandler,
     periodic_count: usize,
+    sys_dispatch: Option<HewSysDispatchFn>,
+    native_crash: Option<HewNativeCrashFn>,
     fault: *mut *mut crate::fault::HewFault,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: constructors return an owned native mailbox.
@@ -3783,6 +3797,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     // SAFETY: ownership and callbacks are supplied atomically before publication.
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash,
             dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
             terminate_fn: terminate,
             state_drop_fn: Some(state_drop),
@@ -3790,7 +3805,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
             state,
             state_size: size,
             dispatch: Some(dispatch),
-            sys_dispatch: None,
+            sys_dispatch,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
@@ -3959,6 +3974,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -4006,6 +4022,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -7701,6 +7718,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -7743,6 +7761,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -7813,6 +7832,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,

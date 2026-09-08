@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-crash-last-valid-state"
+intent = "A crash hook observes successful prior mutation and valid mutation in the failed turn before cleanup; restart constructs fresh state."
+source = "cases/actor-crash-last-valid-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "CHANGED!\nlast valid crash state, fresh restart\n"
+stderr = "hew: failure: UserPanic (212): crash incarnation\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 0

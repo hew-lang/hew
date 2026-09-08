@@ -145,18 +145,6 @@ impl InstanceService<'_> {
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
         }
-        if let Some(hook) = source.lifecycle_hooks.iter().find(|hook| {
-            !matches!(
-                hook.kind,
-                hew_hir::HirLifecycleHookKind::Start | hew_hir::HirLifecycleHookKind::Stop
-            )
-        }) {
-            return Err(format!(
-                "`#[on({:?})]` needs the supervision and link notification contracts",
-                hook.kind
-            )
-            .to_lowercase());
-        }
         let overflow = actor_overflow(&source)?;
         if let Some(field) = source.state_fields.iter().find(|field| {
             super::generators::value_needs_close(self, &substitution.apply(&field.ty))
@@ -191,6 +179,9 @@ impl InstanceService<'_> {
             init: None,
             start: None,
             stop: Vec::new(),
+            crash: None,
+            exit: None,
+            down: None,
             methods: Vec::new(),
             handlers: Vec::new(),
             mailbox_capacity: source.mailbox_capacity,
@@ -199,6 +190,96 @@ impl InstanceService<'_> {
         });
         self.register_actor_bodies(id, &source, &substitution)?;
         Ok(id)
+    }
+
+    fn register_actor_lifecycle(
+        &mut self,
+        id: crate::ActorId,
+        source: &hew_hir::HirActorDecl,
+        substitution: &TypeSubstitution,
+    ) -> Result<(), String> {
+        for hook in &source.lifecycle_hooks {
+            let (params, return_ty) = match hook.kind {
+                hew_hir::HirLifecycleHookKind::Start | hew_hir::HirLifecycleHookKind::Stop => {
+                    if !hook.params.is_empty() || hook.return_ty != ResolvedTy::Unit {
+                        return Err("lifecycle hook takes no parameters and returns unit".into());
+                    }
+                    (Vec::new(), ResolvedTy::Unit)
+                }
+                hew_hir::HirLifecycleHookKind::Crash => (
+                    vec![ResolvedTy::named_builtin(
+                        "std.failure.CrashInfo",
+                        hew_types::BuiltinType::CrashInfo,
+                        Vec::new(),
+                    )],
+                    ResolvedTy::named_builtin(
+                        "std.failure.CrashAction",
+                        hew_types::BuiltinType::CrashAction,
+                        Vec::new(),
+                    ),
+                ),
+                hew_hir::HirLifecycleHookKind::Exit => (
+                    vec![ResolvedTy::named_builtin(
+                        "std.failure.CrashNotification",
+                        hew_types::BuiltinType::CrashNotification,
+                        Vec::new(),
+                    )],
+                    ResolvedTy::Unit,
+                ),
+                hew_hir::HirLifecycleHookKind::Down => (
+                    vec![ResolvedTy::named_builtin(
+                        "std.link_monitor.DownNotification",
+                        hew_types::BuiltinType::DownNotification,
+                        Vec::new(),
+                    )],
+                    ResolvedTy::Unit,
+                ),
+            };
+            if hook.params.len() != params.len()
+                || hook
+                    .params
+                    .iter()
+                    .zip(&params)
+                    .any(|(param, expected)| !lifecycle_types_match(&param.ty, expected))
+                || !lifecycle_types_match(&hook.return_ty, &return_ty)
+            {
+                return Err(format!(
+                    "#[on({:?})] has the wrong signature; expected ({}) -> {}",
+                    hook.kind,
+                    params
+                        .iter()
+                        .map(|ty| ty.user_facing().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    return_ty.user_facing()
+                ));
+            }
+            let body = self.register_actor_body(
+                id,
+                source,
+                substitution,
+                hook.declaration.clone(),
+                &hook.state_bindings,
+                &hook.params,
+                return_ty,
+                &hook.body,
+                &format!("hook_{}", hook.name),
+                matches!(hook.kind, hew_hir::HirLifecycleHookKind::Crash),
+                None,
+            )?;
+            match hook.kind {
+                hew_hir::HirLifecycleHookKind::Start => {
+                    self.actors[id.0 as usize].start = Some(body);
+                }
+                hew_hir::HirLifecycleHookKind::Stop => self.actors[id.0 as usize].stop.push(body),
+                hew_hir::HirLifecycleHookKind::Crash => {
+                    self.actors[id.0 as usize].crash = Some(body);
+                }
+                hew_hir::HirLifecycleHookKind::Exit => self.actors[id.0 as usize].exit = Some(body),
+                hew_hir::HirLifecycleHookKind::Down => self.actors[id.0 as usize].down = Some(body),
+            }
+        }
+        Ok(())
     }
 
     fn register_actor_bodies(
@@ -223,35 +304,7 @@ impl InstanceService<'_> {
             )?;
             self.actors[id.0 as usize].init = Some(body);
         }
-        for hook in &source.lifecycle_hooks {
-            if !hook.params.is_empty() || hook.return_ty != ResolvedTy::Unit {
-                return Err("lifecycle hook takes no parameters and returns unit".into());
-            }
-            let body = self.register_actor_body(
-                id,
-                source,
-                substitution,
-                hook.declaration.clone(),
-                &hook.state_bindings,
-                &[],
-                ResolvedTy::Unit,
-                &hook.body,
-                &format!("hook_{}", hook.name),
-                false,
-                None,
-            )?;
-            match hook.kind {
-                hew_hir::HirLifecycleHookKind::Start => {
-                    self.actors[id.0 as usize].start = Some(body);
-                }
-                hew_hir::HirLifecycleHookKind::Stop => self.actors[id.0 as usize].stop.push(body),
-                hew_hir::HirLifecycleHookKind::Crash
-                | hew_hir::HirLifecycleHookKind::Exit
-                | hew_hir::HirLifecycleHookKind::Down => {
-                    unreachable!("supervision and link hooks are refused above")
-                }
-            }
-        }
+        self.register_actor_lifecycle(id, source, substitution)?;
         for method in &source.methods {
             let body = self.register_actor_body(
                 id,
@@ -490,6 +543,24 @@ impl InstanceService<'_> {
         self.statuses.push(None);
         self.request_body(id);
         Ok(id)
+    }
+}
+
+fn lifecycle_types_match(actual: &ResolvedTy, expected: &ResolvedTy) -> bool {
+    match (actual, expected) {
+        (
+            ResolvedTy::Named {
+                builtin: Some(actual_builtin),
+                args: actual_args,
+                ..
+            },
+            ResolvedTy::Named {
+                builtin: Some(expected_builtin),
+                args: expected_args,
+                ..
+            },
+        ) => actual_builtin == expected_builtin && actual_args == expected_args,
+        _ => actual == expected,
     }
 }
 

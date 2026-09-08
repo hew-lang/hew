@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::check::TypeDef;
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::value_class::{ClassContext, ClassError, DeclaredType, ValueClass};
+use crate::BuiltinType;
 
 /// What a `copy_value` of this type costs, per §1.1's `clone` column.
 ///
@@ -545,7 +546,6 @@ impl TypeFactService {
         ty: &ResolvedTy,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
     ) -> Result<bool, ClassError> {
-        use crate::BuiltinType;
         match ty {
             ResolvedTy::Tuple(members) => {
                 self.members_have_capability(members, ValueCapability::Eq, visiting)

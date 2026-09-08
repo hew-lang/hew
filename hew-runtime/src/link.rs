@@ -487,15 +487,15 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, _actor_addr: *mut HewAct
 /// raw `reason` is retained for the existing integer-tag consumers.
 #[repr(C)]
 #[derive(Debug)]
-struct ExitMessage {
+pub struct ExitMessage {
     /// ID of the actor that crashed and caused this exit signal. Maps to
     /// `CrashNotification.actor_id`.
-    crashed_actor_id: u64,
+    pub crashed_actor_id: u64,
     /// Reason code (`error_code` from `hew_actor_trap`).
-    reason: i32,
+    pub reason: i32,
     /// The M-6 `CrashKind` tag projected from `reason` (Crashed=0,
     /// HeapExceeded=1, PartitionDetected=2). Maps to `CrashNotification.kind`.
-    crash_kind: i32,
+    pub crash_kind: i32,
 }
 
 // ── Test-only crash ledger + probe FFI (cross-node link cascade observability) ────

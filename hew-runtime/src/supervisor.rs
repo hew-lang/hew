@@ -3676,10 +3676,20 @@ unsafe fn apply_restart(
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
     record: FaultRecord,
+    native_action: Option<i32>,
 ) {
     // SAFETY: forwarded unchanged to the decision funnel.
-    let ruling =
-        unsafe { decide_child_failure(sup, failed_identity, exit_state, crash_code, ctx, record) };
+    let ruling = unsafe {
+        decide_child_failure(
+            sup,
+            failed_identity,
+            exit_state,
+            crash_code,
+            ctx,
+            record,
+            native_action,
+        )
+    };
     if exit_state == HewActorState::Crashed as c_int {
         crate::exit_status::settle_supervised_fault(record, ruling);
     }
@@ -3708,6 +3718,7 @@ unsafe fn decide_child_failure(
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
     record: FaultRecord,
+    native_action: Option<i32>,
 ) -> FaultRuling {
     let crashed = exit_state == HewActorState::Crashed as c_int;
     let (spec_identity, template, on_crash, sup_actor_id) = {
@@ -3741,7 +3752,9 @@ unsafe fn decide_child_failure(
     // The arbitrary on-crash callback runs without `roster`. The Arc
     // lease keeps the exact template generation alive across a concurrent
     // clone setter or remove_child.
-    let crash_action_tag = if crashed {
+    let crash_action_tag = if native_action.is_some() {
+        native_action
+    } else if crashed {
         // SAFETY: `ctx` is the live supervisor dispatch context and `template`
         // leases the state allocation for the complete synchronous callback.
         unsafe { invoke_on_crash_handler(on_crash, template.allocation.state, crash_code, ctx) }
@@ -3911,6 +3924,17 @@ unsafe fn dispatch_child_lifecycle_event(
         return;
     };
 
+    // Retain the native hook decision before freeing its incarnation.
+    let native_action = if child.is_null() {
+        None
+    } else {
+        // SAFETY: the retired slot still pins this quiescent actor.
+        unsafe { &*child }
+            .native_completion
+            .as_ref()
+            .and_then(|c| c.crash_action())
+    };
+
     // Free the old child.
     if !child.is_null() {
         // Explicit provenance plus the retiring incarnation's atomic
@@ -3936,6 +3960,7 @@ unsafe fn dispatch_child_lifecycle_event(
             event.crash_code,
             ctx,
             FaultRecord::from_raw(event.fault_record),
+            native_action,
         );
     };
 }

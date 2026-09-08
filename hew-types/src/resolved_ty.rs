@@ -330,7 +330,18 @@ impl ResolvedTy {
             Self::Named {
                 name,
                 args,
-                builtin: None,
+                builtin:
+                    None
+                    | Some(
+                        crate::BuiltinType::CrashInfo
+                        | crate::BuiltinType::CrashAction
+                        | crate::BuiltinType::CrashNotification
+                        | crate::BuiltinType::CrashKind
+                        | crate::BuiltinType::MonitorId
+                        | crate::BuiltinType::DownTarget
+                        | crate::BuiltinType::DownReason
+                        | crate::BuiltinType::DownNotification,
+                    ),
                 ..
             } => Some(NominalInstance {
                 nominal: crate::identity::mint_nominal_id(name.clone()),

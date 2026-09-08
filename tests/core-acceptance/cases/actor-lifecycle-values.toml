@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-lifecycle-values"
+intent = "Source lifecycle records and nested enums share declaration identity, field access and owned-string cleanup across ordinary function calls."
+source = "cases/actor-lifecycle-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "HELLO\n"
+stderr = ""
+exit = 0

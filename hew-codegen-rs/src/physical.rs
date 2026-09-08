@@ -4957,7 +4957,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let map = self.load(receiver, "map.receiver")?;
         match operation {
             PhysicalMapOp::New => unreachable!("constructor already emitted"),
-            PhysicalMapOp::Get { .. } | PhysicalMapOp::Index | PhysicalMapOp::Remove { .. } => {
+            PhysicalMapOp::Get { .. }
+            | PhysicalMapOp::GetBorrow { .. }
+            | PhysicalMapOp::Index
+            | PhysicalMapOp::Remove { .. } => {
                 return self.emit_map_lookup(
                     action,
                     (receiver, source(1)?),
@@ -4986,8 +4989,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalMapOp::Insert | PhysicalMapOp::Clear => {
                 if operation == PhysicalMapOp::Insert {
+                    // A value with no clone moves into the slot; a clonable one
+                    // is copied and the caller keeps its own.
+                    let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
                     self.emit_collection_callback(
-                        "hew_hashmap_insert_clone_layout",
+                        if moved {
+                            "hew_hashmap_insert_take_layout"
+                        } else {
+                            "hew_hashmap_insert_clone_layout"
+                        },
                         &[
                             map.into(),
                             self.slots[source(1)?.0 as usize].into(),
@@ -4996,6 +5006,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         failure,
                         Some((receiver, DestroyAction::Map(glue))),
                     )?;
+                    if moved {
+                        self.clear_owned(source(2)?)?;
+                    }
                 } else {
                     let function = external_drop(self.ctx, self.llvm, "hew_hashmap_clear_layout")?;
                     self.runtime_call_void(function, &[map.into()], "map.clear")?;
@@ -5081,9 +5094,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             values.entry_scratch(value_ty, "map.lookup.value")?
         };
         let option = match operation {
-            PhysicalMapOp::Get { result: option } | PhysicalMapOp::Remove { value: option, .. } => {
-                Some(option)
-            }
+            PhysicalMapOp::Get { result: option }
+            | PhysicalMapOp::GetBorrow { result: option }
+            | PhysicalMapOp::Remove { value: option, .. } => Some(option),
             PhysicalMapOp::Index => None,
             _ => return Err(CodegenError::FailClosed("non-lookup map action".into())),
         };
@@ -5095,10 +5108,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         } else {
             None
         };
-        let symbol = if matches!(operation, PhysicalMapOp::Remove { .. }) {
-            "hew_hashmap_remove_take_layout"
-        } else {
-            "hew_hashmap_get_clone_layout"
+        // A borrowed read aliases the value the map still owns; the owning
+        // read hands back a fresh owner and the removal moves one out.
+        let symbol = match operation {
+            PhysicalMapOp::Remove { .. } => "hew_hashmap_remove_take_layout",
+            PhysicalMapOp::GetBorrow { .. } => "hew_hashmap_get_borrow_layout",
+            _ => "hew_hashmap_get_clone_layout",
         };
         let consumed = matches!(operation, PhysicalMapOp::Remove { .. })
             .then_some((receiver, DestroyAction::Map(id)));
@@ -5148,7 +5163,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             let value = self
                 .builder
                 .build_load(value_ty, output, "map.lookup.owner")
-                .llvm_ctx("load independent map value")?;
+                .llvm_ctx("load map value")?;
             self.write_variant_value(slot, 0, &[value], option)?;
         }
         self.builder

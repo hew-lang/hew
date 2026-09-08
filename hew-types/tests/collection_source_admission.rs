@@ -258,7 +258,8 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
         ("type Holder { callback: fn(i64) -> i64 }", "Holder", "closure value"),
         ("", "Vec<fn(i64) -> i64>", "closure value"),
     ] {
-        for projection in ["keys", "values", "entries", "into_iter"] {
+        // `keys()` projects only the keys, so it copies no value.
+        for projection in ["values", "entries", "into_iter"] {
             let source = format!(
                 "{declarations} fn main() {{ let values: HashMap<string, {value}> = HashMap.new(); values.{projection}(); }}"
             );
@@ -270,6 +271,10 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
                 output.errors
             );
         }
+        let keys = format!(
+            "{declarations} fn main() {{ let values: HashMap<string, {value}> = HashMap.new(); values.keys(); }}"
+        );
+        check_ok(&keys);
     }
 }
 
@@ -357,25 +362,32 @@ fn forward_declared_map_values_are_checked_after_registration() {
             "{declarations} fn main() {{ let value = First {{ values: HashMap.new() }}; }}"
         ));
     }
+    // A map of a clone-free value is an ordinary type: it is read by borrow and
+    // drained by removal, so only an operation that copies its values refuses.
     for declarations in [
         "type First { values: HashMap<string, Second> } #[resource] type Second { id: i64 } impl Second { fn close(consume self) {} }",
         "#[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } type First { values: HashMap<string, Second> }",
     ] {
-        let output = check(&format!("{declarations} fn main() {{}}"));
-        assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation && error.message.contains("resource/linear")), "forward resource member must fail even without construction: {:#?}", output.errors);
+        check_ok(&format!("{declarations} fn main() {{}}"));
+        let output = check(&format!(
+            "{declarations} fn main() {{ var values: HashMap<string, Second> = HashMap.new(); values.values(); }}"
+        ));
+        assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation && error.message.contains("resource/linear")), "a forward resource value must refuse the copying projection: {:#?}", output.errors);
     }
 }
 
 #[test]
 fn abstract_map_key_does_not_hide_a_forward_resource_value() {
-    let output = check("type First<K> { values: HashMap<K, Second> } #[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } fn main() {}");
+    // The value obligation belongs to the operation that copies values out, and
+    // an abstract key must not hide it there.
+    let output = check("#[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } fn snap<K: Hash + Eq>(values: HashMap<K, Second>) { values.entries(); } fn main() {}");
     assert!(
         output
             .errors
             .iter()
             .any(|error| error.kind == TypeErrorKind::InvalidOperation
                 && error.message.contains("resource/linear")),
-        "an abstract key must not bypass value admission: {:#?}",
+        "an abstract key must not bypass the copying projection's value admission: {:#?}",
         output.errors
     );
 }

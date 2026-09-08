@@ -1977,7 +1977,14 @@ impl Checker {
                         let val_ty = args[1].clone();
                         let keys_span = Self::hashmap_for_in_keys_span(&iterable.1);
                         let values_span = Self::hashmap_for_in_values_span(&iterable.1);
+                        // The desugar snapshots `values()`, so every value is
+                        // copied out of the map.
                         if self.validate_hashmap_owned_element_types(&key_ty, &val_ty, &iterable.1)
+                            && self.validate_hashmap_value_clone_type(
+                                &val_ty,
+                                "for (k, v) in m",
+                                &iterable.1,
+                            )
                         {
                             let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
                             let val_vec = self.make_vec_type(val_ty.clone(), &values_span);

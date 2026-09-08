@@ -2683,6 +2683,13 @@ impl Checker {
                 if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }
+                // The trapping read clones the value out of its slot; the
+                // write only moves one in.
+                if ctx == IndexContext::Read
+                    && !self.validate_hashmap_value_clone_type(&val_ty, "m[k]", span)
+                {
+                    return Ty::Error;
+                }
                 match ctx {
                     // Trapping bare-`V` read: no `.get` resolved call; MIR's
                     // `Index` node owns the `hew_hashmap_get_clone_layout` trap

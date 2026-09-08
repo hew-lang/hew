@@ -1,0 +1,24 @@
+// The loan a borrowed `get` takes on the map is live for the match that reads
+// it, so inserting into the map inside the arm is refused by name.
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    var m: HashMap<string, Tok> = HashMap.new();
+    m.insert("a", Tok { id: 1 });
+    match m.get("a") {
+        Option.Some(t) => {
+            m.insert("b", Tok { id: 2 });
+            println(t.id);
+        },
+        Option.None => println("none"),
+    }
+}

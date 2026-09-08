@@ -7200,6 +7200,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_hashmap_get_borrow_layout( *const HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32",
+        "wasm32-wasip1": "fn hew_hashmap_get_borrow_layout( *const HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_hashmap_get_borrow_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_hashmap_get_clone_layout( *const HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32",
         "wasm32-wasip1": "fn hew_hashmap_get_clone_layout( *const HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32"
       },
@@ -7249,6 +7264,21 @@
         "wasm32-wasip1": "fn hew_hashmap_insert_layout( *mut HewLayoutHashMap, *const c_void, *const c_void, *mut bool, *mut *mut c_void, ) -> i32"
       },
       "symbol": "hew_hashmap_insert_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_insert_take_layout( *mut HewLayoutHashMap, *const c_void, *const c_void, *mut bool, *mut *mut c_void, ) -> i32",
+        "wasm32-wasip1": "fn hew_hashmap_insert_take_layout( *mut HewLayoutHashMap, *const c_void, *const c_void, *mut bool, *mut *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_hashmap_insert_take_layout"
     },
     {
       "availability": [

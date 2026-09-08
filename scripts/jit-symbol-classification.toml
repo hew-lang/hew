@@ -356,10 +356,12 @@ stable = [
   "hew_hashmap_clone_layout",
   "hew_hashmap_contains_key_layout",
   "hew_hashmap_free_layout",
+  "hew_hashmap_get_borrow_layout",
   "hew_hashmap_get_clone_layout",
   "hew_hashmap_get_layout",
   "hew_hashmap_insert_clone_layout",
   "hew_hashmap_insert_layout",
+  "hew_hashmap_insert_take_layout",
   "hew_hashmap_iter_free_layout",
   "hew_hashmap_iter_new_layout",
   "hew_hashmap_iter_next_layout",
@@ -2155,6 +2157,15 @@ discharge-depth = "none"
 symbol = "hew_hashmap_insert_clone_layout"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# The key is copied in and the value owner transfers on a zero status; a
+# callback failure leaves the caller holding it.
+[[ownership.contracts]]
+symbol = "hew_hashmap_insert_take_layout"
+result = "none"
+params = ["borrow", "borrow", "consume", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

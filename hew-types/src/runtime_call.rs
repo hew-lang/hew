@@ -668,6 +668,10 @@ pub enum MapValueOp {
     Len,
     Index,
     Get,
+    /// `m.get(k)` where the value has no clone: `Some` carries a loan of the
+    /// slot the map still owns, readable for the length of the receiver's
+    /// loan, and an absent key still reads `None`.
+    GetBorrow,
     ContainsKey,
     Insert,
     Remove,
@@ -697,7 +701,8 @@ impl MapValueOp {
     const fn contract(self) -> RuntimeSemanticContract {
         use RuntimeArgumentEffect::{Borrow, Move};
         use RuntimeResultEffect::{
-            BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
+            BitCopy, Borrowed, FreshOwned, IndependentValue, UpdatedReceiver,
+            UpdatedReceiverAndValue,
         };
         use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
         const MAP: RuntimeValueKind = Receiver(BuiltinType::HashMap);
@@ -705,9 +710,11 @@ impl MapValueOp {
             ty: TypeArgument(0),
             effect: Borrow,
         };
+        // A value with no clone moves into the slot the map owns; a clonable
+        // one is copied in and the caller keeps its own.
         const VALUE: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: TypeArgument(1),
-            effect: Borrow,
+            effect: RuntimeArgumentEffect::Value,
         };
         const READ: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: MAP,
@@ -732,6 +739,11 @@ impl MapValueOp {
             Self::Get => runtime_semantic_contract(
                 &[READ, KEY],
                 IndependentValue(OPTIONAL_VALUE),
+                &[RuntimeLogicalFailure::CallbackFault],
+            ),
+            Self::GetBorrow => runtime_semantic_contract(
+                &[READ, KEY],
+                Borrowed(OPTIONAL_VALUE),
                 &[RuntimeLogicalFailure::CallbackFault],
             ),
             Self::ContainsKey => runtime_semantic_contract(
@@ -2901,6 +2913,7 @@ impl RuntimeCallFamily {
                 MapValueOp::Len => "map.value.len",
                 MapValueOp::Index => "map.value.index",
                 MapValueOp::Get => "map.value.get",
+                MapValueOp::GetBorrow => "map.value.get_borrow",
                 MapValueOp::ContainsKey => "map.value.contains_key",
                 MapValueOp::Insert => "map.value.insert",
                 MapValueOp::Remove => "map.value.remove",
@@ -3344,6 +3357,7 @@ impl RuntimeCallFamily {
             "map.value.len" => Self::Map(MapValueOp::Len),
             "map.value.index" => Self::Map(MapValueOp::Index),
             "map.value.get" => Self::Map(MapValueOp::Get),
+            "map.value.get_borrow" => Self::Map(MapValueOp::GetBorrow),
             "map.value.contains_key" => Self::Map(MapValueOp::ContainsKey),
             "map.value.insert" => Self::Map(MapValueOp::Insert),
             "map.value.remove" => Self::Map(MapValueOp::Remove),
@@ -5260,10 +5274,10 @@ mod tests {
                         op: EncodingOp::ArrayPush,
                         ..
                     } if index == 1 => ConsumeVerdict::ProvenConsume,
-                    RuntimeCallFamily::Map(MapValueOp::Insert)
-                    | RuntimeCallFamily::Vector(VecValueOp::Slice)
-                        if index <= 2 =>
-                    {
+                    RuntimeCallFamily::Vector(VecValueOp::Slice) if index <= 2 => {
+                        ConsumeVerdict::ProvenBorrow
+                    }
+                    RuntimeCallFamily::Map(MapValueOp::Insert) if index == 1 => {
                         ConsumeVerdict::ProvenBorrow
                     }
                     RuntimeCallFamily::Encoding {
@@ -5277,6 +5291,7 @@ mod tests {
                     | RuntimeCallFamily::Map(
                         MapValueOp::Index
                         | MapValueOp::Get
+                        | MapValueOp::GetBorrow
                         | MapValueOp::ContainsKey
                         | MapValueOp::Remove,
                     )
@@ -5968,7 +5983,13 @@ mod map_set_semantic_contract_tests {
         ));
         assert_eq!(insert.arg_consume_verdict(0), ConsumeVerdict::ProvenConsume);
         assert_eq!(insert.arg_consume_verdict(1), ConsumeVerdict::ProvenBorrow);
-        assert_eq!(insert.arg_consume_verdict(2), ConsumeVerdict::ProvenBorrow);
+        // The value's ingress follows its clone fact - copied in when it has
+        // one, moved in when it has none - so the per-argument table cannot
+        // prove a borrow for it.
+        assert_eq!(
+            insert.arg_consume_verdict(2),
+            ConsumeVerdict::ConservativeConsume
+        );
 
         let removed = builtin(BuiltinType::Option, vec![ResolvedTy::Bytes]);
         let remove = RuntimeCallFamily::Map(MapValueOp::Remove)

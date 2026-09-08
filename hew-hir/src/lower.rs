@@ -21637,12 +21637,15 @@ impl LowerCtx {
                     .expect("matched semantic collection method");
                 // The checker admitted this read in borrow mode, so `Some`
                 // carries a loan of the slot the collection still owns.
-                if family == Family::Vector(VecValueOp::Get)
-                    && self
-                        .borrowed_element_option_reads
-                        .contains(&SpanKey::in_module(span, self.current_module_idx))
+                if self
+                    .borrowed_element_option_reads
+                    .contains(&SpanKey::in_module(span, self.current_module_idx))
                 {
-                    family = Family::Vector(VecValueOp::GetBorrow);
+                    if family == Family::Vector(VecValueOp::Get) {
+                        family = Family::Vector(VecValueOp::GetBorrow);
+                    } else if family == Family::Map(MapValueOp::Get) {
+                        family = Family::Map(MapValueOp::GetBorrow);
+                    }
                 }
                 let mut operands = vec![*receiver];
                 operands.extend(args);

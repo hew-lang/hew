@@ -400,6 +400,15 @@ pub(crate) fn resolve_member_ty(
             } else {
                 name
             };
+            // A channel endpoint is a pointer word whose identity is its
+            // builtin. The annotation path qualifies and marks it opaque while
+            // `channel.new`'s own signature spells it bare and transparent, and
+            // the physical glue recipe keys on the exact type — a half stored
+            // in a record then failed to lower. Name and opacity are not
+            // identity facts for this builtin, so both take the canonical form.
+            if let Some(kind) = builtin.filter(|kind| kind.is_channel_handle()) {
+                return ResolvedTy::named_builtin(kind.canonical_name(), kind, args);
+            }
             let is_opaque = is_opaque || is_opaque_type(&name);
             ResolvedTy::Named {
                 name,

@@ -1,6 +1,6 @@
 [[case]]
 id = "network-managed-strings"
-intent = "Real local HTTP and WebSocket exchanges preserve managed UTF-8 and embedded NUL payloads, returned text survives handle release, invalid addresses retain typed details, and listeners release on return."
+intent = "Real local HTTP and WebSocket exchanges through package and peer imports preserve managed UTF-8 and embedded NUL payloads, returned text survives handle release, invalid addresses retain typed details, and listeners release on return."
 source = "cases/network-managed-strings.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

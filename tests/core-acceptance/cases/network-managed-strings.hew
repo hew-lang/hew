@@ -1,4 +1,5 @@
 import std.net.http;
+import std.net.http.http_client;
 import std.net.websocket;
 import std.process;
 import std.os;
@@ -51,7 +52,7 @@ fn check_invalid_address(address: string) {
 }
 
 fn http_client_run(url: string) -> i64 {
-    let response = http.request("POST", url, "café\0雪", [("X-Managed", "header value")]);
+    let response = http_client.request("POST", url, "café\0雪", [("X-Managed", "header value")]);
     assert(response.status() == 201);
     let body = response.body();
     let content_type = response.content_type();
@@ -123,7 +124,7 @@ fn main() -> i64 {
     }
     check_invalid_address("not an address");
     check_invalid_address("127.0.0.1:0\0ignored");
-    let refused = http.request("GET", "http://127.0.0.1:1/", "", [("X-Managed", "bad\0value")]);
+    let refused = http_client.request("GET", "http://127.0.0.1:1/", "", [("X-Managed", "bad\0value")]);
     assert(refused.status() == -1);
     let detail = refused.body();
     refused.close();

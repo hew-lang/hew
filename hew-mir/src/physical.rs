@@ -1010,6 +1010,11 @@ pub enum PhysicalRuntimeAction {
     NodeShutdown,
     /// Register a local actor handle under a source-visible name.
     NodeRegister,
+    /// Resolve a registered actor name into its full carried remote location.
+    NodeLookup {
+        result: PhysicalVariantId,
+        error: PhysicalVariantId,
+    },
     NodeLifecycle {
         family: RuntimeCallFamily,
         result: PhysicalVariantId,
@@ -1058,6 +1063,7 @@ impl PhysicalRuntimeAction {
             Self::TimeScalar(family) | Self::NodeLifecycle { family, .. } => family,
             Self::NodeShutdown => RuntimeCallFamily::NodeShutdown,
             Self::NodeRegister => RuntimeCallFamily::NodeRegister,
+            Self::NodeLookup { .. } => RuntimeCallFamily::NodeLookup,
             Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
             Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
@@ -4070,6 +4076,33 @@ impl FunctionLowerer<'_> {
             };
             return Ok(PhysicalRuntimeAction::NodeLifecycle {
                 family,
+                result,
+                error: self.variant_id(error_ty)?,
+            });
+        }
+        if family == RuntimeCallFamily::NodeLookup {
+            let CallResult::Value(value) = result else {
+                return Err(PhysicalError::new("Node::lookup has no Result value"));
+            };
+            let (_remote_ty, error_ty) = match &value.ty {
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Result),
+                    args,
+                    ..
+                } if args.len() == 2
+                    && args[0].is_builtin(BuiltinType::RemotePid)
+                    && args[1].is_builtin(BuiltinType::LookupError) =>
+                {
+                    (&args[0], &args[1])
+                }
+                _ => {
+                    return Err(PhysicalError::new(
+                        "Node::lookup result is not Result<RemotePid<T>, LookupError>",
+                    ))
+                }
+            };
+            let result = self.variant_id(&value.ty)?;
+            return Ok(PhysicalRuntimeAction::NodeLookup {
                 result,
                 error: self.variant_id(error_ty)?,
             });

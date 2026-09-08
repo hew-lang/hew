@@ -4134,6 +4134,102 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, status)?;
             }
+            PhysicalRuntimeAction::NodeLookup {
+                result: result_glue,
+                error: error_glue,
+            } => {
+                let status_ty = self.ctx.i32_type();
+                let lookup = get_or_declare_external(
+                    self.llvm,
+                    "hew_node_api_lookup_location",
+                    status_ty.fn_type(&[ptr.into(), ptr.into()], false),
+                )?;
+                let result_case = self.value_emitter().variant_glue(result_glue)?;
+                let remote_ty = &result_case.variants[0].fields[0].ty;
+                let remote_layout = self.module.target.layout(remote_ty).ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "Node::lookup RemotePid payload has no physical layout".into(),
+                    )
+                })?;
+                let remote_out = self.value_emitter().entry_scratch(
+                    llvm_type(self.ctx, &remote_layout.repr)?,
+                    "node.lookup.location",
+                )?;
+                self.builder
+                    .build_store(
+                        remote_out,
+                        llvm_type(self.ctx, &remote_layout.repr)?.const_zero(),
+                    )
+                    .llvm_ctx("initialize node lookup location output")?;
+                let status = self
+                    .runtime_call_value(
+                        lookup,
+                        &[
+                            self.load(source(0)?, "node.lookup.name")?.into(),
+                            remote_out.into(),
+                        ],
+                        "node.lookup",
+                    )?
+                    .into_int_value();
+                let ok = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        status_ty.const_zero(),
+                        "node.lookup.ok",
+                    )
+                    .llvm_ctx("test node lookup status")?;
+                let success = self
+                    .ctx
+                    .append_basic_block(self.value, "node.lookup.success");
+                let failure_block = self
+                    .ctx
+                    .append_basic_block(self.value, "node.lookup.failure");
+                let complete = self
+                    .ctx
+                    .append_basic_block(self.value, "node.lookup.complete");
+                self.builder
+                    .build_conditional_branch(ok, success, failure_block)
+                    .llvm_ctx("branch node lookup result")?;
+                let destination = self.slots[required_result()?.0 as usize];
+                self.builder.position_at_end(success);
+                let remote = self
+                    .builder
+                    .build_load(
+                        llvm_type(self.ctx, &remote_layout.repr)?,
+                        remote_out,
+                        "node.lookup.location.value",
+                    )
+                    .llvm_ctx("load resolved node location")?;
+                self.write_variant_value(destination, 0, &[remote], result_glue)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish node lookup success result")?;
+                self.builder.position_at_end(failure_block);
+                let error_layout = self
+                    .value_emitter()
+                    .variant_layout(&self.value_emitter().variant_glue(error_glue)?.ty)?;
+                let error_storage = self.value_emitter().entry_scratch(
+                    llvm_type(self.ctx, &error_layout.object.repr)?,
+                    "node.lookup.error",
+                )?;
+                self.value_emitter()
+                    .write_variant_value(error_storage, 0, &[], error_glue)?;
+                let error_value = self
+                    .builder
+                    .build_load(
+                        llvm_type(self.ctx, &error_layout.object.repr)?,
+                        error_storage,
+                        "node.lookup.error.value",
+                    )
+                    .llvm_ctx("load node lookup error value")?;
+                self.write_variant_value(destination, 1, &[error_value], result_glue)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish node lookup failure result")?;
+                self.builder.position_at_end(complete);
+            }
             PhysicalRuntimeAction::NodeLifecycle {
                 family,
                 result: result_glue,

@@ -139,6 +139,9 @@ pub enum RuntimeValueKind {
     ArrayElement,
     /// One type argument from the signature's canonical collection receiver.
     TypeArgument(usize),
+    /// The exact checked result type for a compiler-owned operation whose
+    /// generic payload is not carried by an argument (Node.lookup).
+    NodeLookupResult,
     /// Ordinary type construction, shared by optional results and projections.
     Applied(BuiltinType, &'static [Self]),
     /// Ordinary product results, including receiver replacement with a value.
@@ -190,7 +193,7 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::ChannelHalfResult(_) => return None,
+            Self::ChannelHalfResult(_) | Self::NodeLookupResult => return None,
             Self::ChannelPair => channel_pair_ty()?,
             Self::ActorRequestOwner => actor_request_owner_ty(),
             Self::ActorRequestAdmission => {
@@ -489,7 +492,9 @@ impl RuntimeSemanticContract {
             | RuntimeResultEffect::Borrowed(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind)
             | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
-                let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                let resolved = if (matches!(kind, RuntimeValueKind::NodeLookupResult)
+                    && is_node_lookup_result(result_hint))
+                    || matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
                     || matches!(kind, RuntimeValueKind::ChannelHalfResult(half) if half.matches(result_hint))
                 {
                     Some(result_hint.clone())
@@ -543,6 +548,13 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
         }
         _ => None,
     }
+}
+
+fn is_node_lookup_result(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Named { builtin: Some(BuiltinType::Result), args, .. }
+        if matches!(args.as_slice(), [ResolvedTy::Named { builtin: Some(BuiltinType::RemotePid), args: remote_args, .. }, error]
+            if remote_args.len() == 1
+                && error.is_builtin(BuiltinType::LookupError)))
 }
 
 /// Which half of a channel a runtime contract's receiver is.
@@ -2748,6 +2760,7 @@ impl RuntimeCallFamily {
             "Node::start" => Some(Self::NodeStart),
             "Node::connect" => Some(Self::NodeConnect),
             "Node::register" => Some(Self::NodeRegister),
+            "Node::lookup" => Some(Self::NodeLookup),
             "Node::shutdown" => Some(Self::NodeShutdown),
             _ => None,
         }
@@ -4240,6 +4253,14 @@ impl RuntimeCallFamily {
                 BitCopy(RuntimeValueKind::I32),
                 SIR_NO_FAILURES,
             ),
+            Self::NodeLookup => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: String,
+                    effect: Borrow,
+                }],
+                IndependentValue(RuntimeValueKind::NodeLookupResult),
+                SIR_NO_FAILURES,
+            ),
             Self::NodeShutdown => runtime_semantic_contract(&[], Unit, SIR_NO_FAILURES),
             _ => return None,
         })
@@ -4284,6 +4305,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ActorRequestOwner
                     | RuntimeValueKind::ActorRequestAdmission
                     | RuntimeValueKind::TypeArgument(_)
+                    | RuntimeValueKind::NodeLookupResult
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
                     | RuntimeValueKind::IoHandle(_)

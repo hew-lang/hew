@@ -75,6 +75,20 @@ fn invalid_bodies(source: &str, names: &[&str]) -> (HirModule, hew_types::TypeCh
     (hir, facts)
 }
 
+/// A malformed header names a type the checked module never declared.
+fn invalidate_header(hir: &mut HirModule, name: &str) {
+    let function = hir
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == name => Some(function),
+            _ => None,
+        })
+        .expect("fixture declares the requested header");
+    function.params[0].ty =
+        hew_types::ResolvedTy::named_user("UnregisteredDemandType".to_string(), Vec::new());
+}
+
 fn lower_invalid_bodies(source: &str, names: &[&str]) -> LoweredModule {
     let (hir, facts) = invalid_bodies(source, names);
     lower_module(&hir, &facts)
@@ -344,7 +358,7 @@ fn explicit_root_refusals_name_each_requested_declaration() {
             value
         }
 
-        fn refused(value: f32) -> i64 {
+        fn refused(value: i64) -> i64 {
             0
         }
 
@@ -353,6 +367,7 @@ fn explicit_root_refusals_name_each_requested_declaration() {
         }
         ",
     );
+    invalidate_header(&mut hir, "refused");
     let generic = declaration_of(&hir, "generic");
     let refused = declaration_of(&hir, "refused");
     let vanished = declaration_of(&hir, "vanished");
@@ -381,7 +396,7 @@ fn explicit_root_refusals_name_each_requested_declaration() {
         .iter()
         .find(|error| error.declaration == refused)
         .expect("ineligible root refusal must retain its declaration");
-    assert!(refused_error.to_string().contains("f32"));
+    assert!(refused_error.to_string().contains("UnregisteredDemandType"));
     let missing_error = errors
         .iter()
         .find(|error| error.declaration == vanished)
@@ -405,7 +420,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
             value
         }
 
-        fn refused_header(value: f32) -> i64 {
+        fn refused_header(value: i64) -> i64 {
             0
         }
 
@@ -413,7 +428,8 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
             0
         }
         ";
-    let (hir, type_facts) = invalid_bodies(source, &["stranded_bad"]);
+    let (mut hir, type_facts) = invalid_bodies(source, &["stranded_bad"]);
+    invalidate_header(&mut hir, "refused_header");
 
     let entry = lower_module(&hir, &type_facts);
     for name in ["stranded_ok", "stranded_bad", "refused_header"] {
@@ -450,7 +466,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         );
     };
     assert!(
-        reason.contains("f32"),
+        reason.contains("UnregisteredDemandType"),
         "the refusal must name the offending parameter type: {reason}"
     );
     let stranded = &every

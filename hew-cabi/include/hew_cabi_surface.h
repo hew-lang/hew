@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1636u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1641u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -1100,6 +1100,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
      "-> *mut u8\"}",
      "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_cbor_de_bytes_hew",
+     "{\"native\": \"fn hew_cbor_de_bytes_hew( *mut c_void, *mut "
+     "BytesTriple)\", \"wasm32-wasip1\": \"fn hew_cbor_de_bytes_hew( *mut "
+     "c_void, *mut BytesTriple)\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cbor_de_char",
      "{\"native\": \"fn hew_cbor_de_char( *mut c_void) -> i64\", "
      "\"wasm32-wasip1\": \"fn hew_cbor_de_char( *mut c_void) -> i64\"}",
@@ -1219,6 +1225,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
      "c_char\"}",
      "native,wasm32-wasip1", "codegen-stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_cbor_de_string_hew",
+     "{\"native\": \"fn hew_cbor_de_string_hew( *mut c_void) -> *mut "
+     "HewString\", \"wasm32-wasip1\": \"fn hew_cbor_de_string_hew( *mut "
+     "c_void) -> *mut HewString\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cbor_de_u64",
      "{\"native\": \"fn hew_cbor_de_u64( *mut c_void) -> u64\", "
      "\"wasm32-wasip1\": \"fn hew_cbor_de_u64( *mut c_void) -> u64\"}",
@@ -1306,6 +1318,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
      "\"wasm32-wasip1\": \"fn hew_cbor_ser_string( *mut c_void, *const "
      "c_char)\"}",
      "native,wasm32-wasip1", "codegen-stable", "nul-terminated",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_cbor_ser_string_hew",
+     "{\"native\": \"fn hew_cbor_ser_string_hew( *mut c_void, *const "
+     "HewString)\", \"wasm32-wasip1\": \"fn hew_cbor_ser_string_hew( *mut "
+     "c_void, *const HewString)\"}",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cbor_ser_u64",
      "{\"native\": \"fn hew_cbor_ser_u64( *mut c_void, u64)\", "
@@ -7800,6 +7818,20 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
      "c_char, c_int, ) -> *mut c_char\", \"wasm32-wasip1\": \"fn "
      "hew_wire_cbor_to_text( *const u8, usize, *const c_char, c_int, ) -> *mut "
      "c_char\"}",
+     "native,wasm32-wasip1", "codegen-stable", "nul-terminated",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_wire_decode_begin",
+     "{\"native\": \"fn hew_wire_decode_begin( *const c_void, i32, *const "
+     "c_char, *mut *mut c_void, *mut *mut HewString, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_wire_decode_begin( *const c_void, i32, "
+     "*const c_char, *mut *mut c_void, *mut *mut HewString, ) -> i32\"}",
+     "native,wasm32-wasip1", "codegen-stable", "nul-terminated",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_wire_encode_finish",
+     "{\"native\": \"fn hew_wire_encode_finish( *mut c_void, i32, *const "
+     "c_char, *mut c_void, *mut *mut HewString, ) -> i32\", \"wasm32-wasip1\": "
+     "\"fn hew_wire_encode_finish( *mut c_void, i32, *const c_char, *mut "
+     "c_void, *mut *mut HewString, ) -> i32\"}",
      "native,wasm32-wasip1", "codegen-stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_wire_text_to_cbor",

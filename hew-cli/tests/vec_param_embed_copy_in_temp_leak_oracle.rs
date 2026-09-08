@@ -355,7 +355,7 @@ const RESOURCE_PROJECTION_DIRECT_CONSUME_TEMPLATE: &str = r#"
 type Token { payload: string }
 
 impl Token {
-    fn close(self) {
+    fn close(consume self) {
         var sink: Vec<string> = [];
         sink.push(self.payload);
     }

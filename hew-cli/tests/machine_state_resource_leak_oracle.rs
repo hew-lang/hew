@@ -30,7 +30,7 @@ type Dq {}
 type Handle { raw: Dq, }
 
 impl Handle {
-    fn close(self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
+    fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
 }
 
 extern "C" {
@@ -67,7 +67,7 @@ type Dq {}
 type Handle { raw: Dq, }
 
 impl Handle {
-    fn close(self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
+    fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
 }
 
 extern "C" {

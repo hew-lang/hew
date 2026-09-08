@@ -839,7 +839,7 @@ impl Checker {
     /// `close`, and the receiver must be by-value `self` (a `var self` /
     /// mutable-receiver method takes the in-place-mutation path and is NOT an
     /// ownership-transfer move — R4). A `#[resource]` type's `close` is required
-    /// to be `fn close(self)` by `check_resource_close_discipline`; this guard
+    /// to be `fn close(consume self)` by `check_resource_close_discipline`; this guard
     /// keeps the consume marking aligned with that contract.
     fn named_type_inherent_close_consumes_receiver(
         &self,
@@ -9537,7 +9537,7 @@ impl Checker {
                     //   1. stdlib `impl Closable for T { fn close }` — the trait
                     //      `close` flattens into T's inherent-method table; honour
                     //      the `consumes_receiver` declared on the trait.
-                    //   2. a `#[resource]` type's inherent `fn close(self)` — the
+                    //   2. a `#[resource]` type's inherent `fn close(consume self)` — the
                     //      implicit-drop dispatch target, which when called
                     //      explicitly also moves the receiver so the scope-exit
                     //      implicit drop is suppressed on the consumed path (no

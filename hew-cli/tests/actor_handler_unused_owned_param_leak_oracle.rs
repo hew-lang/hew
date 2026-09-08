@@ -514,7 +514,7 @@ const DIRECT_STRING_RESOURCE_TRANSFER_POISON_SOURCE: &str = "\
 #[resource]\n\
 type Token { text: string }\n\
 impl Token {\n\
-\x20   fn close(self) {\n\
+\x20   fn close(consume self) {\n\
 \x20       let _ = self.text.len();\n\
 \x20   }\n\
 }\n\

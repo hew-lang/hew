@@ -23,7 +23,7 @@ fn generic_hashmap_affine_clone_out_stops_before_codegen() {
 #[resource]
 type Token { id: i64 }
 impl Token {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 fn duplicate<V>(values: HashMap<string, V>) -> HashMap<string, V> {

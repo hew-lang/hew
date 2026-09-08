@@ -727,7 +727,7 @@ fn explicit_record_clone_rejects_resource_and_linear_in_both_syntaxes() {
         #[resource]
         type ResourceToken { id: i64 }
         impl ResourceToken {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         #[linear]
@@ -785,7 +785,7 @@ fn generic_record_clone_rejects_substituted_affine_fields() {
         #[resource]
         type ResourceToken { id: i64 }
         impl ResourceToken {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         #[linear]
@@ -840,7 +840,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
         #[resource]
         type ResourceToken { id: i64 }
         impl ResourceToken {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         #[linear]
@@ -1727,7 +1727,7 @@ fn recursive_collection_admission_borrows_a_nested_resource_element() {
         r"
         #[resource]
         type Token { id: i64 }
-        impl Token { fn close(self) {} }
+        impl Token { fn close(consume self) {} }
         enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
         type Entry<T> { value: Carrier<T>, }
         fn scan(values: Vec<Carrier<Token>>) {

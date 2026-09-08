@@ -32,7 +32,7 @@ import std.testing;
 type Dq {{}}
 
 impl Dq {{
-    fn close(self) {{
+    fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
@@ -109,7 +109,7 @@ import std.testing;
 type {type_name} {{}}
 
 impl {type_name} {{
-    fn close(self) {{
+    fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
@@ -184,7 +184,7 @@ fn run_imported_receiver_collision_teardown_oracle(package_import: bool) {
 pub type UserReceiver {{}}
 
 impl UserReceiver {{
-    fn close(self) {{
+    fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
@@ -403,7 +403,7 @@ fn direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop(
 type Dq {}
 
 impl Dq {
-    fn close(self) {
+    fn close(consume self) {
         unsafe { hew_deque_free(self) };
     }
 }

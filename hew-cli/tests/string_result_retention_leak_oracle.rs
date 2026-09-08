@@ -359,7 +359,7 @@ fn ordinary_helper_snapshot_normal_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
 type Bundle { text: string, data: bytes }
 #[resource] type Witness { fd: i64 }
-impl Witness { fn close(self) { println("closed"); } }
+impl Witness { fn close(consume self) { println("closed"); } }
 fn make_nested(label: string) -> fn() -> i64 { || label.len() }
 fn helper_normal() -> i64 {
     let text = "helper-string".to_upper();
@@ -399,7 +399,7 @@ fn ordinary_helper_snapshot_crash_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
 type Bundle { text: string, data: bytes }
 #[resource] type Witness { fd: i64 }
-impl Witness { fn close(self) { println("closed"); } }
+impl Witness { fn close(consume self) { println("closed"); } }
 fn make_nested(label: string) -> fn() -> i64 { || label.len() }
 fn helper_trap() -> i64 {
     let text = "helper-string".to_upper();

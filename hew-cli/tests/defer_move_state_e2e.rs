@@ -28,7 +28,7 @@ impl Conn {
         self.fd
     }
 
-    fn close(self) {}
+    fn close(consume self) {}
 }
 ";
 

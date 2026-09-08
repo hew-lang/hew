@@ -69,9 +69,9 @@ use support::{describe_output, require_codegen};
 /// then inner close fire (§10(d) order).
 const NESTED_CLOSE_SOURCE: &str = "\
 #[resource] type Inner { fd: i64, }\n\
-impl Inner { fn close(self) { println(\"inner-closed\"); } }\n\
+impl Inner { fn close(consume self) { println(\"inner-closed\"); } }\n\
 #[resource] type Outer { inner: Inner, tag: i64, }\n\
-impl Outer { fn close(self) { println(\"outer-closed\"); } }\n\
+impl Outer { fn close(consume self) { println(\"outer-closed\"); } }\n\
 fn make_inner() -> Inner { Inner { fd: 3 } }\n\
 fn main() {\n\
 \x20   let o = Outer { inner: make_inner(), tag: 7 };\n\
@@ -91,9 +91,9 @@ const NESTED_CLOSE_EXPECTED: &str = "before-scope-exit\nouter-closed\ninner-clos
 /// double-close / double-free is not.
 const EXPLICIT_CONSUME_SOURCE: &str = "\
 #[resource] type Inner { fd: i64, }\n\
-impl Inner { fn close(self) { println(\"inner-closed\"); } }\n\
+impl Inner { fn close(consume self) { println(\"inner-closed\"); } }\n\
 #[resource] type Outer { inner: Inner, tag: i64, }\n\
-impl Outer { fn close(self) { println(\"outer-closed\"); } }\n\
+impl Outer { fn close(consume self) { println(\"outer-closed\"); } }\n\
 fn make_inner() -> Inner { Inner { fd: 3 } }\n\
 fn main() {\n\
 \x20   let o = Outer { inner: make_inner(), tag: 7 };\n\
@@ -119,7 +119,7 @@ fn heap_field_loop_source(frames: usize) -> String {
     let expected_total = frames * frames.saturating_sub(1) / 2;
     format!(
         "#[resource] type Box {{ payload: Vec<i64>, fd: i64, }}\n\
-         impl Box {{ fn close(self) {{ }} }}\n\
+         impl Box {{ fn close(consume self) {{ }} }}\n\
          fn build(n: i64) -> i64 {{\n\
          \x20   var v: Vec<i64> = Vec.new();\n\
          \x20   v.push(n);\n\

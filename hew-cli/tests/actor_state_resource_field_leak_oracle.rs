@@ -64,7 +64,7 @@ const PRELUDE: &str = "\
 #[opaque]\n\
 type Dq {}\n\
 impl Dq {\n\
-    fn close(self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
+    fn close(consume self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
 }\n\
 extern \"C\" {\n\
     fn hew_deque_new() -> Dq;\n\

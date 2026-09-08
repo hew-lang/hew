@@ -4422,7 +4422,7 @@ extern \"C\" {\n\
 #[resource]\n\
 type Slot { addr: i64 }\n\
 impl Slot {\n\
-    fn close(self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
+    fn close(consume self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
 }\n\
 fn acquire() -> Slot { Slot { addr: unsafe { malloc(64) } } }\n\
 type Two { a: Slot, b: Slot }\n";
@@ -4534,7 +4534,7 @@ const RESOURCE_PAYLOAD_PRELUDE: &str = "\
 #[resource]\n\
 type Handle { id: i64 }\n\
 impl Handle {\n\
-    fn close(self) { println(f\"close {self.id}\"); }\n\
+    fn close(consume self) { println(f\"close {self.id}\"); }\n\
 }\n\
 fn acquire(ok: bool) -> Result<Handle, string> {\n\
     if ok { Ok(Handle { id: 7 }) } else { Err(\"declined\") }\n\
@@ -5963,7 +5963,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          #[opaque]\n\
          type Marker {}\n\
          impl Marker {\n\
-         \x20   fn close(self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
+         \x20   fn close(consume self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
          }\n\
          extern \"C\" {\n\
          \x20   fn hew_deque_new() -> Marker;\n\

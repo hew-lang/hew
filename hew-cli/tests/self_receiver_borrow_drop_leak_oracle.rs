@@ -137,7 +137,7 @@ fn resource_receiver_source(frames: usize) -> String {
          type Res {{ name: string }}\n\
          impl Res {{\n\
          \x20   fn peek(self) -> i64 {{ self.name.len() }}\n\
-         \x20   fn close(self) {{ }}\n\
+         \x20   fn close(consume self) {{ }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\

@@ -60,7 +60,7 @@ type Tok {
 }
 
 impl Tok {
-    fn close(self) {
+    fn close(consume self) {
         println(f"close {self.id}");
     }
 }
@@ -414,7 +414,7 @@ type Dq {
 }
 
 impl Dq {
-    fn close(self) {
+    fn close(consume self) {
         unsafe { hew_deque_free(self.handle) };
         println(f"close {self.tag}");
     }

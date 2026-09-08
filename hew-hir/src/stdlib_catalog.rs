@@ -272,6 +272,10 @@ pub enum BuiltinTy {
     Duration,
     /// `instant` — i64 nanosecond monotonic timestamp; ABI-identical to `i64`.
     Instant,
+    /// Source-owned node configuration record consumed by `Node::start`.
+    NodeConfig,
+    /// Result<(), `NodeError`> returned by public node lifecycle operations.
+    NodeResult,
 }
 
 impl BuiltinTy {
@@ -320,6 +324,19 @@ impl BuiltinTy {
                 pointee: Box::new(ResolvedTy::U8),
             },
             BuiltinTy::Duration => ResolvedTy::Duration,
+            BuiltinTy::NodeConfig => ResolvedTy::named_user("std.builtins.NodeConfig", vec![]),
+            BuiltinTy::NodeResult => ResolvedTy::named_builtin(
+                "Result",
+                hew_types::BuiltinType::Result,
+                vec![
+                    ResolvedTy::Unit,
+                    ResolvedTy::named_builtin(
+                        "NodeError",
+                        hew_types::BuiltinType::NodeError,
+                        vec![],
+                    ),
+                ],
+            ),
         }
     }
 }
@@ -379,7 +396,6 @@ const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
-const U16_STRING: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::String];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
@@ -2328,78 +2344,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
     // harmlessly discarded by the caller — this is the standard C idiom for
     // ignoring a return value.  The runtime still surfaces a peer-auth setup
-    // failure even though the `-1` is discarded: `Node::load_keys` /
-    // `Node::allow_peer` set `hew_last_error`, print a `hew:` stderr diagnostic,
-    // and record a sticky failure so a later `Node::start` refuses to bind a
-    // listener (fail-closed) rather than silently presenting an ephemeral
-    // identity. See `node_peer_auth_setup_failed` in `hew_node.rs`.
-    direct(
-        "Node::set_transport",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_set_transport",
-        },
-    ),
-    direct(
-        "Node::start",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_start",
-        },
-    ),
-    direct(
-        "Node::connect",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_connect",
-        },
-    ),
-    direct(
-        "Node::shutdown",
-        BuiltinClass::ClassB,
-        EMPTY,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_shutdown",
-        },
-    ),
-    // `Node::load_keys(path: String)` — load/persist this node's stable mesh
-    // TLS identity from a keyfile. Same FFI shim shape as set_transport: one
-    // String in, c_int discarded as Unit. Native quic-mesh only.
-    direct(
-        "Node::load_keys",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_load_keys",
-        },
-    ),
-    // `Node::allow_peer(node_id: U16, credential_hex: String)` — bind a peer's
-    // authenticated credential to the NodeId it is permitted to claim (issue
-    // #2652). The credential is interpreted by the node's pinned transport: TCP
-    // ⇒ 32-byte Noise pubkey (`PeerCredential::NoiseKey`); quic-mesh ⇒ cert SPKI
-    // (`PeerCredential::Spki`). U16 + String in, c_int discarded as Unit.
-    direct(
-        "Node::allow_peer",
-        BuiltinClass::ClassB,
-        U16_STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_allow_peer",
-        },
-    ),
-    // `Node::identity_key() -> String` — this node's stable public credential
-    // for the pinned transport as lowercase hex (Noise pubkey on TCP, cert SPKI
-    // on quic-mesh, issue #2652). Operators hand it to peers for `allow_peer`.
-    // No args in; returns an owned hew string (`""` when no stable identity has
-    // been loaded), freed by generated code via `hew_string_drop`.
     direct(
         "Node::identity_key",
         BuiltinClass::ClassB,

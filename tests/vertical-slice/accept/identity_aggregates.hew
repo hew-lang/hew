@@ -12,9 +12,14 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    Node.set_transport("tcp");
-    Node.load_keys("/tmp/hew-cap13-identity-aggregates.key");
-    Node.start("127.0.0.1:0");
+    Node.start(NodeConfig {
+        bind: "127.0.0.1:0",
+        transport: "tcp",
+        key: "/tmp/hew-cap13-identity-aggregates.key",
+        trust: "pinned",
+        peers: Vec.new(),
+        seeds: Vec.new(),
+    });
 
     let node_id = match Node.id() {
         .Some(id) => id,

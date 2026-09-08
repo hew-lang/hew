@@ -80,6 +80,7 @@ pub enum BuiltinType {
     /// Canonical payload accepted by `#[on(down)]`.
     DownNotification,
     SendError,
+    NodeError,
     LookupError,
     RecvError,
     LinkError,
@@ -255,6 +256,7 @@ builtin_types! {
     DownReason => "DownReason",
     DownNotification => "DownNotification",
     SendError => "SendError",
+    NodeError => "NodeError",
     LookupError => "LookupError",
     RecvError => "RecvError",
     LinkError => "LinkError",
@@ -442,6 +444,7 @@ impl BuiltinType {
             | Self::CrashAction
             | Self::CrashKind
             | Self::SendError
+            | Self::NodeError
             | Self::LookupError
             | Self::RecvError
             | Self::LinkError
@@ -568,6 +571,7 @@ impl BuiltinType {
             | Self::DownReason
             | Self::DownNotification
             | Self::SendError
+            | Self::NodeError
             | Self::LookupError
             | Self::RecvError
             | Self::LinkError

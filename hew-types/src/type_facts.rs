@@ -1332,6 +1332,7 @@ mod tests {
                 | BuiltinType::CrashAction
                 | BuiltinType::CrashKind
                 | BuiltinType::SendError
+                | BuiltinType::NodeError
                 | BuiltinType::LookupError
                 | BuiltinType::RecvError
                 | BuiltinType::LinkError

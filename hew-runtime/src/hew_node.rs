@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize,
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
+use crate::vec::HewVec;
+use hew_cabi::string::{string_as_str, HewString};
 use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
@@ -4939,6 +4941,277 @@ fn merge_start_env_into_config(
 /// # Safety
 ///
 /// `addr` must be a valid null-terminated C string.
+/// ABI view of the source-owned `NodeConfig` record. `Node.start` consumes the
+/// record, so this boundary copies the configuration into Rust values and
+/// releases every managed field before staging the runtime state.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewNodeConfig {
+    bind: *const HewString,
+    transport: *const HewString,
+    key: *const HewString,
+    trust: *const HewString,
+    peers: *mut HewVec,
+    seeds: *mut HewVec,
+}
+
+/// Serializes complete source-owned `NodeConfig` transactions. It owns no
+/// configuration state; `PEER_AUTH_STATE` remains the lifecycle authority.
+static NODE_CONFIG_TRANSACTION: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
+const _: () = {
+    assert!(std::mem::size_of::<HewNodeConfig>() == 6 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, bind) == 0);
+    assert!(std::mem::offset_of!(HewNodeConfig, transport) == std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, key) == 2 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, trust) == 3 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, peers) == 4 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, seeds) == 5 * std::mem::size_of::<usize>());
+};
+
+struct ConsumedNodeConfig {
+    bind: *const HewString,
+    transport: *const HewString,
+    key: *const HewString,
+    trust: *const HewString,
+    peers: *mut HewVec,
+    seeds: *mut HewVec,
+}
+
+impl Drop for ConsumedNodeConfig {
+    fn drop(&mut self) {
+        for field in [self.bind, self.transport, self.key, self.trust] {
+            if !field.is_null() {
+                // SAFETY: this owner is created only from the six moved fields
+                // of one NodeConfig and drops each managed string once.
+                unsafe { crate::string::hew_string_drop(field.cast_mut()) };
+            }
+        }
+        for field in [self.peers, self.seeds] {
+            if !field.is_null() {
+                // SAFETY: this owner is created only from the two moved vector
+                // fields of one NodeConfig and drops each vector once.
+                unsafe { crate::vec::hew_vec_free(field) };
+            }
+        }
+    }
+}
+
+unsafe fn config_string(value: *const HewString, field: &str) -> Result<String, c_int> {
+    if value.is_null() {
+        set_last_error(format!("NodeConfig.{field} is null"));
+        return Err(-1);
+    }
+    // SAFETY: ConsumedNodeConfig keeps the field live through this copy.
+    Ok(unsafe { string_as_str(value) }.to_owned())
+}
+
+unsafe fn config_strings(value: *mut HewVec, field: &str) -> Result<Vec<String>, c_int> {
+    if value.is_null() {
+        set_last_error(format!("NodeConfig.{field} is null"));
+        return Err(-1);
+    }
+    // SAFETY: ConsumedNodeConfig keeps the field live through this decode.
+    let len = unsafe { crate::vec::hew_vec_len(value) };
+    if len < 0 {
+        set_last_error(format!("NodeConfig.{field} has an invalid length"));
+        return Err(-1);
+    }
+    let mut strings = Vec::with_capacity(usize::try_from(len).map_err(|_| -1)?);
+    for index in 0..len {
+        // SAFETY: index is within the checked vector range.
+        let item = unsafe { crate::vec::hew_vec_get_str(value, index) };
+        if item.is_null() {
+            set_last_error(format!("NodeConfig.{field}[{index}] is null"));
+            return Err(-1);
+        }
+        // SAFETY: getter result is live until balanced below.
+        strings.push(unsafe { string_as_str(item) }.to_owned());
+        // SAFETY: balances the owned getter result.
+        unsafe { crate::string::hew_string_drop(item.cast_mut()) };
+    }
+    Ok(strings)
+}
+
+/// Clear a previous incomplete source-config staging transaction. A running
+/// node owns its state and must never be overwritten by a second start call.
+fn reset_node_config_staging() -> Result<(), c_int> {
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.state {
+        ConfigState::Building(_) => {
+            guard.state = ConfigState::default();
+            Ok(())
+        }
+        ConfigState::Starting { .. } | ConfigState::Running { .. } => {
+            set_last_error("Node::start: a public node lifecycle is already active (fail-closed)");
+            Err(-1)
+        }
+    }
+}
+
+/// Start a node from one complete source-owned configuration record.
+///
+/// # Safety
+///
+/// The config pointer must name the exact compiler-lowered source record
+/// and remain live for the duration of this call.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one transaction keeps the staged configuration and rollback boundaries auditable"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig) -> c_int {
+    let _transaction = NODE_CONFIG_TRANSACTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if config.is_null() {
+        set_last_error("Node::start: NodeConfig is null");
+        return -1;
+    }
+    // SAFETY: the ABI contract above requires a live compiler-lowered record.
+    let config = unsafe { &*config };
+    let owned = ConsumedNodeConfig {
+        bind: config.bind,
+        transport: config.transport,
+        key: config.key,
+        trust: config.trust,
+        peers: config.peers,
+        seeds: config.seeds,
+    };
+    // SAFETY: each helper validates its managed source handle before borrowing.
+    let Ok(bind) = (unsafe { config_string(owned.bind, "bind") }) else {
+        return -1;
+    };
+    // SAFETY: each helper validates its managed source handle before borrowing.
+    let Ok(transport) = (unsafe { config_string(owned.transport, "transport") }) else {
+        return -1;
+    };
+    let key = if owned.key.is_null() {
+        // The managed empty-string representation is a null handle. This is the
+        // NodeConfig.at default; start validation refuses it until the caller
+        // supplies a stable key path.
+        String::new()
+    } else {
+        // SAFETY: the helper validates the non-null managed source handle.
+        let Ok(key) = (unsafe { config_string(owned.key, "key") }) else {
+            return -1;
+        };
+        key
+    };
+    // SAFETY: each helper validates its managed source handle before borrowing.
+    let Ok(trust) = (unsafe { config_string(owned.trust, "trust") }) else {
+        return -1;
+    };
+    // SAFETY: the helper validates and balances every borrowed vector string.
+    let Ok(peers) = (unsafe { config_strings(owned.peers, "peers") }) else {
+        return -1;
+    };
+    // SAFETY: the helper validates and balances every borrowed vector string.
+    let Ok(seeds) = (unsafe { config_strings(owned.seeds, "seeds") }) else {
+        return -1;
+    };
+    if trust != "pinned" {
+        set_last_error("Node::start: NodeConfig.trust must be pinned");
+        return -1;
+    }
+    let Ok(transport) = CString::new(transport) else {
+        set_last_error("Node::start: transport contains NUL");
+        return -1;
+    };
+    let key = if key.is_empty() {
+        None
+    } else if let Ok(key) = CString::new(key) {
+        Some(key)
+    } else {
+        set_last_error("Node::start: key contains NUL");
+        return -1;
+    };
+    let mut peer_credentials = Vec::with_capacity(peers.len());
+    for peer in peers {
+        if let Ok(peer) = CString::new(peer) {
+            peer_credentials.push(peer);
+        } else {
+            set_last_error("Node::start: peer credential contains NUL");
+            return -1;
+        }
+    }
+    let Ok(bind_c) = CString::new(bind.clone()) else {
+        set_last_error("Node::start: bind contains NUL");
+        return -1;
+    };
+    let mut seed_addresses = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        if seed == bind {
+            continue;
+        }
+        if let Ok(seed) = CString::new(seed) {
+            seed_addresses.push(seed);
+        } else {
+            set_last_error("Node::start: seed contains NUL");
+            return -1;
+        }
+    }
+
+    // A complete config replaces an incomplete transaction rather than adding
+    // fields to it. This is the only public path that stages these low-level
+    // operations, and every error below restores the empty Building state.
+    if reset_node_config_staging().is_err() {
+        return -1;
+    }
+    let staged = (|| {
+        // SAFETY: the C string lives until this closure returns; the callee
+        // copies its selection into the locked staging record.
+        if unsafe { hew_node_api_set_transport(transport.as_ptr()) } != 0 {
+            return Err(-1);
+        }
+        if let Some(key) = key.as_ref() {
+            // SAFETY: the key C string lives for this complete transaction.
+            if unsafe { hew_node_api_load_keys(key.as_ptr()) } != 0 {
+                return Err(-1);
+            }
+        }
+        for (index, credential) in peer_credentials.iter().enumerate() {
+            let Ok(slot) = u16::try_from(index + 1) else {
+                set_last_error("Node::start: too many pinned peers");
+                return Err(-1);
+            };
+            // SAFETY: the credential C string lives for this transaction; the
+            // low-level call copies and validates it before returning.
+            if unsafe { hew_node_api_allow_peer(slot, credential.as_ptr()) } != 0 {
+                return Err(-1);
+            }
+        }
+        // SAFETY: the bind C string lives until the legacy start call has read it.
+        if unsafe { hew_node_api_start(bind_c.as_ptr()) } != 0 {
+            return Err(-1);
+        }
+        Ok(())
+    })();
+    if staged.is_err() {
+        let _ = reset_node_config_staging();
+        return -1;
+    }
+
+    for seed in seed_addresses {
+        // SAFETY: each seed C string is live for the duration of this call.
+        if unsafe { hew_node_api_connect(seed.as_ptr()) } != 0 {
+            // SAFETY: a successful start above owns the singleton public node;
+            // shutdown releases it and resets its staging state.
+            unsafe { node_api_shutdown_inner() };
+            return -1;
+        }
+    }
+    0
+}
+
+/// Create and start a node, binding to addr.
+///
+/// # Safety
+///
+/// The address must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
     if addr.is_null() {
@@ -5087,6 +5360,15 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 /// valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
+    let _transaction = NODE_CONFIG_TRANSACTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: the public lifecycle lock excludes an incomplete source start.
+    unsafe { node_api_shutdown_inner() }
+}
+
+/// Stop the public node while the caller owns its complete lifecycle transaction.
+unsafe fn node_api_shutdown_inner() -> c_int {
     // Claim CURRENT_NODE under the write lock so exactly one caller owns the
     // stop/free sequence.
     let Some(ptr) = with_current_node(|guard| {
@@ -6916,11 +7198,11 @@ mod tests {
         // SAFETY: tcp is a valid C string for this call.
         assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
 
-        let key_path = identity.dir.path().join("node.key");
-        let key_path = CString::new(key_path.to_str().expect("UTF-8 tempfile key path"))
+        let key = identity.dir.path().join("node.key");
+        let key = CString::new(key.to_str().expect("UTF-8 tempfile key path"))
             .expect("valid tempfile key path");
-        // SAFETY: key_path is a valid C string and the directory remains live in the guard.
-        assert_eq!(unsafe { hew_node_api_load_keys(key_path.as_ptr()) }, 0);
+        // SAFETY: key is a valid C string and the directory remains live in the guard.
+        assert_eq!(unsafe { hew_node_api_load_keys(key.as_ptr()) }, 0);
 
         identity
     }
@@ -8241,6 +8523,85 @@ mod tests {
         );
         // SAFETY: the first node is still active; shutdown reclaims it.
         assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
+    }
+
+    /// A complete `NodeConfig` start holds one transaction boundary from its
+    /// source-owned decode through the public node start. Concurrent callers
+    /// therefore cannot combine their staging steps: precisely one owns the
+    /// public node, and the losing record is still consumed and released.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn concurrent_start_config_keeps_transactions_atomic() {
+        let _guard = crate::runtime_test_guard();
+        {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        }
+
+        let identity_dir = tempfile::tempdir().expect("identity directory");
+        let key_path = std::sync::Arc::new(
+            identity_dir
+                .path()
+                .join("node.key")
+                .to_str()
+                .expect("temporary key path is UTF-8")
+                .to_owned(),
+        );
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let starts: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let key_path = key_path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let config = HewNodeConfig {
+                        bind: hew_cabi::string::string_from_str("127.0.0.1:0"),
+                        transport: hew_cabi::string::string_from_str("tcp"),
+                        key: hew_cabi::string::string_from_str(&key_path),
+                        trust: hew_cabi::string::string_from_str("pinned"),
+                        // SAFETY: these freshly allocated string vectors are
+                        // moved into the consuming NodeConfig call below.
+                        peers: unsafe { crate::vec::hew_vec_new_str() },
+                        // SAFETY: these freshly allocated string vectors are
+                        // moved into the consuming NodeConfig call below.
+                        seeds: unsafe { crate::vec::hew_vec_new_str() },
+                    };
+                    // SAFETY: config names the exact live managed fields that
+                    // this consuming boundary owns for the duration of the call.
+                    unsafe { hew_node_api_start_config(&raw const config) }
+                })
+            })
+            .collect();
+
+        barrier.wait();
+        let results: Vec<_> = starts
+            .into_iter()
+            .map(|start| start.join().expect("start thread must not panic"))
+            .collect();
+        let succeeded = results.iter().filter(|&&rc| rc == 0).count();
+        if succeeded == 1 {
+            // SAFETY: exactly one completed transaction owns the public node.
+            assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
+        }
+
+        assert_eq!(
+            succeeded, 1,
+            "one complete NodeConfig transaction must own the public node: {results:?}"
+        );
+        assert_eq!(
+            results.iter().filter(|&&rc| rc == -1).count(),
+            1,
+            "the competing complete configuration must fail closed: {results:?}"
+        );
+        let g = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            matches!(g.state, ConfigState::Building(_)),
+            "shutdown must leave no partial configuration staged"
+        );
     }
 
     #[test]

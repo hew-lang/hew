@@ -1006,6 +1006,13 @@ pub enum PhysicalRuntimeAction {
         operation: PhysicalSetOp,
         glue: PhysicalSetId,
     },
+    /// Source-visible node lifecycle operation returning Result<(), `NodeError`>.
+    NodeShutdown,
+    NodeLifecycle {
+        family: RuntimeCallFamily,
+        result: PhysicalVariantId,
+        error: PhysicalVariantId,
+    },
 }
 
 impl PhysicalRuntimeAction {
@@ -1046,7 +1053,8 @@ impl PhysicalRuntimeAction {
             Self::StringTrim => RuntimeCallFamily::StringTrim,
             Self::StringLen => RuntimeCallFamily::StringLen,
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
-            Self::TimeScalar(family) => family,
+            Self::TimeScalar(family) | Self::NodeLifecycle { family, .. } => family,
+            Self::NodeShutdown => RuntimeCallFamily::NodeShutdown,
             Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
             Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
@@ -2577,6 +2585,7 @@ fn physical_runtime_action(
         | RuntimeCallFamily::DurationAbs
         | RuntimeCallFamily::DurationIsZero) => PhysicalRuntimeAction::TimeScalar(family),
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
+        RuntimeCallFamily::NodeShutdown => PhysicalRuntimeAction::NodeShutdown,
         _ => {
             return Err(PhysicalError::new(format!(
                 "runtime family `{family:?}` has no physical no-unwind ABI action"
@@ -3932,6 +3941,10 @@ impl FunctionLowerer<'_> {
         Ok(PhysicalRuntimeAction::Set { operation, glue })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "runtime families select target-specific glue in one closed authority"
+    )]
     fn runtime_action(
         &self,
         family: RuntimeCallFamily,
@@ -4001,6 +4014,61 @@ impl FunctionLowerer<'_> {
                 VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
             };
             return Ok(PhysicalRuntimeAction::Vector { operation, glue });
+        }
+        if matches!(
+            family,
+            RuntimeCallFamily::NodeStart | RuntimeCallFamily::NodeConnect
+        ) {
+            if family == RuntimeCallFamily::NodeStart {
+                let config = args
+                    .first()
+                    .ok_or_else(|| PhysicalError::new("Node::start has no NodeConfig argument"))?;
+                let config_ty = &self.storage[self.value(config.operand.value)?.0 as usize].ty;
+                let expected_fields = vec![
+                    ResolvedTy::String,
+                    ResolvedTy::String,
+                    ResolvedTy::String,
+                    ResolvedTy::String,
+                    ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
+                    ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
+                ];
+                let shape = self
+                    .module
+                    .aggregate_shapes
+                    .iter()
+                    .find(|shape| shape.aggregate_ty == *config_ty);
+                if !shape.is_some_and(|shape| {
+                    shape
+                        .fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect::<Vec<_>>()
+                        == expected_fields
+                }) {
+                    return Err(PhysicalError::new(
+                        "Node::start requires NodeConfig ABI fields bind, transport, key, trust, peers, seeds in source order",
+                    ));
+                }
+            }
+            let CallResult::Value(value) = result else {
+                return Err(PhysicalError::new(
+                    "node lifecycle operation has no Result value",
+                ));
+            };
+            let result = self.variant_id(&value.ty)?;
+            let error_ty = match &value.ty {
+                ResolvedTy::Named { args, .. } if args.len() == 2 => &args[1],
+                _ => {
+                    return Err(PhysicalError::new(
+                        "node lifecycle result is not Result<(), NodeError>",
+                    ))
+                }
+            };
+            return Ok(PhysicalRuntimeAction::NodeLifecycle {
+                family,
+                result,
+                error: self.variant_id(error_ty)?,
+            });
         }
         if family == RuntimeCallFamily::StringFind {
             let CallResult::Value(value) = result else {

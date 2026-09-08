@@ -1342,21 +1342,16 @@ impl Checker {
         self.register_builtin_fn("bool_to_string", vec![Ty::Bool], Ty::String);
 
         // Node/distributed builtins
-        self.register_builtin_fn("Node::start", vec![Ty::String], Ty::Unit);
+        let node_config = Ty::Named {
+            builtin: None,
+            name: "NodeConfig".to_string(),
+            args: vec![],
+        };
+        let node_error = Ty::builtin_named(BuiltinType::NodeError, vec![]);
+        let node_result = Ty::result(Ty::Unit, node_error);
+        self.register_builtin_fn("Node::start", vec![node_config], node_result.clone());
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
-        self.register_builtin_fn("Node::connect", vec![Ty::String], Ty::Unit);
-        self.register_builtin_fn("Node::set_transport", vec![Ty::String], Ty::Unit);
-        // `Node::load_keys(path: String)` — load/persist this node's mesh
-        // identity. `Node::allow_peer(node_id: U16, credential_hex: String)` —
-        // bind a peer's authenticated credential to the NodeId it may claim
-        // (issue #2652; Noise pubkey on TCP, cert SPKI on quic-mesh). Both are
-        // pre-start peer-auth setup; codegen routes them through the shared
-        // RuntimeFfiShim path (catalog), like start/connect.
-        self.register_builtin_fn("Node::load_keys", vec![Ty::String], Ty::Unit);
-        self.register_builtin_fn("Node::allow_peer", vec![Ty::U16, Ty::String], Ty::Unit);
-        // `Node::identity_key() -> String` — this node's stable public
-        // credential for the pinned transport as lowercase hex (issue #2652);
-        // `""` when no stable identity has been loaded.
+        self.register_builtin_fn("Node::connect", vec![Ty::String], node_result);
         self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
         self.register_builtin_fn(
             "Node::id",
@@ -1919,7 +1914,7 @@ impl Checker {
     /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
     /// and must never mint a second synthetic source owner.
     fn register_builtin_error_prelude_bindings(&mut self) {
-        for name in ["LinkError", "LookupError", "ScopeFailure"]
+        for name in ["LinkError", "LookupError", "NodeError", "ScopeFailure"]
             .into_iter()
             .chain(crate::actor_delivery::DECLARATIONS.iter().copied())
         {

@@ -45,6 +45,33 @@ pub type NodeId {
 pub type Location {
 }
 
+pub type NodeConfig {
+    bind: string,
+    transport: string,
+    key: string,
+    trust: string,
+    peers: Vec<string>,
+    seeds: Vec<string>,
+}
+
+/// A node lifecycle operation could not apply the supplied configuration.
+pub enum NodeError {
+    Config,
+}
+
+impl NodeConfig {
+    fn at(bind: string) -> NodeConfig {
+        NodeConfig {
+            bind: bind,
+            transport: "tcp",
+            key: "",
+            trust: "pinned",
+            peers: Vec.new(),
+            seeds: Vec.new(),
+        }
+    }
+}
+
 /// An actor pid on a remote node carrying its complete actor location.
 ///
 /// Produced by authenticated peer discovery.

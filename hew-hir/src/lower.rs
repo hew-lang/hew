@@ -503,6 +503,7 @@ const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
 /// `machine_ctor_registry`.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
+const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
 /// `TimeoutError` is declared in `std/builtins.hew` and likewise invisible to
 /// the user-enum walk. Surface it so `match e { TimeoutError::Timeout => ... }`
 /// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
@@ -768,6 +769,7 @@ const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
 const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
     ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
+    ("std.builtins.NodeError", SYNTHETIC_NODE_ERROR_ITEM),
     ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
     ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
@@ -2106,51 +2108,27 @@ fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
     }
 }
 
-/// The pure-Hew `duration` constructor block in `std/builtins.hew`
-/// (`from_nanos` / `from_micros` / `from_millis` / `from_secs`).
-///
-/// Distinguished from the sibling `#[extern_symbol]` instance-method block on
-/// `duration` by carrying no trait bound and exactly the four static
-/// constructor methods, each with a single non-receiver `i64` parameter (a
-/// receiver param would have type `duration` or `Self`). Lowering this block
-/// through the user-impl spine registers `duration::from_*` as real HIR fns
-/// whose bodies (`n * 1<unit>`) run — without this, the checker accepts the
-/// call (the impl registers an `fn_sig`) but HIR has no binding and fails with
-/// `UnresolvedSymbol`.
-fn is_builtin_duration_ctor_impl(item: &Item) -> bool {
-    const CTORS: [&str; 4] = ["from_nanos", "from_micros", "from_millis", "from_secs"];
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    if impl_decl.trait_bound.is_some() {
-        return false;
-    }
-    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
-        return false;
-    };
-    if name != "duration" {
-        return false;
-    }
-    impl_decl.methods.len() == CTORS.len()
-        && impl_decl.methods.iter().all(|method| {
-            CTORS.contains(&method.name.as_str())
-                && method
-                    .params
-                    .first()
-                    .is_none_or(|param| !is_duration_receiver_param(param))
-        })
-}
-
-fn is_duration_receiver_param(param: &Param) -> bool {
-    matches!(
-        &param.ty.0,
-        TypeExpr::Named { name, .. } if name == "Self" || name == "duration"
-    )
+/// An inherent `std/builtins.hew` implementation with executable Hew bodies.
+/// The embedded source is the authority: no receiver or method name selects
+/// this path. Declarative runtime shims carry `#[extern_symbol]` and remain
+/// metadata-only, while ordinary bodies are registered and lowered exactly as
+/// user bodies are.
+fn is_builtin_source_body_impl(item: &Item) -> bool {
+    matches!(item, Item::Impl(decl)
+    if decl.trait_bound.is_none()
+        && decl.type_params.is_none()
+        && matches!(&decl.target_type.0, TypeExpr::Named { type_args: None, .. })
+        && !decl.methods.is_empty()
+        && decl.methods.iter().all(|method| {
+            method.body.stmts.is_empty()
+                && method.body.trailing_expr.is_some()
+                && !method.attributes.iter().any(|attr| attr.name == "extern_symbol")
+        }))
 }
 
 fn is_builtin_receiver_impl(item: &Item) -> bool {
     is_builtin_vec_iterator_impl(item)
-        || is_builtin_duration_ctor_impl(item)
+        || is_builtin_source_body_impl(item)
         || is_builtin_request_owner_impl(item)
 }
 
@@ -2161,7 +2139,7 @@ fn is_builtin_request_owner_impl(item: &Item) -> bool {
 
 fn is_builtin_callable_impl(item: &Item) -> bool {
     matches!(item, Item::Impl(impl_decl) if impl_decl.trait_bound.is_some())
-        || is_builtin_duration_ctor_impl(item)
+        || is_builtin_source_body_impl(item)
         || is_builtin_request_owner_impl(item)
 }
 
@@ -18873,6 +18851,11 @@ impl LowerCtx {
                         })
                         .unwrap_or_else(|| name.clone());
                     let result_name = self.canonical_current_module_record_name(&result_name);
+                    let result_name = if name == "NodeConfig" {
+                        "std.builtins.NodeConfig".to_string()
+                    } else {
+                        result_name
+                    };
                     (
                         HirExprKind::StructInit {
                             name: result_name.clone(),
@@ -24106,6 +24089,13 @@ impl LowerCtx {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
                         return self_ty;
                     }
+                }
+                // The embedded builtins projection owns this source record
+                // under its qualified module identity. Keep that identity in
+                // the injected constructor's body and signature; callers have
+                // the same checker-proven canonical type.
+                if name == "NodeConfig" && args.is_empty() {
+                    return ResolvedTy::named_user("std.builtins.NodeConfig", vec![]);
                 }
                 match name.as_str() {
                     "i8" => ResolvedTy::I8,

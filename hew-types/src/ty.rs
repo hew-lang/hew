@@ -65,6 +65,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::DownReason
             | BuiltinType::DownNotification
             | BuiltinType::SendError
+            | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError

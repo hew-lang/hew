@@ -4066,6 +4066,105 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
+            PhysicalRuntimeAction::NodeShutdown => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_node_api_shutdown",
+                    self.ctx.i32_type().fn_type(&[], false),
+                )?;
+                let _ = self.runtime_call_value(function, &[], "node.shutdown")?;
+            }
+            PhysicalRuntimeAction::NodeLifecycle {
+                family,
+                result: result_glue,
+                error: error_glue,
+            } => {
+                let status_ty = self.ctx.i32_type();
+                let function = match family {
+                    hew_types::RuntimeCallFamily::NodeStart => get_or_declare_external(
+                        self.llvm,
+                        "hew_node_api_start_config",
+                        status_ty.fn_type(&[ptr.into()], false),
+                    )?,
+                    hew_types::RuntimeCallFamily::NodeConnect => get_or_declare_external(
+                        self.llvm,
+                        "hew_node_api_connect",
+                        status_ty.fn_type(&[ptr.into()], false),
+                    )?,
+                    hew_types::RuntimeCallFamily::NodeShutdown => get_or_declare_external(
+                        self.llvm,
+                        "hew_node_api_shutdown",
+                        status_ty.fn_type(&[], false),
+                    )?,
+                    _ => {
+                        return Err(CodegenError::FailClosed(
+                            "node lifecycle action carries an invalid family".into(),
+                        ))
+                    }
+                };
+                let arguments = match family {
+                    hew_types::RuntimeCallFamily::NodeStart => {
+                        vec![self.slots[source(0)?.0 as usize].into()]
+                    }
+                    hew_types::RuntimeCallFamily::NodeConnect => {
+                        vec![self.load(source(0)?, "node.connect.address")?.into()]
+                    }
+                    hew_types::RuntimeCallFamily::NodeShutdown => vec![],
+                    _ => unreachable!("validated above"),
+                };
+                let status = self
+                    .runtime_call_value(function, &arguments, "node.lifecycle")?
+                    .into_int_value();
+                let ok = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, status, status_ty.const_zero(), "node.ok")
+                    .llvm_ctx("test node lifecycle status")?;
+                let success = self.ctx.append_basic_block(self.value, "node.success");
+                let failure_block = self.ctx.append_basic_block(self.value, "node.failure");
+                let complete = self.ctx.append_basic_block(self.value, "node.complete");
+                self.builder
+                    .build_conditional_branch(ok, success, failure_block)
+                    .llvm_ctx("branch node lifecycle result")?;
+                let destination = self.slots[required_result()?.0 as usize];
+                let result_case = self.value_emitter().variant_glue(result_glue)?;
+                let unit_ty = &result_case.variants[0].fields[0].ty;
+                let unit_layout = self.module.target.layout(unit_ty).ok_or_else(|| {
+                    CodegenError::FailClosed("node Result Ok payload has no physical layout".into())
+                })?;
+                self.builder.position_at_end(success);
+                self.write_variant_value(
+                    destination,
+                    0,
+                    &[llvm_type(self.ctx, &unit_layout.repr)?.const_zero()],
+                    result_glue,
+                )?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish node success result")?;
+                self.builder.position_at_end(failure_block);
+                let error_layout = self
+                    .value_emitter()
+                    .variant_layout(&self.value_emitter().variant_glue(error_glue)?.ty)?;
+                let error_storage = self.value_emitter().entry_scratch(
+                    llvm_type(self.ctx, &error_layout.object.repr)?,
+                    "node.error",
+                )?;
+                self.value_emitter()
+                    .write_variant_value(error_storage, 0, &[], error_glue)?;
+                let error_value = self
+                    .builder
+                    .build_load(
+                        llvm_type(self.ctx, &error_layout.object.repr)?,
+                        error_storage,
+                        "node.error.value",
+                    )
+                    .llvm_ctx("load node error value")?;
+                self.write_variant_value(destination, 1, &[error_value], result_glue)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish node failure result")?;
+                self.builder.position_at_end(complete);
+            }
             PhysicalRuntimeAction::BytesDecodeUtf8 {
                 result: result_glue,
                 error,

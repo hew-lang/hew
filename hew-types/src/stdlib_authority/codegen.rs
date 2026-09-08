@@ -34,6 +34,13 @@ struct BuiltinEnumAbi {
 const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
+        name: "NodeError",
+        variant_count: 1,
+        order_fingerprint: 0xb89f_e6dc_5d57_7668,
+        suppress_from_sandbox_emit: true,
+    },
+    BuiltinEnumAbi {
+        module: "std.builtins",
         name: "LookupError",
         variant_count: 8,
         order_fingerprint: 0x7ab9_6324_a0dd_7d1f,

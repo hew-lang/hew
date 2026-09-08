@@ -4755,6 +4755,10 @@ run_accept_expect_status "tuple_heap_return" 42
     "${ROOT}/tests/vertical-slice/accept/result_handler_heap_oracle.hew" \
     >"${accept_output}" 2>&1
 
+# Accept: source-owned NodeConfig.at defaults, invalid trust rejection,
+# failed-seed rollback, and repeated lifecycle start/shutdown.
+run_accept_expect_status "node_config_atomic_lifecycle" 0
+
 # Accept: Node.lookup(name) must expose the registered local actor as a
 # RemotePid<T>, and pid.send(msg) must deliver through the in-process
 # send-by-id path.

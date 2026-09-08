@@ -111,6 +111,7 @@ pub enum RuntimeValueKind {
     ChannelPair,
     ActorRequestOwner,
     ActorRequestAdmission,
+    Unit,
     Bool,
     U8,
     U32,
@@ -126,6 +127,10 @@ pub enum RuntimeValueKind {
     /// ABI carries it as `i64`. `instant` has no kind of its own - it resolves
     /// to `I64` before SIR sees it (`ResolvedTy::from_ty`).
     Duration,
+    /// A concrete source-owned prelude nominal with no type parameters.
+    Named(&'static str),
+    /// A monomorphic enum whose source declaration supplies its exact owner.
+    MonomorphicBuiltin(BuiltinType),
     /// The signature's receiver, constrained by canonical builtin identity.
     Receiver(BuiltinType),
     /// The exact fixed-size array receiver, including its length.
@@ -145,7 +150,8 @@ impl RuntimeValueKind {
     pub const fn matches(self, ty: &ResolvedTy) -> bool {
         matches!(
             (self, ty),
-            (Self::Bool, ResolvedTy::Bool)
+            (Self::Unit, ResolvedTy::Unit)
+                | (Self::Bool, ResolvedTy::Bool)
                 | (Self::U8, ResolvedTy::U8)
                 | (Self::U32, ResolvedTy::U32)
                 | (Self::I32, ResolvedTy::I32)
@@ -190,6 +196,7 @@ impl RuntimeValueKind {
             Self::ActorRequestAdmission => {
                 ResolvedTy::named_opaque("std.builtins.ActorRequestAdmission", Vec::new())
             }
+            Self::Unit => ResolvedTy::Unit,
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
             Self::U32 => ResolvedTy::U32,
@@ -201,6 +208,12 @@ impl RuntimeValueKind {
             Self::String => ResolvedTy::String,
             Self::Bytes => ResolvedTy::Bytes,
             Self::Duration => ResolvedTy::Duration,
+            Self::Named(name) => ResolvedTy::named_user(name, Vec::new()),
+            Self::MonomorphicBuiltin(builtin) => {
+                let fact =
+                    crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
+                ResolvedTy::named_builtin(fact.canonical_name, builtin, Vec::new())
+            }
             Self::Receiver(expected) => {
                 let receiver = receiver?;
                 let actual = runtime_receiver_builtin(receiver)?;
@@ -2732,6 +2745,9 @@ impl RuntimeCallFamily {
             "exit" => Some(Self::ProcessExit),
             "utf8.decode" => Some(Self::BytesDecodeUtf8),
             "utf8.decode_lossy" => Some(Self::BytesDecodeUtf8Lossy),
+            "Node::start" => Some(Self::NodeStart),
+            "Node::connect" => Some(Self::NodeConnect),
+            "Node::shutdown" => Some(Self::NodeShutdown),
             _ => None,
         }
     }
@@ -4017,8 +4033,10 @@ impl RuntimeCallFamily {
     )]
     pub const fn semantic_contract(self) -> Option<RuntimeSemanticContract> {
         use RuntimeArgumentEffect::{Borrow, Copy, Move};
-        use RuntimeResultEffect::{BitCopy, FreshOwned, Never, Unit, UpdatedReceiver};
-        use RuntimeValueKind::{Bool, Bytes, String, I64, U8};
+        use RuntimeResultEffect::{
+            BitCopy, FreshOwned, IndependentValue, Never, Unit, UpdatedReceiver,
+        };
+        use RuntimeValueKind::{Bool, Bytes, Named, String, Unit as UnitKind, I64, U8};
 
         const BYTES_INDEX: &[RuntimeArgumentContract] = &[
             RuntimeArgumentContract {
@@ -4179,6 +4197,35 @@ impl RuntimeCallFamily {
             Self::BytesPush => {
                 runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
             }
+            Self::NodeStart => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: Named("std.builtins.NodeConfig"),
+                    effect: Move,
+                }],
+                IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Result,
+                    &[
+                        UnitKind,
+                        RuntimeValueKind::MonomorphicBuiltin(BuiltinType::NodeError),
+                    ],
+                )),
+                SIR_NO_FAILURES,
+            ),
+            Self::NodeConnect => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: String,
+                    effect: Borrow,
+                }],
+                IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Result,
+                    &[
+                        UnitKind,
+                        RuntimeValueKind::MonomorphicBuiltin(BuiltinType::NodeError),
+                    ],
+                )),
+                SIR_NO_FAILURES,
+            ),
+            Self::NodeShutdown => runtime_semantic_contract(&[], Unit, SIR_NO_FAILURES),
             _ => return None,
         })
     }
@@ -4203,7 +4250,8 @@ impl RuntimeCallFamily {
                 | RuntimeResultEffect::UpdatedReceiver(_)
                 | RuntimeResultEffect::FreshOwnedVariant(_)
                 | RuntimeResultEffect::FreshOwned(
-                    RuntimeValueKind::Bool
+                    RuntimeValueKind::Unit
+                    | RuntimeValueKind::Bool
                     | RuntimeValueKind::U8
                     | RuntimeValueKind::U32
                     | RuntimeValueKind::I32
@@ -4224,7 +4272,9 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
                     | RuntimeValueKind::IoHandle(_)
-                    | RuntimeValueKind::FileReadHandle(_),
+                    | RuntimeValueKind::FileReadHandle(_)
+                    | RuntimeValueKind::Named(_)
+                    | RuntimeValueKind::MonomorphicBuiltin(_),
                 ) => RuntimeResultOwnership::Untracked,
             };
         }

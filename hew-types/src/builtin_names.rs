@@ -402,6 +402,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::DownReason
             | BuiltinType::DownNotification
             | BuiltinType::SendError
+            | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError

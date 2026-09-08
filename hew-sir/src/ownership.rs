@@ -124,7 +124,7 @@ pub fn variant_field_types(
         )
         .filter(|descriptor| descriptor.id == shape)
         .ok_or_else(|| format!("variant shape {} is missing or non-canonical", shape.0))?;
-    if &descriptor.enum_ty != enum_ty {
+    if !call_boundary_types_match(&descriptor.enum_ty, enum_ty) {
         return Err(format!(
             "variant shape {} describes `{}`, not `{}`",
             shape.0,
@@ -618,6 +618,99 @@ pub fn sink_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
             ..
         } if args.len() == 1 => args.first(),
         _ => None,
+    }
+}
+
+/// The element type of an exact `Sender<T>`.
+#[must_use]
+pub fn sender_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sender),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// The element type of an exact `Receiver<T>`.
+#[must_use]
+pub fn receiver_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Receiver),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// Whether two checked types are the same value at a call boundary.
+///
+/// WHY: `std.channel` declares its endpoints bare (`type Sender {}`) while the
+/// checker attaches the message type per call site, so one callable's
+/// signature says `Sender` where its caller's expression says `Sender<string>`.
+/// The handle is a pointer word whose class, clone recipe and close are
+/// element-independent, so the two spellings denote the same value; only the
+/// spelled side carries the element fact a receive or send needs.
+///
+/// A bare endpoint only ever comes from `std.channel`'s own declarations, so
+/// this never equates two different spelled elements.
+///
+/// WHEN OBSOLETE: when `std.channel` declares `Sender<T>` / `Receiver<T>` and
+/// `new<T>` and the checker's two channel special cases
+/// (`instantiate_channel_constructor_return`, the bare-handle auto-parameter
+/// in type resolution) are deleted. WHAT THE REAL FIX IS: that declaration.
+#[must_use]
+pub fn call_boundary_types_match(left: &ResolvedTy, right: &ResolvedTy) -> bool {
+    if left == right {
+        return true;
+    }
+    let endpoint = |ty: &ResolvedTy| match ty {
+        ResolvedTy::Named {
+            builtin: Some(kind),
+            args,
+            ..
+        } if kind.is_channel_handle() => Some(args.len()),
+        _ => None,
+    };
+    match (endpoint(left), endpoint(right)) {
+        (Some(0), Some(_)) | (Some(_), Some(0)) => true,
+        _ => match (left, right) {
+            (ResolvedTy::Tuple(left), ResolvedTy::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(left, right)| call_boundary_types_match(left, right))
+            }
+            (
+                ResolvedTy::Named {
+                    name: left_name,
+                    args: left_args,
+                    builtin: left_builtin,
+                    is_opaque: left_opaque,
+                },
+                ResolvedTy::Named {
+                    name: right_name,
+                    args: right_args,
+                    builtin: right_builtin,
+                    is_opaque: right_opaque,
+                },
+            ) => {
+                left_name == right_name
+                    && left_builtin == right_builtin
+                    && left_opaque == right_opaque
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args)
+                        .all(|(left, right)| call_boundary_types_match(left, right))
+            }
+            _ => false,
+        },
     }
 }
 

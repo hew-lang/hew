@@ -272,9 +272,10 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
         } => {
             // Channel endpoint message types are semantic parameters, but the
             // handles themselves are opaque pointer words. Erase those
-            // parameters only while deriving a containing nominal's layout
-            // key so a source declaration's bare endpoint and a checked
-            // `Sender<T>` / `Receiver<T>` call share one ABI identity.
+            // parameters while deriving a containing nominal's mangled layout
+            // name so a source declaration's bare endpoint and a checked
+            // `Sender<T>` / `Receiver<T>` call share one ABI identity. The
+            // registry key keeps the exact spelling; only the name is erased.
             let args = if builtin.is_some_and(hew_types::BuiltinType::is_channel_handle) {
                 Vec::new()
             } else {
@@ -506,32 +507,30 @@ impl RecordLayoutRegistry {
         fields: Vec<(String, ResolvedTy)>,
         span: Range<usize>,
     ) -> Result<bool, ()> {
-        let normalized_args: Vec<ResolvedTy> = key
-            .type_args
-            .iter()
-            .cloned()
-            .map(shorten_named_arg_qualifiers)
-            .collect();
-        let key = RecordMonoKey {
-            type_args: normalized_args,
-            ..key
-        };
         if self.seen.contains_key(&key) {
             return Ok(false);
         }
         if self.order.len() >= self.cap {
             return Err(());
         }
+        // Keyed by the exact instantiation, mangled by the erased one: see
+        // `EnumLayoutRegistry::insert`.
+        let mangled_args: Vec<ResolvedTy> = key
+            .type_args
+            .iter()
+            .cloned()
+            .map(shorten_named_arg_qualifiers)
+            .collect();
         let mangled_name = if matches!(key.symbol_class, crate::mono::SymbolClass::SyntheticRecord)
         {
             crate::mono::mangle_instantiation(
                 key.symbol_class,
                 &key.origin_name,
-                &key.type_args,
+                &mangled_args,
                 &[],
             )
         } else {
-            mangle_layout_key(&key.origin_name, &key.type_args)
+            mangle_layout_key(&key.origin_name, &mangled_args)
         };
         let idx = self.order.len();
         self.order.push(RecordLayout {
@@ -785,23 +784,24 @@ impl EnumLayoutRegistry {
         variants: Vec<EnumVariantLayout>,
         is_indirect: bool,
     ) -> Result<bool, ()> {
-        let normalized_args: Vec<ResolvedTy> = key
-            .type_args
-            .iter()
-            .cloned()
-            .map(shorten_named_arg_qualifiers)
-            .collect();
-        let key = EnumMonoKey {
-            type_args: normalized_args,
-            ..key
-        };
         if self.seen.contains_key(&key) {
             return Ok(false);
         }
         if self.order.len() >= self.cap {
             return Err(());
         }
-        let mangled_name = mangle_layout_key(&key.origin_name, &key.type_args);
+        // The row is keyed by the exact instantiation the site asked for, so
+        // `Result<(Sender<string>, ...)>` and the std declaration's bare
+        // `Result<(Sender, ...)>` each keep their own substituted variants.
+        // The mangled name still erases a channel endpoint's message type:
+        // the two rows describe one pointer-word ABI shape.
+        let mangled_args: Vec<ResolvedTy> = key
+            .type_args
+            .iter()
+            .cloned()
+            .map(shorten_named_arg_qualifiers)
+            .collect();
+        let mangled_name = mangle_layout_key(&key.origin_name, &mangled_args);
         let idx = self.order.len();
         self.order.push(EnumLayout {
             key: key.clone(),

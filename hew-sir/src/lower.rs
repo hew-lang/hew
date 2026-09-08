@@ -2647,6 +2647,9 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || crate::generator_parts(ty).is_some()
         || crate::stream_element(ty).is_some()
         || crate::sink_element(ty).is_some()
+        || ty.is_builtin(hew_types::BuiltinType::Sender)
+        || ty.is_builtin(hew_types::BuiltinType::Receiver)
+        || hew_types::runtime_call::is_channel_pair_ty(ty)
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
@@ -7464,7 +7467,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let result_ty = self.ty(&expr.ty);
         // An actor method's first parameter is the caller's own state seat.
         let seats = usize::from(actor.is_some());
-        if args.len() + seats != signature.params.len() || result_ty != signature.return_ty {
+        if args.len() + seats != signature.params.len()
+            || !crate::call_boundary_types_match(&result_ty, &signature.return_ty)
+        {
             let name = match target {
                 CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                     declaration.full_path()
@@ -7475,6 +7480,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "user call to `{name}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
                 args.len(), signature.params.len(), signature.return_ty
             ));
+        }
+        // The two spellings of a channel half denote one value; the call site's
+        // is the one that carries the message type, so the produced value
+        // takes it and every downstream shape agrees with the scrutinee.
+        let mut signature = signature;
+        if signature.return_ty != result_ty {
+            signature.return_ty = result_ty.clone();
         }
         let mut lowered_args =
             self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;

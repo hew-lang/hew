@@ -743,6 +743,14 @@ impl SemModule {
         self.variant_shapes
             .iter()
             .find(|shape| &shape.enum_ty == ty)
+            .or_else(|| {
+                // A channel half is spelled with its message type at a user
+                // site and bare inside `std.channel`; one enum instance can
+                // reach here under either spelling.
+                self.variant_shapes
+                    .iter()
+                    .find(|shape| crate::call_boundary_types_match(&shape.enum_ty, ty))
+            })
     }
 
     /// Find a monomorphic resolved callable from checker-owned declaration

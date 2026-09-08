@@ -1457,20 +1457,20 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
      "HewCheckedTaskSelect, *mut HewChannelReceiver, )\", \"wasm32-wasip1\": "
      "\"fn hew_checked_task_select_add_channel( *mut HewCheckedTaskSelect, "
      "*mut HewChannelReceiver, )\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_add_task",
      "{\"native\": \"fn hew_checked_task_select_add_task( *mut "
      "HewCheckedTaskSelect, *mut HewTask, )\", \"wasm32-wasip1\": \"fn "
      "hew_checked_task_select_add_task( *mut HewCheckedTaskSelect, *mut "
      "HewTask, )\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_arm_timer",
      "{\"native\": \"fn hew_checked_task_select_arm_timer( *mut "
      "HewCheckedTaskSelect, i64, )\", \"wasm32-wasip1\": \"fn "
      "hew_checked_task_select_arm_timer( *mut HewCheckedTaskSelect, i64, )\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "codegen-stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_select_free",
      "{\"native\": \"fn hew_checked_task_select_free( *mut "

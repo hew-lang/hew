@@ -4209,10 +4209,16 @@ pub fn lower_program_with_mono_cap(
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
             if hir_decl.kind == HirTypeDeclKind::Enum {
+                // Keep this metadata under the declaration identity, not the
+                // leaf spelling. The root program can define `Delivery`
+                // while the generated prelude also contributes
+                // `std.builtins.Delivery`; the latter must not replace the
+                // source enum's variants or layout origin.
+                let enum_name = hir_decl.qualified_name();
                 ctx.enum_variants_by_name
-                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+                    .insert(enum_name.clone(), hir_decl.variants.clone());
                 if hir_decl.is_indirect {
-                    ctx.indirect_enum_names.insert(hir_decl.name.clone());
+                    ctx.indirect_enum_names.insert(enum_name);
                 }
             }
             // Snapshot type-params and ItemId for the enum-layout discovery
@@ -4225,9 +4231,10 @@ pub fn lower_program_with_mono_cap(
             // `try_register_enum_instantiation` for that enum silently
             // no-ops and codegen-front fails with registration-mismatch.
             if decl.kind == TypeDeclKind::Enum {
+                let enum_name = hir_decl.qualified_name();
                 ctx.enum_type_params
-                    .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
-                ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+                    .insert(enum_name.clone(), hir_decl.type_params.clone());
+                ctx.enum_item_ids.insert(enum_name, hir_decl.id);
             }
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
@@ -23342,8 +23349,7 @@ impl LowerCtx {
         // owner's complete identity rather than returning a bare leaf, so the
         // same rule also keeps package-local `module.Result` nominally
         // distinct from prelude `Result`.
-        if builtin.is_some()
-            && !name.contains('.')
+        if !name.contains('.')
             && self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
             let canonical = self.canonical_current_module_record_name(&name);

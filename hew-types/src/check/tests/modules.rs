@@ -55,6 +55,32 @@ fn nested_same_final_modules_resolve_own_nominals_to_full_identity() {
 }
 
 #[test]
+fn root_enum_shadows_generated_delivery_type_member() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.local_type_defs.insert("Delivery".to_string());
+    checker.type_defs.insert(
+        "Delivery".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "Delivery".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: HashMap::from([(String::from("Idle"), VariantDef::Unit)]),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+
+    let head = checker
+        .resolve_dotted_type_head(&(Expr::Identifier("Delivery".to_string()), 0..8), "Idle")
+        .expect("root enum member resolves");
+    assert_eq!(head.canonical_type, "Delivery");
+}
+
+#[test]
 fn nested_module_leaf_is_not_a_nominal_self_qualifier() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("left.render".to_string());

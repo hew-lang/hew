@@ -334,6 +334,21 @@ impl Checker {
         if let Some(published) = self.published_bare_type_qualified(name) {
             return Some(published);
         }
+        // A declaration in the active source scope owns its bare spelling,
+        // including a spelling that the generated prelude also publishes.
+        // Resolve it before the builtin catalog so `Delivery.Idle` selects a
+        // root `enum Delivery` rather than `std.builtins.Delivery`.
+        if !name.contains('.') && self.local_type_defs.contains(name) {
+            if let Some(module) = self.current_module_identity() {
+                let local = format!("{module}.{name}");
+                if self.type_defs.contains_key(&local) || self.known_types.contains(&local) {
+                    return Some(local);
+                }
+            }
+            if !self.in_stdlib_registration {
+                return Some(name.to_string());
+            }
+        }
         // An unqualified builtin keeps its compiler identity unless lexical
         // source authority above explicitly published a same-named type. A
         // private declaration pre-registered from another module is present in

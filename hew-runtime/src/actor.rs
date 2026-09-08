@@ -3731,6 +3731,14 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     }
 }
 
+/// One compiler-selected periodic handler, shared by direct and supervised spawn.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HewNativePeriodicHandler {
+    pub message: i32,
+    pub interval_ms: u64,
+}
+
 /// Publish initialized native state together with both lifetime callbacks.
 ///
 /// # Safety
@@ -3739,7 +3747,8 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
 /// remain valid for the actor's lifetime. The function consumes state on every
 /// outcome. `terminate` is null or the generated `#[on(stop)]` sequence, which
 /// runs once with the initialized state at the terminal transition. `fault`
-/// is a writable, initially null fault slot.
+/// is a writable, initially null fault slot. `periodic` points to
+/// `periodic_count` valid descriptors, or is null when the count is zero.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 #[allow(
@@ -3756,6 +3765,8 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     capacity: i32,
     overflow: i32,
     cap_bytes: usize,
+    periodic: *const HewNativePeriodicHandler,
+    periodic_count: usize,
     fault: *mut *mut crate::fault::HewFault,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: constructors return an owned native mailbox.
@@ -3795,8 +3806,45 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         };
         crate::lifetime::local_handles::HewLocalPidId::INVALID
     } else {
-        // SAFETY: successful publication returns a live actor with a stable token.
-        unsafe { (*actor).local_pid_id }
+        // No external handle exists yet. Pin before the first timer can run,
+        // since a periodic handler may immediately fault and retire this actor.
+        // SAFETY: successful construction returns a live actor before timer arming.
+        let (id, token) = unsafe { ((*actor).id, (*actor).local_pid_id) };
+        let armed = live_actors::with_actor_send_by_id(id, |actor| {
+            // SAFETY: the compiler supplies this static descriptor slice, and
+            // the send guard pins the actor through the complete arming sequence.
+            let handlers = if periodic_count == 0 {
+                &[]
+            } else {
+                // SAFETY: the caller supplies this complete static descriptor slice.
+                unsafe { std::slice::from_raw_parts(periodic, periodic_count) }
+            };
+            handlers.iter().all(|handler| {
+                // SAFETY: the actor is pinned and each checked interval is positive.
+                !unsafe {
+                    crate::timer_periodic::hew_actor_schedule_periodic(
+                        actor,
+                        handler.message,
+                        handler.interval_ms,
+                    )
+                }
+                .is_null()
+            })
+        })
+        .unwrap_or(false);
+        if armed {
+            token
+        } else {
+            // Stop owns timer cancellation and typed state cleanup, including
+            // timers already armed before a later allocation failed.
+            crate::actor_native::hew_actor_close_native(token);
+            // SAFETY: the caller supplies an empty writable fault slot.
+            unsafe {
+                *fault =
+                    crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
+            };
+            crate::lifetime::local_handles::HewLocalPidId::INVALID
+        }
     }
 }
 

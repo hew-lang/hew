@@ -145,13 +145,6 @@ impl InstanceService<'_> {
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
         }
-        if source
-            .receive_handlers
-            .iter()
-            .any(|handler| handler.every_ns.is_some())
-        {
-            return Err("periodic receives need their scheduling contract".into());
-        }
         if let Some(hook) = source.lifecycle_hooks.iter().find(|hook| {
             !matches!(
                 hook.kind,
@@ -396,6 +389,7 @@ impl InstanceService<'_> {
                     declaration: handler.declaration.clone(),
                     name: handler.name.clone(),
                     message_id: row.msg_id,
+                    every_ns: handler.every_ns,
                     callable,
                     params,
                     return_ty,

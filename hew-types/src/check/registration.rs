@@ -4836,19 +4836,6 @@ impl Checker {
             is_indirect: false,
         };
 
-        // `#[every]` periodic handlers are armed by spawn-site codegen
-        // (`emit_periodic_handler_arming`); record which actors declare them
-        // so `check_supervisor` can reject child specs whose runtime spawn
-        // path would silently skip the arming.
-        if let Some(periodic_rf) = ad
-            .receive_fns
-            .iter()
-            .find(|rf| rf.attributes.iter().any(|a| a.name == "every"))
-        {
-            self.actors_with_periodic_handlers
-                .insert(ad.name.clone(), periodic_rf.name.clone());
-        }
-
         // Actors are always Send
         self.registry.register_actor(identity.to_string());
 

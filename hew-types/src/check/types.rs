@@ -3081,12 +3081,6 @@ pub struct Checker {
     /// during registration and again at its use, so the unknown-trait refusal
     /// reports each written spelling once.
     pub(super) reported_unknown_dyn_traits: HashSet<(String, SpanKey)>,
-    /// Actors declaring at least one `#[every(duration)]` periodic receive
-    /// handler, keyed by actor name; the value is the first periodic
-    /// handler's name (for diagnostics). Populated during
-    /// `register_actor_decl`, consulted by `check_supervisor` to reject
-    /// child specs whose runtime spawn path cannot arm periodic timers.
-    pub(super) actors_with_periodic_handlers: HashMap<String, String>,
     pub(super) current_return_type: Option<Ty>,
     /// Return constraints collected while a lambda's result type is inferred.
     pub(super) inferred_lambda_returns: Option<Vec<Ty>>,
@@ -3957,7 +3951,6 @@ impl Checker {
             reported_machine_bound_violations: HashSet::new(),
             reported_type_def_bound_violations: HashSet::new(),
             reported_unknown_dyn_traits: HashSet::new(),
-            actors_with_periodic_handlers: HashMap::new(),
             current_return_type: None,
             inferred_lambda_returns: None,
             current_fails: false,

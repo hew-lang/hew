@@ -616,9 +616,6 @@ pub enum SupervisorErrorKind {
     /// `E_SUPERVISOR_POOL_COUNT_NON_POSITIVE`: a pool child's compile-time
     /// `count:` is zero or negative.
     PoolCountNonPositive,
-    /// `E_SUPERVISOR_PERIODIC_CHILD`: a supervised child's actor declares an
-    /// `#[every]` periodic handler, which is not armed for supervised children.
-    PeriodicChild,
     /// `E_SUPERVISOR_INTENSITY_RESTARTS`: a negative `intensity:` restart budget.
     IntensityRestarts,
     /// `E_SUPERVISOR_INTENSITY_WINDOW`: the `intensity:` window is zero-length or
@@ -650,7 +647,6 @@ impl SupervisorErrorKind {
             Self::PoolCountMissing => "SupervisorPoolCountMissing",
             Self::PoolCountType => "SupervisorPoolCountType",
             Self::PoolCountNonPositive => "SupervisorPoolCountNonPositive",
-            Self::PeriodicChild => "SupervisorPeriodicChild",
             Self::IntensityRestarts => "SupervisorIntensityRestarts",
             Self::IntensityWindow => "SupervisorIntensityWindow",
             Self::DuplicateChild => "SupervisorDuplicateChild",
@@ -2178,7 +2174,6 @@ mod tests {
             SupervisorErrorKind::PoolCountMissing,
             SupervisorErrorKind::PoolCountType,
             SupervisorErrorKind::PoolCountNonPositive,
-            SupervisorErrorKind::PeriodicChild,
             SupervisorErrorKind::IntensityRestarts,
             SupervisorErrorKind::IntensityWindow,
             SupervisorErrorKind::DuplicateChild,

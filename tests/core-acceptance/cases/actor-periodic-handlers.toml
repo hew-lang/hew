@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-periodic-handlers"
+intent = "Periodic turns run for direct and supervised actors, rearm after child restart and release owned state on close."
+source = "cases/actor-periodic-handlers.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "periodic direct and restarted child\n"
+stderr = "hew: failure: UserPanic (212): restart periodic child\nhew: actor crash in Actor (actor 2): UserPanic\n"
+exit = 0

@@ -20,6 +20,8 @@ pub struct SemActorHandler {
     pub declaration: DefId,
     pub name: String,
     pub message_id: u32,
+    /// Periodic cadence selected from the checked duration literal.
+    pub every_ns: Option<i64>,
     pub callable: CallableId,
     /// Message payload fields. A stream producer's last field is the caller's
     /// `Sink<T>`, owned by the body until its turn ends.

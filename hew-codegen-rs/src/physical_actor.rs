@@ -790,10 +790,12 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .into(),
                 });
             }
-            // Every field now transfers to the private body's cleanup graph.
-            builder
-                .build_store(payload, self.ctx.i8_type().const_zero())
-                .llvm_ctx("transfer message fields to handler")?;
+            // Empty timer messages have no payload or field ownership to transfer.
+            if !handler.params.is_empty() {
+                builder
+                    .build_store(payload, self.ctx.i8_type().const_zero())
+                    .llvm_ctx("transfer message fields to handler")?;
+            }
             let output = callable
                 .return_layout
                 .as_ref()
@@ -892,9 +894,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .into(),
             });
         }
-        builder
-            .build_store(payload, self.ctx.i8_type().const_zero())
-            .llvm_ctx("transfer message fields to handler frame")?;
+        if !handler.params.is_empty() {
+            builder
+                .build_store(payload, self.ctx.i8_type().const_zero())
+                .llvm_ctx("transfer message fields to handler frame")?;
+        }
         if let Some(output) = output {
             args.push(output.into());
         }
@@ -1251,6 +1255,46 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let periodic_ty = self.ctx.struct_type(
+            &[self.ctx.i32_type().into(), self.ctx.i64_type().into()],
+            false,
+        );
+        let periodic: Vec<_> = actor
+            .handlers
+            .iter()
+            .filter_map(|handler| handler.every_ns.map(|ns| (handler, ns)))
+            .map(|(handler, ns)| {
+                let interval = u64::try_from(ns)
+                    .ok()
+                    .filter(|ns| *ns >= 1_000_000)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("invalid checked periodic interval".into())
+                    })?
+                    / 1_000_000;
+                Ok(periodic_ty.const_named_struct(&[
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(handler.message_id), false)
+                        .into(),
+                    self.ctx.i64_type().const_int(interval, false).into(),
+                ]))
+            })
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let periodic_count = u32::try_from(periodic.len())
+            .map_err(|_| CodegenError::FailClosed("too many periodic handlers".into()))?;
+        let periodic_table = if periodic.is_empty() {
+            ptr.const_null()
+        } else {
+            let table = self.llvm.add_global(
+                periodic_ty.array_type(periodic_count),
+                None,
+                &symbol(actor.id, "periodic"),
+            );
+            table.set_linkage(Linkage::Internal);
+            table.set_constant(true);
+            table.set_initializer(&periodic_ty.const_array(&periodic));
+            table.as_pointer_value()
+        };
         let spawn = get_or_declare_external(
             self.llvm,
             "hew_actor_spawn_native",
@@ -1264,6 +1308,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     self.ctx.i32_type().into(),
                     self.ctx.i32_type().into(),
+                    size_ty.into(),
+                    ptr.into(),
                     size_ty.into(),
                     ptr.into(),
                 ],
@@ -1306,6 +1352,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty
                         .const_int(actor.max_heap_bytes.unwrap_or(0), false)
                         .into(),
+                    periodic_table.into(),
+                    size_ty.const_int(u64::from(periodic_count), false).into(),
                     self.active_fault.into(),
                 ],
                 "spawn.token",

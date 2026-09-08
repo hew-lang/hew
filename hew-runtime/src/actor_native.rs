@@ -13,8 +13,8 @@ use crate::lifetime::live_actors::ActorIncarnation;
 
 #[path = "actor_native_close.rs"]
 mod close;
-pub(crate) use close::finish_native_terminal;
 pub use close::NativeActorCompletion;
+pub(crate) use close::{finish_native_terminal, hew_actor_close_native};
 #[path = "actor_native_wait_graph.rs"]
 pub(crate) mod wait_graph;
 

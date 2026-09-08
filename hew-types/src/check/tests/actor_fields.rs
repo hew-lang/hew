@@ -545,25 +545,13 @@ actor Counter {
 //
 // Validation behaviours for the periodic-handler attribute: interval floor,
 // handler shape (params / return / generator), attribute arity, and the
-// supervisor-child rejection (periodic timers are armed by spawn-site
-// codegen, which the supervisor child-spec spawn path never reaches).
+// acceptance of periodic handlers on supervisor children.
 mod every_attribute {
     use super::*;
 
     fn invalid_op_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
         output.errors.iter().any(|e| {
-            // Most `#[every]` diagnostics use the generic `InvalidOperation`
-            // kind; the two supervisor-periodic-child cases now carry the
-            // distinct `SupervisorError { PeriodicChild }` kind (#2377). Accept
-            // either so this fragment helper keeps checking the diagnostic body
-            // regardless of which of the two related kinds emitted it.
-            matches!(
-                e.kind,
-                TypeErrorKind::InvalidOperation
-                    | TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::PeriodicChild,
-                    }
-            ) && e.message.contains(fragment)
+            matches!(e.kind, TypeErrorKind::InvalidOperation) && e.message.contains(fragment)
         })
     }
 
@@ -659,7 +647,7 @@ mod every_attribute {
     }
 
     #[test]
-    fn supervisor_child_with_periodic_handler_rejected() {
+    fn supervisor_child_with_periodic_handler_accepted() {
         let output = check_source(
             r"
             actor Heartbeat {
@@ -675,30 +663,8 @@ mod every_attribute {
             ",
         );
         assert!(
-            invalid_op_contains(&output, "E_SUPERVISOR_PERIODIC_CHILD"),
-            "supervisor child spawns never reach spawn-site timer arming; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn supervisor_child_without_periodic_handler_accepted() {
-        let output = check_source(
-            r"
-            actor Worker {
-                receive fn work() {}
-            }
-
-            supervisor App {
-                child w: Worker,
-            }
-
-            fn main() {}
-            ",
-        );
-        assert!(
-            !invalid_op_contains(&output, "E_SUPERVISOR_PERIODIC_CHILD"),
-            "the accept twin: a message-driven child must not trip the periodic check; got: {:#?}",
+            output.errors.is_empty(),
+            "supervisor children use the ordinary actor timer contract; got: {:#?}",
             output.errors
         );
     }

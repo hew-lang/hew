@@ -118,9 +118,6 @@ impl Checker {
         // ── 7. Intensity restart-budget sanity ──────────────────────────────
         self.check_supervisor_intensity(sd, span);
 
-        // ── 8. Children must not declare #[every] periodic handlers ──────────
-        self.check_supervisor_periodic_children(sd, span);
-
         // Child construction uses the ordinary spawn contract with retained
         // config parameters in scope. Each restart repeats this construction.
         self.check_supervisor_init_args(sd, span);
@@ -324,43 +321,6 @@ impl Checker {
                 }
                 // Positive constant or genuinely dynamic — both accepted.
                 Ok(_) | Err(_) => {}
-            }
-        }
-    }
-
-    /// Reject supervisor children whose actor type declares `#[every(duration)]`
-    /// periodic receive handlers.
-    ///
-    /// WHY: periodic timers are armed by spawn-site codegen
-    /// (`emit_periodic_handler_arming`, hew-codegen-rs/src/llvm.rs), but
-    /// supervisor children are spawned — and restarted — by the runtime from
-    /// a `HewChildSpec`, a path that never reaches the codegen spawn site.
-    /// The child's timers would silently never fire, and even spawn-site
-    /// arming could not survive a restart (`hew_actor_free` cancels all
-    /// timers for the crashed instance). Fail-closed: reject at check time
-    /// rather than ship a silent no-op.
-    /// WHEN-OBSOLETE: when `HewChildSpec` carries a periodic-handler table
-    /// (`msg_type` + interval per handler) and the runtime arms timers in the
-    /// child-start path AND re-arms them on restart.
-    /// WHAT: extend `HewChildSpec` + the supervisor child-start/restart paths
-    /// in `hew-runtime/src/supervisor.rs` with that table, then delete this
-    /// check and flip its tests to accept.
-    fn check_supervisor_periodic_children(&mut self, sd: &SupervisorDecl, span: &Span) {
-        for child in &sd.children {
-            if let Some(handler) = self.actors_with_periodic_handlers.get(&child.actor_type) {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::PeriodicChild,
-                    },
-                    span.clone(),
-                    format!(
-                        "E_SUPERVISOR_PERIODIC_CHILD: supervisor `{}` child `{}` (actor `{}`) \
-                         declares #[every] periodic handler `{}`; periodic handlers are not yet \
-                         armed for supervisor-spawned children — spawn the actor directly, or \
-                         drive `{}` with explicit sends",
-                        sd.name, child.name, child.actor_type, handler, handler
-                    ),
-                ));
             }
         }
     }

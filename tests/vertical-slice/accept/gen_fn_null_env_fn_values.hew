@@ -3,7 +3,9 @@
 // Both pairs carry a null env word by construction, so the generator's flat
 // env copy has no heap box to leak or alias; the capturing-closure launder
 // (see reject/gen_fn_capturing_closure_arg.hew) is the rejected boundary.
-gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+// The env copy is why the parameter type is `fn[clone]`: a bare written `fn`
+// carries no copy operation.
+gen fn mapped(n: i64, f: fn[clone](i64) -> i64) -> i64 {
     var i = 0;
     while i < n {
         yield f(i);

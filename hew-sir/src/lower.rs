@@ -334,6 +334,12 @@ struct CallableTable<'a> {
     monomorphic_by_declaration: HashMap<DefId, CallableId>,
     templates: HashMap<DefId, GenericTemplate<'a>>,
     functions_by_item: HashMap<hew_hir::ItemId, &'a HirFn>,
+    /// HIR's structured `(declaring trait, self type, trait method) →
+    /// implementation` index. A generic template publishes
+    /// `CallTarget::StaticTraitMethod` because no concrete implementation
+    /// exists at the template; this stage substitutes the receiver type, so
+    /// this is where the implementation is selected.
+    trait_impls: HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
     /// Why a declaration was refused a SIR callable header, keyed by the
     /// declaration a call would name.
     ///
@@ -517,6 +523,7 @@ impl<'a> CallableTable<'a> {
                 monomorphic_by_declaration,
                 templates,
                 functions_by_item,
+                trait_impls: hew_hir::dispatch::build_trait_impl_method_index(&module.items),
                 ineligible,
             },
             aggregate_shapes,
@@ -1826,6 +1833,84 @@ impl<'a> InstanceService<'a> {
             .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
     }
 
+    /// Select the implementation a static trait call reaches, from the
+    /// receiver type this instance's substitution produced.
+    ///
+    /// The generic template could not name it: `it.next()` under
+    /// `I: Iterator<Item = A>` has no implementation until `I` is bound. The
+    /// selection reads HIR's structured impl index by declaration identity —
+    /// never a symbol spelling — and then enters the ordinary direct-call
+    /// admission for the implementation it found.
+    fn resolve_static_trait_call(
+        &mut self,
+        declaring_trait: &DefId,
+        method: &DefId,
+        receiver_ty: &ResolvedTy,
+    ) -> Result<SemCallable, String> {
+        let self_type = hew_hir::dispatch::receiver_self_type_for_impl_lookup_instance(receiver_ty)
+            .ok_or_else(|| {
+                format!(
+                    "static trait receiver `{}` cannot anchor an implementation",
+                    receiver_ty.user_facing()
+                )
+            })?;
+        let entry = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
+            &self.table.trait_impls,
+            declaring_trait,
+            &self_type,
+            method,
+        )
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "no implementation of `{}` for `{}` provides `{}`",
+                declaring_trait.full_path(),
+                receiver_ty.user_facing(),
+                method.full_path()
+            )
+        })?;
+        if entry.impl_type_params.is_empty() {
+            let id = self
+                .table
+                .monomorphic_by_declaration
+                .get(&entry.method)
+                .copied()
+                .ok_or_else(|| match self.table.ineligible.get(&entry.method) {
+                    Some(reason) => format!(
+                        "static trait callee `{}` has no scalar default-call SIR callable: {reason}",
+                        entry.method.full_path()
+                    ),
+                    None => format!(
+                        "static trait callee `{}` has no scalar default-call SIR callable",
+                        entry.method.full_path()
+                    ),
+                })?;
+            self.request_body(id);
+            return self.callable(id).cloned().ok_or_else(|| {
+                format!("SIR callable {id:?} is absent from its deterministic table")
+            });
+        }
+        // A generic implementation declares its type parameters in the order
+        // its self type spells them, so the receiver instance's arguments are
+        // the instance arguments. A length disagreement is a boundary failure.
+        if self_type.args.len() != entry.impl_type_params.len() {
+            return Err(format!(
+                "generic implementation `{}` declares {} type parameter(s), receiver `{}` carries {}",
+                entry.method.full_path(),
+                entry.impl_type_params.len(),
+                receiver_ty.user_facing(),
+                self_type.args.len()
+            ));
+        }
+        let id = self.request_instance(&entry.method, self_type.args.clone())?;
+        self.callable(id).cloned().ok_or_else(|| {
+            format!(
+                "requested SIR generic callable {} disappeared from its table",
+                id.0
+            )
+        })
+    }
+
     fn request_closure(
         &mut self,
         enclosing: CallableId,
@@ -2755,6 +2840,10 @@ struct VariantBranch {
 /// read-only in the initial slice. A unit expression in `return` instead
 /// transfers control to the caller; HIR marks that transfer `Consume`, which
 /// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
+#[allow(
+    deprecated,
+    reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
+)]
 fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> Result<(), String> {
     let ty = builder.ty(&expr.ty);
     if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) || ty != ResolvedTy::Unit {
@@ -2767,7 +2856,10 @@ fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> R
     if matches!(expr.kind, HirExprKind::VarSelfMethodCall { .. }) {
         return builder.lower_var_self_call(expr).map(|_| ());
     }
-    if !matches!(expr.kind, HirExprKind::Call { .. }) {
+    if !matches!(
+        expr.kind,
+        HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. }
+    ) {
         return Err(
             "unit return values are initially supported only for a resolved direct call"
                 .to_string(),
@@ -4279,6 +4371,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         clippy::too_many_lines,
         reason = "effect-position dispatch keeps control flow and cleanup together"
     )]
+    #[allow(
+        deprecated,
+        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
+    )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
             HirExprKind::ActorDelivery {
@@ -4444,7 +4540,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             _ => {}
         }
-        if matches!(expr.kind, HirExprKind::Call { .. }) {
+        if matches!(
+            expr.kind,
+            HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. }
+        ) {
             if let Some(value) = self.lower_call(expr, false)? {
                 if self.owned_live.contains_key(&value) && !live_before_expression.contains(&value)
                 {
@@ -4573,6 +4672,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     #[allow(
         clippy::too_many_lines,
         reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
+    )]
+    #[allow(
+        deprecated,
+        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
     )]
     fn lower_expr_with_binding_use(
         &mut self,
@@ -4866,11 +4969,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )
             }
             HirExprKind::VarSelfMethodCall { .. } => self.lower_var_self_call(expr),
-            HirExprKind::Call { .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. }
+                if self.ty(&expr.ty) == ResolvedTy::Unit =>
+            {
                 self.lower_call(expr, false)?;
                 self.emit(expr, SemOpKind::ConstUnit)
             }
-            HirExprKind::Call { .. } => self
+            HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. } => self
                 .lower_call(expr, true)?
                 .ok_or_else(|| "value-producing checked call has no result".to_string()),
             HirExprKind::SubsumedValue { source, .. } => {
@@ -7322,6 +7427,68 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
+    /// Lower a trait-method call reached through a where-clause bound.
+    ///
+    /// Once the implementation is selected the receiver is simply its first
+    /// parameter, so the call enters the same argument transfer and call
+    /// boundary as any other direct call.
+    #[allow(
+        deprecated,
+        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; this arm reads the node, it does not construct one"
+    )]
+    fn lower_static_trait_call(
+        &mut self,
+        expr: &HirExpr,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let HirExprKind::CallTraitMethodStatic {
+            receiver,
+            target,
+            args,
+            ..
+        } = &expr.kind
+        else {
+            return Err("static trait call lowering received a non-call".to_string());
+        };
+        let CallTarget::StaticTraitMethod {
+            declaring_trait,
+            method,
+        } = target
+        else {
+            return Err("static trait call requires a checker-selected trait method".to_string());
+        };
+        let receiver_ty = self.ty(&receiver.ty);
+        let callee =
+            self.service
+                .resolve_static_trait_call(declaring_trait, method, &receiver_ty)?;
+        let signature = callee.signature.clone();
+        let result_ty = self.ty(&expr.ty);
+        let arguments: Vec<HirExpr> = std::iter::once((**receiver).clone())
+            .chain(args.iter().cloned())
+            .collect();
+        if arguments.len() != signature.params.len() || result_ty != signature.return_ty {
+            return Err(format!(
+                "static trait call to `{}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
+                callee.declaration.full_path(),
+                arguments.len(),
+                signature.params.len(),
+                signature.return_ty
+            ));
+        }
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let lowered_args = self.lower_user_arguments(&arguments, &signature.params, &mut loans)?;
+        self.finish_user_call(
+            PreparedCallee::Direct(callee.id),
+            signature,
+            lowered_args,
+            &loans,
+            &live_before_arguments,
+            value_required,
+        )
+    }
+
     /// Capture arguments while keeping earlier consumed values live until the call.
     fn lower_user_arguments(
         &mut self,
@@ -7525,11 +7692,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    #[allow(
+        deprecated,
+        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
+    )]
     fn lower_call(
         &mut self,
         expr: &HirExpr,
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
+        if matches!(expr.kind, HirExprKind::CallTraitMethodStatic { .. }) {
+            return self.lower_static_trait_call(expr, value_required);
+        }
         let HirExprKind::Call { target, args, .. } = &expr.kind else {
             return Err(
                 "internal SIR lowering error: call lowering received a non-call".to_string(),

@@ -1,0 +1,66 @@
+// Static trait dispatch through a where-clause bound: `area` and `label` are
+// selected per monomorphised instance from the concrete impl, not from the
+// trait declaration. The same two impls are reached dynamically through a
+// `dyn` value so the static and erased paths can be compared side by side.
+trait Shape {
+    fn area(val: Self) -> i64;
+    fn label(val: Self) -> string;
+}
+
+type Square {
+    side: i64,
+}
+
+impl Shape for Square {
+    fn area(val: Square) -> i64 {
+        val.side * val.side
+    }
+    fn label(val: Square) -> string {
+        f"square({val.side})"
+    }
+}
+
+type Rect {
+    width: i64,
+    height: i64,
+}
+
+impl Shape for Rect {
+    fn area(val: Rect) -> i64 {
+        val.width * val.height
+    }
+    fn label(val: Rect) -> string {
+        f"rect({val.width}x{val.height})"
+    }
+}
+
+// One generic body, two instances: the bound selects `Square::area` in one and
+// `Rect::area` in the other.
+fn report<S>(shape: S) -> string
+where
+    S: Shape,
+{
+    f"{shape.label()} = {shape.area()}"
+}
+
+// A second bound-driven body, so the resolution is proven for more than one
+// generic caller shape.
+fn combined_area<A, B>(first: A, second: B) -> i64
+where
+    A: Shape,
+    B: Shape,
+{
+    first.area() + second.area()
+}
+
+fn main() {
+    println(report(Square { side: 4 }));
+    println(report(Rect { width: 3, height: 5 }));
+    println(combined_area(Square { side: 2 }, Rect { width: 6, height: 7 }));
+
+    // Contrast: the same impls reached through vtable dispatch.
+    let erased: dyn Shape = Square { side: 9 };
+    println(erased.label());
+    let other: dyn Shape = Rect { width: 2, height: 8 };
+    println(other.area());
+}

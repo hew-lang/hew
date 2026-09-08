@@ -6011,6 +6011,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
         let outer_loans = self.argument_receiver_loans.len();
+        let borrowed_scrutinee = self.value_own_kind(scrutinee) == Some(OwnKind::Guaranteed);
         let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
         let mut failures = Vec::new();
         let mut success = None;
@@ -6034,6 +6035,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )?);
             }
             self.end_loans_since(outer_loans)?;
+            if borrowed_scrutinee {
+                // The bound payload escapes into the enclosing block, so its
+                // loan of the scrutinee's region lives as long as that scope.
+                self.scope_loans.extend(
+                    branch
+                        .fields
+                        .iter()
+                        .filter(|field| field.own == OwnKind::Guaranteed)
+                        .map(|field| field.value),
+                );
+            }
             self.transfer_selected_payloads(&branch.fields, nested_predicates)?;
             self.acquire_selected_match_bindings(&outer_bindings)?;
             let escaping_bindings = self

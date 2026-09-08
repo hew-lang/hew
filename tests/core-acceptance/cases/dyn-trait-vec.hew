@@ -34,6 +34,10 @@ fn main() {
     for member in crowd.into_iter() {
         seen = seen + 1;
         println(member.name());
+        if seen == 2 {
+            // The untaken trait object is released with the cursor's vector.
+            break
+        }
     }
     println(f"seen={seen}");
 }

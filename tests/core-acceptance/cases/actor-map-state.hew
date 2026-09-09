@@ -1,0 +1,36 @@
+actor Store {
+    var data: HashMap<string, string>,
+    let prefix: string,
+
+    receive fn set(key: string, value: string) {
+        data.insert(key, value);
+    }
+    receive fn set_prefix(key: string) {
+        data.insert(key, prefix);
+    }
+    receive fn get(key: string) -> string {
+        data.get(key).unwrap_or("missing")
+    }
+    receive fn remove(key: string) {
+        data.remove(key);
+    }
+    receive fn count() -> i64 { data.len() }
+}
+
+fn main() {
+    var original: HashMap<string, string> = HashMap.new();
+    original.insert("kept", "original");
+    let store = spawn Store(data: original, prefix: "shared actor field".repeat(3));
+    store.set("name", "é🙂".repeat(20)).expect("set");
+    assert(store.get("name").expect("get") == "é🙂".repeat(20));
+    store.set("name", "replacement").expect("replace");
+    store.set_prefix("prefix").expect("state argument");
+    assert(store.get("prefix").expect("prefix") == "shared actor field".repeat(3));
+    assert(store.count().expect("count") == 3);
+    store.remove("name").expect("remove");
+    assert(store.get("name").expect("missing") == "missing");
+    assert(original.len() == 1);
+    assert(original.get("kept").unwrap_or("missing") == "original");
+    close(store);
+    println("actor map updates preserve state ownership");
+}

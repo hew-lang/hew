@@ -8485,7 +8485,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let selected = self
                 .owned_projection(place)?
                 .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
-            let (root, _) = crate::projection::place_path(&self.places, selected)?;
+            let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(
                 root,
                 &mut lowered_args,
@@ -8516,7 +8516,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             // A transform takes its receiver, which a live element loan of the
             // same owner forbids. Refusing here names the source construct
             // instead of leaving it to the ownership verifier.
-            let (root, _) = crate::projection::place_path(&self.places, projected)?;
+            let root = self.place_borrow_root(projected)?;
             self.end_binding_loans_on(root)?;
             for loan in self.scope_loans.clone() {
                 if self.ended_loans.contains(&loan) {
@@ -8532,11 +8532,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
             }
             transformed_projection = Some(projected);
-            let source = self.emit_typed(
-                provenance.clone(),
-                &place.leaf_ty,
-                SemOpKind::LoadTake { place: projected },
-            )?;
+            // Actor state remains initialized while a runtime operation runs.
+            // Stage an independent value and publish it with StoreAssign only
+            // after success, preserving the original field on a fault edge.
+            let receiver_kind = if self.state_field_leaves_as_copy(projected, args[0])? {
+                SemOpKind::LoadCopy { place: projected }
+            } else {
+                SemOpKind::LoadTake { place: projected }
+            };
+            let source = self.emit_typed(provenance.clone(), &place.leaf_ty, receiver_kind)?;
             if matches!(
                 family,
                 hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set)

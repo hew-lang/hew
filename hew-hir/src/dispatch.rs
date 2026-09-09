@@ -224,6 +224,13 @@ pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<No
                 hew_types::BuiltinType::RemotePid => "RemotePid",
                 hew_types::BuiltinType::NodeId => "NodeId",
                 hew_types::BuiltinType::Location => "Location",
+                // A shipped `#[opaque]` encoding value (`json.Value`) is a
+                // declaration in its own module, so its canonical identity is
+                // that module path. The checker registers an impl written
+                // through a module binding under the same identity, and the
+                // catalogue owns the path: read it from there rather than
+                // repeating the spelling here.
+                other if other.is_encoding_value() => other.canonical_name(),
                 _ => return None,
             };
             Some(NominalInstance {

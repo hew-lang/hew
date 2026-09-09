@@ -4160,7 +4160,7 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# DNS — hew-std/src/dns.rs. lookup_host(_timed) return str_to_malloc strings;
+# DNS — hew-std/src/dns.rs. lookup_host(_timed) return owned managed strings;
 # resolve(_timed) return a fresh Vec<string> built with hew_vec_new_str /
 # hew_vec_push_str (hew_vec_free discharges element strings: deep). The numeric
 # loopback R1/R2/R3 witness lives in hew-std/src/os_io_string_retention.rs.
@@ -4687,7 +4687,7 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 # URL — hew-std/src/url.rs. parse/join return Box'd HewUrl handles (freed by
-# hew_url_free); component getters return str_to_malloc strings.
+# hew_url_free); component getters return owned managed strings.
 [[ownership.contracts]]
 symbol = "hew_url_fragment"
 result = "fresh"
@@ -5265,7 +5265,7 @@ discharge-depth = "none"
 # QUIC — hew-std/src/quic.rs. Endpoint/conn/stream/event handles are Box'd;
 # the close entries (endpoint_close, conn_disconnect, stream_close,
 # event_free) Box::from_raw (consume). Producers hand back the matching owned
-# handle; *_last_error / *_addr return str_to_malloc strings; stream_recv(_
+# handle; *_last_error / *_addr return owned managed strings; stream_recv(_
 # timeout_hew) return fresh BytesTriples; stream_send borrows its triple
 # (ownership not transferred, per the ABI doc).
 [[ownership.contracts]]
@@ -6449,8 +6449,7 @@ discharge-depth = "none"
 
 # XML — hew-std/src/xml.rs. parse and get_child (clone-out) return Box'd
 # HewXmlNode trees released by hew_xml_free (deep); tag/text/attribute/error/
-# to_string return str_to_malloc strings (hew_xml_string_free is the same
-# free_cstring path as hew_string_drop).
+# to_string return owned managed strings released with hew_string_drop.
 [[ownership.contracts]]
 symbol = "hew_xml_children_count"
 result = "none"
@@ -6529,7 +6528,7 @@ result-retention = "transferred"
 # regex — hew-std/src/regex.rs. new/clone return Box'd HewRegex handles
 # (hew_regex_free). Match/capture entries borrow the regex and text; the
 # Vec<string> producers build fresh vecs via hew_vec_new_str/hew_vec_push_str
-# (hew_vec_free deep); find/replace return str_to_malloc strings.
+# (hew_vec_free deep); find/replace return owned managed strings.
 [[ownership.contracts]]
 symbol = "hew_regex_capture_index_one"
 result = "fresh"

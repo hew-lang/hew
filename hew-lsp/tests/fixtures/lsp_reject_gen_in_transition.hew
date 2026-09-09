@@ -7,7 +7,8 @@ machine Door {
     state Open,
 
     on Toggle: Closed => Open {
-        gen { yield Open; }
+        let _g = gen { yield Open; };
+        Open
     }
     on Toggle: Open => Closed {
         .Closed

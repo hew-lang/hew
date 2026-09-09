@@ -478,21 +478,10 @@ mod tests {
             "min",
             "max",
             "to_float",
-            // String utilities
-            "string_concat",
-            "string_length",
-            "string_equals",
-            "string_from_int",
-            "string_contains",
-            "string_split",
-            "string_starts_with",
-            "substring",
-            "string_slice",
-            "string_trim",
-            "string_replace",
-            "string_to_upper",
-            "string_to_lower",
-            "string_ends_with",
+            // String conversions. The legacy string free functions
+            // (string_concat, substring, string_split and the rest) were
+            // retired in favour of `string` methods, so they are no longer
+            // builtin names and a rename onto them is allowed.
             "int_to_string",
             "float_to_string",
             "char_to_string",
@@ -534,13 +523,20 @@ mod tests {
         // enters `builtin_function_names`, so it does not belong in this
         // list either.
 
-        for name in newly_added {
-            let err = plan_rename(source, &pr, offset, name).unwrap_err();
-            assert!(
-                matches!(err, RenameError::Builtin { .. }),
-                "expected Builtin error for '{name}', got {err:?}"
-            );
-        }
+        let not_refused: Vec<&str> = newly_added
+            .iter()
+            .copied()
+            .filter(|name| {
+                !matches!(
+                    plan_rename(source, &pr, offset, name),
+                    Err(RenameError::Builtin { .. })
+                )
+            })
+            .collect();
+        assert!(
+            not_refused.is_empty(),
+            "these names are no longer refused as builtins: {not_refused:?}"
+        );
     }
 
     #[test]

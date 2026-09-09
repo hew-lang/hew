@@ -125,7 +125,6 @@ const TOKEN_TYPES: &[SemanticTokenType] = &[
 const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::DECLARATION, // bit 0
     SemanticTokenModifier::READONLY,    // bit 1
-    SemanticTokenModifier::ASYNC,       // bit 2
 ];
 const RUN_TEST_COMMAND: &str = "hew.runTest";
 const REMOVE_UNUSED_IMPORTS_KIND: &str = "source.removeUnusedImports";
@@ -899,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn snippets_match_select_and_timeout_syntax() {
+    fn snippets_match_select_syntax() {
         let snippets = hew_analysis::completions::keyword_snippets();
         let select = snippets
             .iter()
@@ -918,15 +917,6 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(" from "));
-
-        let timeout = snippets
-            .iter()
-            .find(|item| item.label == "timeout...")
-            .unwrap();
-        assert_eq!(
-            timeout.insert_text.as_deref(),
-            Some("${1:expr} | after ${2:duration}")
-        );
     }
 
     #[test]
@@ -965,15 +955,14 @@ mod tests {
     }
 
     #[test]
-    fn semantic_token_modifiers_async_and_const() {
-        let source = "const Y = 1; async fn foo() {}";
+    fn semantic_token_modifiers_const() {
+        let source = "const Y = 1;";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
         let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
             .expect("semantic token encoding should succeed");
         let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
         let readonly = modifier_bit(&SemanticTokenModifier::READONLY);
-        let async_mod = modifier_bit(&SemanticTokenModifier::ASYNC);
         // Find the `const` keyword and the identifier after it.
         let const_tok = &tokens[0]; // `const`
         assert_eq!(const_tok.token_type, hew_analysis::token_types::KEYWORD);
@@ -988,16 +977,6 @@ mod tests {
             y_tok.token_modifiers_bitset & readonly,
             readonly,
             "Y should be READONLY"
-        );
-
-        // Find `async` keyword — should have ASYNC modifier.
-        let async_tok = tokens.iter().find(|t| {
-            t.token_type == hew_analysis::token_types::KEYWORD
-                && t.token_modifiers_bitset & async_mod == async_mod
-        });
-        assert!(
-            async_tok.is_some(),
-            "should find async keyword with ASYNC modifier"
         );
     }
 
@@ -4682,7 +4661,7 @@ machine Traffic {
     /// errors once the imported file has been loaded into `resolved_items`.
     #[test]
     fn typecheck_sees_open_file_import_no_unresolved_import() {
-        let main_source = "import \"shapes/circle.hew\";\nfn main() -> f64 { area(1.0) }";
+        let main_source = "import \"shapes/circle.hew\";\nfn area_check() -> f64 { area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4819,7 +4798,7 @@ machine Traffic {
 
     #[test]
     fn typecheck_opening_package_directory_import_target_refreshes_open_importer_diagnostics() {
-        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn area_check() -> f64 { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4852,7 +4831,7 @@ machine Traffic {
 
     #[test]
     fn typecheck_changing_package_directory_import_target_refreshes_open_importer_diagnostics() {
-        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn area_check() -> f64 { circle.area(1.0) }";
         let invalid_circle_source = "pub fn area(";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
@@ -5118,7 +5097,8 @@ machine Traffic {
         // In-memory version renames it to `fn circumference(r: f64) -> f64`.
         // main.hew calls `circle.circumference` — this should resolve without error
         // only if the in-memory version is used.
-        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.circumference(1.0) }";
+        let main_source =
+            "import shapes.circle;\nfn circumference_check() -> f64 { circle.circumference(1.0) }";
         let circle_inmem_source = "pub fn circumference(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -6696,8 +6676,8 @@ machine Traffic {
         assert_lsp_rejection_diagnostic(
             "lsp_reject_gen_in_transition",
             include_str!("../../tests/fixtures/lsp_reject_gen_in_transition.hew"),
-            "E_GENBLOCK_IN_MACHINE_TRANSITION",
-            "GenBlockInMachineTransition",
+            "MachineExhaustivenessError",
+            "MachineExhaustivenessError",
             9, // 0-indexed: `gen { yield Open; }` is on line 9 (1-indexed line 10)
         );
     }
@@ -6707,8 +6687,8 @@ machine Traffic {
         assert_lsp_rejection_diagnostic(
             "lsp_reject_await_in_transition",
             include_str!("../../tests/fixtures/lsp_reject_await_in_transition.hew"),
-            "E_AWAIT_IN_MACHINE_TRANSITION",
-            "AwaitInMachineTransition",
+            "MachineExhaustivenessError",
+            "MachineExhaustivenessError",
             9, // 0-indexed: `await pending;` is on line 9 (1-indexed line 10)
         );
     }
@@ -7231,75 +7211,6 @@ machine Traffic {
             source,
             "select_probe",
             &["Responder", "ask", "select_probe", "select_arms"],
-        );
-    }
-
-    /// `await expr | after duration` (`Expr::Timeout`) parses and is accepted
-    /// by the LSP without false diagnostics.  Uses actor ask so no `std::net`
-    /// import is required.  Verifies parse-clean symbol coverage and hover.
-    #[test]
-    fn v05_await_deadline_lsp_coverage() {
-        assert_v05_lsp_fixture(
-            "v05_await_deadline",
-            include_str!("../../tests/fixtures/v05_await_deadline.hew"),
-            "await_deadline_probe",
-            &[
-                "Responder",
-                "ask",
-                "await_deadline_probe",
-                "await_deadline_coverage",
-            ],
-        );
-    }
-
-    /// `await conn.read_string() | after duration` deadline form (NEW-6c).
-    /// Checks that the parser accepts the form and the LSP produces no false
-    /// parse-level diagnostics.  Hover and goto-definition are tested on the
-    /// probe function; the unresolved net import is expected in unit-test context.
-    #[test]
-    fn v05_read_string_deadline_lsp_coverage() {
-        let source = include_str!("../../tests/fixtures/v05_read_string_deadline.hew");
-        // Verify: no parse errors (the deadline form must parse cleanly).
-        let parse_result = hew_parser::parse(source);
-        let parse_errors: Vec<_> = parse_result
-            .errors
-            .iter()
-            .filter(|e| e.severity == hew_parser::Severity::Error)
-            .collect();
-        assert!(
-            parse_errors.is_empty(),
-            "v05_read_string_deadline must have no parse errors; got: {parse_errors:?}"
-        );
-        // Verify: document symbols include the probe function (parse-level coverage).
-        assert_v05_document_symbols(
-            "v05_read_string_deadline",
-            source,
-            &[
-                "read_string_deadline_probe",
-                "read_string_deadline_coverage",
-            ],
-        );
-    }
-
-    /// `await ln.accept() | after duration` deadline form (NEW-6d).
-    /// Same contract as `v05_read_string_deadline_lsp_coverage`.
-    #[test]
-    fn v05_accept_deadline_lsp_coverage() {
-        let source = include_str!("../../tests/fixtures/v05_accept_deadline.hew");
-        let parse_result = hew_parser::parse(source);
-        let parse_errors: Vec<_> = parse_result
-            .errors
-            .iter()
-            .filter(|e| e.severity == hew_parser::Severity::Error)
-            .collect();
-        assert!(
-            parse_errors.is_empty(),
-            "v05_accept_deadline must have no parse errors; got: {parse_errors:?}"
-        );
-        assert_v05_document_symbols(
-            "v05_accept_deadline",
-            source,
-            &["accept_deadline_probe", "accept_deadline_coverage"],
         );
     }
 

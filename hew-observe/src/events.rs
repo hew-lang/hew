@@ -47,9 +47,9 @@ impl TraceEventMeta {
 }
 
 pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
-    // Runtime-emitted v0.5 trace events. GenBlockInMachineTransition,
-    // AwaitInMachineTransition, and MachineDispatchUnreachable are diagnostics
-    // or crash kinds, not trace event types; they remain under "crash".
+    // Runtime-emitted v0.5 trace events. MachineDispatchUnreachable is a
+    // diagnostic or crash kind, not a trace event type; it remains under
+    // "crash".
     TraceEventMeta {
         name: "send",
         label: "send",

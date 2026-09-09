@@ -11,17 +11,15 @@ checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `must_use`, `sleep_loop_blocks_mailbox`,
 `text_direction_codepoint_in_comment`, `invisible_codepoint_in_comment`) and the
 two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
-they are now re-levelable and suppressible. M3 has landed too: a backward
-liveness dataflow pass in `hew-mir`, the `dead_store` MIR lint built on it, and
-the CLI plumbing that surfaces MIR-stage lints as level-controlled, suppressible
-warnings (see §10). M4 has landed too: comment-side Trojan-Source scanning over
-raw module source, with the text-direction tier denied by default and the broader
-invisible-codepoint tier warning by default (see §11). `clean_counter` has now landed too: a
-faint-variable (strong-liveness) pass in `hew-mir/src/faint.rs` plus
-counter-shape recovery through the checked-arith lowering, scoped to
-non-trapping (float) accumulation so removal is provably semantics-preserving
-(see §10; issue #2178). Editor/web surfacing of MIR lints is deferred to issue
-#2176.
+they are now re-levelable and suppressible. M3 and its `clean_counter` follow-on
+landed on the legacy MIR and were removed with it: retiring the legacy native
+lowering pipeline deleted the liveness and faint-variable passes, so nothing
+computes dead-store or clean-counter facts today and neither lint has a
+producer. The design below records what those passes did and what a
+physical-MIR replacement would have to provide. M4 has landed: comment-side
+Trojan-Source scanning over raw module source, with the text-direction tier
+denied by default and the broader invisible-codepoint tier warning by default
+(see §11).
 
 ## 1. Goal
 
@@ -248,7 +246,8 @@ the precise subset that is actually convertible.
     behaviour is unchanged (they still warn), but they are now re-levelable (`-A/-W/-D`) and
     suppressible (`// hew:allow`). The LSP keeps tagging migrated `dead_code` as
     `DiagnosticTag::UNNECESSARY`. Unused-import / unreachable-code were left un-migrated this pass.
-- **M3 — MIR liveness + dataflow lints. (Implemented in this change.)** A backward liveness
+- **M3 — MIR liveness + dataflow lints. (Implemented on the legacy MIR, removed
+  with it.)** A backward liveness
   dataflow pass in `hew-mir` plus the `dead_store` lint built on it, surfaced through the CLI.
   - **Liveness pass (`hew-mir/src/liveness.rs`).** A backward "may-be-live" analysis over
     `Place::Local(u32)`. It *reuses* the existing forward dataflow scaffolding rather than

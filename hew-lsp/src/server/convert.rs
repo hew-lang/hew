@@ -173,9 +173,6 @@ pub(super) fn analysis_tokens_to_lsp(
         if tok.modifiers & hew_analysis::token_modifiers::READONLY != 0 {
             lsp_modifiers |= modifier_bit(&SemanticTokenModifier::READONLY);
         }
-        if tok.modifiers & hew_analysis::token_modifiers::ASYNC != 0 {
-            lsp_modifiers |= modifier_bit(&SemanticTokenModifier::ASYNC);
-        }
 
         result.push(SemanticToken {
             delta_line,

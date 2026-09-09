@@ -147,7 +147,6 @@ pub mod token_types {
 pub mod token_modifiers {
     pub const DECLARATION: u32 = 1 << 0;
     pub const READONLY: u32 = 1 << 1;
-    pub const ASYNC: u32 = 1 << 2;
 }
 
 // ── Rename ───────────────────────────────────────────────────────────

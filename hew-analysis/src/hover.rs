@@ -391,9 +391,17 @@ fn hover_binding_in_item(
                 }
             }
             for transition in &machine.transitions {
-                if let Some(result) =
-                    hover_binding_in_expr(&transition.body.0, type_output, word, word_span, offset)
-                {
+                // A braced transition body parses to `Expr::Block`, and
+                // `hover_binding_in_expr` expects an already-unwrapped trailing
+                // expression, so a block has to be walked as one — the same way
+                // the guard below is.
+                let body_hover = match &transition.body.0 {
+                    Expr::Block(block) => {
+                        hover_binding_in_block(block, type_output, word, word_span, offset)
+                    }
+                    body => hover_binding_in_expr(body, type_output, word, word_span, offset),
+                };
+                if let Some(result) = body_hover {
                     return Some(result);
                 }
                 // Also cover guard expressions, which may reference bound names.
@@ -2296,9 +2304,12 @@ mod tests {
 
     #[test]
     fn hover_machine_declaration_name_shows_type_def() {
-        // Hovering over the machine name at its declaration site should surface
-        // the machine's type-def hover (via the lookup_type_def fallback path).
-        // This was already reachable before this fix; the test pins the contract.
+        // Hovering over the machine name at its declaration site surfaces the
+        // machine's type-def hover through the lookup_type_def fallback path.
+        // The machine desugars to an enum before it reaches `type_defs`, so the
+        // hover renders the enum form with the machine's states and its
+        // synthesized `step`/`state_name`; the assertion names the states rather
+        // than the declaration keyword.
         let source = concat!(
             "machine Counter {\n",
             "    events {\n",
@@ -2306,7 +2317,8 @@ mod tests {
             "    }\n",
             "    state Idle,\n",
             "    state Running,\n",
-            "    on Start: Idle => Running { Idle }\n",
+            "    on Start: Idle => Running { Running }\n",
+            "    on Start: Running => Running { Running }\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);
@@ -2321,8 +2333,11 @@ mod tests {
         );
         let hr = result.unwrap();
         assert!(
-            hr.contents.contains("machine Counter"),
-            "hover should include machine keyword and name; got: {}",
+            hr.contents.contains("Counter")
+                && hr.contents.contains("Idle")
+                && hr.contents.contains("Running")
+                && hr.contents.contains("state_name"),
+            "hover should name the machine, its states and its step surface; got: {}",
             hr.contents
         );
     }
@@ -2340,7 +2355,7 @@ mod tests {
             "    state Idle,\n",
             "    on Tick: Idle => Idle {\n",
             "        let result = compute();\n",
-            "        result\n",
+            "        Idle\n",
             "    }\n",
             "}\n",
         );

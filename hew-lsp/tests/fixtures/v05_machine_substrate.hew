@@ -19,6 +19,10 @@ machine Lifecycle<T: Resource> {
         Started,
     }
 
+    emits {
+        Started,
+    }
+
     state Idle,
     state Active { handle: T, },
 

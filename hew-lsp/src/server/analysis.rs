@@ -956,14 +956,12 @@ pub(super) fn analyze_document(
         &hir_diagnostics,
     );
     merge_diagnostics(&mut diagnostics_by_uri, &hir_lsp_diagnostics);
-    // MIR-stage lints (issue #2176). Only run when HIR lowering produced a
-    // module AND raised no diagnostics: a module the HIR stage already rejected
-    // is not worth lowering further, and the HIR errors are the actionable
-    // signal. Rendered as WARNINGs on their own path, never through the
-    // unconditional-ERROR HIR mapping above.
+    // Ownership-SIR verification. Only run when HIR lowering produced a module
+    // AND raised no diagnostics: a module the HIR stage already rejected is not
+    // worth lowering further, and the HIR errors are the actionable signal.
     if hir_diagnostics.is_empty() {
         if let Some(hir_module) = hir_module.as_ref() {
-            let mir_lint_diagnostics = build_semantic_lsp_diagnostics(
+            let semantic_diagnostics = build_semantic_lsp_diagnostics(
                 uri,
                 source,
                 &line_offsets,
@@ -971,7 +969,7 @@ pub(super) fn analyze_document(
                 hir_module,
                 type_output.as_ref().expect("HIR requires type checking"),
             );
-            merge_diagnostics(&mut diagnostics_by_uri, &mir_lint_diagnostics);
+            merge_diagnostics(&mut diagnostics_by_uri, &semantic_diagnostics);
         }
     }
     merge_diagnostics(&mut diagnostics_by_uri, &dangling_import_diagnostics);
@@ -1619,8 +1617,10 @@ mod tests {
         let uri = Url::parse("file:///test.hew").unwrap();
         let span = 19..20;
 
-        let combined =
-            dedup_hir_diagnostics(Vec::new(), verify_hir(&duplicate_node_module(span.clone())));
+        let combined = dedup_hir_diagnostics(
+            Vec::new(),
+            verify_hir(&duplicate_node_module(span.clone()).0),
+        );
         assert_eq!(combined.len(), 1, "expected one verifier-only diagnostic");
 
         let by_uri =
@@ -1644,16 +1644,17 @@ mod tests {
     #[test]
     fn duplicate_verifier_hir_diagnostics_are_suppressed_by_kind_and_span() {
         let span = 19..20;
+        // `DuplicateNodeId` carries the id inside the kind, so the id
+        // participates in the suppression key. Take it from the module that
+        // duplicated it rather than pinning a lowering-internal counter value.
+        let (module, duplicated) = duplicate_node_module(span.clone());
         let lower_diagnostic = HirDiagnostic::new(
-            HirDiagnosticKind::DuplicateNodeId { id: HirNodeId(1) },
+            HirDiagnosticKind::DuplicateNodeId { id: duplicated },
             span.clone(),
             "lowering already reported duplicate HIR node id",
         );
 
-        let combined = dedup_hir_diagnostics(
-            vec![lower_diagnostic.clone()],
-            verify_hir(&duplicate_node_module(span)),
-        );
+        let combined = dedup_hir_diagnostics(vec![lower_diagnostic.clone()], verify_hir(&module));
 
         assert_eq!(
             combined.len(),
@@ -1686,7 +1687,7 @@ mod tests {
         let main_uri = Url::parse("file:///project/main.hew").unwrap();
         let document = analyze_document(
             &main_uri,
-            "fn main() { let r = select { }; }\n",
+            "fn main() { let xs: Vec<()> = []; let _: () = xs[0]; }\n",
             &DashMap::new(),
             &[],
         );
@@ -1747,7 +1748,7 @@ mod tests {
         );
     }
 
-    fn duplicate_node_module(span: Span) -> HirModule {
+    fn duplicate_node_module(span: Span) -> (HirModule, HirNodeId) {
         let source = "fn main() -> i64 { 1 }\n";
         let parse_result = hew_parser::parse(source);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
@@ -1763,7 +1764,8 @@ mod tests {
             tail.node = function.body.node;
             tail.span = span;
         }
-        module
+        let duplicated = function.body.node;
+        (module, duplicated)
     }
 
     // ── Diagnostic.code tests ────────────────────────────────────────────
@@ -2606,56 +2608,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&project_dir);
     }
 
-    // ── MIR-stage lint surfacing (issue #2176) ───────────────────────────
-
-    /// `x` is assigned `5`, then unconditionally overwritten before the first
-    /// value is read: the `var x = 5` store is dead.
-    const MIR_DEAD_STORE: &str =
-        "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n";
-
-    /// Near-identical control: a textbook accumulator loop where every store is
-    /// read. Proves the lint discriminates rather than firing on any `var`.
-    const MIR_CLEAN: &str = "fn sum(n: i64) -> i64 {\nvar total = 0;\nfor i in 0..n {\ntotal = total + i;\n}\ntotal\n}\nfn main() {\nlet _ = sum(3);\n}\n";
-
-    fn mir_lint_diags_for(source: &str) -> Vec<Diagnostic> {
-        let uri = Url::parse("file:///mir_lint.hew").unwrap();
-        let line_offsets = compute_line_offsets(source);
-        let parse_result = hew_parser::parse(source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "fixture must parse: {:?}",
-            parse_result.errors
-        );
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        assert!(
-            type_output.errors.is_empty(),
-            "fixture must type-check: {:?}",
-            type_output.errors
-        );
-        let (hir_diagnostics, module) =
-            collect_hir_diagnostics(&parse_result.program, &type_output);
-        assert!(
-            hir_diagnostics.is_empty(),
-            "fixture must lower cleanly: {hir_diagnostics:?}"
-        );
-        build_semantic_lsp_diagnostics(
-            &uri,
-            source,
-            &line_offsets,
-            &parse_result.program,
-            &module,
-            &type_output,
-        )
-        .get(&uri)
-        .cloned()
-        .unwrap_or_default()
-    }
+    /// A textbook accumulator loop where every store is read.
+    const SEMANTIC_AGREEMENT_SOURCE: &str = "fn sum(n: i64) -> i64 {\nvar total = 0;\nfor i in 0..n {\ntotal = total + i;\n}\ntotal\n}\nfn main() {\nlet _ = sum(3);\n}\n";
 
     #[test]
-    fn lsp_and_build_session_report_the_same_mir_lints() {
+    fn lsp_and_build_session_report_the_same_semantic_diagnostics() {
         let uri = Url::parse("file:///session_agreement.hew").unwrap();
-        let parse_result = hew_parser::parse(MIR_DEAD_STORE);
+        let parse_result = hew_parser::parse(SEMANTIC_AGREEMENT_SOURCE);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parse_result.program);
         let (hir_diagnostics, module) = collect_hir_diagnostics(&parse_result.program, &tco);
@@ -2668,8 +2627,8 @@ mod tests {
         .lower_hir_module(&module, &tco, &[]);
         let lsp = build_semantic_lsp_diagnostics(
             &uri,
-            MIR_DEAD_STORE,
-            &compute_line_offsets(MIR_DEAD_STORE),
+            SEMANTIC_AGREEMENT_SOURCE,
+            &compute_line_offsets(SEMANTIC_AGREEMENT_SOURCE),
             &parse_result.program,
             &module,
             &tco,
@@ -2690,42 +2649,5 @@ mod tests {
         };
 
         assert_eq!(lsp_codes, build_codes);
-    }
-
-    #[test]
-    fn mir_dead_store_surfaces_in_the_lsp_as_a_warning() {
-        let diags = mir_lint_diags_for(MIR_DEAD_STORE);
-        let diagnostic = diags
-            .iter()
-            .find(|d| d.code == Some(NumberOrString::String("dead_store".to_string())))
-            .expect("dead_store must reach the LSP surface");
-
-        // The whole point of #2176's constraint: this must NOT inherit the
-        // HIR path's unconditional ERROR mapping.
-        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
-    }
-
-    #[test]
-    fn mir_lint_stays_silent_on_the_clean_control() {
-        let diags = mir_lint_diags_for(MIR_CLEAN);
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code == Some(NumberOrString::String("dead_store".to_string()))),
-            "an accumulator loop must not trip dead_store: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn mir_lint_honours_an_in_source_allow_directive() {
-        let suppressed =
-            MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
-        let diags = mir_lint_diags_for(&suppressed);
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code == Some(NumberOrString::String("dead_store".to_string()))),
-            "hew:allow must suppress the LSP surfacing too: {diags:?}"
-        );
     }
 }

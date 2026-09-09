@@ -1042,10 +1042,16 @@ impl Builder {
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
-            _ => {
-                return Err(
-                    self.error("this expression is not admitted in the pure machine evaluator")
-                )
+            other => {
+                let construct = match other {
+                    Expr::Await(_) => "`await`",
+                    Expr::GenBlock { .. } => "a `gen` block",
+                    Expr::Spawn { .. } => "`spawn`",
+                    _ => "this expression",
+                };
+                return Err(self.error(format!(
+                    "{construct} is not admitted in the pure machine evaluator"
+                )));
             }
         }
         Ok(())

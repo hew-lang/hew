@@ -272,7 +272,6 @@ mod tests {
         let tokens = build_semantic_tokens("let async = 1;");
         let async_tok = tokens.iter().find(|token| token.start == 4).unwrap();
         assert_eq!(async_tok.token_type, token_types::VARIABLE);
-        assert_eq!(async_tok.modifiers & token_modifiers::ASYNC, 0);
     }
 
     #[test]

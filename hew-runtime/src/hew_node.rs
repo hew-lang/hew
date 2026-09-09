@@ -6000,11 +6000,11 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
 /// - `Running` — the standalone `identity_export` clone captured at the
 ///   `Starting → Running` transition.
 ///
-/// Returns an **owned** hew string (empty string `""`, never null, when no
-/// stable identity has been loaded). The caller frees it via `hew_string_drop`;
-/// the runtime never retains the pointer.
+/// Returns an **owned** managed string, which is null when no stable identity
+/// has been loaded - null is the managed carrier's canonical empty string. The
+/// caller frees it via `hew_string_drop`; the runtime never retains it.
 #[no_mangle]
-pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
+pub extern "C" fn hew_node_api_identity_key() -> *mut hew_cabi::string::HewString {
     let export = {
         let guard = PEER_AUTH_STATE
             .lock()
@@ -6017,9 +6017,7 @@ pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
             } => identity_export.clone(),
         }
     };
-    // SAFETY: `export` is valid UTF-8 for its byte length; malloc_cstring copies
-    // exactly that many bytes and NUL-terminates (owned hew string).
-    unsafe { crate::cabi::malloc_cstring(export.as_ptr(), export.len()) }
+    hew_cabi::string::string_from_str(&export)
 }
 
 /// `Node::id()` — write the stable key-derived node identity when configured.
@@ -8811,13 +8809,14 @@ mod tests {
         };
         let read = || {
             let p = hew_node_api_identity_key();
-            assert!(!p.is_null(), "identity_key must never return null");
-            // SAFETY: p is a freshly-owned NUL-terminated hew string.
-            let s = unsafe { std::ffi::CStr::from_ptr(p) }
-                .to_string_lossy()
-                .into_owned();
-            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
-            unsafe { crate::cabi::free_cstring(p) };
+            if p.is_null() {
+                // Null is the managed carrier's canonical empty string.
+                return String::new();
+            }
+            // SAFETY: p is one freshly-owned managed string.
+            let s = unsafe { hew_cabi::string::string_as_str(p) }.to_owned();
+            // SAFETY: p is that same owned string, dropped exactly once.
+            unsafe { crate::string::hew_string_drop(p) };
             s
         };
 
@@ -9085,13 +9084,14 @@ mod tests {
         };
         let read_identity = || {
             let p = hew_node_api_identity_key();
-            assert!(!p.is_null());
-            // SAFETY: p is a freshly-owned NUL-terminated hew string.
-            let s = unsafe { std::ffi::CStr::from_ptr(p) }
-                .to_string_lossy()
-                .into_owned();
-            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
-            unsafe { crate::cabi::free_cstring(p) };
+            if p.is_null() {
+                // Null is the managed carrier's canonical empty string.
+                return String::new();
+            }
+            // SAFETY: p is one freshly-owned managed string.
+            let s = unsafe { hew_cabi::string::string_as_str(p) }.to_owned();
+            // SAFETY: p is that same owned string, dropped exactly once.
+            unsafe { crate::string::hew_string_drop(p) };
             s
         };
 

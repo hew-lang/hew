@@ -11249,10 +11249,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_node_api_identity_key() -> *mut c_char"
+        "native": "fn hew_node_api_identity_key() -> *mut hew_cabi::string::HewString"
       },
       "symbol": "hew_node_api_identity_key"
     },

@@ -2940,6 +2940,7 @@ impl RuntimeCallFamily {
             "Node::register" => Some(Self::NodeRegister),
             "Node::lookup" => Some(Self::NodeLookup),
             "Node::shutdown" => Some(Self::NodeShutdown),
+            "Node::identity_key" => Some(Self::NodeIdentityKey),
             _ => None,
         }
     }
@@ -4524,6 +4525,9 @@ impl RuntimeCallFamily {
                 SIR_NO_FAILURES,
             ),
             Self::NodeShutdown => runtime_semantic_contract(&[], Unit, SIR_NO_FAILURES),
+            Self::NodeIdentityKey => {
+                runtime_semantic_contract(&[], FreshOwned(String), SIR_NO_FAILURES)
+            }
             _ => return None,
         })
     }

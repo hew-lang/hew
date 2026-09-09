@@ -1041,6 +1041,8 @@ pub enum PhysicalRuntimeAction {
     },
     /// Source-visible node lifecycle operation returning Result<(), `NodeError`>.
     NodeShutdown,
+    /// Export this node's stable public credential as a fresh owned string.
+    NodeIdentityKey,
     /// Register a local actor handle under a source-visible name.
     NodeRegister,
     /// Resolve a registered actor name into its full carried remote location.
@@ -1106,6 +1108,7 @@ impl PhysicalRuntimeAction {
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
             Self::TimeScalar(family) | Self::NodeLifecycle { family, .. } => family,
             Self::NodeShutdown => RuntimeCallFamily::NodeShutdown,
+            Self::NodeIdentityKey => RuntimeCallFamily::NodeIdentityKey,
             Self::NodeRegister => RuntimeCallFamily::NodeRegister,
             Self::NodeLookup { .. } => RuntimeCallFamily::NodeLookup,
             Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
@@ -2663,6 +2666,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
         RuntimeCallFamily::BytesAppend => PhysicalRuntimeAction::BytesAppendOwned,
         RuntimeCallFamily::NodeShutdown => PhysicalRuntimeAction::NodeShutdown,
+        RuntimeCallFamily::NodeIdentityKey => PhysicalRuntimeAction::NodeIdentityKey,
         RuntimeCallFamily::NodeRegister => PhysicalRuntimeAction::NodeRegister,
         _ => {
             return Err(PhysicalError::new(format!(

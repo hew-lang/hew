@@ -4183,8 +4183,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
      "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_identity_key",
-     "{\"native\": \"fn hew_node_api_identity_key() -> *mut c_char\"}",
-     "native", "stable", "nul-terminated", "no-in-signature-extent",
+     "{\"native\": \"fn hew_node_api_identity_key() -> *mut "
+     "hew_cabi::string::HewString\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_load_keys",
      "{\"native\": \"fn hew_node_api_load_keys( *const c_char) -> c_int\"}",

@@ -4115,6 +4115,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 let _ = self.runtime_call_value(function, &[], "node.shutdown")?;
             }
+            PhysicalRuntimeAction::NodeIdentityKey => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_node_api_identity_key",
+                    self.ctx
+                        .ptr_type(AddressSpace::default())
+                        .fn_type(&[], false),
+                )?;
+                let value = self.runtime_call_value(function, &[], "node.identity.key")?;
+                self.store(required_result()?, value)?;
+            }
             PhysicalRuntimeAction::NodeRegister => {
                 let status_ty = self.ctx.i32_type();
                 let ptr = self.ctx.ptr_type(AddressSpace::default());

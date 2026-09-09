@@ -3742,6 +3742,7 @@ impl RuntimeCallFamily {
             "vec.value.push" => Self::Vector(VecValueOp::Push),
             "vec.value.set" => Self::Vector(VecValueOp::Set),
             "vec.value.pop" => Self::Vector(VecValueOp::Pop),
+            "vec.value.remove" => Self::Vector(VecValueOp::Remove),
             "vec.value.clear" => Self::Vector(VecValueOp::Clear),
             "vec.value.index_borrow" => Self::Vector(VecValueOp::IndexBorrow),
             "vec.value.get_borrow" => Self::Vector(VecValueOp::GetBorrow),

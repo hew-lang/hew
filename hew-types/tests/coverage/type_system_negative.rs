@@ -2400,7 +2400,7 @@ fn vec_remove_copy_record_element_now_succeeds() {
             y: i32,
         }
         fn main() {
-            let v: Vec<Point> = Vec.new();
+            var v: Vec<Point> = Vec.new();
             v.remove(0);
         }
         ",
@@ -2419,7 +2419,7 @@ fn vec_remove_copy_tuple_element_now_succeeds() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, i64)> = Vec.new();
+            var v: Vec<(i32, i64)> = Vec.new();
             v.remove(0);
         }
         ",

@@ -4093,7 +4093,8 @@ fn rc_vec_remove_supported() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
-            h.v.remove(0)
+            var items = h.v;
+            items.remove(0)
         }",
         "Vec.remove(_) on Vec<Rc<i64>>",
     );

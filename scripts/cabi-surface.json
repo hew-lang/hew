@@ -2378,6 +2378,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_append_owned( *mut BytesTriple, *const BytesTriple, *mut BytesTriple, )",
+        "wasm32-wasip1": "fn hew_bytes_append_owned( *mut BytesTriple, *const BytesTriple, *mut BytesTriple, )"
+      },
+      "symbol": "hew_bytes_append_owned"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

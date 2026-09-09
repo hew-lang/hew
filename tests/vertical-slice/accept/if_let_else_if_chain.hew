@@ -1,0 +1,24 @@
+fn main() {
+    let first: Option<i64> = None;
+    let second: Option<i64> = Some(7);
+    // Statement position: the chain falls through `else if let` to the arm
+    // that matches, and neither the guard nor the final `else` runs.
+    if let .Some(_) = first {
+        panic("first must not match");
+    } else if let .Some(n) = second {
+        println(n);
+    } else if true {
+        panic("the guard arm must not run");
+    } else {
+        panic("the else arm must not run");
+    }
+    // Value position: every arm of the chain contributes to one joined type.
+    let picked = if let .Some(n) = first {
+        n
+    } else if let .Some(n) = second {
+        n * 2
+    } else {
+        0
+    };
+    println(picked);
+}

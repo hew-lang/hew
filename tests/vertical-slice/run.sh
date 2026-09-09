@@ -6144,6 +6144,10 @@ run_accept_expect_stdout "scope_statement_tail"
 # identifier, all the way through codegen and execution.
 run_accept_expect_stdout "keyword_diet_identifiers"
 
+# `if let` chains with `else if` and `else if let` in statement and value
+# position, and the joined value reaches the runtime.
+run_accept_expect_stdout "if_let_else_if_chain"
+
 # ---------------------------------------------------------------------------
 # Summary: report every fixture's disposition instead of stopping at the
 # first unexpected outcome, so a batch-head run says something about the

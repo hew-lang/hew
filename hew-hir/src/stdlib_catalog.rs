@@ -1063,9 +1063,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `bytes.pop() -> u8` — removes and returns the last byte (CoW-aware).
-    // `CalleeNameDispatchOnly`: checker authority drives the `u8` result; the
-    // MIR producer arm emits the dedicated `hew_bytes_pop` runtime call.
+    // `bytes.pop() -> Option<u8>` — removes and returns the last byte
+    // (CoW-aware), answering `None` on an empty buffer.
+    // `CalleeNameDispatchOnly`: checker authority drives the `Option<u8>`
+    // result; the MIR producer arm emits the dedicated `hew_bytes_pop`
+    // runtime call and codegen wraps its `-1` sentinel as `None`. (`U8` below
+    // is the element class, not the wrapped return — there is no
+    // `BuiltinTy::Option`.)
     direct(
         "hew_bytes_pop",
         BuiltinClass::ClassA,

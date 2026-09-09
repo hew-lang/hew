@@ -1826,6 +1826,8 @@ pub enum RuntimeCallFamily {
     StringSplit,
     /// `s.lines()` - a fresh `Vec<string>` split on line boundaries.
     StringLines,
+    /// `s.chars()` - a fresh `Vec<char>` of the string's Unicode scalars.
+    StringChars,
     StringSliceCodepoints,
     StringSliceCodepointsFrom,
     StringSlice,
@@ -1981,6 +1983,7 @@ pub enum CanonicalExternTy {
     OptionI64,
     OptionChar,
     VecString,
+    VecChar,
     Duration,
     Instant,
 }
@@ -2011,6 +2014,14 @@ impl CanonicalExternTy {
                     args,
                     ..
                 } if matches!(args.as_slice(), [crate::Ty::String])
+            ),
+            Self::VecChar => matches!(
+                ty,
+                crate::Ty::Named {
+                    builtin: Some(crate::BuiltinType::Vec),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [crate::Ty::Char])
             ),
             Self::OptionU8 => matches!(
                 ty,
@@ -2205,7 +2216,7 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         symbol: "hew_bytes_pop",
         family: Some(RuntimeCallFamily::BytesPop),
         params: EMPTY,
-        result: CanonicalExternTy::U8,
+        result: CanonicalExternTy::OptionU8,
     },
     CanonicalStdlibExternSignature {
         module: "std.io",
@@ -2382,6 +2393,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         family: Some(RuntimeCallFamily::StringLines),
         params: EMPTY,
         result: CanonicalExternTy::VecString,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::chars",
+        symbol: "hew_string_chars",
+        family: Some(RuntimeCallFamily::StringChars),
+        params: EMPTY,
+        result: CanonicalExternTy::VecChar,
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
@@ -2744,6 +2763,14 @@ impl RuntimeCallFamily {
             Self::StringLines => RuntimeSemanticContract {
                 arguments: STRING_BORROW,
                 result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
+                failures: NO_FAILURES,
+            },
+            Self::StringChars => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: FreshOwned(RuntimeValueKind::Applied(
+                    BuiltinType::Vec,
+                    &[RuntimeValueKind::Char],
+                )),
                 failures: NO_FAILURES,
             },
             Self::StringReplace => {
@@ -3168,6 +3195,7 @@ impl RuntimeCallFamily {
             Self::StringClone => "hew_string_clone",
             Self::StringSplit => "hew_string_split",
             Self::StringLines => "hew_string_lines",
+            Self::StringChars => "hew_string_chars",
             Self::StringSlice => "hew_string_slice",
             Self::StringToLowercase => "hew_string_to_lowercase",
             Self::StringToBytes => "hew_string_to_bytes",
@@ -3584,6 +3612,7 @@ impl RuntimeCallFamily {
             "hew_string_clone" => Self::StringClone,
             "hew_string_split" => Self::StringSplit,
             "hew_string_lines" => Self::StringLines,
+            "hew_string_chars" => Self::StringChars,
             "hew_string_slice" => Self::StringSlice,
             "hew_string_to_lowercase" => Self::StringToLowercase,
             "hew_string_to_bytes" => Self::StringToBytes,
@@ -4430,6 +4459,16 @@ impl RuntimeCallFamily {
             Self::BytesPush => {
                 runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
             }
+            // `pop` both shrinks the receiver and hands one byte to the
+            // caller; an empty buffer answers `None` rather than failing.
+            Self::BytesPop => runtime_semantic_contract(
+                BYTES_CLEAR,
+                RuntimeResultEffect::UpdatedReceiverAndValue(RuntimeValueKind::Tuple(&[
+                    Bytes,
+                    RuntimeValueKind::Applied(BuiltinType::Option, &[U8]),
+                ])),
+                SIR_NO_FAILURES,
+            ),
             Self::BytesAppend => {
                 runtime_semantic_contract(BYTES_APPEND, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
             }
@@ -4887,6 +4926,7 @@ impl RuntimeCallFamily {
             | F::StringClone
             | F::StringSplit
             | F::StringLines
+            | F::StringChars
             | F::StringToLowercase
             | F::StringSliceCodepoints
             | F::StringSliceCodepointsFrom

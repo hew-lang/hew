@@ -4440,6 +4440,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish string find miss")?;
                 self.builder.position_at_end(complete);
             }
+            PhysicalRuntimeAction::BytesPop { option, .. } => {
+                return self.emit_bytes_pop(source(0)?, required_result()?, option, normal);
+            }
             PhysicalRuntimeAction::BytesGet { result: option } => {
                 return self.emit_bytes_get(
                     source(0)?,
@@ -4642,6 +4645,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     function,
                     &[self.load(source(0)?, "lines.text")?.into()],
                     "string.lines",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::StringChars => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_chars",
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "chars.text")?.into()],
+                    "string.chars",
                 )?;
                 self.store(required_result()?, value)?;
             }
@@ -6509,6 +6525,71 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_load(self.ctx.i8_type(), read_at, "bytes.index.load")
             .llvm_ctx("load indexed byte")?;
         self.store(result, indexed)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// Shrink the receiver in place and build the `(bytes, Option<u8>)` pair.
+    ///
+    /// `hew_bytes_pop` answers `-1` on an empty buffer; every real byte is in
+    /// `0..=255`, so the sentinel is the only `None`.
+    fn emit_bytes_pop(
+        &self,
+        receiver: StorageId,
+        result: StorageId,
+        option: PhysicalVariantId,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_bytes_pop",
+            self.ctx
+                .i64_type()
+                .fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
+        )?;
+        let byte = self
+            .runtime_call_value(
+                function,
+                &[self.slots[receiver.0 as usize].into()],
+                "bytes.pop.byte",
+            )?
+            .into_int_value();
+        let destination = self.slots[result.0 as usize];
+        let pair_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_struct_type();
+        let updated = self.load(receiver, "bytes.pop.receiver")?;
+        let owner = self
+            .builder
+            .build_struct_gep(pair_ty, destination, 0, "bytes.pop.owner")
+            .llvm_ctx("address the shrunk bytes receiver")?;
+        self.builder
+            .build_store(owner, updated)
+            .llvm_ctx("write the shrunk bytes receiver")?;
+        let optional = self
+            .builder
+            .build_struct_gep(pair_ty, destination, 1, "bytes.pop.optional")
+            .llvm_ctx("address the popped byte")?;
+        let found = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SGE,
+                byte,
+                byte.get_type().const_zero(),
+                "bytes.pop.found",
+            )
+            .llvm_ctx("check bytes pop sentinel")?;
+        let some = self.ctx.append_basic_block(self.value, "bytes.pop.some");
+        let none = self.ctx.append_basic_block(self.value, "bytes.pop.none");
+        self.builder
+            .build_conditional_branch(found, some, none)
+            .llvm_ctx("select bytes pop outcome")?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(optional, 1, &[], option)?;
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(some);
+        let popped = self
+            .builder
+            .build_int_truncate(byte, self.ctx.i8_type(), "bytes.pop.value")
+            .llvm_ctx("narrow the popped byte")?;
+        self.write_variant_value(optional, 0, &[popped.into()], option)?;
         self.emit_result_edge(Some(result), normal)
     }
 

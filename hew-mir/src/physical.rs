@@ -956,6 +956,12 @@ pub enum PhysicalRuntimeAction {
     BytesGet {
         result: PhysicalVariantId,
     },
+    /// `bytes.pop()` - shrinks the receiver and yields `(bytes, Option<u8>)`.
+    /// `result` names the pair, `option` its optional byte half.
+    BytesPop {
+        result: PhysicalAggregateId,
+        option: PhysicalVariantId,
+    },
     StringCharAt {
         result: PhysicalVariantId,
     },
@@ -973,6 +979,7 @@ pub enum PhysicalRuntimeAction {
     StringClone,
     StringSplit,
     StringLines,
+    StringChars,
     StringIndex,
     StringSliceCodepoints,
     StringSliceCodepointsFrom,
@@ -1090,6 +1097,7 @@ impl PhysicalRuntimeAction {
             Self::StringClone => RuntimeCallFamily::StringClone,
             Self::StringSplit => RuntimeCallFamily::StringSplit,
             Self::StringLines => RuntimeCallFamily::StringLines,
+            Self::StringChars => RuntimeCallFamily::StringChars,
             Self::StringIndex => RuntimeCallFamily::StringIndex,
             Self::StringSliceCodepoints => RuntimeCallFamily::StringSliceCodepoints,
             Self::StringSliceCodepointsFrom => RuntimeCallFamily::StringSliceCodepointsFrom,
@@ -1117,6 +1125,7 @@ impl PhysicalRuntimeAction {
             Self::BytesLen => RuntimeCallFamily::BytesLen,
             Self::BytesIsEmpty => RuntimeCallFamily::BytesIsEmpty,
             Self::BytesClear => RuntimeCallFamily::BytesClear,
+            Self::BytesPop { .. } => RuntimeCallFamily::BytesPop,
             Self::BytesContains => RuntimeCallFamily::BytesContains,
             Self::BytesSet => RuntimeCallFamily::BytesSet,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
@@ -2608,6 +2617,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringClone => PhysicalRuntimeAction::StringClone,
         RuntimeCallFamily::StringSplit => PhysicalRuntimeAction::StringSplit,
         RuntimeCallFamily::StringLines => PhysicalRuntimeAction::StringLines,
+        RuntimeCallFamily::StringChars => PhysicalRuntimeAction::StringChars,
         RuntimeCallFamily::StringIndex => PhysicalRuntimeAction::StringIndex,
         RuntimeCallFamily::StringSliceCodepoints => PhysicalRuntimeAction::StringSliceCodepoints,
         RuntimeCallFamily::StringSliceCodepointsFrom => {
@@ -4181,6 +4191,21 @@ impl FunctionLowerer<'_> {
                 RuntimeCallFamily::StringCharAt => PhysicalRuntimeAction::StringCharAt { result },
                 RuntimeCallFamily::BytesGet => PhysicalRuntimeAction::BytesGet { result },
                 _ => unreachable!("matched optional runtime family"),
+            });
+        }
+        if family == RuntimeCallFamily::BytesPop {
+            let CallResult::Value(value) = result else {
+                return Err(PhysicalError::new("bytes pop has no transformed result"));
+            };
+            let ResolvedTy::Tuple(fields) = &value.ty else {
+                return Err(PhysicalError::new("bytes pop result is not a pair"));
+            };
+            let [_, option] = fields.as_slice() else {
+                return Err(PhysicalError::new("bytes pop result is not a pair"));
+            };
+            return Ok(PhysicalRuntimeAction::BytesPop {
+                result: self.aggregate_id(&value.ty)?,
+                option: self.variant_id(option)?,
             });
         }
         if family != RuntimeCallFamily::BytesDecodeUtf8 {
@@ -8211,6 +8236,33 @@ fn verify_terminator(
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} argument disagrees with its semantic contract"
                     )));
+                }
+            }
+            if let PhysicalRuntimeAction::BytesPop {
+                result: pair,
+                option: descriptor,
+            } = action
+            {
+                let Some(output) = result else {
+                    return Err(PhysicalError::new("bytes pop has no result storage"));
+                };
+                let pair = aggregate_glue(module, *pair)?;
+                let descriptor = variant_glue(module, *descriptor)?;
+                let [receiver, optional] = pair.fields.as_slice() else {
+                    return Err(PhysicalError::new("bytes pop pair is not two fields"));
+                };
+                if pair.ty != slot(*output)?.ty
+                    || receiver.ty != ResolvedTy::Bytes
+                    || descriptor.ty != optional.ty
+                    || descriptor.is_indirect
+                    || descriptor.variants.len() != 2
+                    || descriptor.variants[0].fields.len() != 1
+                    || descriptor.variants[0].fields[0].ty != ResolvedTy::U8
+                    || !descriptor.variants[1].fields.is_empty()
+                {
+                    return Err(PhysicalError::new(
+                        "bytes pop descriptor disagrees with result",
+                    ));
                 }
             }
             if let PhysicalRuntimeAction::StringFind { result: descriptor }

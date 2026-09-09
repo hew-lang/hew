@@ -56,9 +56,10 @@ pub fn read_all() -> string {
 impl bytes {
     #[extern_symbol(hew_bytes_push)]
     fn push(buf: bytes, byte: u8) {}
+    /// Remove and return the last byte, or `None` when the buffer is empty.
     #[extern_symbol(hew_bytes_pop)]
-    fn pop(buf: bytes) -> u8 {
-        0
+    fn pop(buf: bytes) -> Option<u8> {
+        None
     }
     #[extern_symbol(hew_bytes_len)]
     fn len(buf: bytes) -> i64 {

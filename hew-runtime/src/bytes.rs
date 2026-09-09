@@ -483,28 +483,14 @@ pub unsafe extern "C" fn hew_bytes_append_owned(
     unsafe { out.write(value) };
 }
 
-/// Trap with a bytes empty-buffer panic message.
-///
-/// Backs `bytes.pop()` on an empty buffer: the spec signature is `() -> i64`
-/// with no `Option`, so the empty case fails closed (boundary-fail-closed)
-/// rather than returning a fabricated sentinel.
-///
-/// # Safety
-///
-/// Always aborts — safe to call from any context.
-#[no_mangle]
-pub unsafe extern "C-unwind" fn hew_bytes_abort_empty_pop() -> ! {
-    // SAFETY: this is the terminal empty-pop path.
-    unsafe { bytes_bounds_trap("PANIC: bytes.pop() on an empty buffer\n") }
-}
-
 /// Remove and return the last byte, using copy-on-write if shared.
 ///
-/// Aborts via [`hew_bytes_abort_empty_pop`] when the buffer is empty (spec
-/// `pop() -> i64`: no `Option`, so the empty case fails closed like `b[i]`
-/// OOB). On a shared buffer (refcount > 1) the active region is forked before
-/// the in-place length decrement so co-owners observe the original buffer
-/// unchanged. The receiver keeps its single reference afterward.
+/// Returns `-1` when the buffer is empty. `bytes.pop()` is `Option<u8>` at the
+/// source level, and `-1` is outside the byte range, so codegen wraps the
+/// sentinel as `None` and every real byte — including `0` and `255` — as
+/// `Some`. On a shared buffer (refcount > 1) the active region is forked
+/// before the in-place length decrement so co-owners observe the original
+/// buffer unchanged. The receiver keeps its single reference afterward.
 ///
 /// # Safety
 ///
@@ -513,8 +499,7 @@ pub unsafe extern "C-unwind" fn hew_bytes_abort_empty_pop() -> ! {
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
     if triple.len == 0 || triple.ptr.is_null() {
-        // SAFETY: abort is always safe; it does not return.
-        unsafe { hew_bytes_abort_empty_pop() };
+        return -1;
     }
 
     // Ensure unique ownership (CoW) before mutating the length: a shared buffer
@@ -2079,14 +2064,30 @@ mod tests {
         run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
     )]
-    fn bytes_pop_empty_aborts() {
-        run_aborting_subprocess("bytes_pop_empty_aborts");
+    fn bytes_pop_empty_reports_absence() {
+        // `bytes.pop()` is `Option<u8>`: an empty buffer answers with the
+        // out-of-byte-range `-1` sentinel, distinct from every real byte.
+        let mut empty = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        unsafe {
+            assert_eq!(hew_bytes_pop(&mut empty), -1);
+            assert_eq!(empty.len, 0);
+            // Zero and 255 stay distinguishable from absence.
+            hew_bytes_push(&mut empty, 0);
+            hew_bytes_push(&mut empty, 255);
+            assert_eq!(hew_bytes_pop(&mut empty), 255);
+            assert_eq!(hew_bytes_pop(&mut empty), 0);
+            assert_eq!(hew_bytes_pop(&mut empty), -1);
+            hew_bytes_drop(empty.ptr);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2469,16 +2470,6 @@ mod tests {
                 let ptr = hew_bytes_new(16);
                 refcount(ptr).store(BYTES_RC_MAX + 1, Ordering::Relaxed);
                 hew_bytes_clone_ref(ptr); // must abort, never returns
-            },
-            "bytes_pop_empty_aborts" => unsafe {
-                // pop() on a fresh empty triple fails closed (no Option in the
-                // spec signature) — same termination class as index OOB.
-                let mut empty = BytesTriple {
-                    ptr: std::ptr::null_mut(),
-                    offset: 0,
-                    len: 0,
-                };
-                let _ = hew_bytes_pop(&mut empty);
             },
             "bytes_set_oob_aborts" => unsafe {
                 // set() past the end fails closed via the index-OOB trap.

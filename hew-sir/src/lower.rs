@@ -5663,9 +5663,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(value)
     }
 
-    fn bind_match_arm_value(
+    fn bind_selected_value(
         &mut self,
-        binding: &HirMatchArmBinding,
+        binding: BindingId,
+        name: &str,
         value: ValueId,
         span: Range<usize>,
     ) -> Result<(), String> {
@@ -5677,16 +5678,91 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             id: crate::BindingId(
                 u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
             ),
-            name: binding.name.clone(),
+            name: name.to_string(),
             span,
             mutable: false,
             target,
         });
-        self.binding_declarations
-            .insert(binding.binding, declaration);
-        self.bindings.insert(binding.binding, target);
-        self.declare_in_scope(binding.binding);
+        self.binding_declarations.insert(binding, declaration);
+        self.bindings.insert(binding, target);
+        self.declare_in_scope(binding);
         Ok(())
+    }
+
+    /// Rebuild one variant value from the payloads its switch handed out.
+    fn emit_variant_make(
+        &mut self,
+        shape: VariantShapeId,
+        variant: u32,
+        ty: &ResolvedTy,
+        fields: &[BlockArg],
+    ) -> Result<ValueId, String> {
+        let operands = fields
+            .iter()
+            .map(|field| Operand { value: field.value })
+            .collect::<Vec<_>>();
+        let value = self.emit_typed(
+            Provenance::Synthesized,
+            ty,
+            SemOpKind::VariantMake {
+                shape,
+                variant,
+                fields: operands,
+            },
+        )?;
+        for field in fields {
+            self.owned_live.remove(&field.value);
+        }
+        Ok(value)
+    }
+
+    /// Take a rebuilt variant value apart again, returning its fresh payloads.
+    fn emit_variant_destructure(
+        &mut self,
+        shape: VariantShapeId,
+        variant: u32,
+        descriptor: &SemVariantShape,
+        source: ValueId,
+    ) -> Result<Vec<BlockArg>, String> {
+        let declared = &descriptor
+            .variants
+            .get(usize::try_from(variant).map_err(|_| "variant tag exceeds usize".to_string())?)
+            .ok_or_else(|| format!("variant tag {variant} is absent from its shape"))?
+            .fields;
+        let mut results = Vec::with_capacity(declared.len());
+        for field in declared {
+            results.push(ValueDef {
+                id: self.fresh_value(),
+                ty: field.ty.clone(),
+                own: OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?,
+            });
+        }
+        let id = OpId(self.ops);
+        self.current_block_mut().append_op(SemOp {
+            id,
+            results: results.clone(),
+            kind: SemOpKind::VariantDestructure {
+                shape,
+                variant,
+                source: Operand { value: source },
+            },
+            provenance: Provenance::Synthesized,
+        })?;
+        self.ops += 1;
+        self.owned_live.remove(&source);
+        Ok(results
+            .into_iter()
+            .map(|field| {
+                if field.own == OwnKind::Owned {
+                    self.owned_live.insert(field.id, field.ty.clone());
+                }
+                BlockArg {
+                    value: field.id,
+                    ty: field.ty,
+                    own: field.own,
+                }
+            })
+            .collect())
     }
 
     fn destroy_live_since(
@@ -5802,7 +5878,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     field.ty.user_facing()
                 ));
             }
-            self.bind_match_arm_value(binding, field.value, span.clone())?;
+            let value = field.value;
+            self.bind_selected_value(binding.binding, &binding.name, value, span.clone())?;
         }
         Ok(())
     }
@@ -6320,11 +6397,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         );
                     }
                 }
-                HirMatchArmPredicate::Binding { .. } => {
-                    return Err(
-                        "whole-scrutinee binding matches need an explicit SIR binding transfer"
-                            .to_string(),
-                    );
+                HirMatchArmPredicate::Binding { ty, .. } => {
+                    if self.ty(ty) != enum_ty {
+                        return Err(format!(
+                            "whole-scrutinee binding has `{}`, its scrutinee is `{}`",
+                            self.ty(ty).user_facing(),
+                            enum_ty.user_facing()
+                        ));
+                    }
+                    if !arm.bindings.is_empty()
+                        || !arm.payload_predicates.is_empty()
+                        || !arm.payload_variant_predicates.is_empty()
+                    {
+                        return Err(
+                            "whole-scrutinee binding arm carries impossible payload metadata"
+                                .to_string(),
+                        );
+                    }
                 }
                 HirMatchArmPredicate::Literal { .. }
                 | HirMatchArmPredicate::RecordProject { .. }
@@ -6349,7 +6438,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         {
                             Some(index)
                         }
-                        HirMatchArmPredicate::Wildcard => Some(index),
+                        HirMatchArmPredicate::Wildcard | HirMatchArmPredicate::Binding { .. } => {
+                            Some(index)
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -6393,7 +6484,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.restore_control_state(&inherited);
             self.current = branch.block;
             self.owned_live = branch.owned_live;
-            let root_live = self.owned_live.clone();
+            let mut root_live = self.owned_live.clone();
+            // A whole-scrutinee binding rebuilds the value from these payloads
+            // and a failed guard destructures it again, so the branch's live
+            // payload owners are candidate state, not a fixed switch fact.
+            let mut fields = branch.fields.clone();
             let branch_candidates = &candidates[usize::try_from(branch.variant)
                 .map_err(|_| "variant tag exceeds usize".to_string())?];
             // A variant with an uninhabited payload has no values, so its
@@ -6406,17 +6501,31 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             for (candidate_position, arm_index) in branch_candidates.iter().enumerate() {
                 let arm = &source_arms[*arm_index];
                 let mut failures = Vec::new();
-                self.bind_match_fields(&arm.bindings, &branch.fields, &arm.span)?;
+                self.bind_match_fields(&arm.bindings, &fields, &arm.span)?;
+                // A whole-scrutinee binding names the value the switch just
+                // took apart. A borrowed scrutinee still has it; an owned one
+                // is rebuilt from this branch's payloads.
+                let mut rebuilt = None;
+                if let HirMatchArmPredicate::Binding {
+                    binding_id, name, ..
+                } = &arm.predicate
+                {
+                    let value = if borrowed_scrutinee {
+                        scrutinee
+                    } else {
+                        let value =
+                            self.emit_variant_make(shape, branch.variant, &enum_ty, &fields)?;
+                        rebuilt = Some(value);
+                        value
+                    };
+                    self.bind_selected_value(*binding_id, name, value, arm.span.clone())?;
+                }
                 for predicate in &arm.payload_predicates {
-                    let condition = self.lower_payload_literal_test(&branch.fields, predicate)?;
+                    let condition = self.lower_payload_literal_test(&fields, predicate)?;
                     failures.push(self.branch_candidate_test(condition)?);
                 }
                 for predicate in &arm.payload_variant_predicates {
-                    failures.extend(self.lower_nested_predicate(
-                        &branch.fields,
-                        predicate,
-                        &arm.span,
-                    )?);
+                    failures.extend(self.lower_nested_predicate(&fields, predicate, &arm.span)?);
                 }
                 if let Some(guard) = &arm.guard {
                     let guard_live = self.owned_live.clone();
@@ -6436,14 +6545,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // readable for the arm body, and the candidate cleanup ends
                     // them on every exit from it.
                     self.argument_receiver_loans.extend(
-                        branch
-                            .fields
+                        fields
                             .iter()
                             .filter(|field| field.own == OwnKind::Guaranteed)
                             .map(|field| field.value),
                     );
                 }
-                self.transfer_selected_payloads(&branch.fields, &arm.payload_variant_predicates)?;
+                self.transfer_selected_payloads(&fields, &arm.payload_variant_predicates)?;
                 self.acquire_selected_match_bindings(&outer_bindings)?;
                 let result = self.lower_selected_match_body(arm, &result_ty)?;
                 if self.is_open() {
@@ -6478,6 +6586,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let mut cleaned_failures = Vec::with_capacity(failures.len());
                 for failure in failures {
                     self.restore_control_state(&failure);
+                    // A guard is the only test a whole-scrutinee binding arm
+                    // can fail, so the rebuilt value is taken apart once and
+                    // the later candidates read the payloads it gives back.
+                    if let Some(value) = rebuilt.take() {
+                        fields = self.emit_variant_destructure(
+                            shape,
+                            branch.variant,
+                            &descriptor,
+                            value,
+                        )?;
+                        root_live = self.owned_live.clone();
+                    }
                     self.cleanup_match_candidate(&root_live, outer_loans, &outer_bindings)?;
                     cleaned_failures.push(self.control_state());
                 }

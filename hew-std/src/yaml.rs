@@ -578,6 +578,30 @@ pub unsafe extern "C" fn hew_yaml_get_field(
     }
 }
 
+/// Return every mapping key as an independent YAML sequence in insertion order.
+///
+/// Key kinds are preserved, including non-string keys. The checked source API
+/// rejects those keys before returning string keys to the caller.
+/// Returns null when the value is not an untagged mapping. The caller owns the
+/// returned sequence and must free it with [`hew_yaml_free`].
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_object_keys(val: *const HewYamlValue) -> *mut HewYamlValue {
+    if val.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let serde_yaml::Value::Mapping(mapping) = &unsafe { &*val }.inner else {
+        return std::ptr::null_mut();
+    };
+    boxed_value(serde_yaml::Value::Sequence(
+        mapping.keys().cloned().collect(),
+    ))
+}
+
 /// Get the length of a YAML sequence.
 ///
 /// Returns the sequence length, or -1 if the value is not a sequence.
@@ -1132,6 +1156,46 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { hew_yaml_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn mapping_keys_keep_arbitrary_kinds_and_survive_source_release() {
+        let baseline = live_value_boxes();
+        let source = parse("a: null\n? [b, c]\n: {nested: 1}\n? !Custom key\n: 2\n");
+        assert!(!source.is_null());
+        // SAFETY: source and each returned value are independent live owners.
+        unsafe {
+            let keys = hew_yaml_object_keys(source);
+            assert_eq!(hew_yaml_array_len(keys), 3);
+            let first = hew_yaml_array_get(keys, 0);
+            let sequence = hew_yaml_array_get(keys, 1);
+            let tagged = hew_yaml_array_get(keys, 2);
+            assert_eq!(hew_yaml_type(first), 4);
+            assert_eq!(hew_yaml_type(sequence), 5);
+            assert_eq!(hew_yaml_type(tagged), 7);
+            let key = ManagedString::new("a");
+            let explicit_null = hew_yaml_get_field(source, key.as_ptr());
+            assert_eq!(hew_yaml_type(explicit_null), 0);
+            hew_yaml_free(explicit_null);
+            hew_yaml_free(source);
+            hew_yaml_free(keys);
+            assert_eq!(read_and_free_string(hew_yaml_get_string(first)), "a");
+            assert_eq!(hew_yaml_array_len(sequence), 2);
+            assert_eq!(hew_yaml_type(tagged), 7);
+            hew_yaml_free(first);
+            hew_yaml_free(sequence);
+            hew_yaml_free(tagged);
+        }
+        assert_eq!(live_value_boxes(), baseline);
+        for input in ["null", "[]", "!Custom {}"] {
+            let value = parse(input);
+            // SAFETY: value is live and freed exactly once.
+            unsafe {
+                assert!(hew_yaml_object_keys(value).is_null());
+                hew_yaml_free(value);
+            }
+        }
+        assert_eq!(live_value_boxes(), baseline);
     }
 
     #[test]

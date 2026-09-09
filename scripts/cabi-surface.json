@@ -19788,6 +19788,21 @@
         "wasm32-wasip1"
       ],
       "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_contains_checked( *const HewVec, *const c_void, hew_cabi::map::HewMapKeyEqThunk, *mut bool, *mut *mut c_void, ) -> i32",
+        "wasm32-wasip1": "fn hew_vec_contains_checked( *const HewVec, *const c_void, hew_cabi::map::HewMapKeyEqThunk, *mut bool, *mut *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_vec_contains_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -22830,6 +22845,21 @@
         "wasm32-wasip1": "fn hew_yaml_last_error() -> *mut HewString"
       },
       "symbol": "hew_yaml_last_error"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_yaml_object_keys( *const HewYamlValue) -> *mut HewYamlValue",
+        "wasm32-wasip1": "fn hew_yaml_object_keys( *const HewYamlValue) -> *mut HewYamlValue"
+      },
+      "symbol": "hew_yaml_object_keys"
     },
     {
       "availability": [

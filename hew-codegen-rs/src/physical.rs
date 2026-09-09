@@ -4043,13 +4043,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
-            PhysicalRuntimeAction::JsonObjectKeys => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::JsonObjectKeys,
-                    transfers,
-                    result,
-                )?;
-            }
             PhysicalRuntimeAction::Map { operation, glue } => {
                 return self.emit_map_call(
                     (operation, glue),
@@ -5433,6 +5426,27 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let length =
                     self.runtime_call_value(function, &[vector.into()], "vector.length")?;
                 self.store(result, length)?;
+            }
+            PhysicalVectorOp::Contains => {
+                let equality = self
+                    .value_callbacks
+                    .get(&(glue.element.ty.clone(), hew_types::ValueCapability::Eq))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "vector membership lacks its selected element equality".into(),
+                        )
+                    })?;
+                let contains = self.emit_collection_callback(
+                    "hew_vec_contains_checked",
+                    &[
+                        vector.into(),
+                        self.slots[source(1)?.0 as usize].into(),
+                        equality.as_global_value().as_pointer_value().into(),
+                    ],
+                    Some(failure()?),
+                    None,
+                )?;
+                self.store(result, contains.into())?;
             }
             PhysicalVectorOp::Push | PhysicalVectorOp::Clear => {
                 if operation == PhysicalVectorOp::Push {

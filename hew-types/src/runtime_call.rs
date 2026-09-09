@@ -654,6 +654,7 @@ pub enum VecValueOp {
     #[default]
     New,
     Len,
+    Contains,
     Index,
     Get,
     Push,
@@ -684,6 +685,7 @@ impl VecValueOp {
     pub const fn from_method(method: crate::VecMethod) -> Option<Self> {
         Some(match method {
             crate::VecMethod::Len => Self::Len,
+            crate::VecMethod::Contains => Self::Contains,
             crate::VecMethod::Get => Self::Get,
             crate::VecMethod::Push => Self::Push,
             crate::VecMethod::Set => Self::Set,
@@ -699,7 +701,7 @@ impl VecValueOp {
         use RuntimeResultEffect::{
             BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
         };
-        use RuntimeValueKind::{Applied, Receiver, Tuple, TypeArgument, I64};
+        use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
         const VECTOR: RuntimeValueKind = Receiver(BuiltinType::Vec);
         const ELEMENT_TYPE: RuntimeValueKind = TypeArgument(0);
         const READ: RuntimeArgumentContract = RuntimeArgumentContract {
@@ -721,6 +723,17 @@ impl VecValueOp {
         match self {
             Self::New => runtime_semantic_contract(&[], FreshOwned(VECTOR), &[]),
             Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
+            Self::Contains => runtime_semantic_contract(
+                &[
+                    READ,
+                    RuntimeArgumentContract {
+                        ty: ELEMENT_TYPE,
+                        effect: Borrow,
+                    },
+                ],
+                BitCopy(Bool),
+                &[RuntimeLogicalFailure::CallbackFault],
+            ),
             Self::Index => runtime_semantic_contract(
                 &[READ, INDEX],
                 IndependentValue(ELEMENT_TYPE),
@@ -1037,6 +1050,7 @@ encoding_operations! {
     GetField => "get_field",
     ArrayLen => "array_len",
     ArrayGet => "array_get",
+    ObjectKeys => "object_keys",
     ObjectNew => "object_new",
     ArrayNew => "array_new",
     FromBool => "from_bool",
@@ -1130,7 +1144,9 @@ macro_rules! encoding_contract {
             EncodingOp::ArrayPush => {
                 runtime_semantic_contract(&[WRITE, WRITE], UpdatedReceiver(VALUE), &[])
             }
-            EncodingOp::Clone => runtime_semantic_contract(&[READ], FreshOwned(VALUE), &[]),
+            EncodingOp::Clone | EncodingOp::ObjectKeys => {
+                runtime_semantic_contract(&[READ], FreshOwned(VALUE), &[])
+            }
             EncodingOp::Free => runtime_semantic_contract(&[WRITE], Unit, &[]),
         }
     }};
@@ -1458,8 +1474,6 @@ pub enum RuntimeCallFamily {
         format: EncodingFormat,
         op: EncodingOp,
     },
-    /// JSON object keys are returned as an independently owned JSON array.
-    JsonObjectKeys,
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
     ActorAskWithChannel,
@@ -2449,7 +2463,6 @@ impl RuntimeCallFamily {
     pub const fn encoding_format(self) -> Option<EncodingFormat> {
         match self {
             Self::Encoding { format, .. } => Some(format),
-            Self::JsonObjectKeys => Some(EncodingFormat::Json),
             _ => None,
         }
     }
@@ -2925,7 +2938,6 @@ impl RuntimeCallFamily {
             Self::FileRead(op) => op.c_symbol(),
             Self::Tcp(op) => op.c_symbol(),
             Self::Encoding { format, op } => op.c_symbol(format),
-            Self::JsonObjectKeys => "hew_json_object_keys",
             // Actor
             Self::ActorAsk => "hew_actor_ask",
             Self::ActorAskWithChannel => "hew_actor_ask_with_channel",
@@ -3236,6 +3248,7 @@ impl RuntimeCallFamily {
             Self::Vector(op) => match op {
                 VecValueOp::New => "vec.value.new",
                 VecValueOp::Len => "vec.value.len",
+                VecValueOp::Contains => "vec.value.contains",
                 VecValueOp::Index => "vec.value.index",
                 VecValueOp::Get => "vec.value.get",
                 VecValueOp::Push => "vec.value.push",
@@ -3337,9 +3350,6 @@ impl RuntimeCallFamily {
 
         if let Some((format, op)) = EncodingOp::from_c_symbol(sym) {
             return Some(Self::Encoding { format, op });
-        }
-        if sym == "hew_json_object_keys" {
-            return Some(Self::JsonObjectKeys);
         }
         if let Some(family) = vec_scalar_from_c_symbol(sym) {
             return Some(family);
@@ -3697,6 +3707,7 @@ impl RuntimeCallFamily {
             "set.value.clear" => Self::Set(SetValueOp::Clear),
             "set.value.elements" => Self::Set(SetValueOp::Elements),
             "vec.value.len" => Self::Vector(VecValueOp::Len),
+            "vec.value.contains" => Self::Vector(VecValueOp::Contains),
             "vec.value.index" => Self::Vector(VecValueOp::Index),
             "vec.value.get" => Self::Vector(VecValueOp::Get),
             "vec.value.push" => Self::Vector(VecValueOp::Push),
@@ -4339,14 +4350,6 @@ impl RuntimeCallFamily {
             Self::ChannelPairSender => channel_pair_half_contract(true),
             Self::ChannelPairReceiver => channel_pair_half_contract(false),
             Self::Encoding { format, op } => op.contract(format),
-            Self::JsonObjectKeys => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::Receiver(BuiltinType::JsonValue),
-                    effect: Borrow,
-                }],
-                FreshOwned(RuntimeValueKind::Receiver(BuiltinType::JsonValue)),
-                SIR_NO_FAILURES,
-            ),
             Self::StringCompare => runtime_semantic_contract(
                 SIR_STRING_PAIR_BORROW,
                 BitCopy(RuntimeValueKind::I32),
@@ -4699,7 +4702,6 @@ impl RuntimeCallFamily {
             | F::Map(_)
             | F::Set(_)
             | F::Encoding { .. }
-            | F::JsonObjectKeys
             | F::StreamClose
             | F::StreamTryNextLayout
             | F::SinkTryWrite(_)

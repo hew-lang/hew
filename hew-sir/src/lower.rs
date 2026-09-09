@@ -8415,6 +8415,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .ok_or_else(|| "collection operation has no canonical receiver type".to_string())?;
             self.service.require_key_capabilities(&arguments[0])?;
         }
+        if family == hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Contains) {
+            self.service
+                .require_value_capability(&parameter_types[1], hew_types::ValueCapability::Eq)?;
+        }
         if matches!(contract.result, RuntimeResultEffect::IndependentValue(_)) {
             self.service.require_type_facts(&instantiated.result_ty)?;
             if self.service.checked_facts.rows()[&TypeInstanceKey(instantiated.result_ty.clone())]

@@ -1407,14 +1407,17 @@ fn vec_contains_f64_typechecks() {
         output.errors
     );
 
-    // After the W4.027 Stage 3 resolved-call kernel cutover, Vec dispatch is
-    // recorded via `resolved_calls`, not the legacy `method_call_rewrites` side table.
+    // Checking retains the method identity; physical lowering chooses the
+    // selected element equality and its ABI after concrete type demand.
     assert!(
         output.resolved_calls.values().any(|call| {
             call.method_name == "contains"
-                && call.method_target.symbol_name == "hew_vec_contains_f64"
+                && call.target
+                    == crate::CallTarget::RuntimeCollection(MethodTargetFamily::Vec(
+                        VecMethod::Contains,
+                    ))
         }),
-        "Vec<f64>::contains must route to hew_vec_contains_f64 via resolved_calls: {:#?}",
+        "Vec<f64>::contains must retain its resolved collection method identity: {:#?}",
         output.resolved_calls
     );
 }

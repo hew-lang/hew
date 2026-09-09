@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1655u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1657u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1655] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1657] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -7217,6 +7217,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1655] = {
      "c_void)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_vec_contains_checked",
+     "{\"native\": \"fn hew_vec_contains_checked( *const HewVec, *const "
+     "c_void, hew_cabi::map::HewMapKeyEqThunk, *mut bool, *mut *mut c_void, ) "
+     "-> i32\", \"wasm32-wasip1\": \"fn hew_vec_contains_checked( *const "
+     "HewVec, *const c_void, hew_cabi::map::HewMapKeyEqThunk, *mut bool, *mut "
+     "*mut c_void, ) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_vec_contains_f64", "{\"native\": \"\", \"wasm32-wasip1\": \"\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
@@ -8223,6 +8231,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1655] = {
     {"hew_yaml_last_error",
      "{\"native\": \"fn hew_yaml_last_error() -> *mut HewString\", "
      "\"wasm32-wasip1\": \"fn hew_yaml_last_error() -> *mut HewString\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_yaml_object_keys",
+     "{\"native\": \"fn hew_yaml_object_keys( *const HewYamlValue) -> *mut "
+     "HewYamlValue\", \"wasm32-wasip1\": \"fn hew_yaml_object_keys( *const "
+     "HewYamlValue) -> *mut HewYamlValue\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_object_new",

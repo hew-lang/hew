@@ -1,0 +1,17 @@
+import std.encoding.yaml;
+
+fn consume_keys(consume keys: Vec<string>, later: i64) {
+    println(keys.len());
+    println(later);
+}
+
+fn run(divisor: i64) {
+    let mapping = yaml.parse("{a: null, b: {c: 1}}").expect("mapping");
+    let sibling = mapping.mapping_keys().expect("independent keys");
+    println(sibling.len());
+    consume_keys(mapping.mapping_keys().expect("argument keys"), 10 / divisor);
+}
+
+fn main() {
+    run(0);
+}

@@ -41,7 +41,7 @@ fn source_signature(
         EncodingOp::Eq => (vec![value.clone(), value.clone()], I32),
         EncodingOp::ObjectSet => (vec![value.clone(), String, value.clone()], Unit),
         EncodingOp::ArrayPush => (vec![value.clone(), value.clone()], Unit),
-        EncodingOp::Clone => (vec![value.clone()], value.clone()),
+        EncodingOp::Clone | EncodingOp::ObjectKeys => (vec![value.clone()], value.clone()),
         EncodingOp::Free => (vec![value.clone()], Unit),
     };
     let mut consuming = vec![false; params.len()];
@@ -123,15 +123,6 @@ fn every_encoding_extern_checks_its_complete_source_abi_and_identity() {
             ));
         }
     }
-    assert!(RuntimeCallFamily::from_c_symbol("hew_yaml_object_keys").is_none());
-    assert!(RuntimeCallFamily::JsonObjectKeys.matches_encoding_extern(
-        "std.encoding.json",
-        "std.encoding.json.hew_json_object_keys",
-        "hew_json_object_keys",
-        &[value(EncodingFormat::Json)],
-        &value(EncodingFormat::Json),
-        &[false]
-    ));
 }
 
 #[test]

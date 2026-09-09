@@ -49,6 +49,8 @@ pub enum AccessError {
     IntegerRange,
     /// The index is negative or exceeds the supported runtime index range.
     InvalidIndex(i64),
+    /// A mapping key is not a string; its kind is preserved in the error.
+    UnsupportedMappingKey(Kind),
 }
 
 impl Display for AccessError {
@@ -57,6 +59,7 @@ impl Display for AccessError {
             AccessError.WrongKind(_, _) => "yaml: unexpected value kind",
             AccessError.IntegerRange => "yaml: integer outside the requested range",
             AccessError.InvalidIndex(index) => f"yaml: unsupported array index {index}",
+            AccessError.UnsupportedMappingKey(_) => "yaml: mapping key is not a string",
         }
     }
 }
@@ -93,6 +96,9 @@ trait ValueMethods {
 
     /// Missing keys return None; an explicit null returns Some(value).
     fn get_field(self, key: string) -> Result<Option<Value>, AccessError>;
+
+    /// Return independent string keys in insertion order, rejecting other key kinds.
+    fn mapping_keys(self) -> Result<Vec<string>, AccessError>;
 
     fn array_len(self) -> Result<i64, AccessError>;
 
@@ -202,6 +208,22 @@ impl ValueMethods for Value {
         } else {
             Ok(Some(child))
         }
+    }
+    fn mapping_keys(self) -> Result<Vec<string>, AccessError> {
+        require_kind(self, Kind.Mapping)?;
+        let keys = unsafe {
+            hew_yaml_object_keys(self)
+        };
+        var strings: Vec<string> = Vec.new();
+        for index in 0 .. keys.array_len()? {
+            let key = keys.array_get(index)?.expect("yaml: mapping key exists");
+            let kind = key.type_of();
+            if kind != Kind.String {
+                return Err(AccessError.UnsupportedMappingKey(kind));
+            }
+            strings.push(key.get_string()?);
+        }
+        Ok(strings)
     }
     fn array_len(self) -> Result<i64, AccessError> {
         require_kind(self, Kind.Sequence)?;
@@ -328,6 +350,7 @@ extern "C" {
     fn hew_yaml_get_float(val: Value) -> f64;
     fn hew_yaml_get_string(val: Value) -> string;
     fn hew_yaml_get_field(val: Value, key: string) -> Value;
+    fn hew_yaml_object_keys(val: Value) -> Value;
     fn hew_yaml_array_len(val: Value) -> i32;
     fn hew_yaml_array_get(val: Value, index: i32) -> Value;
     fn hew_yaml_object_new() -> Value;

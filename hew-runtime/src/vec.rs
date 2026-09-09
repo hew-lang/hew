@@ -3291,6 +3291,52 @@ pub unsafe extern "C" fn hew_vec_contains_owned(
     }
 }
 
+/// Test membership using the selected element equality without taking either
+/// input's ownership. Equality may fail; its exact status and fault propagate
+/// without reading its output or publishing a membership result.
+///
+/// # Safety
+///
+/// `v` must be a live descriptor-backed vector and `val` must point to a value
+/// of its element type. `eq_fn` must compare borrowed elements using the checked
+/// equality ABI. Neither input may be mutated during the call. Result and fault
+/// outputs must be non-null, aligned, writable and disjoint from all inputs.
+/// Status zero initializes `present_out` and clears `fault_out`; nonzero status
+/// leaves `present_out` untouched and transfers the callback's fault owner.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_contains_checked(
+    v: *const HewVec,
+    val: *const c_void,
+    eq_fn: hew_cabi::map::HewMapKeyEqThunk,
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the caller provides a live vector and readable element storage.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let len = (*v).len;
+        if (*v).elem_size != layout.size || len > (*v).cap || (len > 0 && (*v).data.is_null()) {
+            abort_layout_aware_operation();
+        }
+        for index in 0..len {
+            let element = (*v).data.add(index * layout.size).cast::<c_void>();
+            let mut equal = false;
+            let status = eq_fn(element, val, &raw mut equal, fault_out);
+            if status != 0 {
+                return status;
+            }
+            if equal {
+                *present_out = true;
+                *fault_out = ptr::null_mut();
+                return 0;
+            }
+        }
+        *present_out = false;
+        *fault_out = ptr::null_mut();
+        0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reverse
 // ---------------------------------------------------------------------------

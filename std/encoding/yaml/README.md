@@ -38,6 +38,13 @@ include `from_int`, `from_u64`, `from_float`, `from_string`, `from_bool` and `nu
 Both return `Result<(), AccessError>` and leave the receiver and
 child unchanged on an error. Successful insertion stores an independent value.
 
+`mapping_keys()` returns `Result<Vec<string>, AccessError>` with every string key
+in insertion order. An empty mapping produces an empty vector. A non-mapping
+returns `WrongKind(Mapping, actual)`; any non-string key returns
+`UnsupportedMappingKey(actual)` for the first such key, without dropping or
+coercing keys. Returned strings remain independent of the mapping, which stays
+usable for field access, including explicit null and nested values.
+
 Equality compares format values, including their numeric representation, rather
 than pointer identity or serialized text. Integer and float forms remain distinct;
 floating signed zero compares equal. `Hash` is unavailable.

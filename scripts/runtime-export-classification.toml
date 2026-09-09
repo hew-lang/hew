@@ -828,6 +828,7 @@ stable = [
   "hew_vec_clone_layout",
   "hew_vec_clone_owned",
   "hew_vec_closure_pair_drop_inplace",
+  "hew_vec_contains_checked",
   "hew_vec_contains_f64",
   "hew_vec_contains_i32",
   "hew_vec_contains_i64",
@@ -1275,6 +1276,7 @@ stable-stdlib = [
   "hew_yaml_get_u64",
   "hew_yaml_last_error",
   "hew_yaml_object_new",
+  "hew_yaml_object_keys",
   "hew_yaml_object_set",
   "hew_yaml_object_set_bool",
   "hew_yaml_object_set_float",
@@ -6364,6 +6366,14 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_keys"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
 result-retention = "transferred"
 
 [[ownership.contracts]]

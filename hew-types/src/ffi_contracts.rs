@@ -857,6 +857,7 @@ mod tests {
                     ("hew_yaml_get_int", &[ExternParamOwnership::Borrow][..]),
                     ("hew_yaml_get_string", &[ExternParamOwnership::Borrow][..]),
                     ("hew_yaml_int_status", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_yaml_object_keys", &[ExternParamOwnership::Borrow][..]),
                     (
                         "hew_yaml_object_set",
                         &[
@@ -1011,6 +1012,7 @@ mod tests {
                     "hew_yaml_from_null",
                     "hew_yaml_from_string",
                     "hew_yaml_get_field",
+                    "hew_yaml_object_keys",
                     "hew_yaml_object_new",
                     "hew_yaml_parse",
                 ][..],

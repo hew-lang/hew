@@ -29,7 +29,7 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
         "aarch64-apple-darwin",
     ] {
         let ctx = Context::create();
-        let ptr = ctx.ptr_type(AddressSpace::default()).into();
+        let ptr: BasicMetadataTypeEnum<'_> = ctx.ptr_type(AddressSpace::default()).into();
         let i32_ty = ctx.i32_type().into();
         let i64_ty = ctx.i64_type().into();
         let f64_ty = ctx.f64_type().into();
@@ -43,14 +43,16 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
             use EncodingOp as Op;
             let (params, result): (Vec<BasicMetadataTypeEnum<'_>>, Option<BasicTypeEnum<'_>>) =
                 match family {
-                    RuntimeCallFamily::JsonObjectKeys => (vec![ptr], Some(ptr.try_into().unwrap())),
                     RuntimeCallFamily::Encoding { op, .. } => match op {
                         Op::LastError | Op::ObjectNew | Op::ArrayNew | Op::FromNull => {
                             (vec![], Some(ptr.try_into().unwrap()))
                         }
-                        Op::Parse | Op::Stringify | Op::FromString | Op::GetString | Op::Clone => {
-                            (vec![ptr], Some(ptr.try_into().unwrap()))
-                        }
+                        Op::Parse
+                        | Op::Stringify
+                        | Op::FromString
+                        | Op::GetString
+                        | Op::Clone
+                        | Op::ObjectKeys => (vec![ptr], Some(ptr.try_into().unwrap())),
                         Op::Type | Op::IntStatus | Op::GetBool | Op::ArrayLen => {
                             (vec![ptr], Some(ctx.i32_type().into()))
                         }

@@ -554,6 +554,7 @@ pub struct PhysicalSetGlue {
 pub enum PhysicalVectorOp {
     New,
     Len,
+    Contains,
     Index,
     Get {
         result: PhysicalVariantId,
@@ -589,6 +590,7 @@ impl PhysicalVectorOp {
         match self {
             Self::New => VecValueOp::New,
             Self::Len => VecValueOp::Len,
+            Self::Contains => VecValueOp::Contains,
             Self::Index => VecValueOp::Index,
             Self::Get { .. } => VecValueOp::Get,
             Self::Push => VecValueOp::Push,
@@ -937,7 +939,6 @@ pub enum PhysicalRuntimeAction {
         format: EncodingFormat,
         op: EncodingOp,
     },
-    JsonObjectKeys,
     StringConcat,
     StringEquals,
     StringCompare,
@@ -1061,7 +1062,6 @@ impl PhysicalRuntimeAction {
             Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
             Self::ChannelPairReceiver => RuntimeCallFamily::ChannelPairReceiver,
             Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
-            Self::JsonObjectKeys => RuntimeCallFamily::JsonObjectKeys,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
             Self::StringCompare => RuntimeCallFamily::StringCompare,
@@ -2579,7 +2579,6 @@ fn physical_runtime_action(
         RuntimeCallFamily::Encoding { format, op } => {
             PhysicalRuntimeAction::Encoding { format, op }
         }
-        RuntimeCallFamily::JsonObjectKeys => PhysicalRuntimeAction::JsonObjectKeys,
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
         RuntimeCallFamily::StringCompare => PhysicalRuntimeAction::StringCompare,
@@ -4050,6 +4049,7 @@ impl FunctionLowerer<'_> {
             let operation = match op {
                 VecValueOp::New => PhysicalVectorOp::New,
                 VecValueOp::Len => PhysicalVectorOp::Len,
+                VecValueOp::Contains => PhysicalVectorOp::Contains,
                 VecValueOp::Index => PhysicalVectorOp::Index,
                 VecValueOp::Get => PhysicalVectorOp::Get {
                     result: self.variant_id(&value.ty)?,
@@ -8377,6 +8377,16 @@ fn verify_vector_call(
         ));
     }
     match operation {
+        PhysicalVectorOp::Contains => {
+            if !module
+                .value_capabilities
+                .contains_key(&(glue.element.ty.clone(), ValueCapability::Eq))
+            {
+                return Err(PhysicalError::new(
+                    "vector membership lacks its selected element equality",
+                ));
+            }
+        }
         PhysicalVectorOp::Get { result: option }
         | PhysicalVectorOp::GetBorrow { result: option } => {
             let option = variant_glue(module, option)?;

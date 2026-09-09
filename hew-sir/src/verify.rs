@@ -703,7 +703,49 @@ fn verify_required_value_capabilities(
     use hew_types::runtime_call::{MapValueOp, SetValueOp};
     use hew_types::{RuntimeCallFamily, ValueCapability};
 
+    let mut types = function
+        .params
+        .iter()
+        .map(|param| (param.value, param.ty.clone()))
+        .collect::<HashMap<_, _>>();
     for block in &function.blocks {
+        types.extend(block.args.iter().map(|arg| (arg.value, arg.ty.clone())));
+        types.extend(block.ops.iter().flat_map(|op| {
+            op.results
+                .iter()
+                .map(|result| (result.id, result.ty.clone()))
+        }));
+        block.terminator.visit_results(|result| {
+            types.insert(result.id, result.ty.clone());
+        });
+    }
+    for block in &function.blocks {
+        if let SemTerminator::RtCall {
+            family: RuntimeCallFamily::Vector(hew_types::VecValueOp::Contains),
+            args,
+            ..
+        } = &block.terminator
+        {
+            if let Some(ty) = args
+                .get(1)
+                .and_then(|argument| types.get(&argument.operand.value))
+            {
+                if !module
+                    .value_capabilities
+                    .contains_key(&(ty.clone(), ValueCapability::Eq))
+                {
+                    diagnostics.push(diag(
+                        function,
+                        SirDiagnosticKind::InvalidValueCapability {
+                            ty: ty.clone(),
+                            capability: ValueCapability::Eq,
+                            reason: "vector membership requires its selected element equality"
+                                .into(),
+                        },
+                    ));
+                }
+            }
+        }
         if let SemTerminator::ValueCall { ty, capability, .. } = &block.terminator {
             let checked = module
                 .value_capabilities

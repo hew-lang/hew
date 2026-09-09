@@ -2110,3 +2110,95 @@ fn main() {
         output.errors
     );
 }
+
+#[test]
+fn init_parameter_shadowing_a_field_reports_the_parameter() {
+    // D447: an `init` parameter with a field's name shadows the field, so
+    // `items = items` assigns to the parameter, not to the `var` field. Both
+    // spellings reach the parameter - there is no `self.` escape - so the
+    // diagnostic names the shadowing and asks for a rename.
+    for target in ["items", "self.items"] {
+        let output = check_source(&format!(
+            "
+actor Bag {{
+    var items: i64,
+    init(items: i64) {{
+        {target} = items;
+    }}
+    receive fn get() -> i64 {{ items }}
+}}
+
+fn main() {{
+    let bag = spawn Bag(items: 3);
+    let _ = bag.get();
+}}
+"
+        ));
+        let error = output
+            .errors
+            .iter()
+            .find(|error| matches!(error.kind, TypeErrorKind::MutabilityError))
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{target} = items` must be rejected; got: {:#?}",
+                    output.errors
+                )
+            });
+        assert!(
+            error
+                .message
+                .contains("cannot assign to immutable parameter `items`"),
+            "the shadowing parameter is the assignment target, not the field; got: {error:#?}"
+        );
+        assert!(
+            error
+                .notes
+                .iter()
+                .any(|note| note.1.contains("shadows the state field")),
+            "the diagnostic must name the shadowing; got: {error:#?}"
+        );
+        assert!(
+            error.suggestions.iter().any(|s| s.contains("rename")),
+            "making the field `var` cannot help - the fix is a rename; got: {error:#?}"
+        );
+        assert!(
+            !error.suggestions.iter().any(|s| s.contains("`var items")),
+            "the field is already `var`; suggesting `var` again is wrong: {error:#?}"
+        );
+    }
+}
+
+#[test]
+fn an_unshadowed_immutable_field_write_keeps_the_field_diagnostic() {
+    // Negative control for the shadowing arm above: with no parameter in the
+    // way, a write to an immutable field outside `init` still reports the
+    // field and still suggests `var`.
+    let output = check_source(
+        r"
+actor Bag {
+    let items: i64 = 0,
+    receive fn bump() {
+        items = 1;
+    }
+}
+
+fn main() {
+    let bag = spawn Bag;
+    let _ = bag.bump();
+}
+",
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|error| {
+            error
+                .message
+                .contains("cannot assign to immutable field `items` outside `init`")
+        })
+        .unwrap_or_else(|| panic!("expected the field diagnostic; got: {:#?}", output.errors));
+    assert!(
+        error.suggestions.iter().any(|s| s.contains("var")),
+        "the unshadowed case still asks for `var`; got: {error:#?}"
+    );
+}

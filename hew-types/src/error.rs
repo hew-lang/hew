@@ -343,6 +343,40 @@ impl TypeError {
         .with_suggestion(format!("declare the field with `var`: `var {name}: ...`"))
     }
 
+    /// Create a mutability error for an assignment to an `init` parameter that
+    /// shadows a state field of the same name (D447).
+    ///
+    /// Inside `init` the bare name is the parameter, and no spelling reaches the
+    /// shadowed field, so the fix is to rename the parameter rather than to make
+    /// it or the field mutable.
+    #[must_use]
+    pub fn shadowed_field_parameter_assignment(
+        span: Span,
+        name: &str,
+        param_span: Option<Span>,
+        decl_span: Span,
+    ) -> Self {
+        let mut error = Self::new(
+            TypeErrorKind::MutabilityError,
+            span,
+            format!("cannot assign to immutable parameter `{name}`"),
+        );
+        if let Some(param_span) = param_span {
+            error = error.with_note(
+                param_span,
+                format!(
+                    "`init` parameter `{name}` shadows the state field of the same name, \
+                     so the bare name here is the parameter"
+                ),
+            );
+        }
+        error
+            .with_note(decl_span, format!("state field `{name}` is declared here"))
+            .with_suggestion(format!(
+                "rename the parameter so `{name}` names the state field"
+            ))
+    }
+
     /// Create a return type mismatch error.
     #[must_use]
     pub fn return_type_mismatch(span: Span, expected: &Ty, actual: &Ty) -> Self {

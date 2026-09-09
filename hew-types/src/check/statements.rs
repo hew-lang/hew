@@ -1609,19 +1609,34 @@ impl Checker {
                             // Actor state fields get a field-specific
                             // diagnostic pointing at the declaration site;
                             // plain locals keep the variable-shaped error.
-                            // In `init { }` fields are bound writable, so
-                            // this arm only fires in handler/method/hook
-                            // bodies.
+                            // In `init { }` every field is bound writable, so
+                            // an immutable binding under a field's name there
+                            // is an init parameter that took the name (D447).
+                            let shadows_field_in_init =
+                                self.checking_actor_init && binding.is_param();
+                            let param_span = binding.shadow_span.clone();
                             if let Some(error) = self.private_capture_mutation_error(name, span) {
                                 self.errors.push(error);
                             } else if let Some(field) =
                                 self.current_actor_fields.iter().find(|f| f.name == *name)
                             {
-                                self.errors.push(TypeError::immutable_field_assignment(
-                                    span.clone(),
-                                    name,
-                                    field.decl_span.clone(),
-                                ));
+                                let decl_span = field.decl_span.clone();
+                                if shadows_field_in_init {
+                                    self.errors.push(
+                                        TypeError::shadowed_field_parameter_assignment(
+                                            span.clone(),
+                                            name,
+                                            param_span,
+                                            decl_span,
+                                        ),
+                                    );
+                                } else {
+                                    self.errors.push(TypeError::immutable_field_assignment(
+                                        span.clone(),
+                                        name,
+                                        decl_span,
+                                    ));
+                                }
                             } else {
                                 self.errors
                                     .push(TypeError::mutability_error(span.clone(), name));

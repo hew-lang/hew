@@ -13,10 +13,11 @@ checker lints (`needless_range_loop`, `redundant_else_after_return`,
 two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
 they are now re-levelable and suppressible. M3 and its `clean_counter` follow-on
 landed on the legacy MIR and were removed with it: retiring the legacy native
-lowering pipeline deleted the liveness and faint-variable passes, so nothing
-computes dead-store or clean-counter facts today and neither lint has a
-producer. The design below records what those passes did and what a
-physical-MIR replacement would have to provide. M4 has landed: comment-side
+lowering pipeline deleted the liveness and faint-variable passes, and the
+physical MIR computes neither fact, so `dead_store` and `clean_counter` are no
+longer registry entries — the CLI refuses both names as unknown lints. The
+design below records what those passes did and what a physical-MIR replacement
+would have to provide. M4 has landed: comment-side
 Trojan-Source scanning over raw module source, with the text-direction tier
 denied by default and the broader invisible-codepoint tier warning by default
 (see §11).
@@ -325,10 +326,9 @@ the precise subset that is actually convertible.
     `// hew:allow(...)`, renders `Warn` as a warning / `Deny` as a build error / drops `Allow`, and is
     threaded into all four MIR-lowering seams. `hew compile` exposes no lint flags, so it surfaces at
     default levels. Surfacing is **CLI-only**; editor/web is issue #2176.
-  - **Tests.** Liveness unit + integration fixtures (`hew-mir/tests/liveness.rs`) pin the query API
-    and the over-approximation contract; `dead_store` positives and precision-guard negatives live
-    alongside them and in the CLI e2e suite (`hew-cli/tests/lint_pass_e2e.rs`), including the
-    `for i in 0..n` regression that must stay silent even under `-D dead_store`.
+  - **Tests.** Liveness unit + integration fixtures pinned the query API and the
+    over-approximation contract, with `dead_store` positives and precision-guard negatives beside
+    them and in the CLI e2e suite. All of them went with the passes; a replacement lands its own.
 - **M4 — comment-side Trojan-Source lints. (Implemented in this change.)** Two source-text checker
   lints scan comments (`//`, `///`, `//!`, `/* */`) for codepoints that can make source review lie
   about the bytes the compiler sees. See §11.

@@ -525,14 +525,12 @@ struct AnalyzedSource {
     /// boundary-violation diagnostics; this gate remains for any construct the
     /// checker still leaves unresolved at the HIR boundary.
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
-    /// MIR-stage lint findings (`dead_store` today, plus any future lint that
-    /// lands on `IrPipeline::lint_warnings`), surfaced in the playground as
-    /// **warnings** (issue #2176).
+    /// Findings from the shared semantic boundary at the browser target -
+    /// today the SIR verification failure `collect_semantic_diagnostics`
+    /// reports, carrying its own severity.
     ///
     /// Distinct from [`Self::hir_diagnostics`], which is converted with an
-    /// unconditional `"error"` severity: MIR lints are level-controlled style
-    /// findings and must never make the playground show red for code the
-    /// native compiler accepts.
+    /// unconditional `"error"` severity.
     semantic_diagnostics: Vec<WasmDiagnostic>,
 }
 
@@ -2276,58 +2274,11 @@ mod tests {
         );
     }
 
-    // ── MIR-stage lint surfacing (issue #2176) ───────────────────────────
-
-    const MIR_DEAD_STORE: &str =
-        "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n";
-
-    /// Near-identical control: every store is read.
-    const MIR_CLEAN: &str = "fn sum(n: i64) -> i64 {\nvar total = 0;\nfor i in 0..n {\ntotal = total + i;\n}\ntotal\n}\nfn main() {\nlet _ = sum(3);\n}\n";
-
-    fn diagnostics_of(source: &str) -> Vec<serde_json::Value> {
-        let parsed: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
-        parsed["diagnostics"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn wasm_mir_dead_store_surfaces_as_a_warning() {
-        let diags = diagnostics_of(MIR_DEAD_STORE);
-        let lint = diags
-            .iter()
-            .find(|d| d["kind"] == "dead_store")
-            .unwrap_or_else(|| panic!("dead_store must reach the playground: {diags:?}"));
-
-        // #2176's constraint: not the unconditional "error" HIR mapping.
-        assert_eq!(lint["severity"], "warning");
-        assert_eq!(lint["phase"], "mir");
-    }
-
-    #[test]
-    fn wasm_mir_lint_stays_silent_on_the_clean_control() {
-        let diags = diagnostics_of(MIR_CLEAN);
-        assert!(
-            !diags.iter().any(|d| d["kind"] == "dead_store"),
-            "an accumulator loop must not trip dead_store: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn wasm_mir_lint_honours_an_in_source_allow_directive() {
-        let suppressed =
-            MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
-        let diags = diagnostics_of(&suppressed);
-        assert!(
-            !diags.iter().any(|d| d["kind"] == "dead_store"),
-            "hew:allow must suppress the playground surfacing too: {diags:?}"
-        );
-    }
-
     #[test]
     fn wasm_session_uses_build_checks_at_wasm32_width() {
-        let parsed = hew_parser::parse(MIR_DEAD_STORE);
+        let parsed = hew_parser::parse(
+            "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n",
+        );
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));

@@ -1247,7 +1247,7 @@ pub(super) fn build_diagnostics_by_uri(
 }
 
 /// Lower to HIR once and return both the HIR diagnostics and the lowered
-/// module, so the MIR lint pass can reuse the same lowering instead of
+/// module, so a later consumer can reuse the same lowering instead of
 /// repeating it.
 fn collect_hir_diagnostics(
     program: &hew_parser::ast::Program,

@@ -83,10 +83,6 @@ pub enum LintId {
     /// A function that is defined but never reached from any entry point.
     /// (Migrated from an ad-hoc whole-program dead-code warning.)
     DeadCode,
-    /// A value assigned to a local is never read on any path before the local
-    /// is overwritten or goes out of scope — the store is dead. Emitted by the
-    /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
-    DeadStore,
     /// A discarded value carries a write/send/ask error that must not be
     /// ignored — `WriteError` / `SendError` / `AskError`, bare or as the error
     /// arm of a `Result`. A statement-position discard fails open (a dropped
@@ -108,18 +104,6 @@ pub enum LintId {
     /// A comment contains an invisible/default-ignorable Unicode codepoint that
     /// can hide text or create visually indistinguishable source.
     InvisibleCodepointInComment,
-    /// A loop-carried counter / accumulator whose value is never read after the
-    /// loop exits — the counting is dead work and the local can be removed.
-    ///
-    /// Emitted by the MIR-stage faint-variable (strong-liveness) pass in
-    /// `hew-mir`, not the HIR checker sweep. The lint is deliberately narrow:
-    /// it fires only when the accumulate step is **non-trapping**, so deleting
-    /// the counter is provably semantics-preserving. Hew's default integer
-    /// arithmetic lowers to `IntArithChecked` whose overflow flag branches to a
-    /// `Trap`, which makes an integer counter *strongly* live (its value
-    /// decides whether the program traps) — those are excluded. See
-    /// `docs/design/lint-pass.md` §10 and issue #2178.
-    CleanCounter,
 }
 
 impl LintId {
@@ -135,13 +119,11 @@ impl LintId {
         LintId::NeedlessBool,
         LintId::CloneOnCopy,
         LintId::DeadCode,
-        LintId::DeadStore,
         LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
         LintId::ActorHandleBuiltinShadow,
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
-        LintId::CleanCounter,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -159,13 +141,11 @@ impl LintId {
             LintId::NeedlessBool => "needless_bool",
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
-            LintId::DeadStore => "dead_store",
             LintId::MustUse => "must_use",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
             LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
-            LintId::CleanCounter => "clean_counter",
         }
     }
 
@@ -190,12 +170,10 @@ impl LintId {
             | LintId::NeedlessBool
             | LintId::CloneOnCopy
             | LintId::DeadCode
-            | LintId::DeadStore
             | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
             | LintId::ActorHandleBuiltinShadow
-            | LintId::InvisibleCodepointInComment
-            | LintId::CleanCounter => LintLevel::Warn,
+            | LintId::InvisibleCodepointInComment => LintLevel::Warn,
             LintId::TextDirectionCodepointInComment => LintLevel::Deny,
         }
     }
@@ -385,9 +363,9 @@ impl LintCtx<'_> {
 /// and, for item-bodied constructs reached through only comments, the
 /// item-level form. `all` matches every lint.
 ///
-/// Exposed beyond the checker so MIR-stage lints surfaced through the CLI
-/// (`dead_store`) resolve `// hew:allow(...)` directives through the same path
-/// as the HIR sweep instead of re-implementing it.
+/// Exposed beyond the checker so a lint surfaced outside the HIR sweep resolves
+/// `// hew:allow(...)` directives through this path instead of re-implementing
+/// it.
 #[must_use]
 pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
     let lines: Vec<&str> = source.lines().collect();

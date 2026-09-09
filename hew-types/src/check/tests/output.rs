@@ -71,7 +71,12 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
         ]),
     )]);
 
-    checker.validate_expr_output_contract(&mut expr_types, &HashSet::from([covered_var]));
+    // Channel endpoints carry ordinary type parameters now, so a var inside
+    // `Sender<?a>` is an ordinary unresolved var: it is covered or it is a leak.
+    // The uncovered case is the sibling negative control
+    // (`validate_expr_output_contract_reports_and_prunes_ty_var_leak`).
+    checker
+        .validate_expr_output_contract(&mut expr_types, &HashSet::from([covered_var, sender_var]));
 
     assert!(
         checker

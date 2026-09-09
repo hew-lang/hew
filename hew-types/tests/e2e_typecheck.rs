@@ -1281,7 +1281,7 @@ fn for_receiver_missing_element_type_errors() {
         import std.channel.channel;
 
         fn main() {
-            let (tx, rx): (channel.Sender, channel.Receiver) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
             for _ in rx {
                 println(0);

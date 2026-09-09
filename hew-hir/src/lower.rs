@@ -16979,7 +16979,7 @@ impl LowerCtx {
     /// Lower `let PAT = scrutinee else { <divergent block> };` to the dedicated
     /// `HirStmtKind::LetElse` node.
     ///
-    /// Unlike `lower_if_let_inner`, the success-path payload bindings are
+    /// Unlike a pattern condition, the success-path payload bindings are
     /// allocated in the ENCLOSING scope (no `push_scope`/`pop_scope` brackets
     /// them) so they escape the statement and are live for the rest of the
     /// enclosing block. The else block is lowered in its own scope and is
@@ -16987,11 +16987,13 @@ impl LowerCtx {
     /// runs it on the no-match path so control never reaches an unbound binder.
     ///
     /// Returns `Some(HirStmt)` on success, `None` on a fail-closed error
-    /// (diagnostics already pushed). Pattern scope mirrors `if let`: only
-    /// single payload-bearing enum-variant constructor patterns (e.g. `Ok(n)`).
+    /// (diagnostics already pushed). Pattern scope: single enum-variant
+    /// constructor patterns (e.g. `Ok(n)`, `Packet.Data { a }`). Or-patterns and
+    /// tuples with a refutable element are not lowered here yet and fail closed;
+    /// `if let` and `while let` accept them through `lower_pattern_arms`.
     #[allow(
         clippy::too_many_lines,
-        reason = "mirrors lower_if_let_inner; splitting would obscure the parallel \
+        reason = "one bind-or-diverge path; splitting would obscure the parallel \
                   error-handling paths"
     )]
     fn lower_let_else(

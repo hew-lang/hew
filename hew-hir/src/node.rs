@@ -1132,8 +1132,8 @@ pub enum HirStmtKind {
     /// `let Pat = scrutinee else { <divergent block> };` — the let-else
     /// bind-or-diverge primitive.
     ///
-    /// Unlike `HirExprKind::IfLet` (whose payload bindings are scoped to the
-    /// then-body), a let-else's `bindings` ESCAPE into the enclosing scope:
+    /// Unlike a pattern condition (whose bindings are scoped to the arm), a
+    /// let-else's `bindings` ESCAPE into the enclosing scope:
     /// after the statement, the success-path binders are live for the rest of
     /// the enclosing block. Semantic lowering evaluates the scrutinee and
     /// branches on its variant: success binds the payload fields in the

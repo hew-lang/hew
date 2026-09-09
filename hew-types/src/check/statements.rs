@@ -1210,8 +1210,16 @@ impl Checker {
                                                     ),
                                                 );
                                             }
-                                            None
-                                        } // irrefutable product type
+                                            // A record pattern always matches its
+                                            // own type, but a field pattern can
+                                            // still fail: `let Wrap { inner:
+                                            // .Some(n) } = w;` is refutable.
+                                            if aggregate_holds_refutable_element(&pattern.0) {
+                                                Some("enum variant")
+                                            } else {
+                                                None
+                                            }
+                                        } // product type; refutable only through a field
                                         Some(_) => Some("enum variant"),
                                         None => {
                                             // Unknown type — checker already reported; allow
@@ -1240,8 +1248,16 @@ impl Checker {
                         Pattern::Literal(_) => Some("literal"),
                         // Or-patterns are always refutable.
                         Pattern::Or(_, _) => Some("or-pattern"),
-                        // All other patterns (Tuple, plain Identifier, Wildcard,
-                        // Regex, …) — handled above or not refutable here.
+                        // An aggregate is refutable when one of its elements
+                        // is: `let (.Some(n), m) = pair;` can fail to match.
+                        Pattern::Tuple(_) | Pattern::RecordShorthand { .. }
+                            if aggregate_holds_refutable_element(&pattern.0) =>
+                        {
+                            Some("enum variant")
+                        }
+                        // All other patterns (irrefutable aggregates, plain
+                        // Identifier, Wildcard, Regex, …) — handled above or not
+                        // refutable here.
                         _ => None,
                     };
                     match (maybe_refutable_kind, else_block) {
@@ -2254,5 +2270,35 @@ impl Checker {
         }
 
         self.check_exhaustiveness(scrutinee_ty, arms, span);
+    }
+}
+
+/// Whether an aggregate pattern holds an element that can fail to match.
+///
+/// A tuple or record pattern is itself irrefutable, but `let (.Some(n), m) =
+/// pair;` is not: the constructor element decides whether the whole pattern
+/// matches. Only shapes that are refutable on their own spelling count, so a
+/// bare identifier element (which may or may not name a unit variant) is left
+/// to the top-level classifier.
+fn aggregate_holds_refutable_element(pattern: &Pattern) -> bool {
+    fn is_refutable(pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::Constructor { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_)
+            | Pattern::Literal(_)
+            | Pattern::Or(_, _) => true,
+            Pattern::Tuple(elements) => elements.iter().any(|(inner, _)| is_refutable(inner)),
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => fields
+                .iter()
+                .any(|field| field.pattern.as_ref().is_some_and(|(p, _)| is_refutable(p))),
+            _ => false,
+        }
+    }
+    match pattern {
+        Pattern::Tuple(_) | Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
+            is_refutable(pattern)
+        }
+        _ => false,
     }
 }

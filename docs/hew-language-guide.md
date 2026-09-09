@@ -441,12 +441,50 @@ fn main() {
 
 ```hew
 fn main() {
-    let some: Option<i64> = Some(42);
+    let some: Option<i64> = .Some(42);
     if let .Some(v) = some { println(v); } else { println(-1); }
 }
 ```
 
-Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you want the unwrapped-or-default as an expression result.
+Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you want the unwrapped-or-default as an expression result. Every pattern `match` accepts works here and in `while let`: unit variants, records, tuples, literals, or-patterns and nested patterns.
+
+### Chained conditions
+
+A condition joins `let` patterns and boolean tests with `&&`. Each `let` binds its names for the tests to its right and for the block; nothing it binds is visible in the `else` arm, and the condition stops at the first operand that fails.
+
+```hew
+fn main() {
+    let first: Option<i64> = .Some(20);
+    let second: Result<string, string> = .Ok("ready");
+    if let .Some(n) = first && n > 10 && let .Ok(text) = second {
+        println(f"{n}: {text}");
+    } else {
+        println("not ready");
+    }
+}
+```
+
+`||` cannot join a `let` pattern — write the alternatives as separate arms, or match on the value.
+
+### let … else
+
+A `let` with a refutable pattern takes an `else` block for the no-match path. The block must diverge, so the bindings are live for the rest of the enclosing block:
+
+```hew
+import std.string;
+
+fn port(raw: Option<string>) -> Result<i64, string> {
+    let .Some(text) = raw else {
+        return .Err("port missing");
+    };
+    let .Ok(value) = string.to_int(text) else {
+        return .Err("port is not a number");
+    };
+    .Ok(value)
+}
+```
+
+A refutable pattern in a plain `let` without `else` is `E_REFUTABLE_LET`; an `else` block that can fall through is `E_LET_ELSE_FALLTHROUGH`.
 
 ## Collections — Vec
 

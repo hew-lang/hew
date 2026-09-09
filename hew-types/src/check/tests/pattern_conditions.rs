@@ -122,6 +122,47 @@ fn main() {
 }
 
 #[test]
+fn a_tuple_holding_a_refutable_element_is_refutable() {
+    // The tuple itself always matches, but `.Some(n)` decides whether the whole
+    // pattern does, so a plain `let` must refuse it rather than leave the
+    // failure to a later stage.
+    let (errors, _) = parse_and_check(
+        r#"
+fn main() {
+    let pair: (Option<i64>, i64) = (.Some(1), 2);
+    let (.Some(n), m) = pair;
+    println(f"{n} {m}");
+}
+"#,
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::RefutableLetPattern { .. })),
+        "a tuple with a refutable element is E_REFUTABLE_LET: {errors:#?}"
+    );
+}
+
+#[test]
+fn an_irrefutable_tuple_still_destructures_in_a_plain_let() {
+    // The negative control for the check above: no refutable element, no error.
+    let (errors, _) = parse_and_check(
+        r#"
+type Point { x: i64, y: i64 }
+fn main() {
+    let pair = (Point { x: 1, y: 2 }, 3);
+    let (point, count) = pair;
+    println(f"{point.x} {count}");
+}
+"#,
+    );
+    assert!(
+        errors.is_empty(),
+        "an irrefutable tuple is still a plain `let`: {errors:#?}"
+    );
+}
+
+#[test]
 fn pattern_condition_diagnostic_codes_match_the_spec() {
     assert_eq!(
         TypeErrorKind::RefutableLetPattern {

@@ -78,10 +78,17 @@ fn module_id_from_identity(module_path: &str) -> ModuleId {
 ///
 /// Returns `None` if no such ancestor exists, which is the normal case for
 /// external Hew projects compiled with an installed binary.
+///
+/// The walk runs on an absolute path so the answer never depends on the
+/// process working directory. A relative input would otherwise ascend to the
+/// empty path and report `""` as the checkout root, and every module source
+/// resolved under that root would be a cwd-relative path that
+/// `canonical_stdlib_module_for_source` cannot canonicalize.
 #[must_use]
 pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
+    let from = std::path::absolute(from).ok()?;
     let start = if from.is_dir() {
-        from.to_path_buf()
+        from
     } else {
         from.parent()?.to_path_buf()
     };
@@ -2369,6 +2376,27 @@ mod tests {
         assert_eq!(canon_result, canon_tree);
     }
 
+    #[test]
+    fn find_enclosing_hew_root_answers_the_same_for_a_relative_path() {
+        // The crate directory is a child of the checkout root, so a relative
+        // module source resolves against it exactly like the absolute form.
+        // Before the walk ran on an absolute path, a relative input ascended to
+        // the empty path and reported `""` as the root; every module source
+        // loaded under it was then a cwd-relative path that
+        // `canonical_stdlib_module_for_source` could not canonicalize.
+        let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std/net/http/http.hew");
+        let relative = PathBuf::from("../std/net/http/http.hew");
+        let from_absolute =
+            find_enclosing_hew_root(&absolute).expect("shipped source is inside the checkout");
+        let from_relative =
+            find_enclosing_hew_root(&relative).expect("relative source is inside the checkout");
+        assert!(from_relative.is_absolute(), "root must be absolute");
+        assert_eq!(
+            std::fs::canonicalize(&from_relative).expect("canonical root"),
+            std::fs::canonicalize(&from_absolute).expect("canonical root"),
+        );
+    }
+
     /// `find_enclosing_hew_root`: a directory tree with no `std/builtins.hew`
     /// anywhere returns None.  We test with a self-contained temp tree that is
     /// itself rooted (no further parent walk needed) by creating it under
@@ -2380,6 +2408,7 @@ mod tests {
     /// parent chain does not include the real repo root.  We achieve that by
     /// creating the dir directly under the OS temp dir so the walk never
     /// reaches the Hew repo root.
+
     #[test]
     fn find_enclosing_hew_root_returns_none_outside_checkout() {
         use std::time::{SystemTime, UNIX_EPOCH};

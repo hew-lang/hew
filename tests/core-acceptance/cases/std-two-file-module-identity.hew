@@ -1,0 +1,19 @@
+// Two files of one directory module, imported directly and together. Each
+// import binds its own qualifier, and a type declared in one of the files has
+// exactly one identity however it was reached, so that file still checks
+// against itself and its fields stay reachable from the importer.
+import std.net.http.http_client;
+import std.net.http.http_async_server;
+
+fn reject_code(raw: string) -> i64 {
+    let parsed = http_async_server.parse_request(raw);
+    parsed.reject_code
+}
+
+fn main() {
+    println(reject_code("GET / HTTP/1.1\r\n\r\n"));
+    println(reject_code("nonsense\r\n\r\n"));
+    println(http_async_server.request_complete("GET / HTTP/1.1\r\n\r\n"));
+    // The sibling file's own surface stays reachable through its own binding.
+    println(http_client.last_error() == "");
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "std-two-file-module-identity"
+intent = "Two files of one directory module imported directly and together: each import binds its own qualifier, a type declared in one file keeps one identity however it was reached, and both files' public surfaces stay callable."
+source = "cases/std-two-file-module-identity.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "0\n400\ntrue\ntrue\n"
+exit = 0

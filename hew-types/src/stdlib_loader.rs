@@ -143,7 +143,15 @@ pub(crate) fn load_module_checked(
         });
     }
 
-    let module_short = module_short_name(module_path);
+    // Extracted signatures qualify a module-local nominal with the module's
+    // short owner, and the registry later projects that spelling onto the
+    // module's canonical owner. Both spellings must come from the same
+    // authority: a directory-module peer (`std.net.http.http_async_server`)
+    // is owned by its package (`std.net.http`), so it extracts as `http.T`,
+    // not `http_async_server.T`, or the projection has nothing to join.
+    let module_short = crate::module_registry::canonical_stdlib_module_for_source(&hew_path)
+        .and_then(|owner| owner.rsplit('.').next().map(str::to_string))
+        .unwrap_or_else(|| module_short_name(module_path));
     let mut info = extract_module_info(&result.program, &module_short);
     info.source_path = Some(hew_path);
     info.source_items = result.program.items;
@@ -1386,6 +1394,37 @@ mod tests {
         assert!(
             path.unwrap().ends_with("std/fs.hew"),
             "should use flat form"
+        );
+    }
+
+    #[test]
+    fn directory_peer_extracts_under_the_package_owner() {
+        // A peer of a directory module is owned by the package, so its
+        // extracted signatures must qualify a module-local nominal with the
+        // PACKAGE's short owner. The registry projects that spelling onto the
+        // package's canonical owner; a peer that extracted under its own file
+        // name would leave the projection nothing to join and the declaration
+        // would carry two identities.
+        let root = test_root();
+        let peer = load_module("std::net::http::http_async_server", &root)
+            .expect("http_async_server loads");
+        let parse_request = peer
+            .wrapper_fns
+            .iter()
+            .find(|wrapper| wrapper.name == "parse_request")
+            .expect("parse_request is a public wrapper");
+        assert_eq!(
+            parse_request.return_type,
+            Ty::named("http.AsyncRequest", vec![]),
+        );
+
+        // Negative control: a module that owns itself keeps its own short
+        // owner, so the projection is not simply dropping the leaf segment.
+        let flat = load_module("std::encoding::json", &root).expect("json loads");
+        assert!(
+            flat.handle_types.iter().any(|name| name == "json.Value"),
+            "a self-owned module keeps its own short owner: {:?}",
+            flat.handle_types,
         );
     }
 

@@ -823,9 +823,12 @@ impl Parser<'_> {
                 Expr::ByteArrayLiteral(values)
             }
             // `try { ... }` / `catch { ... }` — retired blocks. Both words are
-            // ordinary identifiers now, so only the block form is redirected.
+            // ordinary identifiers now, so only the block form is redirected,
+            // and not in condition position: there `if try { .. }` reads the
+            // binding `try` and the `{` opens the then block.
             Token::Identifier("try" | "catch")
-                if self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) =>
+                if !self.no_struct_literal()
+                    && self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) =>
             {
                 self.error(
                     "'try'/'catch' blocks have been removed; use the '?' operator instead"

@@ -5793,3 +5793,11 @@ fn if_let_else_if_round_trips_through_the_formatter() {
         &second.program
     ));
 }
+
+#[test]
+fn try_is_an_ordinary_binding_in_condition_position() {
+    // `if try {` reads the binding and opens the then block; only a `try`
+    // block in value position is the retired construct.
+    let result = crate::parse("fn main() { let try = true; if try { println(\"ok\"); } }");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+}

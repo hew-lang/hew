@@ -42,12 +42,12 @@ fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) 
 #[test]
 fn dotted_static_paths_lower_without_a_runtime_receiver() {
     let (lower_output, tc_output) = typecheck_and_lower(
-        r#"
+        r"
             fn main() {
                 let values: Vec<i64> = Vec.new();
-                Node.start("127.0.0.1:0");
+                let key = Node.identity_key();
             }
-        "#,
+        ",
     );
     assert!(
         tc_output.errors.is_empty(),
@@ -102,8 +102,8 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
     assert!(
         calls
             .iter()
-            .any(|(_, name, arity)| *name == "Node::start" && *arity == 1),
-        "Node.start call: {calls:#?}"
+            .any(|(_, name, arity)| *name == "Node::identity_key" && *arity == 0),
+        "Node.identity_key call: {calls:#?}"
     );
 }
 

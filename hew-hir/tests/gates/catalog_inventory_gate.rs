@@ -113,6 +113,14 @@ fn catalog_runtime_symbols_are_classified() {
             }
         };
 
+        // A shim symbol that names a typed runtime-call family (`vec.value.len`)
+        // is lowered by codegen from the family descriptor, not linked against a
+        // runtime export. `RuntimeCallFamily` is the authority for that class,
+        // so it carries no row in the export classification table.
+        if hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(symbol).is_some() {
+            continue;
+        }
+
         if !stable.contains(symbol) {
             failures.push(format!(
                 "catalog row `{}` (linkage symbol `{}`) is not in the \

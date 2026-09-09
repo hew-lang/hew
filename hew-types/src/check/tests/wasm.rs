@@ -1708,16 +1708,6 @@ fn main() {
     }
 
     #[test]
-    fn wasm_rejects_node_load_keys() {
-        let output = check_wasm(r#"fn main() { Node.load_keys("/keys/node.pem"); }"#);
-        assert!(
-            platform_error_contains(&output, "Distributed node"),
-            "Node::load_keys should be a Distributed-node WASM error; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn wasm_rejects_node_register_and_lookup() {
         // `Node::register` (LocalPid arg) and `Node::lookup` (RemotePid result)
         // both ride the native registry transport and must fail closed too.
@@ -1749,9 +1739,9 @@ fn main() {
     fn native_node_calls_no_platform_error() {
         let source = concat!(
             "fn main() {\n",
-            "    Node.start(\"a@127.0.0.1:9000\");\n",
-            "    Node.connect(\"b@127.0.0.1:9001\");\n",
-            "    Node.load_keys(\"/keys/node.pem\");\n",
+            "    let config = NodeConfig.at(\"127.0.0.1:9000\");\n",
+            "    Node.start(config);\n",
+            "    Node.connect(\"1@127.0.0.1:9001\");\n",
             "}\n",
         );
         let output = check_native(source);

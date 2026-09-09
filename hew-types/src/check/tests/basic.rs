@@ -270,7 +270,7 @@ fn dotted_associated_calls_resolve_without_using_the_head_as_a_value() {
         r#"
 fn main() {
     let values: Vec<i64> = Vec.new();
-    Node.start("127.0.0.1:0");
+    Node.start(NodeConfig.at("127.0.0.1:0"));
 }
 "#,
     );

@@ -13458,14 +13458,11 @@ mod node_builtin_catalog_tests {
         assert_eq!(
             emitted,
             [
-                "Node::allow_peer",
                 "Node::connect",
                 "Node::id",
                 "Node::identity_key",
-                "Node::load_keys",
                 "Node::lookup",
                 "Node::register",
-                "Node::set_transport",
                 "Node::shutdown",
                 "Node::start",
             ]

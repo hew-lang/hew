@@ -10,14 +10,8 @@
 /// Closed identities of catalog callables that are both monomorphic in the
 /// checker and executable as ordinary HIR/MIR calls.
 pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
-    "Node::allow_peer",
-    "Node::connect",
     "Node::id",
     "Node::identity_key",
-    "Node::load_keys",
-    "Node::set_transport",
-    "Node::shutdown",
-    "Node::start",
     "abs",
     "assert",
     "bytes::new",
@@ -43,7 +37,6 @@ pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
     "sleep",
     "sleep_until",
     "sqrt",
-    "string_concat",
 ];
 
 /// Return the exact catalog identity for a checker-registered executable

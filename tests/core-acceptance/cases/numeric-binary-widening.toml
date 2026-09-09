@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-binary-widening"
+intent = "Checked numeric binary operations widen compatible operands before arithmetic and comparison, including calls and loop indices."
+source = "cases/numeric-binary-widening.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\ntrue\n1\n5\ntrue\n131071\ntrue\n4\ntrue\ntrue\ntrue\n"
+exit = 0

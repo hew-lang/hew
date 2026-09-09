@@ -947,10 +947,8 @@ impl Checker {
         right_ty: &Ty,
     ) {
         if integer_type_info(common_ty, self.pointer_width()).is_some() {
-            // Concrete, compatible widths deliberately keep their operand
-            // types: HIR carries the common result type and MIR inserts the
-            // required NumericCast before checked arithmetic. Only literal or
-            // inference-variable operands need contextual unification here.
+            // Preserve the source types and publish explicit widening targets
+            // for HIR. Literal and inference operands use contextual unification.
             self.record_concrete_integer_operand(common_ty, left, left_ty);
             self.record_concrete_integer_operand(common_ty, right, right_ty);
         }
@@ -963,6 +961,12 @@ impl Checker {
         operand_ty: &Ty,
     ) {
         let resolved = self.subst.resolve(operand_ty);
+        if resolved.is_integer() && !resolved.is_integer_literal() && resolved != *common_ty {
+            self.numeric_operand_coercions.insert(
+                SpanKey::in_module(&operand.1, self.current_module_idx),
+                common_ty.clone(),
+            );
+        }
         if resolved.is_integer_literal() || matches!(resolved, Ty::Var(_)) {
             if self.is_coercible_numeric(&operand.0) {
                 self.check_against(&operand.0, &operand.1, common_ty);
@@ -2566,7 +2570,12 @@ impl Checker {
         if let Some((_, child_ty)) = resolved_obj.as_supervisor_pool() {
             let idx_actual = self.synthesize(&index.0, &index.1);
             let idx_resolved = self.subst.resolve(&idx_actual);
-            if !Self::is_narrower_signed_int(&idx_resolved) {
+            if Self::is_narrower_signed_int(&idx_resolved) {
+                self.numeric_operand_coercions.insert(
+                    SpanKey::in_module(&index.1, self.current_module_idx),
+                    Ty::I64,
+                );
+            } else {
                 self.check_against(&index.0, &index.1, &Ty::I64);
             }
             if ctx == IndexContext::AssignTarget {
@@ -2618,8 +2627,8 @@ impl Checker {
             // than i64 (i8/i16/i32) as a Vec index.  The operand widens to i64
             // at the call site; the element result type is NOT changed (LESSONS
             // `widen-operands-not-result-when-tightening-int-coercion`).
-            // MIR `lower_vec_index` inserts a `NumericCast` for the `xs[i]`
-            // path so the bounds-check `IntCmp` sees matching i64 operands.
+            // Publish the operand widening so HIR inserts an explicit cast
+            // before the runtime bounds check.
             Ty::Named {
                 builtin: Some(BuiltinType::Vec),
                 args,
@@ -2627,7 +2636,12 @@ impl Checker {
             } if !args.is_empty() => {
                 let idx_actual = self.synthesize(&index.0, &index.1);
                 let idx_resolved = self.subst.resolve(&idx_actual);
-                if !Self::is_narrower_signed_int(&idx_resolved) {
+                if Self::is_narrower_signed_int(&idx_resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(&index.1, self.current_module_idx),
+                        Ty::I64,
+                    );
+                } else {
                     self.check_against(&index.0, &index.1, &Ty::I64);
                 }
                 if matches!(ctx, IndexContext::Read) {
@@ -4795,6 +4809,21 @@ impl Checker {
         let right_resolved = self.subst.resolve(&right_ty);
         if matches!(left_resolved, Ty::Error) || matches!(right_resolved, Ty::Error) {
             return Ty::Error;
+        }
+
+        if left_resolved.is_float() && right_resolved.is_float() {
+            if let Some(common_ty) =
+                common_numeric_type(&left_resolved, &right_resolved, self.pointer_width())
+            {
+                for (operand, source_ty) in [(left, &left_resolved), (right, &right_resolved)] {
+                    if !source_ty.is_numeric_literal() && *source_ty != common_ty {
+                        self.numeric_operand_coercions.insert(
+                            SpanKey::in_module(&operand.1, self.current_module_idx),
+                            common_ty.clone(),
+                        );
+                    }
+                }
+            }
         }
 
         match op {
@@ -7381,6 +7410,14 @@ impl Checker {
                         Ty::Error
                     }
                 } else {
+                    self.report_error(
+                        TypeErrorKind::UndefinedField,
+                        span,
+                        format!(
+                            "cannot access field `{field}` on `{}`",
+                            resolved.user_facing()
+                        ),
+                    );
                     Ty::Error
                 }
             }

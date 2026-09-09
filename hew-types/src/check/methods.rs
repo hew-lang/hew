@@ -6507,6 +6507,10 @@ impl Checker {
                 let actual = self.synthesize(expr, arg_span);
                 let resolved = self.subst.resolve(&actual);
                 if Self::is_narrower_signed_int(&resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(arg_span, self.current_module_idx),
+                        Ty::I64,
+                    );
                     continue;
                 }
             }
@@ -6611,7 +6615,10 @@ impl Checker {
                     // Accept i64 or any narrower signed int (widened at the
                     // index site, identical to `[]`/`set`/`remove`); otherwise
                     // run the normal i64 coercion (literals, error wording).
-                    if !Self::is_narrower_signed_int(&resolved_idx) {
+                    if Self::is_narrower_signed_int(&resolved_idx) {
+                        self.numeric_operand_coercions
+                            .insert(SpanKey::in_module(sp, self.current_module_idx), Ty::I64);
+                    } else {
                         self.check_against(expr, sp, &Ty::I64);
                     }
                 }

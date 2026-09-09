@@ -437,6 +437,20 @@ fn test_empty_program() {
 }
 
 #[test]
+fn result_field_access_requires_handling_the_result() {
+    let output = check_source(
+        "type Record { value: i64 } fn main() { let result: Result<Record, string> = Ok(Record { value: 3 }); let _value = result.value; }",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedField && error.message.contains("value")
+        }),
+        "unhandled Result field access must produce a source diagnostic: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn tuple_numeric_field_access_out_of_bounds_is_rejected() {
     let output = check_source("fn main() -> i64 { let t = (1, false); t.2 }");
     assert!(

@@ -342,6 +342,8 @@ pub struct TypeCheckOutput {
     /// a user-provided `impl` overriding the derived comparison (D340). See
     /// [`UserComparisonDispatch`].
     pub user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
+    /// Explicit widening targets for numeric binary and index operands.
+    pub numeric_operand_coercions: HashMap<SpanKey, Ty>,
     /// Spans of `self.field` projections the checker resolved to the enclosing
     /// actor's own state field.
     ///
@@ -1382,6 +1384,7 @@ impl Default for TypeCheckOutput {
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
+            numeric_operand_coercions: HashMap::new(),
             actor_self_state_fields: HashSet::new(),
             borrowed_element_for_loops: HashSet::new(),
             borrowed_element_index_reads: HashSet::new(),
@@ -2702,6 +2705,7 @@ pub struct Checker {
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::user_comparison_dispatch`].
     pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
+    pub(super) numeric_operand_coercions: HashMap<SpanKey, Ty>,
     /// Declaring provenance for attributed methods, keyed by canonical
     /// `Type::method` signature identity.
     pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
@@ -3847,6 +3851,7 @@ impl Checker {
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
+            numeric_operand_coercions: HashMap::new(),
             extern_method_origins: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),

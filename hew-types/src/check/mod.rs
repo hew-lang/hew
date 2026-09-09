@@ -2473,6 +2473,7 @@ impl Checker {
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
+            numeric_operand_coercions: std::mem::take(&mut self.numeric_operand_coercions),
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
             borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
             borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),

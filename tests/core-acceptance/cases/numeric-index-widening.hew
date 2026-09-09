@@ -1,0 +1,14 @@
+fn index() -> i32 { 1 }
+fn main() {
+    var values: Vec<string> = ["first", "second", "third"];
+    println(values[index()]);
+    let small: i8 = 0;
+    values.set(small, "changed");
+    match values.get(small) {
+        .Some(value) => println(value),
+        .None => println("missing"),
+    }
+    let middle: i16 = 1;
+    values.remove(middle);
+    println(values[middle]);
+}

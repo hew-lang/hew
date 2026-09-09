@@ -7751,6 +7751,7 @@ struct LowerCtx {
     /// trait impl instead of the structural default (D340). Consulted at
     /// `Expr::Binary` lowering; see [`UserComparisonDispatch`].
     user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
+    numeric_operand_coercions: HashMap<SpanKey, Ty>,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from
@@ -8492,6 +8493,7 @@ impl LowerCtx {
             type_declarations: tc_output.type_fact_context.declarations().clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
+            numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -8630,6 +8632,10 @@ impl LowerCtx {
             &mut self.direct_call_targets,
             tc_output.direct_call_targets.clone(),
         );
+        let saved_numeric_coercions = std::mem::replace(
+            &mut self.numeric_operand_coercions,
+            tc_output.numeric_operand_coercions.clone(),
+        );
         let saved = (
             std::mem::replace(
                 &mut self.method_call_rewrites,
@@ -8700,6 +8706,7 @@ impl LowerCtx {
             self.record_init_type_args,
         ) = saved;
         self.direct_call_targets = saved_direct_calls;
+        self.numeric_operand_coercions = saved_numeric_coercions;
 
         result
     }
@@ -17766,6 +17773,25 @@ impl LowerCtx {
             });
         lowered.ty = normalized_ty;
 
+        if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(&expr.1)) {
+            if let Ok(to_ty) = ResolvedTy::from_ty(target) {
+                if lowered.ty != to_ty {
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::BitCopy,
+                        ty: to_ty.clone(),
+                        intent,
+                        span: expr.1.clone(),
+                        kind: HirExprKind::NumericCast {
+                            from_ty: lowered.ty.clone(),
+                            to_ty,
+                            value: Box::new(lowered),
+                        },
+                    };
+                }
+            }
+        }
         lowered
     }
 

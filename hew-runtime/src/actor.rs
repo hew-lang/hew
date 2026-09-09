@@ -3084,6 +3084,7 @@ pub type HewNativeCrashFn =
     unsafe extern "C" fn(*mut c_void, i64, *const hew_cabi::string::HewString) -> i32;
 
 struct ActorSpawnConfig {
+    #[cfg(not(target_arch = "wasm32"))]
     native_crash: Option<HewNativeCrashFn>,
     dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
@@ -3568,6 +3569,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3635,6 +3637,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3738,6 +3741,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3988,6 +3992,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -4036,6 +4041,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -7799,6 +7805,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -7842,6 +7849,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -7913,6 +7921,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,

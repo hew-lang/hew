@@ -2805,7 +2805,10 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // Clean self-stop on the resume path: notify monitors with the
             // Stopped reason, mirroring the crash trap and the non-resume
             // finalize. See the companion comment in `activate_actor`.
-            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            if a.native_completion.is_none() {
+                // Native completion publishes DOWN after typed state cleanup.
+                crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };
@@ -3900,7 +3903,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
             // path runs this from `hew_actor_trap`; the self-stop finalize is the
             // only place the Stopping → Stopped transition completes, so it must
             // run it too.
-            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            if a.native_completion.is_none() {
+                // Native completion publishes DOWN after typed state cleanup.
+                crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };

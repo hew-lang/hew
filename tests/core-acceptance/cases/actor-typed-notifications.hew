@@ -1,0 +1,85 @@
+import std.failure;
+
+import std.link_monitor;
+
+actor Target {
+    receive fn fail() {
+        panic("linked target");
+    }
+}
+
+actor Watcher {
+    var exits: i64 = 0,
+    var downs: i64 = 0,
+    var expected_monitor: u64 = 0,
+    var exit_actor: u64 = 0,
+
+    receive fn watch(target: LocalPid<Target>) -> link_monitor.MonitorRef {
+        link(target).expect("link target");
+        let observation = monitor(target).expect("monitor target");
+        expected_monitor = observation.id().value;
+        observation
+    }
+
+    receive fn watch_normal(target: LocalPid<Target>) -> link_monitor.MonitorRef {
+        let observation = monitor(target).expect("monitor normal target");
+        expected_monitor = observation.id().value;
+        exit_actor = 0;
+        observation
+    }
+
+    receive fn counts() -> i64 {
+        exits * 10 + downs
+    }
+
+    #[on(exit)]
+    fn exited(note: failure.CrashNotification) {
+        assert(note.actor_id > 0);
+        assert(note.kind == failure.CrashKind.Crashed);
+        exit_actor = note.actor_id;
+        exits = exits + 1;
+    }
+
+    #[on(down)]
+    fn down(note: link_monitor.DownNotification) {
+        assert(note.monitor.value == expected_monitor);
+        assert(match note.target {
+            .Local(id) => id > 0 && (exit_actor == 0 || id == exit_actor),
+            _ => false,
+        });
+        assert(match note.reason {
+            .Crashed(kind) => exit_actor > 0 && kind == failure.CrashKind.Crashed,
+            .Exited => exit_actor == 0,
+            _ => false,
+        });
+        downs = downs + 1;
+    }
+}
+
+fn main() {
+    let target = spawn Target;
+    let watcher = spawn Watcher;
+    let observation = watcher.watch(target).expect("watch target");
+    let _ = target.fail();
+    for _ in 0 .. 1000 {
+        if watcher.counts().expect("hook outcomes") == 11 {
+            break;
+        }
+        sleep(1ms);
+    }
+    assert(watcher.counts().expect("hook outcomes") == 11);
+    observation.close();
+    let normal_target = spawn Target;
+    let normal_observation = watcher.watch_normal(normal_target).expect("watch normal target");
+    close(normal_target);
+    for _ in 0 .. 1000 {
+        if watcher.counts().expect("normal hook outcome") == 12 {
+            break;
+        }
+        sleep(1ms);
+    }
+    assert(watcher.counts().expect("normal hook outcome") == 12);
+    normal_observation.close();
+    close(watcher);
+    println("typed EXIT and DOWN retain actor and monitor identities");
+}

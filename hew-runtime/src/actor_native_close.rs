@@ -29,7 +29,8 @@ impl NativeActorCompletion {
 
     pub(crate) fn crash_action(&self) -> Option<i32> {
         self.crash
-            .map(|_| self.crash_action.load(Ordering::Acquire))
+            .filter(|_| self.is_finished())
+            .map(|_| self.crash_action.load(Ordering::Relaxed))
     }
 
     pub(crate) fn is_finished(&self) -> bool {
@@ -101,6 +102,12 @@ pub(crate) unsafe fn finish_native_terminal(actor: &HewActor) {
     // SAFETY: this terminal owner has reserved completion before taking the
     // actor's existing exactly-once state destructor authority.
     unsafe { crate::actor::drop_initialized_actor_state(actor) };
+    if state == HewActorState::Stopped as i32 {
+        // Native cleanup owns normal DOWN publication, including an idle
+        // actor closed without another scheduler activation. Queue the
+        // notification before a close observer can release its monitor owner.
+        crate::monitor::notify_monitors_on_death(actor.id, state, 0);
+    }
     completion.finish(actor.error_code.load(Ordering::Acquire));
 }
 

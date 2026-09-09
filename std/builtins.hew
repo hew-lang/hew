@@ -61,14 +61,7 @@ pub enum NodeError {
 
 impl NodeConfig {
     fn at(bind: string) -> NodeConfig {
-        NodeConfig {
-            bind: bind,
-            transport: "tcp",
-            key: "",
-            trust: "pinned",
-            peers: Vec.new(),
-            seeds: Vec.new(),
-        }
+        NodeConfig { bind: bind, transport: "tcp", key: "", trust: "pinned", peers: Vec.new(), seeds: Vec.new() }
     }
 }
 

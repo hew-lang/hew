@@ -2475,9 +2475,10 @@ fn take_nested_supervisor_roster(
         .collect()
 }
 
-fn wait_for_retiring_children(roster: &Mutex<SupervisorRoster>, deadline: Instant) -> bool {
+fn wait_for_retiring_children(supervisor: &HewSupervisor, deadline: Instant) -> bool {
     loop {
-        if roster
+        if supervisor
+            .roster
             .lock_or_recover()
             .retiring_children
             .iter()
@@ -2578,7 +2579,7 @@ unsafe fn stop_supervisor_owned(
     }
 
     // Detached incarnations remain part of the parent's cleanup obligation.
-    if !wait_for_retiring_children(&s.roster, quiescence_deadline) {
+    if !wait_for_retiring_children(&s, quiescence_deadline) {
         set_last_error("supervisor teardown retained an unfinished child subtree");
         let sup = Box::into_raw(s);
         // SAFETY: the parent stays live until its detached children finish.
@@ -11578,6 +11579,8 @@ pub struct HewNativeChildSpec {
 }
 
 fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -> Option<usize> {
+    // ROSTER-GUARDED-HELPER: construction holds the owning supervisor mutex
+    // throughout registration; this helper invokes no callbacks or waits.
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
     let next_identity = s.next_child_spec_identity.checked_add(1)?;
     let index = if child.role_kind == 1 {

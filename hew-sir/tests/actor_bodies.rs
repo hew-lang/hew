@@ -350,3 +350,36 @@ fn verifier_refuses_a_stream_send_that_keeps_its_element() {
         "{diagnostics:#?}"
     );
 }
+
+#[test]
+fn verifier_refuses_a_notification_hook_with_a_scalar_payload() {
+    for exit_hook in [true, false] {
+        let mut module = lower_source(COUNTER);
+        let actor = &mut module.actors[0];
+        let hook = actor.stop.pop().expect("counter stop hook");
+        if exit_hook {
+            actor.exit = Some(hook);
+        } else {
+            actor.down = Some(hook);
+        }
+        let callable = module
+            .callables
+            .iter_mut()
+            .find(|callable| callable.id == hook)
+            .unwrap();
+        callable.signature.params.push(hew_sir::SemAbiParam {
+            ty: hew_types::ResolvedTy::I64,
+            passing: SemParamPassing::ReadOnly,
+            caller_visible_projection: false,
+        });
+        let diagnostics = verify_module(&module);
+        assert!(
+            diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                SirDiagnosticKind::InvalidTerminator { reason }
+                    if reason.contains("lifecycle hook signature differs")
+            )),
+            "{diagnostics:#?}"
+        );
+    }
+}

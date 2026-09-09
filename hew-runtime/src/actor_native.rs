@@ -619,12 +619,65 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Default)]
+    struct ExternalTrapHooks {
+        calls: usize,
+        drops: usize,
+    }
+
+    unsafe extern "C" fn external_trap_hook(
+        state: *mut c_void,
+        code: i64,
+        message: *const hew_cabi::string::HewString,
+    ) -> i32 {
+        // SAFETY: the fixture keeps this initialized state live through terminal cleanup.
+        let state = unsafe { &mut *state.cast::<ExternalTrapHooks>() };
+        assert_eq!(code, 91);
+        assert_eq!(state.calls, 0);
+        assert_eq!(state.drops, 0);
+        // SAFETY: the native terminal boundary lends a managed diagnostic string.
+        assert!(!unsafe { hew_cabi::string::string_as_str(message) }.is_empty());
+        state.calls += 1;
+        crate::supervisor::CRASH_ACTION_KILL
+    }
+
+    unsafe extern "C-unwind" fn external_trap_state_clone(state: *const c_void) -> *mut c_void {
+        // SAFETY: the fixture lends an initialized scalar state record.
+        let copy = unsafe { *state.cast::<ExternalTrapHooks>() };
+        // SAFETY: this allocation matches the runtime state wrapper convention.
+        let allocation = unsafe { libc::malloc(std::mem::size_of::<ExternalTrapHooks>()) }
+            .cast::<ExternalTrapHooks>();
+        assert!(!allocation.is_null());
+        // SAFETY: the allocation has the exact state size and alignment.
+        unsafe { allocation.write(copy) };
+        allocation.cast()
+    }
+
+    unsafe extern "C" fn external_trap_state_drop(state: *mut c_void) {
+        // SAFETY: the fixture keeps this initialized state live through terminal cleanup.
+        let state = unsafe { &mut *state.cast::<ExternalTrapHooks>() };
+        assert_eq!(state.calls, 1);
+        assert_eq!(state.drops, 0);
+        state.drops += 1;
+    }
+
     #[test]
     fn external_trap_drains_a_parked_checked_turn_before_crashing() {
         let _guard = crate::runtime_test_guard();
         let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
         let (_, waker) = crate::wake::blocking::Readiness::new();
         let mut actor = crate::test_actor::stub_actor();
+        let mut hooks = ExternalTrapHooks::default();
+        actor.state = (&raw mut hooks).cast();
+        actor.state_drop_fn = Some(external_trap_state_drop);
+        actor.state_clone_fn = Some(external_trap_state_clone);
+        actor.state_size = std::mem::size_of::<ExternalTrapHooks>();
+        actor.dispatch_ownership = crate::actor::HewDispatchOwnership::UniqueEnvelope;
+        let completion = std::sync::Arc::new(super::NativeActorCompletion::with_crash(Some(
+            external_trap_hook,
+        )));
+        actor.native_completion = Some(completion.clone());
+
         let mut frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
         frame.resume = Some(resume_checked_cleanup);
         // SAFETY: this fixture exclusively owns its actor, invocation, frame,
@@ -664,6 +717,8 @@ mod tests {
                 "the first cancellation poll remains live"
             );
             assert!(!actor.checked_invocation.load(Ordering::Acquire).is_null());
+            assert_eq!((hooks.calls, hooks.drops), (0, 0));
+            assert_eq!(completion.crash_action(), None);
 
             actor.actor_state.store(
                 crate::internal::types::HewActorState::Runnable as i32,
@@ -681,6 +736,13 @@ mod tests {
             assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());
             assert!(actor.suspended_cont.load(Ordering::Acquire).is_null());
             assert_eq!(actor.pending_external_trap_code.load(Ordering::Acquire), 0);
+            assert_eq!((hooks.calls, hooks.drops), (1, 1));
+            assert_eq!(
+                completion.crash_action(),
+                Some(crate::supervisor::CRASH_ACTION_KILL)
+            );
+            super::finish_native_terminal(&actor);
+            assert_eq!((hooks.calls, hooks.drops), (1, 1));
             crate::mailbox::hew_mailbox_free(mailbox);
         }
     }

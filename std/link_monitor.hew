@@ -109,6 +109,7 @@ impl MonitorRef {
     fn id(monitor_ref: MonitorRef) -> MonitorId {
         MonitorId { value: monitor_ref.ref_id }
     }
+
     /// Remove the monitor registration.
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,

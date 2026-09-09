@@ -723,6 +723,7 @@ impl LocalHandles {
     }
 
     /// Resolve a live or retired incarnation without acquiring allocation ownership.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn observation_actor(
         &self,
         runtime_id: RuntimeId,
@@ -1183,6 +1184,7 @@ pub(crate) fn resolve_current_actor(token: HewLocalPidId) -> Option<u64> {
 }
 
 /// Resolve an observation target even after its allocation has been reclaimed.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<u64> {
     #[cfg(not(target_arch = "wasm32"))]
     let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();

@@ -326,22 +326,19 @@ impl SemActor {
             ),
             _ => ResolvedTy::Unit,
         };
-        let return_matches = match (&callable.signature.return_ty, &expected_return) {
-            (
-                ResolvedTy::Named {
-                    builtin: Some(actual),
-                    args: actual_args,
-                    ..
-                },
-                ResolvedTy::Named {
-                    builtin: Some(expected),
-                    args: expected_args,
-                    ..
-                },
-            ) => actual == expected && actual_args == expected_args,
-            (actual, expected) => actual == expected,
-        };
-        if callable.signature.params.len() != expected_params || !return_matches {
+        let payload_matches = typed.is_none_or(|(expected, _)| {
+            callable.signature.params.get(1).is_some_and(|parameter| {
+                parameter.ty.is_builtin(expected)
+                    && parameter
+                        .ty
+                        .nominal_instance()
+                        .is_some_and(|instance| instance.args.is_empty())
+            })
+        });
+        if callable.signature.params.len() != expected_params
+            || callable.signature.return_ty != expected_return
+            || !payload_matches
+        {
             return Err("lifecycle hook signature differs from its declared kind".into());
         }
         Ok(())

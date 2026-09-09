@@ -1181,7 +1181,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, *mut *mut HewFault, ) -> HewLocalPidId"
+        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, ) -> HewLocalPidId"
       },
       "symbol": "hew_actor_spawn_native"
     },
@@ -11125,6 +11125,45 @@
         "native": "fn hew_msgpack_to_json_hew( *const BytesTriple) -> *mut c_char"
       },
       "symbol": "hew_msgpack_to_json_hew"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_native_actor_link( HewLocalPidId) -> i32"
+      },
+      "symbol": "hew_native_actor_link"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_native_actor_monitor( HewLocalPidId, *mut u64, ) -> i32"
+      },
+      "symbol": "hew_native_actor_monitor"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_native_actor_unlink( HewLocalPidId)"
+      },
+      "symbol": "hew_native_actor_unlink"
     },
     {
       "availability": [

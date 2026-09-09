@@ -101,9 +101,16 @@ fn map_bindings_copies_calls_and_returns_share_semantic_value_contracts() {
         .any(|op| {
             matches!(op.kind, SemOpKind::CopyValue { .. }) && op.results[0].own == OwnKind::Owned
         }));
+    // `std.builtins` bodies lower into every module and publish their own record
+    // shapes; none of them belongs to a map.
     assert!(
-        module.aggregate_shapes.is_empty(),
-        "ordinary maps must not need fabricated record shapes"
+        module.aggregate_shapes.iter().all(|shape| shape
+            .instance
+            .nominal
+            .full_path()
+            .starts_with("std.builtins.")),
+        "ordinary maps must not need fabricated record shapes: {:?}",
+        module.aggregate_shapes
     );
 }
 

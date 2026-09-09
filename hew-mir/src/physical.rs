@@ -9563,7 +9563,11 @@ mod tests {
         let inventory = physical_type_inventory(&module);
         assert!(inventory.contains(&ResolvedTy::I64));
         assert!(inventory.contains(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64,])));
-        assert!(!inventory.contains(&ResolvedTy::String));
+        // Negative control: the inventory is demand-driven, not a dump of every
+        // registered type. `f64` is registered and no body here mentions it.
+        // (`string` is no longer a control: the `std.builtins` bodies that lower
+        // into every module carry it.)
+        assert!(!inventory.contains(&ResolvedTy::F64));
     }
 
     #[test]
@@ -9613,10 +9617,22 @@ mod tests {
         let verified = lower_physical_module(&module, target_for_inventory(&module))
             .expect("owned aggregate physical lowering");
         let physical = verified.module();
-        assert_eq!(physical.aggregate_glue.len(), 2);
-        assert!(physical.aggregate_glue.iter().all(|glue| {
-            matches!(glue.fields[0].clone, Some(CloneAction::StringRetain))
-                && matches!(glue.fields[1].clone, Some(CloneAction::BytesRetain))
+        // `std.builtins` bodies (`NodeConfig::at`, `duration::from_micros`, ...)
+        // lower into every module, so the inventory legitimately carries their
+        // types too. Select the shapes this source demands rather than counting
+        // every row.
+        let demanded: Vec<_> = physical
+            .aggregate_glue
+            .iter()
+            .filter(|glue| {
+                glue.fields.len() == 2
+                    && matches!(glue.fields[0].clone, Some(CloneAction::StringRetain))
+            })
+            .collect();
+        // The tuple `("tuple", b"T")` and the record `Packet` each publish one.
+        assert_eq!(demanded.len(), 2);
+        assert!(demanded.iter().all(|glue| {
+            matches!(glue.fields[1].clone, Some(CloneAction::BytesRetain))
                 && matches!(glue.fields[0].destroy, Some(DestroyAction::StringRelease))
                 && matches!(glue.fields[1].destroy, Some(DestroyAction::BytesRelease))
         }));
@@ -11157,10 +11173,17 @@ mod tests {
         assert!(inventory
             .aggregates()
             .any(|shape| shape.fields == [ResolvedTy::String]));
-        assert_eq!(inventory.vectors().count(), 1);
+        // `std.builtins` bodies (`NodeConfig::at`, `duration::from_micros`, ...)
+        // lower into every module, so the inventory legitimately carries their
+        // types too. Select the shapes this source demands rather than counting
+        // every row.
         let physical = lower_physical_module(&module, target_for_inventory(&module)).unwrap();
         let physical = physical.module();
-        let vector = &physical.vector_glue[0];
+        let vector = physical
+            .vector_glue
+            .iter()
+            .find(|glue| matches!(glue.element.clone, Some(CloneAction::Variant(_))))
+            .expect("the Vec<Tree> element demands a variant copy recipe");
         let Some(CloneAction::Variant(tree)) = vector.element.clone else {
             panic!("tree copy recipe");
         };
@@ -11192,9 +11215,18 @@ mod tests {
             }
         ",
         );
+        // `std.builtins` bodies (`NodeConfig::at`, `duration::from_micros`, ...)
+        // lower into every module, so the inventory legitimately carries their
+        // types too. Select the shapes this source demands rather than counting
+        // every row.
         let physical = lower_physical_module(&module, target_for_inventory(&module)).unwrap();
         let physical = physical.module();
-        let element = &physical.vector_glue[0].element;
+        let element = &physical
+            .vector_glue
+            .iter()
+            .find(|glue| physical.target.layout(&glue.element.ty).unwrap().size == 0)
+            .expect("the Vec<Empty> element is zero sized")
+            .element;
         assert_eq!(physical.target.layout(&element.ty).unwrap().size, 0);
         assert_eq!(element.clone, Some(CloneAction::Bitwise));
         assert_eq!(element.destroy, None);

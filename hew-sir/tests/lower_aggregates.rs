@@ -133,10 +133,17 @@ fn owned_record_shape_and_field_order_are_exact() {
     );
     assert_main_lowered(&lowered);
 
-    let [shape] = lowered.module.aggregate_shapes.as_slice() else {
+    // `std.builtins` bodies lower into every module and publish their own record
+    // shapes; this source demands exactly one of its own.
+    let packets: Vec<_> = lowered
+        .module
+        .aggregate_shapes
+        .iter()
+        .filter(|shape| shape.instance.nominal.display_name() == "Packet")
+        .collect();
+    let [shape] = packets.as_slice() else {
         panic!("one demanded record type must publish exactly one shape")
     };
-    assert_eq!(shape.instance.nominal.display_name(), "Packet");
     assert_eq!(
         shape
             .fields

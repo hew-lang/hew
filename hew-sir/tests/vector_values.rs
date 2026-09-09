@@ -447,11 +447,17 @@ fn affine_vector_accepts_nested_non_clone_values_without_copy_capability() {
         })
         .unwrap();
     assert_eq!(pushed[1].decision, hew_sir::BoundaryDecision::Move);
-    assert!(module
+    // `std.builtins` carries its own `Vec<string>` fields, so name the element
+    // this source demands instead of judging every vector row in the module.
+    let element = module
         .type_facts
         .iter()
-        .filter(|(key, _)| hew_types::runtime_call::vector_element_type(&key.0).is_some())
-        .all(|(_, facts)| facts.clone == hew_types::CloneKind::None));
+        .find(|(key, _)| {
+            hew_types::runtime_call::vector_element_type(&key.0)
+                .is_some_and(|element| matches!(element, hew_types::ResolvedTy::Named { .. }))
+        })
+        .expect("the affine vector's element must carry a row");
+    assert_eq!(element.1.clone, hew_types::CloneKind::None);
 }
 
 #[test]

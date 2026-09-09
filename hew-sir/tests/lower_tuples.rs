@@ -433,8 +433,12 @@ fn the_module_carries_the_rows_its_own_bodies_mention() {
         ]))),
         "the tuple the body builds must have a row: {rows:?}"
     );
+    // The projection is demand-driven, not a dump of every checker row. `f64` is
+    // a registered type no body in this module mentions. (`string` is no longer
+    // a control: the `std.builtins` bodies that lower into every module carry
+    // it.)
     assert!(
-        !rows.contains_key(&key(ResolvedTy::String)),
+        !rows.contains_key(&key(ResolvedTy::F64)),
         "a type this module never mentions must not be projected: {rows:?}"
     );
     assert_eq!(

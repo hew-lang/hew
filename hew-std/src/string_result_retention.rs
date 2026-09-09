@@ -3,14 +3,17 @@
 //! Every promoted symbol is named at its own call site below. The shared
 //! instrument proves two live results are distinct (R1), each arrives solely
 //! owned (R2), and the producer/input remains usable after the caller releases
-//! both (R3). JSON/YAML instead use managed ownership and verify results
-//! after container destruction, including canonical empty and embedded NUL.
+//! both (R3). Managed-string producers use the managed instrument for the same
+//! three properties. JSON/YAML instead verify results after container
+//! destruction, including canonical empty and embedded NUL.
 //! An unmeasured symbol has no call site here and must remain absent
 //! from the classification's `result-retention` axis.
 
 use std::ffi::{c_char, CStr, CString};
 
+use crate::test_string::ManagedString;
 use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
+use hew_cabi::string::{string_as_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_drop, BytesTriple};
 
 fn assert_transferred(
@@ -57,18 +60,76 @@ fn assert_transferred(
     unsafe { free_cstring(third) };
 }
 
-#[test]
-fn uuid_results_are_transferred() {
-    let valid_uuid = |text: &CStr| {
-        let parsed = uuid::Uuid::parse_str(text.to_str().unwrap()).expect("valid UUID");
-        assert!(matches!(parsed.get_version_num(), 4 | 7));
-    };
-    assert_transferred("hew_uuid_v4", || crate::uuid::hew_uuid_v4(), valid_uuid);
-    assert_transferred("hew_uuid_v7", || crate::uuid::hew_uuid_v7(), valid_uuid);
+/// Managed-string counterpart of [`assert_transferred`]: two live results are
+/// distinct owners (R1), each stays readable while its sibling is released
+/// (R2), and the producer keeps working after both are released (R3).
+fn assert_managed_transferred(
+    symbol: &str,
+    mut call: impl FnMut() -> *mut HewString,
+    validate: impl Fn(&str),
+) {
+    let first = call();
+    let second = call();
+    assert!(
+        !first.is_null() && !second.is_null(),
+        "{symbol}: expected two live results"
+    );
+    assert_ne!(
+        first, second,
+        "{symbol}: R1 failed: two live results share an allocation"
+    );
+
+    // SAFETY: both results are live owners held by this test.
+    unsafe {
+        validate(string_as_str(first));
+        validate(string_as_str(second));
+        string_release(first);
+        // R2: releasing one owner must not disturb the other.
+        validate(string_as_str(second));
+        string_release(second);
+    }
+
+    let third = call();
+    assert!(
+        !third.is_null(),
+        "{symbol}: R3 failed after caller releases"
+    );
+    // SAFETY: `third` is a fresh live owner.
+    unsafe {
+        validate(string_as_str(third));
+        string_release(third);
+    }
 }
 
 #[test]
-fn url_and_cidr_results_are_transferred() {
+fn uuid_results_are_transferred() {
+    let valid_uuid = |text: &str| {
+        let parsed = uuid::Uuid::parse_str(text).expect("valid UUID");
+        assert!(matches!(parsed.get_version_num(), 4 | 7));
+    };
+    assert_managed_transferred("hew_uuid_v4", || crate::uuid::hew_uuid_v4(), valid_uuid);
+    assert_managed_transferred("hew_uuid_v7", || crate::uuid::hew_uuid_v7(), valid_uuid);
+}
+
+#[test]
+fn cidr_results_are_transferred() {
+    let cidr = ManagedString::new("192.0.2.129/25");
+    assert_managed_transferred(
+        "hew_cidr_network",
+        // SAFETY: `cidr` owns a live managed string for the whole measurement.
+        || unsafe { crate::ipnet::hew_cidr_network(cidr.as_ptr()) },
+        |text| assert_eq!(text, "192.0.2.128"),
+    );
+    assert_managed_transferred(
+        "hew_cidr_broadcast",
+        // SAFETY: `cidr` owns a live managed string for the whole measurement.
+        || unsafe { crate::ipnet::hew_cidr_broadcast(cidr.as_ptr()) },
+        |text| assert_eq!(text, "192.0.2.255"),
+    );
+}
+
+#[test]
+fn url_results_are_transferred() {
     let input = CString::new("https://example.test/a/b?q=hew#frag").unwrap();
     // SAFETY: `input` is a valid NUL-terminated URL.
     let url = unsafe { crate::url::hew_url_parse(input.as_ptr()) };
@@ -100,20 +161,6 @@ fn url_and_cidr_results_are_transferred() {
     }
     // SAFETY: all accessors borrowed `url`; the handle is still owned here.
     unsafe { crate::url::hew_url_free(url) };
-
-    let cidr = CString::new("192.0.2.129/25").unwrap();
-    assert_transferred(
-        "hew_cidr_network",
-        // SAFETY: `cidr` is a live NUL-terminated string.
-        || unsafe { crate::ipnet::hew_cidr_network(cidr.as_ptr()) },
-        |text| assert_eq!(text.to_str().unwrap(), "192.0.2.128"),
-    );
-    assert_transferred(
-        "hew_cidr_broadcast",
-        // SAFETY: `cidr` is a live NUL-terminated string.
-        || unsafe { crate::ipnet::hew_cidr_broadcast(cidr.as_ptr()) },
-        |text| assert_eq!(text.to_str().unwrap(), "192.0.2.255"),
-    );
 }
 
 /// Returned text must outlive sibling releases, later calls and its value container.
@@ -125,8 +172,7 @@ fn assert_managed_value_results<T>(
     free_string: unsafe extern "C" fn(*mut hew_cabi::string::HewString),
     decode: impl Fn(&str) -> String,
 ) {
-    use crate::test_string::ManagedString;
-    use hew_cabi::string::{string_as_str, string_release, string_retain};
+    use hew_cabi::string::string_retain;
 
     for expected in ["", "clé\0雪\0fin"] {
         let input = ManagedString::new(expected);

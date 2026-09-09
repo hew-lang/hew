@@ -4095,7 +4095,7 @@ release-symbol = ""
 discharge-depth = "none"
 
 # IP / CIDR — hew-std/src/ipnet.rs. Read-only string predicates; network and
-# broadcast return str_to_malloc strings.
+# broadcast return owned managed strings.
 [[ownership.contracts]]
 symbol = "hew_cidr_broadcast"
 result = "fresh"

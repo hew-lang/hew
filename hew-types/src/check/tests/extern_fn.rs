@@ -198,7 +198,7 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     let Item::Import(import) = &mut net.program.items[0].0 else {
         panic!("expected import");
     };
-    import.resolved_items = Some(stream.program.items.clone());
+    import.resolved_items = Some(stream.program.items.clone().into());
 
     let root_id = ModuleId::root();
     let stream_id = ModuleId::new(vec!["std".to_string(), "stream".to_string()]);

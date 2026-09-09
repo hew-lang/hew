@@ -252,7 +252,7 @@ pub(super) fn make_user_import(
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(items),
+        resolved_items: Some(items.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }

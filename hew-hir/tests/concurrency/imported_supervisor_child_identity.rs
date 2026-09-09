@@ -50,7 +50,7 @@ fn file_import_program(
             _ => None,
         })
         .expect("root file import");
-    import.resolved_items = Some(imported_items.clone());
+    import.resolved_items = Some(imported_items.clone().into());
     import.resolved_item_source_paths = vec![worker_path.clone(); imported_items.len()];
     import.resolved_source_paths = vec![worker_path.clone()];
 
@@ -130,7 +130,7 @@ fn actor_import_program(
             selection_trailing_comma: false,
             module_alias: module_alias.map(str::to_string),
             file_path: None,
-            resolved_items: Some(imported.program.items.clone()),
+            resolved_items: Some(imported.program.items.clone().into()),
             resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         }),

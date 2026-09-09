@@ -64,7 +64,7 @@ fn make_user_import(
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(items),
+        resolved_items: Some(items.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }
@@ -320,7 +320,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = isolated_checker();
     let output = checker.check_program(&root.program);

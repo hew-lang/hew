@@ -46,7 +46,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
             if import.path == ["m"] {
-                import.resolved_items = Some(imported_items.clone());
+                import.resolved_items = Some(imported_items.clone().into());
             }
         }
     }

@@ -2676,7 +2676,7 @@ fn root_imported_fn_rewrites(
             continue;
         };
         let module_full_path = decl.path.join(".");
-        for (resolved_item, _) in resolved_items {
+        for (resolved_item, _) in resolved_items.iter() {
             let Item::Function(function) = resolved_item else {
                 continue;
             };
@@ -3518,7 +3518,7 @@ pub fn lower_program_with_mono_cap(
             continue;
         };
         let module_full_path = decl.path.join(".");
-        for (resolved_item, _) in resolved_items {
+        for (resolved_item, _) in resolved_items.iter() {
             let Item::Const(const_decl) = resolved_item else {
                 continue;
             };
@@ -36857,7 +36857,7 @@ impl Widget {
         };
         let imported = hew_parser::parse(module_source);
         assert!(imported.errors.is_empty(), "{:?}", imported.errors);
-        import.resolved_items = Some(imported.program.items.clone());
+        import.resolved_items = Some(imported.program.items.clone().into());
         import.resolved_source_paths = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -37740,7 +37740,7 @@ impl Widget {
         );
         for (item, _) in &mut root.program.items {
             if let Item::Import(import) = item {
-                import.resolved_items = Some(source.program.items.clone());
+                import.resolved_items = Some(source.program.items.clone().into());
             }
         }
 
@@ -37886,15 +37886,18 @@ impl Widget {
                 let Item::Import(import) = item else {
                     continue;
                 };
-                import.resolved_items = Some(match import.path.as_slice() {
-                    [package, module] if package == "hew" && module == "alpha" => {
-                        alpha.program.items.clone()
+                import.resolved_items = Some(
+                    match import.path.as_slice() {
+                        [package, module] if package == "hew" && module == "alpha" => {
+                            alpha.program.items.clone()
+                        }
+                        [package, module] if package == "hew" && module == "beta" => {
+                            beta.program.items.clone()
+                        }
+                        path => panic!("unexpected import path: {path:?}"),
                     }
-                    [package, module] if package == "hew" && module == "beta" => {
-                        beta.program.items.clone()
-                    }
-                    path => panic!("unexpected import path: {path:?}"),
-                });
+                    .into(),
+                );
             }
 
             let root_id = ModuleId::root();

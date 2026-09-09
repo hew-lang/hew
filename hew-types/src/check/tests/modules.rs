@@ -1655,7 +1655,7 @@ mod warning_source_attribution {
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
-            resolved_items: Some(vec![]),
+            resolved_items: Some(vec![].into()),
             resolved_item_source_paths: vec![],
             resolved_source_paths: vec![],
         }
@@ -1938,7 +1938,7 @@ mod warning_source_attribution {
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
-            resolved_items: Some(vec![]),
+            resolved_items: Some(vec![].into()),
             resolved_item_source_paths: vec![],
             resolved_source_paths: vec![],
         }
@@ -2113,7 +2113,7 @@ mod warning_source_attribution {
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
-            resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)]),
+            resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)].into()),
             resolved_item_source_paths: vec![],
             resolved_source_paths: vec![],
         };
@@ -2230,7 +2230,7 @@ mod warning_source_attribution {
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
-            resolved_items: Some(vec![(Item::Trait(fake_trait.clone()), 0..30)]),
+            resolved_items: Some(vec![(Item::Trait(fake_trait.clone()), 0..30)].into()),
             resolved_item_source_paths: vec![],
             resolved_source_paths: vec![],
         };

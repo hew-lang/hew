@@ -29,7 +29,7 @@ fn lower_encoding(format: &str, body: &str) -> hew_sir::SemModule {
     let Item::Import(import) = &mut imported.program.items[0].0 else {
         panic!("encoding import fixture")
     };
-    import.resolved_items = Some(parsed.program.items.clone());
+    import.resolved_items = Some(parsed.program.items.clone().into());
     import.resolved_source_paths = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()

@@ -1223,7 +1223,7 @@ mod tests {
                         selection_trailing_comma: false,
                         module_alias: module_alias.map(str::to_string),
                         file_path: None,
-                        resolved_items: Some(parsed.program.items),
+                        resolved_items: Some(parsed.program.items.into()),
                         resolved_item_source_paths: Vec::new(),
                         resolved_source_paths: Vec::new(),
                     }),

@@ -1,0 +1,11 @@
+[[case]]
+id = "nominal-import-payload"
+intent = "A dotted imported module preserves nominal record and enum payload identity through construction, return and pattern matching."
+source = "cases/nominal-import-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "delivered\n"
+stderr = ""
+exit = 0

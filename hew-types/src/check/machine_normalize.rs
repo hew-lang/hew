@@ -1370,7 +1370,7 @@ fn apply_import_updates(items: &mut [Spanned<Item>], updates: Vec<ImportUpdate>)
         let Item::Import(decl) = &mut items[ordinal].0 else {
             unreachable!("import projection preserves item kinds")
         };
-        decl.resolved_items = Some(resolved_items);
+        decl.resolved_items = Some(resolved_items.into());
         decl.resolved_item_source_paths = sources;
     }
 }

@@ -28,7 +28,7 @@ fn resource_module(module_name: &str, source: &str, caller: &str) -> hew_sir::Se
     let Item::Import(import) = &mut imported.program.items[0].0 else {
         panic!("resource import fixture")
     };
-    import.resolved_items = Some(parsed.program.items.clone());
+    import.resolved_items = Some(parsed.program.items.clone().into());
     let source_path = match module_name {
         "std.process" => "std/process.hew",
         "std.net" => "std/net/net.hew",

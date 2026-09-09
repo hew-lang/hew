@@ -10158,7 +10158,7 @@ impl Checker {
         let Some(items) = decl.resolved_items.as_ref() else {
             return candidates;
         };
-        for (item, _) in items {
+        for (item, _) in items.iter() {
             let mut push = |name: &str| candidates.push((name.to_string(), name.to_string()));
             match item {
                 Item::Function(item) if item.visibility.is_pub() => push(&item.name),
@@ -10542,7 +10542,7 @@ impl Checker {
                     // does.  Bare-name publication stays gated on the spec in
                     // `publish_imported_hew_bindings`, so a plain module import
                     // still publishes only the `net.` namespace.
-                    let resolved_items = decl.resolved_items.as_ref().or_else(|| {
+                    let resolved_items = decl.resolved_items.as_deref().or_else(|| {
                         (!registry_source_items.is_empty()).then_some(&registry_source_items)
                     });
                     if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
@@ -11813,7 +11813,7 @@ impl Checker {
                                 );
                             }
                             if let Some(resolved_items) = &decl.resolved_items {
-                                for (imported_item, _) in resolved_items {
+                                for (imported_item, _) in resolved_items.iter() {
                                     if let Item::Trait(tr) = imported_item {
                                         if tr.visibility.is_pub() {
                                             self.trait_import_bindings.insert(
@@ -12923,6 +12923,26 @@ impl Checker {
     ) {
         let qualified = format!("{module_full_path}.{name}");
         let mut published = source_def.clone();
+        published.fields = published
+            .fields
+            .iter()
+            .map(|(field, ty)| {
+                (
+                    field.clone(),
+                    self.qualify_source_member_ty(module_full_path, ty),
+                )
+            })
+            .collect();
+        published.variants = published
+            .variants
+            .iter()
+            .map(|(variant, definition)| {
+                (
+                    variant.clone(),
+                    self.qualify_source_variant_def(module_full_path, definition),
+                )
+            })
+            .collect();
         if let Some(existing) = self.type_defs.get(&qualified) {
             for (method_name, method_sig) in &existing.methods {
                 published
@@ -12952,6 +12972,67 @@ impl Checker {
         self.registry
             .register_type_params(qualified.clone(), published.type_params.clone());
         self.handle_bearing_dirty = true;
+    }
+
+    /// A source declaration's members are registered while their module owns
+    /// bare sibling names. Preserve that owner when publishing the declaration
+    /// for an importer. Later checker phases run in the importer's scope, where
+    /// a bare sibling can instead denote a builtin or an unimported export.
+    fn qualify_source_member_ty(&self, module_full_path: &str, ty: &Ty) -> Ty {
+        let qualified_children =
+            ty.map_children_pub(&|child| self.qualify_source_member_ty(module_full_path, child));
+        let Ty::Named {
+            name,
+            args,
+            builtin,
+        } = qualified_children
+        else {
+            return qualified_children;
+        };
+        if name.contains('.') {
+            return Ty::Named {
+                name,
+                args,
+                builtin,
+            };
+        }
+        let canonical = format!("{module_full_path}.{name}");
+        if self.type_defs.contains_key(&canonical) {
+            Ty::named(canonical, args)
+        } else {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            }
+        }
+    }
+
+    fn qualify_source_variant_def(
+        &self,
+        module_full_path: &str,
+        definition: &VariantDef,
+    ) -> VariantDef {
+        match definition {
+            VariantDef::Unit => VariantDef::Unit,
+            VariantDef::Tuple(fields) => VariantDef::Tuple(
+                fields
+                    .iter()
+                    .map(|field| self.qualify_source_member_ty(module_full_path, field))
+                    .collect(),
+            ),
+            VariantDef::Struct(fields) => VariantDef::Struct(
+                fields
+                    .iter()
+                    .map(|(field, ty)| {
+                        (
+                            field.clone(),
+                            self.qualify_source_member_ty(module_full_path, ty),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
     }
 
     /// Retire the temporary source-leaf and lexical-module keys for an imported

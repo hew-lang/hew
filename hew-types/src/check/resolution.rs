@@ -3319,7 +3319,17 @@ impl Checker {
                 // last-write-wins residue of a cross-module same-name collision and
                 // must not be treated as an unambiguous resolution.
                 let is_local = self.local_type_defs.contains(name.as_str())
-                    || self.source_type_defs.contains(name.as_str());
+                    || self.source_type_defs.contains(name.as_str())
+                    // The embedded prelude's body module contains its impls,
+                    // while its declarations were registered separately. An
+                    // exact declaration owned by the active module is still
+                    // local even when it is absent from that module's AST
+                    // items. Never infer this from a bare global definition:
+                    // another module may export the same name.
+                    || (!name.contains('.')
+                        && self.current_module.as_ref().is_some_and(|module| {
+                            self.type_defs.contains_key(&format!("{module}.{name}"))
+                        }));
                 // Fail closed under qualified-by-default: a bare reference
                 // published by more than one module is ambiguous, and one
                 // exported by some module(s) but published by none is not in

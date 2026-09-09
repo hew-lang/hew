@@ -222,7 +222,7 @@ pub(super) fn populate_user_module_imports_impl(
                     let item_count = module_items.len();
                     decl.resolved_source_paths = vec![candidate.clone()];
                     decl.resolved_item_source_paths = vec![candidate.clone(); item_count];
-                    decl.resolved_items = Some(module_items);
+                    decl.resolved_items = Some(module_items.into());
                 }
                 // Stop after the first candidate that yielded source text,
                 // regardless of whether it parsed cleanly — otherwise we'd
@@ -518,7 +518,7 @@ pub(super) fn extract_module_info(
                 graph
                     .add_module(Module {
                         id: module_id,
-                        items: resolved_items.clone(),
+                        items: resolved_items.as_ref().clone(),
                         imports: child_imports,
                         source_paths,
                         doc: None,

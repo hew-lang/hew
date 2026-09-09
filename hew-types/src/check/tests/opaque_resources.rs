@@ -332,7 +332,7 @@ fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
                     declaration.path.join(".")
                 )
             });
-            declaration.resolved_items = Some(resolved.clone());
+            declaration.resolved_items = Some(resolved.clone().into());
             imports.push(hew_parser::module::ModuleImport {
                 target: ModuleId::new(declaration.path.clone()),
                 spec: declaration.spec.clone(),
@@ -838,7 +838,7 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
                 .iter()
                 .position(|candidate| candidate.path == declaration.path)
                 .expect("test import target must be present in the graph");
-            declaration.resolved_items = Some(parsed_items[target_index].clone());
+            declaration.resolved_items = Some(parsed_items[target_index].clone().into());
             imports.push(hew_parser::module::ModuleImport {
                 target: module_ids[target_index].clone(),
                 spec: declaration.spec.clone(),

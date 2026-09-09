@@ -1145,7 +1145,7 @@ mod every_attribute {
                 _ => None,
             })
             .expect("root should have an import");
-        import_decl.resolved_items = Some(handles_src.program.items.clone());
+        import_decl.resolved_items = Some(handles_src.program.items.clone().into());
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&root.program);
@@ -1201,7 +1201,7 @@ mod every_attribute {
                 _ => None,
             })
             .expect("root should have an import");
-        import_decl.resolved_items = Some(handles_src.program.items.clone());
+        import_decl.resolved_items = Some(handles_src.program.items.clone().into());
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&root.program);

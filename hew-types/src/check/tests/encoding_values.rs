@@ -253,7 +253,7 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
             let Item::Import(import) = &mut items[0].0 else {
                 panic!("import fixture")
             };
-            import.resolved_items = Some(parsed_items(VALUE_SOURCE));
+            import.resolved_items = Some(parsed_items(VALUE_SOURCE).into());
             let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
@@ -294,7 +294,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     let Item::Import(import) = &mut relay[0].0 else {
         panic!("import fixture")
     };
-    import.resolved_items = Some(parsed_items(VALUE_SOURCE));
+    import.resolved_items = Some(parsed_items(VALUE_SOURCE).into());
     import.resolved_source_paths = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -303,7 +303,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     let Item::Import(import) = &mut items[0].0 else {
         panic!("import fixture")
     };
-    import.resolved_items = Some(relay.clone());
+    import.resolved_items = Some(relay.clone().into());
     import.resolved_item_source_paths = vec![relay_path.clone(); relay.len()];
     import.resolved_source_paths = vec![relay_path.clone()];
     let root = ModuleId::root();
@@ -363,7 +363,7 @@ fn encoding_value_import_alias_cannot_promote_a_same_named_user_resource() {
     let Item::Import(import) = &mut items[0].0 else {
         panic!("import fixture")
     };
-    import.resolved_items = Some(parsed_items("#[resource] #[opaque] pub type Value {}"));
+    import.resolved_items = Some(parsed_items("#[resource] #[opaque] pub type Value {}").into());
     items.extend(parsed_items(
         "fn identity(value: json.Value) -> json.Value { value }",
     ));
@@ -457,7 +457,7 @@ fn user_extern_with_canonical_value_arguments_never_gains_encoding_authority() {
     let Item::Import(import) = &mut items[0].0 else {
         panic!("import fixture")
     };
-    import.resolved_items = Some(parsed_items(VALUE_SOURCE));
+    import.resolved_items = Some(parsed_items(VALUE_SOURCE).into());
     import.resolved_source_paths = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -509,7 +509,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
         let Item::Import(import) = &mut items[0].0 else {
             panic!("import fixture")
         };
-        import.resolved_items = Some(parsed_items(&format!(
+        let imported = parsed_items(&format!(
             r"
             {VALUE_SOURCE}
             impl Value {{
@@ -518,12 +518,12 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
                 }}
             }}
         "
-        )));
+        ));
+        import.resolved_items = Some(imported.clone().into());
         import.resolved_source_paths = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join(format!("std/encoding/{format}/{format}.hew"))];
-        let imported = import.resolved_items.clone().unwrap();
         let source_paths = import.resolved_source_paths.clone();
         let root = ModuleId::root();
         let module = ModuleId::new(vec![

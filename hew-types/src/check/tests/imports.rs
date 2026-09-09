@@ -141,7 +141,7 @@ fn peer_files_resolve_same_module_alias_from_their_own_imports() {
                 _ => None,
             })
             .expect("peer import");
-        import.resolved_items = Some(resolved);
+        import.resolved_items = Some(resolved.into());
     }
 
     let root_id = ModuleId::root();
@@ -231,7 +231,7 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
             _ => None,
         })
         .expect("peer import");
-    import.resolved_items = Some(failure.program.items.clone());
+    import.resolved_items = Some(failure.program.items.clone().into());
     import.resolved_item_source_paths =
         std::iter::repeat_n(failure_path.clone(), failure.program.items.len()).collect();
     import.resolved_source_paths = vec![failure_path.clone()];
@@ -363,7 +363,7 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
             _ => None,
         })
         .expect("consumer import");
-    consumer_import.resolved_items = Some(color.program.items.clone());
+    consumer_import.resolved_items = Some(color.program.items.clone().into());
     consumer_import.resolved_item_source_paths =
         std::iter::repeat_n(color_path.clone(), color_item_count).collect();
     consumer_import.resolved_source_paths = vec![color_path.clone()];
@@ -378,7 +378,7 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
             _ => None,
         })
         .expect("root import");
-    root_import.resolved_items = Some(consumer.program.items.clone());
+    root_import.resolved_items = Some(consumer.program.items.clone().into());
     root_import.resolved_item_source_paths =
         std::iter::repeat_n(consumer_path.clone(), consumer_item_count).collect();
     root_import.resolved_source_paths = vec![consumer_path.clone()];
@@ -458,7 +458,7 @@ fn failed_member_lookup_explains_lexical_module_shadowing() {
             _ => None,
         })
         .expect("fixture import");
-    import.resolved_items = Some(vec![]);
+    import.resolved_items = Some(vec![].into());
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&root.program);
@@ -494,7 +494,7 @@ fn check_resolved_testffi_import(root_source: &str) -> (Checker, TypeCheckOutput
             _ => None,
         })
         .expect("fixture import");
-    import.resolved_items = Some(module.program.items);
+    import.resolved_items = Some(module.program.items.into());
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&root.program);
@@ -525,12 +525,12 @@ fn check_resolved_closableerr_import(
         };
         match import.path.as_slice() {
             [package, module] if package == "hew" && module == "closableerr" => {
-                import.resolved_items = Some(primary.program.items.clone());
+                import.resolved_items = Some(primary.program.items.clone().into());
             }
             [package, module]
                 if include_second_owner && package == "hew" && module == "closableerr2" =>
             {
-                import.resolved_items = Some(secondary.program.items.clone());
+                import.resolved_items = Some(secondary.program.items.clone().into());
             }
             _ => {}
         }
@@ -1043,11 +1043,14 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
         let Item::Import(import) = item else {
             continue;
         };
-        import.resolved_items = Some(if import.path.first().is_some_and(|part| part == "left") {
-            left.program.items.clone()
-        } else {
-            right.program.items.clone()
-        });
+        import.resolved_items = Some(
+            if import.path.first().is_some_and(|part| part == "left") {
+                left.program.items.clone()
+            } else {
+                right.program.items.clone()
+            }
+            .into(),
+        );
     }
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -1105,7 +1108,7 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
             _ => None,
         })
         .expect("fixture import");
-    import.resolved_items = Some(user_module.program.items);
+    import.resolved_items = Some(user_module.program.items.into());
     import.resolved_source_paths = vec![user_source.clone()];
     import.resolved_item_source_paths = vec![user_source; 2];
 
@@ -1551,7 +1554,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(resolved_items.clone()),
+        resolved_items: Some(resolved_items.clone().into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     };
@@ -2240,7 +2243,7 @@ fn caller() -> i64 {
             _ => None,
         })
         .expect("import decl should exist");
-    import_decl.resolved_items = Some(vec![(Item::Const(pub_const), 0..0)]);
+    import_decl.resolved_items = Some(vec![(Item::Const(pub_const), 0..0)].into());
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&root.program);
@@ -2294,7 +2297,7 @@ fn caller() -> i64 {
             _ => None,
         })
         .expect("import decl should exist");
-    import_decl.resolved_items = Some(vec![(Item::Const(pub_const), 0..0)]);
+    import_decl.resolved_items = Some(vec![(Item::Const(pub_const), 0..0)].into());
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&root.program);
@@ -2663,10 +2666,13 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
-        resolved_items: Some(vec![
-            (Item::Function(shared_decl.clone()), 0..5),
-            (Item::Function(shared_decl), 10..15),
-        ]),
+        resolved_items: Some(
+            vec![
+                (Item::Function(shared_decl.clone()), 0..5),
+                (Item::Function(shared_decl), 10..15),
+            ]
+            .into(),
+        ),
         resolved_item_source_paths: vec![
             std::path::PathBuf::from("pkg/pkg.hew"),
             std::path::PathBuf::from("pkg/helpers.hew"),
@@ -2702,17 +2708,20 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
-        resolved_items: Some(vec![(
-            Item::Function(make_pub_fn(
-                "shared",
-                vec![],
-                Some(TypeExpr::Named {
-                    name: "i32".to_string(),
-                    type_args: None,
-                }),
-            )),
-            0..5,
-        )]),
+        resolved_items: Some(
+            vec![(
+                Item::Function(make_pub_fn(
+                    "shared",
+                    vec![],
+                    Some(TypeExpr::Named {
+                        name: "i32".to_string(),
+                        type_args: None,
+                    }),
+                )),
+                0..5,
+            )]
+            .into(),
+        ),
         resolved_item_source_paths: vec![shared_source.clone()],
         resolved_source_paths: vec![shared_source],
     };
@@ -2758,7 +2767,7 @@ fn flat_file_imported_pub_fn_publishes_root_call_target() {
             _ => None,
         })
         .expect("root file import");
-    import.resolved_items = Some(helper.program.items.clone());
+    import.resolved_items = Some(helper.program.items.clone().into());
     import.resolved_item_source_paths =
         std::iter::repeat_n(helper_path.clone(), helper.program.items.len()).collect();
     import.resolved_source_paths = vec![helper_path.clone()];
@@ -2833,7 +2842,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(parsed.program.items),
+        resolved_items: Some(parsed.program.items.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: vec![fs_path],
     };
@@ -3108,6 +3117,67 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         output.fn_sigs.get("Has").map(|sig| sig.params.clone()),
         Some(vec![named_ty("myapp.mod_a.Payload")]),
         "the variant constructor `Has` must be re-keyed to take `myapp.mod_a.Payload`"
+    );
+}
+
+#[test]
+fn imported_enum_payload_keeps_its_defining_module_identity() {
+    // A module may declare an enum payload whose leaf collides with a prelude
+    // type. The payload belongs to the declaration module, even when a root
+    // program imports only the enclosing enum through its module namespace.
+    let delivery = make_pub_struct("Delivery", "payload");
+    let receive = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Enum,
+        name: "Receive".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+            name: "Message".to_string(),
+            kind: VariantKind::Tuple(vec![(
+                TypeExpr::Named {
+                    name: "Delivery".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            )]),
+            doc_comment: None,
+            span: 0..0,
+        })],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+        lang_item: None,
+    };
+    let import = make_user_import(
+        &["pkg"],
+        None,
+        vec![
+            (Item::TypeDecl(delivery), 0..0),
+            (Item::TypeDecl(receive), 0..0),
+        ],
+    );
+    let neighbour = make_user_import(
+        &["neighbour"],
+        None,
+        vec![(Item::TypeDecl(make_pub_struct("Delivery", "other")), 0..0)],
+    );
+    let output = check_items(vec![
+        (Item::Import(import), 0..0),
+        (Item::Import(neighbour), 0..0),
+    ]);
+
+    assert_eq!(
+        output
+            .type_defs
+            .get("pkg.Receive")
+            .and_then(|receive| receive.variants.get("Message")),
+        Some(&VariantDef::Tuple(vec![named_ty("pkg.Delivery")])),
+        "an imported enum payload must retain its defining-module identity, not a same-leaf neighbour or the prelude"
     );
 }
 
@@ -3525,7 +3595,7 @@ fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
     let Item::Import(import) = &mut consumer.program.items[0].0 else {
         panic!("consumer starts with an import");
     };
-    import.resolved_items = Some(foreign.program.items.clone());
+    import.resolved_items = Some(foreign.program.items.clone().into());
     import.resolved_source_paths = vec![foreign_path.clone()];
 
     let root_id = ModuleId::root();
@@ -3761,7 +3831,7 @@ fn test_file_import_private_items_not_visible() {
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("private_lib.hew".to_string()),
-        resolved_items: Some(resolved),
+        resolved_items: Some(resolved.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     };
@@ -3802,7 +3872,7 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
             if import.path.as_slice() == ["m"] {
-                import.resolved_items = Some(module.program.items.clone());
+                import.resolved_items = Some(module.program.items.clone().into());
             }
         }
     }
@@ -3850,7 +3920,7 @@ fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckO
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
             if import.path.as_slice() == ["m"] {
-                import.resolved_items = Some(module.program.items.clone());
+                import.resolved_items = Some(module.program.items.clone().into());
             }
         }
     }

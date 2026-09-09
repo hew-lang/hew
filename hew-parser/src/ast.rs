@@ -1075,8 +1075,10 @@ pub struct ImportDecl {
     pub file_path: Option<String>,
     /// Resolved items from the imported file (populated by `resolve_file_imports`).
     /// Used by the type checker to register user module items under the module namespace.
+    /// Shared imports retain the same immutable module body rather than cloning
+    /// their transitive dependency graph into a tree at every import edge.
     #[serde(skip)]
-    pub resolved_items: Option<Vec<Spanned<Item>>>,
+    pub resolved_items: Option<std::sync::Arc<Vec<Spanned<Item>>>>,
     /// Per-item source path for `resolved_items` (same length/order when present).
     #[serde(skip)]
     pub resolved_item_source_paths: Vec<std::path::PathBuf>,

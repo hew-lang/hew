@@ -537,7 +537,7 @@ fn module_local_dyn_trait_method_records_vtable_call() {
             _ => None,
         })
         .expect("root program must contain the shapes import");
-    import.resolved_items = Some(module_items.clone());
+    import.resolved_items = Some(module_items.clone().into());
 
     let root_id = ModuleId::root();
     let shapes_id = ModuleId::new(vec!["shapes".to_string()]);

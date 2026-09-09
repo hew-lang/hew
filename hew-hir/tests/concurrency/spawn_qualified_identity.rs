@@ -42,7 +42,7 @@ fn build_program(root_src: &str) -> Program {
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
-            resolved_items: Some(imported.program.items.clone()),
+            resolved_items: Some(imported.program.items.clone().into()),
             resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         }),

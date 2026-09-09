@@ -3026,7 +3026,7 @@ fn check_resolved_selective_import(child_source: &str, root_source: &str) -> Typ
             _ => None,
         })
         .expect("fixture import");
-    import.resolved_items = Some(child.program.items);
+    import.resolved_items = Some(child.program.items.into());
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&root.program)
 }
@@ -3153,7 +3153,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&root.program);
@@ -4099,7 +4099,7 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
             _ => None,
         })
     {
-        import_decl.resolved_items = Some(bench_module.program.items.clone());
+        import_decl.resolved_items = Some(bench_module.program.items.clone().into());
         import_decl.resolved_source_paths = vec![bench_path.clone()];
     }
 

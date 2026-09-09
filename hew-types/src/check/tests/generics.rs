@@ -3445,7 +3445,7 @@ fn generic_decl_bound_rejects_imported_type_annotation_site() {
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&root.program);

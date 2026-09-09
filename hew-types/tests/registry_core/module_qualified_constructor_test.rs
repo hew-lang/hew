@@ -43,7 +43,7 @@ fn typecheck_with_module(root_source: &str, module_source: &str) -> hew_types::T
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = isolated_checker();
     checker.check_program(&root.program)
@@ -86,7 +86,7 @@ fn typecheck_with_modules(
                     .eq(path.iter().copied())
             })
             .expect("every fixture import should have module source");
-        import.resolved_items = Some(items.clone());
+        import.resolved_items = Some(items.clone().into());
     }
 
     let mut checker = isolated_checker();

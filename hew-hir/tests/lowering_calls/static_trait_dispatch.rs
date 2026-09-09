@@ -82,7 +82,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
         if let Item::Import(import) = item {
             let full_path = import.path.join("::");
             if let Some(items) = source_items.get(&full_path) {
-                import.resolved_items = Some(items.clone());
+                import.resolved_items = Some(items.clone().into());
             }
         }
     }

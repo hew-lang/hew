@@ -831,7 +831,7 @@ pub struct CheckOutput {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedImport {
-    items: Vec<Spanned<Item>>,
+    items: std::sync::Arc<Vec<Spanned<Item>>>,
     item_source_paths: Vec<PathBuf>,
     source_paths: Vec<PathBuf>,
 }
@@ -1982,7 +1982,7 @@ fn extract_module_info(
                 }
                 let module = Module {
                     id: module_id,
-                    items: resolved.clone(),
+                    items: resolved.as_ref().clone(),
                     imports: child_imports,
                     source_paths,
                     doc: None,
@@ -2409,7 +2409,7 @@ fn build_resolved_import_internal(
             peer_canonical.clone(),
             peer_resolved.items.len(),
         ));
-        import_items.extend(peer_resolved.items);
+        import_items.extend(peer_resolved.items.iter().cloned());
         source_paths.push(peer_canonical);
     }
 
@@ -2428,7 +2428,7 @@ fn build_resolved_import_internal(
     }
 
     Ok(ResolvedImport {
-        items: import_items,
+        items: import_items.into(),
         item_source_paths: import_item_source_paths,
         source_paths,
     })

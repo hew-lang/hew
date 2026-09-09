@@ -8052,7 +8052,9 @@ mod tests {
                 ty: ty.clone(),
                 own: if borrowed { OwnKind::Guaranteed } else { own },
             });
-            let (value, decision) = match contract.effect.resolve(facts.require(ty).unwrap().clone)
+            let (value, decision) = match contract
+                .effect
+                .resolve_operand(facts.require(ty).unwrap().class)
             {
                 RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
                 RuntimeArgumentEffect::Borrow => (ValueId(index), BoundaryDecision::Borrow),

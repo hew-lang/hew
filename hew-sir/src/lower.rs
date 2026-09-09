@@ -7701,6 +7701,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
+    /// Lower one adopted runtime operand that still has a copy recipe into the
+    /// independent owner the operation takes. The binding is read as a copy, so
+    /// the caller keeps its own value; that copy transfers rather than being
+    /// cloned again inside the operation and destroyed on the normal edge.
+    fn lower_adopted_copy(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
+        let value = lower_initial_value_transfer(
+            self,
+            argument,
+            "runtime operand adoption",
+            OwnedBindingUse::Copy,
+        )?;
+        if self.value_own_kind(value) != Some(OwnKind::Owned) {
+            return Err("an adopted runtime operand requires an owned value".into());
+        }
+        self.owned_live.remove(&value);
+        self.emit(
+            argument,
+            SemOpKind::Move {
+                source: Operand { value },
+            },
+        )
+    }
+
     fn require_consuming_capture(&self, expression: &HirExpr) -> Result<(), String> {
         let mut source = expression;
         while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
@@ -8446,11 +8469,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .iter()
             .zip(parameter_types)
             .map(|(argument, ty)| {
-                argument
-                    .effect
-                    .resolve(self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].clone)
+                argument.effect.resolve_operand(
+                    self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].class,
+                )
             })
             .collect::<Vec<_>>();
+        // An adopted operand that still has a copy recipe keeps the caller's
+        // own value: lowering reads the binding as an independent owner and
+        // transfers that owner, rather than consuming what the caller named.
+        let copied_ingress = contract
+            .arguments
+            .iter()
+            .zip(parameter_types)
+            .map(|(argument, ty)| {
+                argument.effect == RuntimeArgumentEffect::Value
+                    && self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].clone
+                        != hew_types::CloneKind::None
+            })
+            .collect::<Vec<bool>>();
         let read_only = effects
             .iter()
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
@@ -8502,6 +8538,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         // The receiver is retaken after later arguments finish;
                         // no operand or snapshot is emitted for it here.
                         continue;
+                    }
+                    RuntimeArgumentEffect::Move if copied_ingress[index] => {
+                        (self.lower_adopted_copy(arg)?, crate::BoundaryDecision::Move)
                     }
                     RuntimeArgumentEffect::Move => (
                         self.lower_consuming_value(arg)?,

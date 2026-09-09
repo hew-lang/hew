@@ -264,17 +264,29 @@ pub enum RuntimeArgumentEffect {
     Borrow,
     Copy,
     Move,
-    /// Clone a value with a copy recipe; otherwise transfer its unique owner.
+    /// Adopt the operand: the operation owns it once the call returns normally.
     Value,
 }
 
 impl RuntimeArgumentEffect {
-    /// Resolve value ingress from the checker-authored copy capability.
+    /// Resolve one operand's ownership action from the checker-authored class.
+    ///
+    /// Value ingress means the operation adopts its operand, so an owned
+    /// operand transfers. Lowering reads a copyable binding as an independent
+    /// owner first, which leaves the caller's own value intact and hands the
+    /// operation the copy it would otherwise clone a second time and destroy
+    /// on the call's normal edge. A bit-copied operand owns nothing to
+    /// transfer and is read in place.
     #[must_use]
-    pub const fn resolve(self, clone: crate::CloneKind) -> Self {
+    pub const fn resolve_operand(self, class: crate::ValueClass) -> Self {
         match self {
-            Self::Value if matches!(clone, crate::CloneKind::None) => Self::Move,
-            Self::Value => Self::Borrow,
+            Self::Value => match class {
+                crate::ValueClass::BitCopy | crate::ValueClass::View => Self::Borrow,
+                crate::ValueClass::CowValue
+                | crate::ValueClass::PersistentShare
+                | crate::ValueClass::AffineResource
+                | crate::ValueClass::Linear => Self::Move,
+            },
             effect => effect,
         }
     }

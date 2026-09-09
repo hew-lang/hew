@@ -3952,7 +3952,7 @@ fn verify_runtime_call_terminator(
         else {
             continue;
         };
-        let expected_decision = match expected.effect.resolve(facts.clone) {
+        let expected_decision = match expected.effect.resolve_operand(facts.class) {
             RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
             RuntimeArgumentEffect::Borrow => crate::BoundaryDecision::Borrow,
             RuntimeArgumentEffect::Copy => crate::BoundaryDecision::Copy,

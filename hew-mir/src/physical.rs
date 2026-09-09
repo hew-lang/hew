@@ -8235,7 +8235,7 @@ fn verify_terminator(
                 if actual_effect
                     != expected
                         .effect
-                        .resolve(semantic_type_facts(module, &slot(id)?.ty)?.clone)
+                        .resolve_operand(semantic_type_facts(module, &slot(id)?.ty)?.class)
                 {
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} argument disagrees with its semantic contract"

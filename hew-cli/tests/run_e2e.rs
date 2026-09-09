@@ -5936,66 +5936,6 @@ fn run_fork_args_spawn_scribbled_no_freed_read() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Init-closure wall: a supervised child whose actor init-parameter type is not
-/// reproducible by the init-closure restart thunk must be rejected at `hew
-/// check` with `E_SUPERVISOR_INIT_ARG_NON_BITCOPY` before reaching codegen.
-///
-/// Admitted types (the thunk can reproduce them on every restart):
-///   - scalar `BitCopy` primitives (loaded directly)
-///   - owned `string` / `bytes` (deep-cloned per incarnation)
-///
-/// Rejected types (clone-in-thunk codegen not wired, or structurally
-/// forbidden for handles):
-///   - owned collections (`Vec`, `HashMap`, `HashSet`)
-///   - user records, enums, tuples, type aliases, generic types
-///   - `#[resource]` handle types
-#[test]
-fn check_supervisor_init_arg_non_bitcopy_rejected() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/supervisor_init_arg_non_bitcopy.hew");
-    assert!(
-        combined.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"),
-        "expected E_SUPERVISOR_INIT_ARG_NON_BITCOPY diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("Vec<i64>"),
-        "diagnostic must name the rejected type; got: {combined}"
-    );
-    assert!(
-        combined.contains("init args are re-produced by the init-closure restart model"),
-        "diagnostic must describe the init-closure model; got: {combined}"
-    );
-}
-
-#[test]
-fn check_supervisor_init_arg_non_bitcopy_evasions_rejected() {
-    require_codegen();
-    let combined =
-        check_fails("tests/vertical-slice/reject/supervisor_init_arg_non_bitcopy_evasions.hew");
-    assert!(
-        combined.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"),
-        "expected E_SUPERVISOR_INIT_ARG_NON_BITCOPY diagnostic; got: {combined}"
-    );
-    // Each still-walled type must appear in the combined diagnostic output.
-    // `string` (now admitted via deep-clone in the init thunk) is not listed.
-    for expected_type in [
-        "Option<string>",
-        "(string, i64)",
-        "Wrapper",
-        "HashMap<string, i64>",
-        "HashSet<i64>",
-    ] {
-        assert!(
-            combined.contains(expected_type),
-            "diagnostic must name rejected type `{expected_type}`; got: {combined}"
-        );
-    }
-    assert!(
-        combined.contains("init args are re-produced by the init-closure restart model"),
-        "diagnostic must describe the init-closure model; got: {combined}"
-    );
-}
-
 #[test]
 fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     require_codegen();

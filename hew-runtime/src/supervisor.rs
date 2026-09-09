@@ -2920,8 +2920,8 @@ unsafe fn restart_child_from_spec_expected(
     // expression against the supervisor's config. This REPLACES the byte-copy
     // template / clone-fn template paths below: there is no captured template
     // to clone, so each incarnation gets fresh, unaliased owned values — the
-    // structural fix for the byte-copy-template-replay aliasing hazard the
-    // checker walled off (E_SUPERVISOR_INIT_ARG_NON_BITCOPY).
+    // structural fix for the byte-copy-template-replay aliasing hazard that
+    // the retired init-arg bit-copy refusal used to wall off in the checker.
     //
     // Ownership/drop contract (the memory-safety crux):
     //  - The thunk returns a fresh, fully-owned state wrapper (`res.state`).
@@ -3031,12 +3031,11 @@ unsafe fn restart_child_from_spec_expected(
             // registered `state_drop_fn` means the actor's state owns heap
             // fields, so byte-copying the template would alias those owned
             // pointers between the template and every spawned incarnation —
-            // a double-free on teardown. The checker
-            // (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) rejects this at compile
-            // time for codegen-emitted actors; a C-ABI caller that bypasses
-            // the checker and registers `state_drop_fn` without
-            // `state_clone_fn` gets a refused restart here instead of a
-            // silent alias (#1893).
+            // a double-free on teardown. Codegen-emitted actors never reach
+            // this path: they carry an `init_fn` thunk that produces fresh
+            // owned values per incarnation. A C-ABI caller that registers
+            // `state_drop_fn` without `state_clone_fn` gets a refused restart
+            // here instead of a silent alias (#1893).
             set_last_error(format!(
                 "hew_supervisor_set_child_state_drop: child {index} registered a state-drop \
                  function without a matching state-clone function; restart refused rather than \

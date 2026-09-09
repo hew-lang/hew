@@ -1,0 +1,98 @@
+// Supervised child init arguments take owned values like any other spawn.
+//
+// The supervisor keeps its own copy of each init argument in the child spec and
+// transfers a fresh copy at every incarnation, so an owned `string` and an owned
+// record survive a crash and restart with the same values. This replaces the
+// retired init-arg bit-copy refusal, which limited child init arguments to
+// bit-copyable scalars.
+//
+// The restart is observed with `await_restart`, the language-primitive restart
+// barrier: it suspends until the child slot is Live again and re-fetches the
+// now-Live handle.
+//
+// Exit code 12 proves:
+//   - the owned string and record reached the first incarnation intact,
+//   - a restart happened,
+//   - the second incarnation received the same owned values, not a moved-from
+//     or freed copy.
+
+type Profile {
+    region: string,
+    weight: i64,
+}
+
+actor Worker {
+    var label: string,
+    var profile: Profile,
+
+    // label.len() proves the owned string is a live, readable value in this
+    // incarnation rather than a dangling or emptied copy.
+    receive fn score() -> i64 {
+        label.len() + profile.weight
+    }
+
+    receive fn region_matches() -> bool {
+        profile.region == label
+    }
+
+    receive fn crash_me() {
+        panic("test crash — supervisor should restart this child");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child w: Worker(
+        label: "north",
+        profile: Profile { region: "north", weight: 7 },
+    ),
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+
+    // First incarnation: the owned record field matches the owned string, and
+    // "north".len() + 7 == 12.
+    match w.region_matches() {
+        .Err(_) => {
+            return 0;
+        },
+        .Ok(same) => {
+            if !same {
+                return 0;
+            }
+        },
+    }
+    match w.score() {
+        .Err(_) => {
+            return 0;
+        },
+        .Ok(v) => {
+            if v != 12 {
+                return 0;
+            }
+        },
+    }
+
+    let _ = w.crash_me();
+    let w2 = await_restart sup.w;
+
+    // The second incarnation must carry the same owned values.
+    match w2.region_matches() {
+        .Err(_) => {
+            return 0;
+        },
+        .Ok(same) => {
+            if !same {
+                return 0;
+            }
+        },
+    }
+    match w2.score() {
+        .Ok(v) => v,
+        .Err(_) => 0,
+    }
+}

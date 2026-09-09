@@ -756,7 +756,7 @@ fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
 }
 
 #[test]
-fn record_with_bytes_field_eq_is_accepted() {
+fn record_with_bytes_field_eq_and_hash_are_accepted() {
     let output = check_source(
         r"
         type Packet { data: bytes }
@@ -772,7 +772,35 @@ fn record_with_bytes_field_eq_is_accepted() {
         )))
         .unwrap();
     assert!(facts.eq);
-    assert!(!facts.hash, "bytes equality must not grant record hashing");
+    assert!(
+        facts.hash,
+        "bytes hashes like string, so a record holding one hashes too"
+    );
+}
+
+/// Negative control for the row above: a record whose members are not all
+/// hashable does not become hashable just because `bytes` is.
+#[test]
+fn record_with_non_hashable_field_is_not_hashable() {
+    let output = check_source(
+        r"
+        type Sample { data: bytes, tags: Vec<string> }
+        fn same(a: Sample, b: Sample) -> bool { a == b }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let facts = output
+        .type_facts
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+            "Sample",
+            vec![],
+        )))
+        .unwrap();
+    assert!(facts.eq);
+    assert!(
+        !facts.hash,
+        "a record holding a non-hashable member must not publish Hash"
+    );
 }
 
 #[test]
@@ -2382,7 +2410,7 @@ fn selected_eq_admits_owned_option_result_composition() {
 }
 
 #[test]
-fn selected_eq_admits_bytes_without_hash() {
+fn selected_eq_admits_bytes_with_hash() {
     let output = check_source(
         "fn compare(left: bytes, right: bytes) -> bool { left == right && !(left != right) }",
     );
@@ -2392,7 +2420,7 @@ fn selected_eq_admits_bytes_without_hash() {
         .get(&crate::TypeInstanceKey(ResolvedTy::Bytes))
         .unwrap();
     assert!(facts.eq);
-    assert!(!facts.hash);
+    assert!(facts.hash, "bytes carries Eq and Hash like string");
 }
 
 #[test]

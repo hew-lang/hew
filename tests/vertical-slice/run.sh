@@ -2190,6 +2190,13 @@ run_accept_expect_status "supervisor_child_after_restart" 7
 # uses the blocking contextless path (hew_supervisor_restart_await_blocking).
 run_accept_expect_status "supervisor_await_restart" 7
 
+# Supervised child init arguments take owned values like any other spawn: the
+# supervisor keeps its own copy in the child spec and transfers a fresh copy at
+# each incarnation. Exit 12 = "north".len() + weight 7, checked before the crash
+# and again on the await_restart-ed child, so a moved-from or freed owned value
+# in the second incarnation fails the test.
+run_accept_expect_status "supervisor_owned_init_args" 12
+
 # v0.6 init-closure restart model — SCALAR config init. A supervised child's
 # initial state is derived from the supervisor's config
 # (`child cache: Cache(capacity: config.size)`): the codegen init thunk loads

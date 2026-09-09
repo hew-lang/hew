@@ -400,14 +400,26 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
-    let has_empty_lit = any_expr(
-        &lower_output2,
-        |e| matches!(&e.kind, HirExprKind::Literal(HirLiteral::String(s)) if s.is_empty()),
-    );
+    // The interpolant itself must lower to `Unsupported`, and no empty string
+    // may stand in its place. Scope the scan to this source's own f-string span:
+    // `std.builtins` bodies lower into every module and carry their own empty
+    // string literals (`NodeConfig.at` sets `key: ""`).
+    let substituted = any_expr(&lower_output2, |e| {
+        interp_span.contains(&e.span.start)
+            && matches!(&e.kind, HirExprKind::Literal(HirLiteral::String(s)) if s.is_empty())
+    });
     assert!(
-        !has_empty_lit,
+        !substituted,
         "fail-open violation: lowering must not substitute an empty \
          string for a missing Display dispatch"
+    );
+    let refused = any_expr(&lower_output2, |e| {
+        interp_span.contains(&e.span.start)
+            && matches!(&e.kind, HirExprKind::Unsupported(note) if note.contains("Widget::fmt"))
+    });
+    assert!(
+        refused,
+        "the interpolant must lower to an Unsupported node naming the missing impl"
     );
 }
 

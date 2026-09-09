@@ -1850,7 +1850,6 @@ dependencies = [
  "hew-compile",
  "hew-hir",
  "hew-lexer",
- "hew-mir",
  "hew-parser",
  "hew-types",
  "serde_json",

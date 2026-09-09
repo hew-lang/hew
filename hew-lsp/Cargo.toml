@@ -18,7 +18,6 @@ hew-analysis = { path = "../hew-analysis" }
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
-hew-mir = { path = "../hew-mir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 tower-lsp-server = "0.21.1"

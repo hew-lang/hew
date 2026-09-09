@@ -620,7 +620,7 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             walk_expr(&expr.0, &expr.1, visitor);
             walk_block(body, visitor);
             if let Some(eb) = else_body {
-                walk_block(eb, visitor);
+                walk_expr(&eb.0, &eb.1, visitor);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -781,7 +781,7 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             walk_expr(&expr.0, &expr.1, visitor);
             walk_block(body, visitor);
             if let Some(eb) = else_body {
-                walk_block(eb, visitor);
+                walk_expr(&eb.0, &eb.1, visitor);
             }
         }
         Expr::Match { scrutinee, arms } => {

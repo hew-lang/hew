@@ -105,7 +105,7 @@ fn find_in_stmt(
             find_in_expr(ctx, levels, &expr.0, out);
             find_in_block(ctx, levels, body, out);
             if let Some(else_body) = else_body {
-                find_in_block(ctx, levels, else_body, out);
+                find_in_expr(ctx, levels, &else_body.0, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -190,7 +190,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_expr(ctx, levels, &expr.0, out);
             find_in_block(ctx, levels, body, out);
             if let Some(else_body) = else_body {
-                find_in_block(ctx, levels, else_body, out);
+                find_in_expr(ctx, levels, &else_body.0, out);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -533,7 +533,9 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
         } => {
             bounded_expr_has_sleep(&expr.0)
                 || bounded_contains_sleep(body)
-                || else_body.as_ref().is_some_and(bounded_contains_sleep)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_body| bounded_expr_has_sleep(&else_body.0))
         }
         Stmt::Match { scrutinee, arms } => {
             bounded_expr_has_sleep(&scrutinee.0) || arms.iter().any(bounded_arm_has_sleep)
@@ -646,7 +648,9 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         } => {
             bounded_expr_has_sleep(&expr.0)
                 || bounded_contains_sleep(body)
-                || else_body.as_ref().is_some_and(bounded_contains_sleep)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_body| bounded_expr_has_sleep(&else_body.0))
         }
         Expr::Match { scrutinee, arms } => {
             bounded_expr_has_sleep(&scrutinee.0) || arms.iter().any(bounded_arm_has_sleep)
@@ -788,7 +792,7 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
                 || assigns_identifier(body, name)
                 || else_body
                     .as_ref()
-                    .is_some_and(|else_body| assigns_identifier(else_body, name))
+                    .is_some_and(|else_body| expr_assigns_identifier(&else_body.0, name))
         }
         Stmt::Match { scrutinee, arms } => {
             expr_assigns_identifier(&scrutinee.0, name)
@@ -868,7 +872,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                 || assigns_identifier(body, name)
                 || else_body
                     .as_ref()
-                    .is_some_and(|else_body| assigns_identifier(else_body, name))
+                    .is_some_and(|else_body| expr_assigns_identifier(&else_body.0, name))
         }
         Expr::Match { scrutinee, arms } => {
             expr_assigns_identifier(&scrutinee.0, name)

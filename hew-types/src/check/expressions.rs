@@ -512,7 +512,7 @@ impl Checker {
                 expr,
                 body,
                 else_body,
-            } => self.synthesize_iflet(pattern, expr, body, else_body.as_ref(), span),
+            } => self.synthesize_iflet(pattern, expr, body, else_body.as_deref(), span),
 
             // Match
             Expr::Match { scrutinee, arms } => {
@@ -1334,7 +1334,7 @@ impl Checker {
         pattern: &Spanned<Pattern>,
         expr: &Spanned<Expr>,
         body: &Block,
-        else_body: Option<&Block>,
+        else_body: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
         let scr_ty = self.synthesize(&expr.0, &expr.1);
@@ -1354,9 +1354,9 @@ impl Checker {
             diverges: Self::arm_skips_join(&then_ty),
         };
         self.env.pop_scope();
-        if let Some(block) = else_body {
+        if let Some(else_expr) = else_body {
             self.env.restore_ownership(&entry);
-            let else_ty = self.check_block(block, None);
+            let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
             let else_exit = BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
                 diverges: Self::arm_skips_join(&else_ty),
@@ -6108,9 +6108,8 @@ impl Checker {
                 let mut then_scopes = scopes.to_vec();
                 self.shadow_pattern_bindings(&pattern.1, &mut then_scopes);
                 self.scan_block_for_rc_param_return(body, &mut then_scopes);
-                if let Some(else_blk) = else_body {
-                    let mut else_scopes = scopes.to_vec();
-                    self.scan_block_for_rc_param_return(else_blk, &mut else_scopes);
+                if let Some(else_expr) = else_body {
+                    self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
                 }
             }
             Expr::Match { arms, .. } => {
@@ -6542,8 +6541,8 @@ impl Checker {
                         );
                     }
                     scopes.pop();
-                    if let Some(else_blk) = else_body {
-                        self.scan_block_for_rc_param_return(else_blk, scopes);
+                    if let Some(else_expr) = else_body {
+                        self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
                     }
                 }
                 Stmt::Match { arms, .. } => {
@@ -6723,9 +6722,10 @@ impl Checker {
                         method_name,
                         bindings,
                     );
-                    if let Some(block) = else_body {
-                        self.scan_block_for_owned_handle_field_return(
-                            block,
+                    if let Some(else_expr) = else_body {
+                        self.check_expr_for_owned_handle_field_return(
+                            &else_expr.0,
+                            &else_expr.1,
                             receiver_name,
                             type_name,
                             method_name,
@@ -6846,9 +6846,10 @@ impl Checker {
                     method_name,
                     bindings,
                 );
-                if let Some(block) = else_body {
-                    self.scan_block_for_owned_handle_field_return(
-                        block,
+                if let Some(else_expr) = else_body {
+                    self.check_expr_for_owned_handle_field_return(
+                        &else_expr.0,
+                        &else_expr.1,
                         receiver_name,
                         type_name,
                         method_name,
@@ -9185,8 +9186,8 @@ impl Checker {
             } => {
                 self.scan_expr_for_stack_hints(&expr.0);
                 self.scan_block_for_stack_hints(body);
-                if let Some(b) = else_body {
-                    self.scan_block_for_stack_hints(b);
+                if let Some(else_expr) = else_body {
+                    self.scan_expr_for_stack_hints(&else_expr.0);
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -9293,8 +9294,8 @@ impl Checker {
                 // so we call `scan_block_for_stack_hints` directly.
                 self.scan_expr_for_stack_hints(&expr.0);
                 self.scan_block_for_stack_hints(body);
-                if let Some(b) = else_body {
-                    self.scan_block_for_stack_hints(b);
+                if let Some(else_expr) = else_body {
+                    self.scan_expr_for_stack_hints(&else_expr.0);
                 }
             }
             Expr::Match { scrutinee, arms } => {

@@ -162,7 +162,10 @@ fn stmt_always_diverges(ctx: &LintCtx, stmt: &Stmt, _span: &Span) -> bool {
             body,
             else_body: Some(else_body),
             ..
-        } => block_always_diverges(ctx, body) && block_always_diverges(ctx, else_body),
+        } => {
+            block_always_diverges(ctx, body)
+                && expr_always_diverges(ctx, &else_body.0, &else_body.1)
+        }
         Stmt::Match { arms, .. } => {
             !arms.is_empty()
                 && arms

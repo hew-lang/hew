@@ -1613,8 +1613,8 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
             walk_pattern(pattern, owners);
             walk_expr(expr, owners);
             walk_block(body, owners);
-            if let Some(block) = else_body {
-                walk_block(block, owners);
+            if let Some(else_expr) = else_body {
+                walk_expr(else_expr, owners);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -1887,8 +1887,8 @@ fn walk_expr(
             walk_pattern(pattern, owners);
             walk_expr(expr, owners);
             walk_block(body, owners);
-            if let Some(block) = else_body {
-                walk_block(block, owners);
+            if let Some(else_expr) = else_body {
+                walk_expr(else_expr, owners);
             }
         }
         Expr::Match { scrutinee, arms } => {

@@ -202,6 +202,24 @@ impl Parser<'_> {
         })
     }
 
+    /// Parse the arm after an `if let`'s `else`, which the caller has already
+    /// consumed. The arm is an expression, so `if let` chains with `else if`
+    /// and `else if let` exactly as `if` does.
+    ///
+    /// `else if ..` is parsed as a statement and promoted, which builds the
+    /// same tree `{ if .. }` produces and keeps the trailing `if` from
+    /// swallowing whatever follows its block.
+    fn parse_if_let_else_arm(&mut self) -> Option<Box<Spanned<Expr>>> {
+        if self.peek() == Some(&Token::If) {
+            let if_stmt = self.parse_stmt()?;
+            return Some(Box::new(Self::promote_stmt_to_trailing_expr(if_stmt)?));
+        }
+        let start = self.peek_span().start;
+        let block = self.parse_block()?;
+        let end = self.peek_span().start;
+        Some(Box::new((Expr::Block(block), start..end)))
+    }
+
     /// Convert a value-bearing statement (`Stmt::If`, `Stmt::IfLet`,
     /// `Stmt::Match`) that appears in tail position into the equivalent
     /// expression form, so the block's `trailing_expr` slot can be populated.
@@ -268,7 +286,7 @@ impl Parser<'_> {
                 body,
                 else_body,
             } => {
-                // Stmt::IfLet and Expr::IfLet share the same `else_body: Option<Block>` type.
+                // Stmt::IfLet and Expr::IfLet share the same `else_body` type.
                 Some((
                     Expr::IfLet {
                         pattern,
@@ -480,7 +498,7 @@ impl Parser<'_> {
                     let expr = Box::new(self.parse_expr()?);
                     let body = self.parse_block()?;
                     let else_body = if self.eat(&Token::Else) {
-                        Some(self.parse_block()?)
+                        Some(self.parse_if_let_else_arm()?)
                     } else {
                         None
                     };

@@ -187,7 +187,7 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool 
                 return true;
             }
             if let Some(eb) = else_body {
-                if ast_block_has_break(eb, query, depth) {
+                if ast_expr_has_break(&eb.0, query, depth) {
                     return true;
                 }
             }
@@ -303,7 +303,7 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
                 return true;
             }
             if let Some(eb) = else_body {
-                return ast_block_has_break(eb, query, depth);
+                return ast_expr_has_break(&eb.0, query, depth);
             }
             false
         }
@@ -582,7 +582,9 @@ mod tests {
             pattern: Box::new(sp(Pattern::Wildcard)),
             expr: Box::new(sp(Expr::Identifier("v".into()))),
             body: empty_block(),
-            else_body: Some(block_with_stmts(vec![bare_break()])),
+            else_body: Some(Box::new(sp(Expr::Block(block_with_stmts(vec![
+                bare_break(),
+            ]))))),
         });
         let body = block_with_stmts(vec![sp(Stmt::Expression(if_let_expr))]);
         assert!(loop_body_has_break(&body, None));

@@ -99,7 +99,9 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
         } => {
             expr_contains_defer(&expr.0)
                 || block_contains_defer(body)
-                || else_body.as_ref().is_some_and(block_contains_defer)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_expr| expr_contains_defer(&else_expr.0))
         }
         Stmt::Match { scrutinee, arms } => {
             expr_contains_defer(&scrutinee.0)
@@ -209,7 +211,9 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         } => {
             expr_contains_defer(&expr.0)
                 || block_contains_defer(body)
-                || else_body.as_ref().is_some_and(block_contains_defer)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_expr| expr_contains_defer(&else_expr.0))
         }
         Expr::Match { scrutinee, arms } => {
             expr_contains_defer(&scrutinee.0)
@@ -315,8 +319,8 @@ fn mark_stmt(stmt: &mut Stmt) {
         } => {
             mark_expr(&mut expr.0, false);
             mark_block(body, false);
-            if let Some(block) = else_body {
-                mark_block(block, false);
+            if let Some(else_expr) = else_body {
+                mark_expr(&mut else_expr.0, false);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -449,8 +453,8 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         } => {
             mark_expr(&mut expr.0, false);
             mark_block(body, is_tail_position);
-            if let Some(block) = else_body {
-                mark_block(block, is_tail_position);
+            if let Some(else_expr) = else_body {
+                mark_expr(&mut else_expr.0, is_tail_position);
             }
         }
         Expr::Match { scrutinee, arms } => {

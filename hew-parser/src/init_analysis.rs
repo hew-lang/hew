@@ -91,7 +91,7 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<String>) {
             expr_targets(&expr.0, names);
             block_targets(body, names);
             if let Some(else_body) = else_body {
-                block_targets(else_body, names);
+                expr_targets(&else_body.0, names);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -144,7 +144,7 @@ fn expr_targets(expr: &Expr, names: &mut BTreeSet<String>) {
         } => {
             block_targets(body, names);
             if let Some(else_body) = else_body {
-                block_targets(else_body, names);
+                expr_targets(&else_body.0, names);
             }
         }
         Expr::Match { arms, .. } => {

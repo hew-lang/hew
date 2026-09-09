@@ -523,8 +523,8 @@ fn hover_binding_in_expr(
             {
                 return Some(result);
             }
-            else_body.as_ref().and_then(|block| {
-                hover_binding_in_block(block, type_output, word, word_span, offset)
+            else_body.as_ref().and_then(|else_expr| {
+                hover_binding_in_expr(&else_expr.0, type_output, word, word_span, offset)
             })
         }
         Expr::Match { scrutinee, arms } => type_output
@@ -667,8 +667,8 @@ fn hover_binding_in_stmt(
             {
                 return Some(result);
             }
-            else_body.as_ref().and_then(|block| {
-                hover_binding_in_block(block, type_output, word, word_span, offset)
+            else_body.as_ref().and_then(|else_expr| {
+                hover_binding_in_expr(&else_expr.0, type_output, word, word_span, offset)
             })
         }
         Stmt::For {

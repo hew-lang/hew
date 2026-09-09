@@ -1103,8 +1103,10 @@ impl Parser<'_> {
                     self.expect(&Token::Equal)?;
                     let expr = Box::new(self.parse_expr()?);
                     let body = self.parse_block()?;
+                    // The `else` arm is an expression, exactly as it is for a
+                    // plain `if`: a block, another `if`, or another `if let`.
                     let else_body = if self.eat(&Token::Else) {
-                        Some(self.parse_block()?)
+                        Some(Box::new(self.parse_expr()?))
                     } else {
                         None
                     };

@@ -10106,8 +10106,8 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
         } => {
             scan_expr_for_private_refs(&expr.0, pf, out);
             scan_block_for_private_refs(body, pf, out);
-            if let Some(b) = else_body {
-                scan_block_for_private_refs(b, pf, out);
+            if let Some(eb) = else_body {
+                scan_expr_for_private_refs(&eb.0, pf, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -10217,8 +10217,8 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         } => {
             scan_expr_for_private_refs(&expr.0, pf, out);
             scan_block_for_private_refs(body, pf, out);
-            if let Some(b) = else_body {
-                scan_block_for_private_refs(b, pf, out);
+            if let Some(eb) = else_body {
+                scan_expr_for_private_refs(&eb.0, pf, out);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -17028,7 +17028,7 @@ impl LowerCtx {
                     pattern,
                     expr,
                     body,
-                    else_body.as_ref(),
+                    else_body.as_deref(),
                     &ResolvedTy::Unit,
                     &span,
                 ) {
@@ -17451,9 +17451,9 @@ impl LowerCtx {
     /// Used by both statement position (`Stmt::IfLet`, `result_ty` = Unit) and
     /// expression position (`Expr::IfLet`, `result_ty` = unified branch type).
     /// Returns `Some(HirExprKind::IfLet { ... })` on success, `None` on a
-    /// fail-closed error (diagnostics already pushed). The `else_body` block
-    /// is lowered with `result_ty` so that expression-position branches are
-    /// type-consistent.
+    /// fail-closed error (diagnostics already pushed). The `else` arm is an
+    /// expression, so `else if` and `else if let` links lower through the same
+    /// path as an `else { .. }` block.
     ///
     /// Pattern scope (v0.5 substrate): only single payload-bearing enum-variant
     /// constructor patterns (e.g. `Some(x)`) are accepted — the same restriction
@@ -17468,7 +17468,7 @@ impl LowerCtx {
         pattern: &Spanned<Pattern>,
         scrutinee_expr: &Spanned<Expr>,
         body: &Block,
-        else_body: Option<&Block>,
+        else_body: Option<&Spanned<Expr>>,
         result_ty: &ResolvedTy,
         span: &Span,
     ) -> Option<HirExprKind> {
@@ -17490,7 +17490,7 @@ impl LowerCtx {
             let _ = self.lower_block(body, &ResolvedTy::Unit);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_expr(eb, IntentKind::Read);
             }
             return None;
         };
@@ -17503,7 +17503,7 @@ impl LowerCtx {
             let _ = self.lower_block(body, &ResolvedTy::Unit);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_expr(eb, IntentKind::Read);
             }
             return None;
         }
@@ -17519,7 +17519,7 @@ impl LowerCtx {
                 let _ = self.lower_block(body, &ResolvedTy::Unit);
                 self.pop_scope();
                 if let Some(eb) = else_body {
-                    let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                    let _ = self.lower_expr(eb, IntentKind::Read);
                 }
                 return None;
             };
@@ -17536,19 +17536,7 @@ impl LowerCtx {
                 kind: HirExprKind::Block(then_block),
                 span: span.clone(),
             };
-            let else_expr = else_body.map(|eb| {
-                let else_block = self.lower_block(eb, result_ty);
-                let else_ty = else_block.ty.clone();
-                Box::new(HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: else_ty.clone(),
-                    value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::Block(else_block),
-                    span: span.clone(),
-                })
-            });
+            let else_expr = else_body.map(|eb| Box::new(self.lower_expr(eb, IntentKind::Read)));
             return Some(HirExprKind::If {
                 condition: Box::new(condition),
                 then_expr: Box::new(then_expr),
@@ -17570,7 +17558,7 @@ impl LowerCtx {
             let _ = self.lower_block(body, &ResolvedTy::Unit);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_expr(eb, IntentKind::Read);
             }
             return None;
         };
@@ -17587,7 +17575,7 @@ impl LowerCtx {
             let _ = self.lower_block(body, &ResolvedTy::Unit);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_expr(eb, IntentKind::Read);
             }
             return None;
         };
@@ -17657,26 +17645,15 @@ impl LowerCtx {
         self.current_scope_id = previous_scope_id;
         self.pop_scope();
 
-        let else_block = else_body.as_ref().map(|eb| self.lower_block(eb, result_ty));
+        let else_expr = else_body.map(|eb| self.lower_expr(eb, IntentKind::Read));
 
         if binding_error || pvp_error {
             return None;
         }
 
         // `if let PAT = e { a } else { b }` is `match e { PAT => a, _ => b }`.
-        let fallthrough = match else_block {
-            Some(block) => {
-                let else_ty = block.ty.clone();
-                HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: else_ty.clone(),
-                    value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::Block(block),
-                    span: span.clone(),
-                }
-            }
+        let fallthrough = match else_expr {
+            Some(expr) => expr,
             None => self.make_unit_expr(span.clone()),
         };
         Some(
@@ -19741,7 +19718,7 @@ impl LowerCtx {
                     pattern,
                     scrutinee_expr,
                     body,
-                    else_body.as_ref(),
+                    else_body.as_deref(),
                     &result_ty,
                     &span,
                 ) {
@@ -31162,7 +31139,7 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
             scan_expr_for_blocking_recv(&expr.0, diagnostics);
             scan_block_for_blocking_recv(body, diagnostics);
             if let Some(eb) = else_body {
-                scan_block_for_blocking_recv(eb, diagnostics);
+                scan_expr_for_blocking_recv(&eb.0, diagnostics);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -31293,7 +31270,7 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
             scan_expr_for_blocking_recv(&expr.0, diagnostics);
             scan_block_for_blocking_recv(body, diagnostics);
             if let Some(b) = else_body {
-                scan_block_for_blocking_recv(b, diagnostics);
+                scan_expr_for_blocking_recv(&b.0, diagnostics);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -31716,7 +31693,7 @@ fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCt
             scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
             scan_block_for_binop_gates(body, ctx);
             if let Some(eb) = else_body {
-                scan_block_for_binop_gates(eb, ctx);
+                scan_expr_for_binop_gates(&eb.0, &eb.1, false, ctx);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -31881,7 +31858,7 @@ fn scan_expr_for_binop_gates(
             scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
             scan_block_for_binop_gates(body, ctx);
             if let Some(b) = else_body {
-                scan_block_for_binop_gates(b, ctx);
+                scan_expr_for_binop_gates(&b.0, &b.1, false, ctx);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -32791,7 +32768,7 @@ fn scan_stmt_for_supervisor_spawn(
             scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
             if let Some(eb) = else_body {
-                scan_block_for_supervisor_spawn(eb, current_module, registry, diagnostics);
+                scan_expr_for_supervisor_spawn(&eb.0, current_module, registry, diagnostics);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -33018,7 +32995,7 @@ fn scan_expr_for_supervisor_spawn(
             scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
             if let Some(b) = else_body {
-                scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+                scan_expr_for_supervisor_spawn(&b.0, current_module, registry, diagnostics);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -33249,7 +33226,7 @@ fn scan_stmt_for_vec_index_gate(
             scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
             if let Some(eb) = else_body {
-                scan_block_for_vec_index_gate(eb, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(eb, expr_types, diagnostics);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -33374,7 +33351,7 @@ fn scan_expr_for_vec_index_gate(
             scan_expr_for_vec_index_gate(cond, expr_types, diagnostics);
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
             if let Some(b) = else_body {
-                scan_block_for_vec_index_gate(b, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(b, expr_types, diagnostics);
             }
         }
         Expr::Match { scrutinee, arms } => {

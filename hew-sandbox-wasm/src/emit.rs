@@ -1562,7 +1562,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 body,
                 else_body,
             } => {
-                self.lower_stmt_if_let(pattern, expr, body, else_body.as_ref(), span)?;
+                self.lower_stmt_if_let(pattern, expr, body, else_body.as_deref(), span)?;
             }
             Stmt::Defer(_) => {
                 self.emit_unsupported(Some(span));
@@ -2236,7 +2236,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 pattern,
                 scrutinee,
                 body,
-                else_body.as_ref(),
+                else_body.as_deref(),
                 span.clone(),
             ),
             Expr::Clone(operand) => {
@@ -4784,7 +4784,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         pattern: &Spanned<Pattern>,
         expr: &Spanned<Expr>,
         body: &AstBlock,
-        else_body: Option<&AstBlock>,
+        else_body: Option<&Spanned<Expr>>,
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
         let scrutinee_ty = self.ty_for_expr(expr);
@@ -4848,7 +4848,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
             self.switch_to(else_idx);
             let saved_else = self.bindings.clone();
-            self.lower_block(else_body)?;
+            self.lower_expr(else_body)?;
             self.bindings = saved_else;
             if !self.current_is_terminated() {
                 self.terminate(Terminator::br(exit_id, Vec::new(), None));
@@ -4888,7 +4888,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         pattern: &Spanned<Pattern>,
         scrutinee_expr: &Spanned<Expr>,
         body: &AstBlock,
-        else_body: Option<&AstBlock>,
+        else_body: Option<&Spanned<Expr>>,
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
         let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
@@ -4976,9 +4976,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         // Else arm: lower the else body, join its value.
         self.switch_to(else_idx);
         let saved_else = self.bindings.clone();
-        let else_val = self
-            .lower_block(else_body)?
-            .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
+        let else_val = self.lower_expr(else_body)?;
         if !self.current_is_terminated() {
             self.emit_instruction(
                 "local.set",

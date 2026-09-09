@@ -114,8 +114,8 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
         } => {
             esc_visit_expr(&expr.0, name, in_fork, acc, false);
             esc_visit_block(body, name, in_fork, acc);
-            if let Some(b) = else_body {
-                esc_visit_block(b, name, in_fork, acc);
+            if let Some(else_expr) = else_body {
+                esc_visit_expr(&else_expr.0, name, in_fork, acc, false);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -328,8 +328,8 @@ fn esc_visit_expr(
         } => {
             esc_visit_expr(&expr.0, name, in_fork, acc, false);
             esc_visit_block(body, name, in_fork, acc);
-            if let Some(b) = else_body {
-                esc_visit_block(b, name, in_fork, acc);
+            if let Some(else_expr) = else_body {
+                esc_visit_expr(&else_expr.0, name, in_fork, acc, false);
             }
         }
         Expr::Match { scrutinee, arms } => {

@@ -774,9 +774,14 @@ impl Checker {
                     diverges: Self::arm_skips_join(&then_ty),
                 };
                 self.env.pop_scope();
-                if let Some(block) = else_body {
+                if let Some(else_expr) = else_body {
                     self.env.restore_ownership(&entry);
-                    let else_ty = self.check_block(block, expected);
+                    let else_ty = match expected {
+                        Some(expected) => {
+                            self.check_expr_with_expected(&else_expr.0, &else_expr.1, expected)
+                        }
+                        None => self.synthesize(&else_expr.0, &else_expr.1),
+                    };
                     let else_skips = Self::arm_skips_join(&else_ty);
                     self.join_two_way(&entry, then_exit, else_skips);
                     self.unify_branches(&then_ty, &else_ty, span)
@@ -1741,9 +1746,9 @@ impl Checker {
                     diverges: Self::arm_skips_join(&then_ty),
                 };
                 self.env.pop_scope();
-                if let Some(block) = else_body {
+                if let Some(else_expr) = else_body {
                     self.env.restore_ownership(&entry);
-                    let else_ty = self.check_block(block, None);
+                    let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
                     let else_skips = Self::arm_skips_join(&else_ty);
                     self.join_two_way(&entry, then_exit, else_skips);
                 } else {

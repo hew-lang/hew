@@ -292,8 +292,8 @@ fn collect_inlay_hints_from_stmt(
         } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
-            if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, block, tc, hints);
+            if let Some(else_expr) = else_body {
+                collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -433,8 +433,8 @@ fn collect_inlay_hints_from_expr(
         } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
-            if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, block, tc, hints);
+            if let Some(else_expr) = else_body {
+                collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
             }
         }
         Expr::Match { scrutinee, arms } => {

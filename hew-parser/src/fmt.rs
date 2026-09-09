@@ -2615,7 +2615,7 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
                     self.write(" else ");
-                    self.format_block(else_block, self.source.len());
+                    self.format_expr(&else_block.0);
                 }
                 self.newline();
             }
@@ -2810,7 +2810,7 @@ impl<'a> Formatter<'a> {
                         self.format_block(body, self.source.len());
                         if let Some(else_block) = else_body {
                             self.write(" else ");
-                            self.format_block(else_block, self.source.len());
+                            self.format_expr(&else_block.0);
                         }
                     }
                     Stmt::Let { .. }
@@ -3120,7 +3120,7 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
                     self.write(" else ");
-                    self.format_block(else_block, self.source.len());
+                    self.format_expr(&else_block.0);
                 }
             }
             Expr::Match { scrutinee, arms } => {

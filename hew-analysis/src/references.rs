@@ -786,8 +786,8 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
         } => {
             count_idents_in_expr(&expr.0, counts);
             count_idents_in_block(body, counts);
-            if let Some(block) = else_body {
-                count_idents_in_block(block, counts);
+            if let Some(else_expr) = else_body {
+                count_idents_in_expr(&else_expr.0, counts);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -889,8 +889,8 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         } => {
             count_idents_in_expr(&expr.0, counts);
             count_idents_in_block(body, counts);
-            if let Some(block) = else_body {
-                count_idents_in_block(block, counts);
+            if let Some(else_expr) = else_body {
+                count_idents_in_expr(&else_expr.0, counts);
             }
         }
         Expr::Match { scrutinee, arms } => {

@@ -3068,8 +3068,13 @@ impl Checker {
             } => {
                 self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_block(body, in_fork);
-                if let Some(b) = else_body {
-                    self.classify_escapes_in_block(b, in_fork);
+                if let Some(else_expr) = else_body {
+                    self.classify_escapes_in_expr(
+                        &else_expr.0,
+                        &else_expr.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -3250,8 +3255,13 @@ impl Checker {
             } => {
                 self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_block(body, in_fork);
-                if let Some(b) = else_body {
-                    self.classify_escapes_in_block(b, in_fork);
+                if let Some(else_expr) = else_body {
+                    self.classify_escapes_in_expr(
+                        &else_expr.0,
+                        &else_expr.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -3620,8 +3630,8 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
         } => {
             collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
             collect_lambda_spans_in_block(body, out);
-            if let Some(b) = else_body {
-                collect_lambda_spans_in_block(b, out);
+            if let Some(else_expr) = else_body {
+                collect_lambda_spans_in_expr(&else_expr.0, &else_expr.1, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -3702,8 +3712,8 @@ fn collect_lambda_spans_in_expr(
         } => {
             collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
             collect_lambda_spans_in_block(body, out);
-            if let Some(b) = else_body {
-                collect_lambda_spans_in_block(b, out);
+            if let Some(else_expr) = else_body {
+                collect_lambda_spans_in_expr(&else_expr.0, &else_expr.1, out);
             }
         }
         Expr::Match { scrutinee, arms } => {

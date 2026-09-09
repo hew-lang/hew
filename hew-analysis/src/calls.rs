@@ -163,8 +163,8 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
         } => {
             collect_calls_in_expr(expr.as_ref(), calls);
             collect_calls_in_block(body, calls);
-            if let Some(block) = else_body {
-                collect_calls_in_block(block, calls);
+            if let Some(else_expr) = else_body {
+                collect_calls_in_expr(else_expr, calls);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -248,8 +248,8 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         } => {
             collect_calls_in_expr(expr.as_ref(), calls);
             collect_calls_in_block(body, calls);
-            if let Some(block) = else_body {
-                collect_calls_in_block(block, calls);
+            if let Some(else_expr) = else_body {
+                collect_calls_in_expr(else_expr, calls);
             }
         }
         Expr::Binary { left, right, .. }

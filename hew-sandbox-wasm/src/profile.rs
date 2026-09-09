@@ -548,8 +548,8 @@ impl<'a> ProfileChecker<'a> {
                 }
                 self.check_expr(expr);
                 self.check_block(body);
-                if let Some(block) = else_body {
-                    self.check_block(block);
+                if let Some(else_expr) = else_body {
+                    self.check_expr(else_expr);
                 }
             }
             Stmt::Defer(_) => self.reject(
@@ -787,8 +787,8 @@ impl<'a> ProfileChecker<'a> {
                 }
                 self.check_expr(expr);
                 self.check_block(body);
-                if let Some(block) = else_body {
-                    self.check_block(block);
+                if let Some(else_expr) = else_body {
+                    self.check_expr(else_expr);
                 }
             }
             Expr::Match { scrutinee, arms } => {

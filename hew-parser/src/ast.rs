@@ -288,7 +288,11 @@ pub enum Expr {
         pattern: Box<Spanned<Pattern>>,
         expr: Box<Spanned<Expr>>,
         body: Block,
-        else_body: Option<Block>,
+        /// The `else` arm, if written. Like `If::else_block` this is an
+        /// expression, so `if let` chains with `else if` and `else if let`
+        /// exactly as `if` does; a plain `else { .. }` arrives as
+        /// [`Expr::Block`].
+        else_body: Option<Box<Spanned<Expr>>>,
     },
     Match {
         scrutinee: Box<Spanned<Expr>>,
@@ -507,7 +511,11 @@ pub enum Stmt {
         pattern: Box<Spanned<Pattern>>,
         expr: Box<Spanned<Expr>>,
         body: Block,
-        else_body: Option<Block>,
+        /// The `else` arm, if written. Like `If::else_block` this is an
+        /// expression, so `if let` chains with `else if` and `else if let`
+        /// exactly as `if` does; a plain `else { .. }` arrives as
+        /// [`Expr::Block`].
+        else_body: Option<Box<Spanned<Expr>>>,
     },
     Match {
         scrutinee: Spanned<Expr>,

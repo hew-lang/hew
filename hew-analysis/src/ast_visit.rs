@@ -633,7 +633,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block(inner_body, body);
                 self.pop_scope();
                 if let Some(else_body) = else_body {
-                    self.walk_block(else_body, body);
+                    self.walk_expr(&else_body.0, &else_body.1, body);
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -817,7 +817,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block(inner_body, body);
                 self.pop_scope();
                 if let Some(else_body) = else_body {
-                    self.walk_block(else_body, body);
+                    self.walk_expr(&else_body.0, &else_body.1, body);
                 }
             }
             Expr::Match { scrutinee, arms } => {

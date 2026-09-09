@@ -773,8 +773,8 @@ fn collect_locals_from_stmt(
         } if in_stmt_scope => {
             collect_pattern_names(&pattern.0, locals);
             collect_locals_from_block(body, offset, locals);
-            if let Some(block) = else_body {
-                collect_locals_from_block(block, offset, locals);
+            if let Some(else_expr) = else_body {
+                collect_locals_from_expr(&else_expr.0, offset, locals);
             }
         }
         Stmt::Match { arms, .. } if in_stmt_scope => {
@@ -832,8 +832,8 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             body, else_body, ..
         } => {
             collect_locals_from_block(body, offset, locals);
-            if let Some(block) = else_body {
-                collect_locals_from_block(block, offset, locals);
+            if let Some(else_expr) = else_body {
+                collect_locals_from_expr(&else_expr.0, offset, locals);
             }
         }
         Expr::Match { arms, .. } => {

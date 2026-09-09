@@ -1516,9 +1516,12 @@ fn parse_interpolated_string_empty_expr_reports_error() {
 fn parse_deeply_nested_expr_produces_error() {
     // 300 levels of parenthesized nesting exceeds MAX_DEPTH (256).
     // Use a child thread with an explicit stack size to avoid the test
-    // runner's own stack limit being hit before our guard triggers.
+    // runner's own stack limit being hit before our guard triggers. The
+    // budget is generous because an unoptimized `parse_primary` frame is
+    // large: this test is about the guard firing, not about how much stack
+    // a debug build happens to use per level.
     let errors = std::thread::Builder::new()
-        .stack_size(16 * 1024 * 1024)
+        .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             let open: String = "(".repeat(300);
             let close: String = ")".repeat(300);
@@ -5745,4 +5748,48 @@ fn race_is_still_a_reserved_word() {
         !result.errors.is_empty(),
         "`race` is reserved; using it as a name must be refused"
     );
+}
+
+#[test]
+fn if_let_chains_with_else_if() {
+    let source = "fn main() {
+    let value: Option<i64> = None;
+    if let .Some(_) = value {
+        println(\"some\");
+    } else if let .None = value {
+        println(\"none\");
+    } else if true {
+        println(\"other\");
+    } else {
+        println(\"fallback\");
+    }
+}";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+}
+
+#[test]
+fn if_let_else_if_round_trips_through_the_formatter() {
+    let source = "fn main() {
+    let value: Option<i64> = None;
+    if let .Some(_) = value {
+        println(\"some\");
+    } else if true {
+        println(\"ok\");
+    }
+}
+";
+    let first = crate::parse(source);
+    assert!(first.errors.is_empty(), "errors: {:?}", first.errors);
+    let formatted = crate::fmt::format_program(&first.program);
+    assert!(
+        formatted.contains("} else if true {"),
+        "the formatter must preserve the `else if` spelling, got:\n{formatted}"
+    );
+    let second = crate::parse(&formatted);
+    assert!(second.errors.is_empty(), "errors: {:?}", second.errors);
+    assert!(crate::ast_eq::program_eq_ignoring_spans(
+        &first.program,
+        &second.program
+    ));
 }

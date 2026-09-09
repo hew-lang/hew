@@ -1312,7 +1312,7 @@ pub enum TypeErrorKind {
     /// tuples) are legal. Enum variants, literal patterns, and or-patterns
     /// are refutable and must be used in `if let` or `match` instead.
     ///
-    /// Envelope code: `E_REFUTABLE_LET_PATTERN`.
+    /// Envelope code: `E_REFUTABLE_LET`.
     RefutableLetPattern {
         /// Human-readable label for the rejected pattern kind,
         /// e.g. `"enum variant"`, `"literal"`, or `"or-pattern"`.
@@ -1327,7 +1327,7 @@ pub enum TypeErrorKind {
     /// type is `Ty::Never`. A non-diverging else block would let execution
     /// reach code that reads an unbound binder, so it is rejected.
     ///
-    /// Envelope code: `E_LET_ELSE_DOES_NOT_DIVERGE`.
+    /// Envelope code: `E_LET_ELSE_FALLTHROUGH`.
     LetElseDoesNotDiverge,
     /// A function carrying `#[intrinsic("…")]` was declared outside the
     /// designated stdlib-floor modules.
@@ -1591,8 +1591,8 @@ impl TypeErrorKind {
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
             Self::IntrinsicSignatureMismatch { .. } => "E_INTRINSIC_SIGNATURE_MISMATCH",
-            Self::RefutableLetPattern { .. } => "RefutableLetPattern",
-            Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
+            Self::RefutableLetPattern { .. } => "E_REFUTABLE_LET",
+            Self::LetElseDoesNotDiverge => "E_LET_ELSE_FALLTHROUGH",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
             Self::OpaqueMessagePayload { .. } => "OpaqueMessagePayload",
             Self::StreamAdapterNotSupported { .. } => "StreamAdapterNotSupported",

@@ -1,0 +1,10 @@
+[[case]]
+id = "pattern-if-let-coverage"
+intent = "`if let` and `while let` accept every pattern `match` accepts: unit variant, record, tuple, or-pattern with an owned payload, nested constructor, literal and enum struct-variant, with the owned string released on the match and the fallthrough path alike."
+source = "cases/pattern-if-let-coverage.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "blank\npoint 3 4\ntuple 3 9\nfirst 4\nnested 11\nseven\ntagged boxed 7 2\nother\ntext 0\npair 1\nstopped 2\npending 2 1\ndone\n"
+exit = 0

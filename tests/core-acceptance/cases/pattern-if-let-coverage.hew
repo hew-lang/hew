@@ -1,0 +1,92 @@
+enum Item {
+    Text(string),
+    Pair(string, i64),
+    Tagged { name: string, size: i64 },
+    Blank,
+}
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn describe(item: Item) -> string {
+    if let .Tagged { name, size } = item {
+        f"tagged {name} {size}"
+    } else {
+        "other"
+    }
+}
+
+fn take(index: i64) -> Item {
+    if index == 0 {
+        .Text(f"text {index}")
+    } else if index == 1 {
+        .Pair(f"pair {index}", index)
+    } else {
+        .Blank
+    }
+}
+
+fn main() {
+    // Unit variant.
+    let blank: Item = .Blank;
+    if let .Blank = blank {
+        println("blank");
+    } else {
+        println("not blank");
+    }
+
+    // Record pattern with an owned field.
+    let point = Point { x: 3, y: 4 };
+    if let Point { x, y } = point {
+        println(f"point {x} {y}");
+    }
+
+    // Tuple pattern carrying an owned string.
+    let entry = (f"tuple {point.x}", 9);
+    if let (label, count) = entry {
+        println(f"{label} {count}");
+    }
+
+    // Or-pattern over two payload variants, both binding an owned string.
+    let first: Item = .Text(f"first {point.y}");
+    if let .Text(owned) | .Pair(owned, _) = first {
+        println(owned);
+    } else {
+        println("none");
+    }
+
+    // Nested pattern.
+    let nested: Option<Option<i64>> = .Some(.Some(11));
+    if let .Some(.Some(inner)) = nested {
+        println(f"nested {inner}");
+    }
+
+    // Literal pattern.
+    let n = 7;
+    if let 7 = n {
+        println("seven");
+    }
+
+    // Enum struct-variant pattern in a function that returns from both paths.
+    println(describe(.Tagged { name: f"boxed {n}", size: 2 }));
+    println(describe(.Blank));
+
+    // `while let` over an or-pattern; the owned payload is released on every
+    // iteration and on the exit path.
+    var index = 0;
+    while let .Text(owned) | .Pair(owned, _) = take(index) {
+        println(owned);
+        index = index + 1;
+    }
+    println(f"stopped {index}");
+
+    // `while let` over a record pattern, ending through the fallthrough arm.
+    var pending: Item = .Tagged { name: f"pending {index}", size: 1 };
+    while let .Tagged { name, size } = pending {
+        println(f"{name} {size}");
+        pending = .Blank;
+    }
+    println("done");
+}

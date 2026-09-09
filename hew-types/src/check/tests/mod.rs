@@ -43,6 +43,7 @@ mod opaque_resources;
 mod option_none;
 mod optional_control_flow;
 mod output;
+mod pattern_conditions;
 mod patterns;
 mod records;
 mod supervisor;

@@ -1,0 +1,65 @@
+import std.string;
+
+enum Setting {
+    Raw(string),
+    Missing,
+}
+
+fn lookup(key: string) -> Setting {
+    if key == "port" {
+        .Raw(f"{8080}")
+    } else if key == "name" {
+        .Raw(f"host {key}")
+    } else {
+        .Missing
+    }
+}
+
+fn port(key: string) -> Result<i64, string> {
+    let .Raw(raw) = lookup(key) else {
+        return .Err(f"{key} missing");
+    };
+    let .Ok(parsed) = string.to_int(raw) else {
+        return .Err(f"{key} is not a number");
+    };
+    .Ok(parsed)
+}
+
+fn scan(limit: i64) -> i64 {
+    var total = 0;
+    for i in 0..limit {
+        let .Raw(text) = lookup(if i == 0 { "port" } else { "other" }) else {
+            break;
+        };
+        total = total + text.len();
+    }
+    total
+}
+
+fn skip(limit: i64) -> i64 {
+    var seen = 0;
+    for i in 0..limit {
+        let .Raw(text) = lookup(if i == 1 { "other" } else { "name" }) else {
+            continue;
+        };
+        seen = seen + text.len();
+    }
+    seen
+}
+
+fn main() {
+    match port("port") {
+        .Ok(value) => println(f"port {value}"),
+        .Err(message) => println(f"error {message}"),
+    }
+    match port("name") {
+        .Ok(value) => println(f"port {value}"),
+        .Err(message) => println(f"error {message}"),
+    }
+    match port("absent") {
+        .Ok(value) => println(f"port {value}"),
+        .Err(message) => println(f"error {message}"),
+    }
+    println(f"scan {scan(3)}");
+    println(f"skip {skip(3)}");
+}

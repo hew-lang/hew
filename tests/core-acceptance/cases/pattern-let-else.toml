@@ -1,0 +1,10 @@
+[[case]]
+id = "pattern-let-else"
+intent = "`let PATTERN = expr else { … };` binds an owned payload for the rest of the enclosing block and runs the diverging block when the pattern does not match, through `return`, `break` and `continue`."
+source = "cases/pattern-let-else.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "port 8080\nerror name is not a number\nerror absent missing\nscan 4\nskip 18\n"
+exit = 0

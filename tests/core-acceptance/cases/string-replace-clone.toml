@@ -1,0 +1,11 @@
+[[case]]
+id = "string-replace-clone"
+intent = "Explicit clones survive their source scope and replacements preserve borrowed inputs, Unicode and embedded NUL, including missing, empty and deletion patterns."
+source = "cases/string-replace-clone.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "string clone and replace preserve owned Unicode text\n"
+stderr = ""
+exit = 0

@@ -1769,6 +1769,8 @@ pub enum RuntimeCallFamily {
     StringLen,
     /// `s.repeat(n)` - a fresh string of `n` concatenated copies.
     StringRepeat,
+    StringReplace,
+    StringClone,
     /// `s.split(sep)` - a fresh `Vec<string>` of the separated parts.
     StringSplit,
     StringSliceCodepoints,
@@ -2290,6 +2292,22 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
+        signature_key: "string::replace",
+        symbol: "hew_string_replace",
+        family: Some(RuntimeCallFamily::StringReplace),
+        params: &[CanonicalExternTy::String, CanonicalExternTy::String],
+        result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::clone",
+        symbol: "hew_string_clone",
+        family: Some(RuntimeCallFamily::StringClone),
+        params: EMPTY,
+        result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
         signature_key: "string::trim",
         symbol: "hew_string_trim",
         family: Some(RuntimeCallFamily::StringTrim),
@@ -2468,6 +2486,8 @@ impl RuntimeCallFamily {
         }];
         const STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
             &[STRING_BORROW[0], STRING_BORROW[0]];
+        const STRING_TRIPLE_BORROW: &[RuntimeArgumentContract] =
+            &[STRING_BORROW[0], STRING_BORROW[0], STRING_BORROW[0]];
         const STRING_INDEX_BORROW: &[RuntimeArgumentContract] = &[
             STRING_BORROW[0],
             RuntimeArgumentContract {
@@ -2614,13 +2634,17 @@ impl RuntimeCallFamily {
                 result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
                 failures: NO_FAILURES,
             },
-            Self::StringToUppercase | Self::StringToLowercase | Self::StringTrim => {
-                RuntimeSemanticContract {
-                    arguments: STRING_BORROW,
-                    result: FreshOwned(String),
-                    failures: NO_FAILURES,
-                }
+            Self::StringReplace => {
+                runtime_semantic_contract(STRING_TRIPLE_BORROW, FreshOwned(String), NO_FAILURES)
             }
+            Self::StringToUppercase
+            | Self::StringToLowercase
+            | Self::StringTrim
+            | Self::StringClone => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: FreshOwned(String),
+                failures: NO_FAILURES,
+            },
             Self::StringToBytes => RuntimeSemanticContract {
                 arguments: STRING_BORROW,
                 result: FreshOwned(Bytes),
@@ -3024,6 +3048,8 @@ impl RuntimeCallFamily {
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             Self::StringSliceCodepointsFrom => "hew_string_slice_codepoints_from",
             Self::StringRepeat => "hew_string_repeat",
+            Self::StringReplace => "hew_string_replace",
+            Self::StringClone => "hew_string_clone",
             Self::StringSplit => "hew_string_split",
             Self::StringSlice => "hew_string_slice",
             Self::StringToLowercase => "hew_string_to_lowercase",
@@ -3434,6 +3460,8 @@ impl RuntimeCallFamily {
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             "hew_string_slice_codepoints_from" => Self::StringSliceCodepointsFrom,
             "hew_string_repeat" => Self::StringRepeat,
+            "hew_string_replace" => Self::StringReplace,
+            "hew_string_clone" => Self::StringClone,
             "hew_string_split" => Self::StringSplit,
             "hew_string_slice" => Self::StringSlice,
             "hew_string_to_lowercase" => Self::StringToLowercase,
@@ -4685,6 +4713,8 @@ impl RuntimeCallFamily {
             | F::StringLen
             | F::StringSlice
             | F::StringRepeat
+            | F::StringReplace
+            | F::StringClone
             | F::StringSplit
             | F::StringToLowercase
             | F::StringSliceCodepoints

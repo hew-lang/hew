@@ -4569,6 +4569,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
+            PhysicalRuntimeAction::StringReplace => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_replace",
+                    ptr.fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[
+                        self.load(source(0)?, "replace.text")?.into(),
+                        self.load(source(1)?, "replace.from")?.into(),
+                        self.load(source(2)?, "replace.to")?.into(),
+                    ],
+                    "string.replace",
+                )?;
+                self.store(required_result()?, value)?;
+            }
             PhysicalRuntimeAction::StringSlice => {
                 let function = get_or_declare_external(
                     self.llvm,
@@ -4635,8 +4652,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalRuntimeAction::StringToUppercase
             | PhysicalRuntimeAction::StringToLowercase
+            | PhysicalRuntimeAction::StringClone
             | PhysicalRuntimeAction::StringTrim => {
                 let symbol = match action {
+                    PhysicalRuntimeAction::StringClone => "hew_string_clone",
                     PhysicalRuntimeAction::StringTrim => "hew_string_trim",
                     PhysicalRuntimeAction::StringToLowercase => "hew_string_to_lowercase",
                     _ => "hew_string_to_uppercase",

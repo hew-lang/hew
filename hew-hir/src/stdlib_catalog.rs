@@ -720,7 +720,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
         VEC_ANY,
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_vec_len",
+            symbol: "vec.value.len",
         },
     ),
     // Receiver-method rewrite targets for the `impl duration` methods declared

@@ -226,8 +226,8 @@ fn find_keyword(
     keyword: &str,
     var_name: Option<&str>,
 ) -> Option<OffsetSpan> {
-    let search_start = diag_offset.saturating_sub(200);
-    let search_region = &source[search_start..diag_offset];
+    let search_start = source.floor_char_boundary(diag_offset.saturating_sub(200));
+    let search_region = source.get(search_start..diag_offset)?;
     let needle = format!("{keyword} ");
     for (rel_pos, _) in search_region.rmatch_indices(needle.as_str()) {
         let abs_pos = search_start + rel_pos;
@@ -843,6 +843,19 @@ mod tests {
         let source = "let x = 1\nx = 2";
         let span = find_keyword(source, 10, "let", Some("x"));
         assert_eq!(span, Some(OffsetSpan { start: 0, end: 3 }));
+    }
+
+    #[test]
+    fn find_let_keyword_after_multibyte_text() {
+        let source = format!("{}let x = 1;\nx = 2;", "é".repeat(100));
+        let offset = source.find("x = 2").unwrap();
+        assert_eq!(
+            find_keyword(&source, offset, "let", Some("x")),
+            Some(OffsetSpan {
+                start: 200,
+                end: 203
+            })
+        );
     }
 
     #[test]

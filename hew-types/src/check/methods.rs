@@ -7362,11 +7362,24 @@ impl Checker {
             }
             let label =
                 root.map_or_else(|| "this expression".to_string(), |root| format!("`{root}`"));
+            let declaration = root
+                .and_then(|root| self.env.lookup_ref(root))
+                .and_then(|binding| binding.def_span.clone());
+            let error_index = self.errors.len();
             self.report_error(
                 TypeErrorKind::MutabilityError,
                 span,
                 format!("{description} requires a mutable binding receiver; {label} is not declared with `var`"),
             );
+            if let (Some(declaration), Some(error)) =
+                (declaration, self.errors.get_mut(error_index))
+            {
+                error.notes.push((
+                    declaration,
+                    "immutable binding declared here; use `var` to allow mutation".to_string(),
+                    error.source_module.clone(),
+                ));
+            }
         } else if let Some((root, path)) = place {
             self.env.mark_written(&root);
             self.reject_borrowed_parameter_mutation(&root, &path, span);

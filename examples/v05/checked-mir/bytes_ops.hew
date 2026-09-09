@@ -6,7 +6,7 @@ import std.encoding.utf8;
 // `hew_bytes_set`, `hew_bytes_is_empty`, `hew_bytes_contains`,
 // `hew_bytes_clear`, `hew_bytes_append`, and the bytes drop elaboration.
 fn main() -> i64 {
-    let b: bytes = "abcd".to_bytes();
+    var b: bytes = "abcd".to_bytes();
     println(b.len());
     let first = b[0];
     let fi = first as i64;
@@ -19,7 +19,7 @@ fn main() -> i64 {
         return 1;
     };
     println(decoded_slice);
-    let popped: u8 = b.pop();
+    let popped: u8 = b.pop().unwrap_or(0);
     println(popped as i64);
     b.set(0, 65);
     if b.contains(65) {

@@ -777,7 +777,7 @@ buf.push(72);      // same as 'H' in ASCII
 let n = buf.len(); // i64
 let b = buf.get(0); // Option<u8> — first byte, or None when out of range
 buf.set(1, 0xFF);   // overwrite byte at index 1
-let last = buf.pop(); // i64 — removes and returns last byte
+let last = buf.pop(); // Option<u8> — removes and returns last byte, None when empty
 println(buf.is_empty()); // bool
 println(buf.contains(72)); // bool — linear scan
 ```
@@ -788,7 +788,7 @@ println(buf.contains(72)); // bool — linear scan
 | -------------- | ------------------ | ------------------------------- |
 | `bytes.new()` | `() -> bytes`      | Create an empty byte buffer     |
 | `.push(b)`     | `(i64) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> i64`        | Remove and return the last byte |
+| `.pop()`       | `() -> Option<u8>` | Remove and return the last byte; `None` when empty |
 | `.get(i)`      | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
 | `.set(i, b)`   | `(i64, i64) -> ()` | Overwrite the byte at index `i` |
 | `.len()`       | `() -> i64`        | Number of bytes                 |

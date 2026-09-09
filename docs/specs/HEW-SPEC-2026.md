@@ -5836,31 +5836,47 @@ ContinueStmt   = "continue" ("@" Ident)? ";" ;
 The lexer tokenizes `@outer`-style labels as a dedicated label token; the
 fragment above shows their surface spelling.
 
-### 12.5 `if let` and `while let`
+### 12.5 `if let`, `while let` and `let … else`
 
-`if let` and `while let` are first-class single-branch pattern-matching
-constructs. They work on any type that supports pattern matching, including
-`Option<T>`, `Result<T, E>`, enums, and `machine` values.
+`if let`, `while let` and `let … else` are pattern-matching constructs that
+bind the parts of one value without a full `match`. They work on any type
+`match` accepts: `Option<T>`, `Result<T, E>`, enums, records, tuples, literals
+and `machine` values.
 
-**`if let`** — execute a block only when a pattern matches, binding the
-extracted value:
+**`if let`** — execute a block when a pattern matches, binding what it
+extracts. The `else` arm is any `if`-shaped expression, exactly as for `if`,
+so `if let`, `if` and blocks chain freely and are formatted as written:
 
 ```hew
-let opt: Option<string> = .Some("hello");
-
-if let .Some(s) = opt {
-    println(s);      // prints "hello"
-}
-
-// With else:
-if let .Some(s) = opt {
-    println(s);
-} else {
-    println("nothing");
+fn describe(first: Option<i64>, second: Result<string, string>, flag: bool) -> string {
+    if let .Some(n) = first {
+        f"first {n}"
+    } else if let .Ok(text) = second {
+        text
+    } else if flag {
+        "flagged"
+    } else {
+        "nothing"
+    }
 }
 ```
 
-**`while let`** — loop as long as a pattern matches:
+**Chained conditions (normative).** A condition may join `let` patterns and
+boolean expressions with `&&`. Each `let` binds its names for the operands to
+its right and for the then block; nothing bound in the condition is visible in
+the `else` arm. `||` cannot join a `let` pattern with anything. The condition
+is evaluated left to right and stops at the first operand that fails.
+
+```hew
+if let .Some(n) = first && n > 10 && let .Ok(text) = second {
+    println(f"{n}: {text}");
+} else if let .None = first {
+    println("empty");
+}
+```
+
+**`while let`** — loop as long as the condition holds; the same chaining rules
+apply:
 
 ```hew
 var m: HashMap<string, i64> = {"a": 1, "b": 2};
@@ -5871,13 +5887,38 @@ while let .Some(v) = m.get("a") {
 }
 ```
 
-Both forms are semantically equivalent to the corresponding `match` form; they are compiled through dedicated IR paths rather than being desugared at the AST level. `if let P = expr { body }` corresponds to `match expr { P => { body }, _ => {} }`, but the lowering is a first-class HIR node, not a transformation.
+**`let … else` (normative).** A `let` statement with a refutable pattern takes
+an `else` block that runs when the pattern does not match. The block must
+diverge: it ends in `return`, `break`, `continue`, `panic` or a call that
+returns `Never`; a block that can fall through is `E_LET_ELSE_FALLTHROUGH`.
+The bindings of the pattern are in scope after the statement.
 
-> **Supported patterns:** Only payload-bearing constructor patterns (e.g. `.Some(x)`, `.Ok(v)`, `.Err(e)`) and literal patterns work in `if let`/`while let`. Unit-variant, record, tuple, and or-patterns fail closed at HIR time. The variant spelling is the one rule of §3.1: a bare `Some(x)` pattern is `E_BARE_VARIANT_PATTERN`.
+```hew
+fn port(config: HashMap<string, string>) -> Result<i64, string> {
+    let .Some(raw) = config.get("port") else {
+        return Err("port missing");
+    };
+    let .Ok(port) = raw.try_to_int() else {
+        return Err(f"port is not a number: {raw}");
+    };
+    Ok(port)
+}
+```
+
+**Patterns (normative).** Every pattern `match` accepts is accepted here:
+payload and unit variants, records, tuples, literals, or-patterns and `_`, with
+the variant spelling rule of §3.1 (a bare `Some(x)` pattern is
+`E_BARE_VARIANT_PATTERN`). A refutable pattern in a plain `let` without `else`
+is `E_REFUTABLE_LET`. All three forms lower through the same pattern path as
+`match`; `if let P = expr { body }` has the meaning of
+`match expr { P => { body }, _ => {} }`.
 
 ```ebnf
-IfLetExpr   = "if" "let" Pattern "=" Expr Block ("else" Block)? ;
-WhileLetStmt = "while" "let" Pattern "=" Expr Block ;
+LetCondition = "let" Pattern "=" Expr ;
+Condition    = (LetCondition | Expr) ("&&" (LetCondition | Expr))* ;
+IfExpr       = "if" Condition Block ("else" (IfExpr | Block))? ;
+WhileStmt    = "while" Condition Block ;
+LetElseStmt  = "let" Pattern "=" Expr "else" Block ";" ;
 ```
 
 ### 12.6 Attributes

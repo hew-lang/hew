@@ -771,15 +771,20 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 `bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
 
 ```hew
-var buf: bytes = bytes.new();
-buf.push(0x48);    // push a byte value (i64)
-buf.push(72);      // same as 'H' in ASCII
-let n = buf.len(); // i64
-let b = buf.get(0); // Option<u8> — first byte, or None when out of range
-buf.set(1, 0xFF);   // overwrite byte at index 1
-let last = buf.pop(); // Option<u8> — removes and returns last byte, None when empty
-println(buf.is_empty()); // bool
-println(buf.contains(72)); // bool — linear scan
+fn main() {
+    var buf: bytes = bytes.new();
+    buf.push(0x48);    // push a byte value (i64)
+    buf.push(72);      // same as 'H' in ASCII
+    let n = buf.len(); // i64
+    let b = buf.get(0); // Option<u8> — first byte, or None when out of range
+    buf.set(1, 0xFF);   // overwrite byte at index 1
+    let last = buf.pop(); // Option<u8> — removes and returns last byte, None when empty
+    println(buf.is_empty()); // bool
+    println(buf.contains(72)); // bool — linear scan
+    println(n);
+    println(last.unwrap_or(0));
+    println(b.unwrap_or(0));
+}
 ```
 
 **Methods on `bytes`:**

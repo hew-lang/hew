@@ -529,13 +529,20 @@ mod session_completion_tests {
         let module = &output.semantics().module;
         assert!(module.entry_callable.is_none());
         assert_eq!(output.compiled_roots().len(), 2);
+        // `SemFunction::name` carries the emitted symbol (`__hew_fn_answer`);
+        // the declaration is the source-name authority, and selection is about
+        // which declarations compile.
         let mut bodies = module
-            .functions
+            .callables
             .iter()
-            .map(|function| function.name.as_str())
+            .filter(|callable| callable.source_origin == hew_sir::FunctionSourceOrigin::RootUnit)
+            .map(|callable| callable.declaration.full_path())
             .collect::<Vec<_>>();
         bodies.sort_unstable();
-        assert_eq!(bodies, ["answer", "helper", "neighbour"]);
+        assert_eq!(
+            bodies,
+            ["exports.answer", "exports.helper", "exports.neighbour"]
+        );
         for root in output.compiled_roots() {
             assert!(module.function_index().function(*root).is_some());
         }
@@ -3301,7 +3308,8 @@ mod tests {
             })
             .collect();
         assert!(
-            dumps[0].contains("fn left$left_value") && dumps[0].contains("fn right$right_value"),
+            dumps[0].contains("fn __hew_fn_left$left_value")
+                && dumps[0].contains("fn __hew_fn_right$right_value"),
             "dump must contain both imported functions:\n{}",
             dumps[0]
         );
@@ -5064,7 +5072,7 @@ fn main() {
 #[resource]
 #[opaque]
 type Foo {}
-impl Foo { fn close(foo: Foo) {} }
+impl Foo { fn close(consume self) {} }
 extern "C" { fn hew_tcp_read(foo: Foo); }
 "#,
         );
@@ -6558,7 +6566,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                  let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
                      value: 21, label: \"probe\", crash_stage: false\n\
                  };\n\
-                 match await chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
+                 match chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
              }\n",
         );
         let state = run_file_frontend_to_typecheck(

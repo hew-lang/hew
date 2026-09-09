@@ -28172,7 +28172,11 @@ impl LowerCtx {
                 candidates.push(format!("{module}.{name}"));
             }
         }
-        candidates.push(name.to_string());
+        // A checker-proven owner must not be replaced by an unrelated bare
+        // constructor, such as NodeError.Config for a user record Config.
+        if !matches!(owner_ty, Some(ResolvedTy::Named { .. })) {
+            candidates.push(name.to_string());
+        }
 
         for candidate in candidates {
             let Some((type_name, idx)) = self.machine_ctor_registry.get(&candidate) else {

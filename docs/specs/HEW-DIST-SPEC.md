@@ -397,7 +397,9 @@ derives the peer's `NodeId`; the numeric prefix is never the peer identity. A
 `found` of `Err(LookupError.TypeMismatch)` means the name resolved to an actor
 whose declaration is not `Counter` (§7).
 
-> **Implementation status.** The shipped surface is still the call sequence
-> `Node.set_transport`, `Node.load_keys`, `Node.allow_peer`, `Node.start(addr)`,
-> with an untyped `Node.register` and a `Node.lookup<T>` that compares nothing.
-> Tracked in hew-lang/hew#3256.
+> **Implementation status.** Native `Node.start(NodeConfig)` performs the
+> configuration transaction, and registration and lookup carry actor locations.
+> Lookup does not yet validate the requested actor declaration, and
+> `LookupError.TypeMismatch` is not implemented. Remote send and ask still lack
+> ownership-SIR lowering. These gaps prevent the distributed contract above
+> from being considered complete. Tracked in hew-lang/hew#3256.

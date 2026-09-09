@@ -52,19 +52,16 @@ color brightgreen "\<(actor|supervisor|spawn|receive|init|fork|move)\>"
 
 # Supervisor configuration
 color brightgreen "\<(child|restart|strategy|permanent|transient|temporary|brutal_kill|one_for_one|one_for_all|rest_for_one)\>"
-color brightgreen "\<(simple_one_for_one|pool)\>"
+color brightgreen "\<(simple_one_for_one)\>"
 
 # Wire protocol
-color green "\<(reserved|optional|deprecated|default)\>"
+color green "\<(reserved|optional|deprecated)\>"
 
 # Machine keywords
-color green "\<(machine|state|event|on|when|entry|exit|emit)\>"
+color green "\<(machine|state|event|on|when|entry|exit)\>"
 
 # Other keywords
 color green "\<(dyn|unsafe|is)\>"
-
-# Reserved keywords
-color green "\<(try|catch|foreign|cooperate|super|budget)\>"
 
 # Types — primitives
 color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"

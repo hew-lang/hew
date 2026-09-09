@@ -267,17 +267,17 @@
         {
           "comment": "Supervisor strategy and overflow policy values",
           "name": "constant.language.strategy.hew",
-          "match": "\\b(brutal_kill|one_for_all|one_for_one|permanent|pool|rest_for_one|simple_one_for_one|temporary|transient)\\b"
+          "match": "\\b(brutal_kill|one_for_all|one_for_one|permanent|rest_for_one|simple_one_for_one|temporary|transient)\\b"
         },
         {
           "comment": "Wire protocol keywords",
           "name": "keyword.wire.hew",
-          "match": "\\b(default|deprecated|optional|reserved)\\b"
+          "match": "\\b(deprecated|optional|reserved)\\b"
         },
         {
           "comment": "State machine keywords",
           "name": "keyword.control.machine.hew",
-          "match": "\\b(emit|entry|event|exit|machine|on|state|when)\\b"
+          "match": "\\b(entry|event|exit|machine|on|state|when)\\b"
         },
         {
           "comment": "Other keywords",
@@ -295,9 +295,9 @@
           "match": "\\bNone\\b"
         },
         {
-          "comment": "Removed/rejected keywords — parser explicitly rejects these with migration diagnostics. Highlight as invalid so users know these are not valid v0.5 syntax.",
+          "comment": "Reserved but unimplemented — the parser rejects `race` until the spec's race expression lands. Highlight as invalid so users know it does not compile yet.",
           "name": "invalid.removed.hew",
-          "match": "\\b(catch|cooperate|foreign|race|try)\\b"
+          "match": "\\brace\\b"
         }
       ]
     },
@@ -765,7 +765,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|clone|coalesce|consume|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
+          "match": "\\b(block|clone|coalesce|consume|default|drop_new|drop_old|emit|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|pool|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",

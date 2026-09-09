@@ -53,8 +53,7 @@
     "wire": [
       "reserved",
       "optional",
-      "deprecated",
-      "default"
+      "deprecated"
     ],
     "supervisor_config": [
       "child",
@@ -67,8 +66,7 @@
       "one_for_one",
       "one_for_all",
       "rest_for_one",
-      "simple_one_for_one",
-      "pool"
+      "simple_one_for_one"
     ],
     "logical": [
       "true",
@@ -81,21 +79,12 @@
       "on",
       "when",
       "entry",
-      "exit",
-      "emit"
+      "exit"
     ],
     "other": [
       "dyn",
       "unsafe",
       "is"
-    ],
-    "reserved_unused": [
-      "try",
-      "catch",
-      "foreign",
-      "cooperate",
-      "super",
-      "budget"
     ]
   },
   "all_keywords": [
@@ -116,7 +105,6 @@
     "import",
     "pub",
     "package",
-    "super",
     "indirect",
     "enum",
     "trait",
@@ -125,7 +113,6 @@
     "supervisor",
     "child",
     "restart",
-    "budget",
     "strategy",
     "permanent",
     "transient",
@@ -134,7 +121,6 @@
     "one_for_all",
     "rest_for_one",
     "simple_one_for_one",
-    "pool",
     "brutal_kill",
     "scope",
     "fork",
@@ -146,16 +132,13 @@
     "type",
     "dyn",
     "move",
-    "try",
     "true",
     "false",
     "reserved",
     "optional",
     "deprecated",
-    "default",
     "unsafe",
     "extern",
-    "foreign",
     "in",
     "select",
     "race",
@@ -163,8 +146,6 @@
     "gen",
     "yield",
     "where",
-    "cooperate",
-    "catch",
     "defer",
     "as",
     "machine",
@@ -174,7 +155,6 @@
     "when",
     "entry",
     "exit",
-    "emit",
     "is"
   ],
   "contextual_identifiers": {
@@ -200,6 +180,9 @@
     "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
     "wired_to": "Supervisor child sibling-wiring clause",
     "count": "Supervisor pool arity clause (pool ws: Worker(..) count: N)",
+    "pool": "Supervisor child-pool declaration marker (contextual inside a supervisor body)",
+    "default": "Machine fallback transition marker (contextual inside a machine body)",
+    "emit": "Machine event emission marker (contextual before an event name)",
     "export": "FFI export attribute",
     "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
     "linear": "Type-decl ownership attribute — must be consumed exactly once",

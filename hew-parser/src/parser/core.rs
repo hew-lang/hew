@@ -656,7 +656,6 @@ impl<'src> Parser<'src> {
             Token::Init => Some("init"),
             Token::Child => Some("child"),
             Token::Restart => Some("restart"),
-            Token::Budget => Some("budget"),
             Token::Strategy => Some("strategy"),
             Token::Permanent => Some("permanent"),
             Token::Transient => Some("transient"),
@@ -675,7 +674,6 @@ impl<'src> Parser<'src> {
             // or identifiers in other positions.
             Token::Entry => Some("entry"),
             Token::Exit => Some("exit"),
-            Token::Emit => Some("emit"),
             _ => None,
         }
     }

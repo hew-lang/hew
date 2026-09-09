@@ -26,6 +26,7 @@ const FOREIGN_KEYWORD_IDENTS: &[&str] = &[
     "interface",
     "protocol",
     "wire",
+    "foreign",
 ];
 
 impl Parser<'_> {
@@ -343,6 +344,13 @@ impl Parser<'_> {
                 );
                 true
             }
+            "foreign" => {
+                self.error_with_hint(
+                    "unexpected 'foreign'".to_string(),
+                    "use 'extern' instead of 'foreign'",
+                );
+                true
+            }
             _ => false,
         }
     }
@@ -360,8 +368,8 @@ impl Parser<'_> {
     /// table lists no attribute for.
     ///
     /// Returns `None` when the upcoming token is one [`Self::foreign_keyword_redirect`]
-    /// recognises (`struct`, `class`, `func`, bare `wire`, and friends) or the
-    /// reserved `foreign` keyword: these paths never construct an item — they
+    /// recognises (`struct`, `class`, `func`, bare `wire`, `foreign`, and
+    /// friends): these paths never construct an item — they
     /// emit their own targeted diagnostic (e.g. "write `#[wire] type Name {
     /// .. }` instead") and return `None` from [`Self::parse_item`] — so the
     /// closed table stays silent rather than layering `E_UNKNOWN_ATTRIBUTE`
@@ -384,7 +392,6 @@ impl Parser<'_> {
             }
             Some(Token::Trait) => Some(AttrPosition::TraitDecl),
             Some(Token::Actor) => Some(AttrPosition::ActorDecl),
-            Some(Token::Foreign) => None,
             Some(Token::Identifier(id)) if FOREIGN_KEYWORD_IDENTS.contains(id) => None,
             // `type` alias/tuple-record forms, `const`, `import`,
             // `supervisor`, `machine`, `impl`, `extern`, and anything else:
@@ -579,13 +586,6 @@ impl Parser<'_> {
             Some(Token::Extern) => {
                 self.advance();
                 Item::ExternBlock(self.parse_extern_block()?)
-            }
-            Some(Token::Foreign) => {
-                self.error_with_hint(
-                    "unexpected 'foreign'".to_string(),
-                    "use 'extern' instead of 'foreign'",
-                );
-                return None;
             }
             _ => {
                 let found = match self.peek() {

@@ -5495,13 +5495,13 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `from`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `await`, `await_restart` |
 | Wire | `reserved`, `optional`, `deprecated` |
 | Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
 | Literals | `true`, `false` |
 | Other | `dyn`, `unsafe`, `is` |
-| Reserved | `mut` (foreign pointer types, §3.9.3), `budget` |
+| Reserved | `mut` (foreign pointer types, §3.9.3) |
 
 **Contextual keywords** are words the lexer produces as identifiers and the
 parser recognises only in the position that gives them meaning. Using one as

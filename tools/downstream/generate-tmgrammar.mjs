@@ -60,9 +60,7 @@ const types = syntaxData.types;
 const keywordGroups = {
   'keyword.control.hew': [...new Set([
     ...kw.control_flow,
-    // Actor keywords that serve as control flow. `cooperate` is deliberately
-    // NOT here — syntax-data.json classifies it under reserved_unused (a
-    // compiler-internal safepoint token, not a source expression).
+    // Actor keywords that serve as control flow.
     'select', 'race', 'after', 'from', 'await', 'await_restart', 'scope',
   ])],
 
@@ -100,8 +98,6 @@ const keywordGroups = {
   ],
 
   'constant.language.boolean.hew': ['true', 'false'],
-
-  'keyword.reserved.hew': [...kw.reserved_unused],
 };
 
 // -- Type group mapping ----------------------------------------------------
@@ -301,13 +297,11 @@ for (const keywords of Object.values(keywordGroups)) {
   for (const k of keywords) coveredKeywords.add(k);
 }
 
-// Deliberately unassigned by any keywordGroups entry (see the comments at
-// their exclusion sites above) \u2014 not coverage gaps, so exclude them from the
-// "missing" report: kw.reserved_unused is classified under
-// invalid.removed.hew (a scope outside this generator's ownership), and
-// `mut` is operator-context-only, already scoped correctly by the dedicated
-// meta.type.pointer.raw.hew rule.
-const intentionallyUnassigned = new Set([...kw.reserved_unused, 'mut']);
+// Deliberately unassigned by any keywordGroups entry (see the comment at its
+// exclusion site above) \u2014 not a coverage gap, so exclude it from the
+// "missing" report: `mut` is operator-context-only, already scoped correctly
+// by the dedicated meta.type.pointer.raw.hew rule.
+const intentionallyUnassigned = new Set(['mut']);
 
 const missing = syntaxData.all_keywords
   .filter(k => !coveredKeywords.has(k) && !intentionallyUnassigned.has(k));

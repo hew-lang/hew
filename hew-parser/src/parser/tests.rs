@@ -5694,3 +5694,55 @@ fn select_arm_rejects_the_retired_equals_spelling() {
         crate::parse("fn f() { let v = select { first = left => first, after 1s => 0 }; }");
     assert!(!parsed.errors.is_empty(), "expected a parse error");
 }
+
+#[test]
+fn diet_words_are_accepted_as_identifiers() {
+    let source = "fn main() {
+    let try = 1;
+    let catch = 2;
+    let cooperate = 3;
+    let foreign = 4;
+    let super = 5;
+    let budget = 6;
+    let default = 7;
+    let emit = 8;
+    let pool = 9;
+    println(try + catch + cooperate + foreign + super + budget + default + emit + pool);
+}";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+}
+
+#[test]
+fn try_block_is_still_rejected() {
+    let result = crate::parse("fn main() { try { work() } }");
+    assert!(
+        result.errors.iter().any(|error| error
+            .message
+            .contains("'try'/'catch' blocks have been removed")),
+        "errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn foreign_item_still_redirects_to_extern() {
+    let result = crate::parse("foreign \"C\" { fn puts(s: string) -> i32; }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.hint.as_deref() == Some("use 'extern' instead of 'foreign'")),
+        "errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn race_is_still_a_reserved_word() {
+    let result = crate::parse("fn main() { let race = 1; }");
+    assert!(
+        !result.errors.is_empty(),
+        "`race` is reserved; using it as a name must be refused"
+    );
+}

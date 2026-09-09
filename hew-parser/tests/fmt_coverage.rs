@@ -1773,18 +1773,6 @@ fn fmt_scope_block_roundtrip() {
 }
 
 #[test]
-fn parse_rejects_explicit_cooperate_expression() {
-    let result = parse("fn main() {\n    cooperate;\n}\n");
-    assert!(
-        result.errors.iter().any(|error| error.message.contains(
-            "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
-        )),
-        "expected explicit cooperate parse rejection, got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
 fn fmt_lambda_actor_roundtrip() {
     exact_roundtrip("fn main() {\n    let worker = actor |x: int| {\n        x + 1\n    };\n}\n");
 }

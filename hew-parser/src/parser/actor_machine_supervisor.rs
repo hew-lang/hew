@@ -391,9 +391,8 @@ impl Parser<'_> {
             } else if self.peek() == Some(&Token::On) {
                 let transition = self.parse_machine_transition()?;
                 transitions.push(transition);
-            } else if self.peek() == Some(&Token::Default) {
+            } else if self.eat_machine_kw("default") {
                 // `default { state }` — unhandled events stay in current state.
-                self.advance();
                 if self.peek() == Some(&Token::LeftBrace) {
                     let block = self.parse_block()?;
                     if !block.stmts.is_empty()
@@ -1256,9 +1255,9 @@ impl Parser<'_> {
                     }
                     self.expect_structural_separator();
                 }
-                Some(Token::Child | Token::Pool) => {
+                Some(Token::Child | Token::Identifier("pool")) => {
                     let child_start = self.peek_span().start;
-                    let is_pool = matches!(self.peek(), Some(Token::Pool));
+                    let is_pool = matches!(self.peek(), Some(Token::Identifier("pool")));
                     self.advance();
                     let child_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;

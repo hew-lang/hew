@@ -6140,6 +6140,10 @@ expect_check_fail_contains \
 run_accept_expect_stdout "break_control_flow_only"
 run_accept_expect_stdout "scope_statement_tail"
 
+# The keyword diet: every retired and contextual spelling is an ordinary
+# identifier, all the way through codegen and execution.
+run_accept_expect_stdout "keyword_diet_identifiers"
+
 # ---------------------------------------------------------------------------
 # Summary: report every fixture's disposition instead of stopping at the
 # first unexpected outcome, so a batch-head run says something about the

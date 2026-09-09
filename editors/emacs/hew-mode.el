@@ -60,22 +60,21 @@
 
 ;; Keywords
 ;; Keywords — sourced from hew-lexer ALL_KEYWORDS (single source of truth).
-;; v0.5 additions: is, emit, entry, exit (machine sub-keywords); fork promoted
-;;                 from actor group.
-;; v0.6: struct keyword removed (#[wire] type/enum only); wire keyword removed
-;;       (attribute-only via #[wire]); await_restart added; mut added;
-;;       ActorRef -> LocalPid/RemotePid/LambdaPid.
+;; v0.6: the keyword diet retired async, budget, catch, cooperate, default,
+;;       emit, foreign, join, from, pool, super and try; default, emit and
+;;       pool live on as contextual identifiers. struct and wire are
+;;       attribute-only (#[wire] type/enum); race stays reserved.
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
     "let" "var" "const" "mut" "fn" "gen" "type" "indirect" "enum"
-    "trait" "impl" "import" "pub" "super" "where"
-    "actor" "fork" "receive" "init" "spawn" "async" "move" "await" "await_restart" "this"
-    "supervisor" "child" "restart" "budget" "strategy"
-    "reserved" "optional" "deprecated" "default"
-    "machine" "state" "event" "on" "when" "entry" "exit" "emit"
-    "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
-    "scope" "race" "defer" "foreign"
+    "trait" "impl" "import" "pub" "where"
+    "actor" "fork" "receive" "init" "spawn" "move" "await" "await_restart" "this"
+    "supervisor" "child" "restart" "strategy"
+    "reserved" "optional" "deprecated"
+    "machine" "state" "event" "on" "when" "entry" "exit"
+    "select" "yield" "after"
+    "scope" "race" "defer"
     "dyn" "unsafe" "extern" "package"
     "as")
   "Hew language keywords.")
@@ -100,7 +99,7 @@
 
 (defconst hew-constants
   '("true" "false" "None"
-    "one_for_one" "one_for_all" "rest_for_one" "simple_one_for_one" "pool"
+    "one_for_one" "one_for_all" "rest_for_one" "simple_one_for_one"
     "permanent" "transient" "temporary"
     "brutal_kill"
     "block" "drop_new" "drop_old" "fail" "coalesce" "fallback")

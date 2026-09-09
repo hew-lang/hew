@@ -12,7 +12,7 @@
  *
  * Supported categories:
  *   control_flow, declarations, actors, supervisor, wire, machine, other,
- *   logical, supervisor_config, reserved_unused, contextual, types
+ *   logical, supervisor_config, contextual, types
  *
  * Usage: node tools/downstream/patch-vim-syntax.mjs [HEW_VIM_PATH]
  *
@@ -103,13 +103,9 @@ const categoryMap = {
     group: 'hewControl',
     keywords: [...new Set([
       ...kw.control_flow.filter(k => k !== 'for'),
-      // Actor keywords that serve as control flow. `cooperate` is
-      // deliberately NOT here — syntax-data.json classifies it under
-      // reserved_unused (a compiler-internal safepoint token, not a source
-      // expression); it is supplied via the reserved_unused category
-      // (hewReserved group) instead. `for` is handled by a dedicated
-      // negative-lookahead match below so `for await` can remain visibly
-      // retired while ordinary `for` stays a control keyword.
+      // Actor keywords that serve as control flow. `for` is handled by a
+      // dedicated negative-lookahead match below so `for await` can remain
+      // visibly retired while ordinary `for` stays a control keyword.
       'select', 'race', 'yield', 'after', 'from', 'await', 'await_restart',
       'scope',
     ])],
@@ -164,11 +160,6 @@ const categoryMap = {
       { words: supervisorConstants },
       { words: overflowKinds },
     ],
-  },
-
-  reserved_unused: {
-    group: 'hewReserved',
-    keywords: [...kw.reserved_unused],
   },
 
   // Contextual identifiers — special meaning in specific parser contexts but
@@ -322,7 +313,6 @@ const coveredKeywords = new Set([
   ...categoryMap.machine.keywords,
   ...categoryMap.other.keywords,
   ...categoryMap.logical.keywords,
-  ...categoryMap.reserved_unused.keywords,
   ...supervisorConstants,
 ]);
 

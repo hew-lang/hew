@@ -1301,7 +1301,7 @@ fn main() {
 }
 ```
 
-A field without a default that `init` assigns belongs to `init`: `spawn` cannot name it, and `init` must assign it on every path before it finishes. Read it only after that assignment, and initialize it in every arm of a branch or before the branch, never inside a loop body. A later assignment in `init` replaces the value. If `init` faults part way, what it stored is released along with the spawn's own arguments; no handler sees partial state.
+A field without a default that `init` assigns belongs to `init`: `spawn` cannot name it, and `init` must assign it on every path before it finishes. Read it, or call an actor method, only after every such field is assigned, and initialize it in every arm of a branch or before the branch, never inside a loop body. A later assignment in `init` replaces the value. If `init` faults part way, what it stored is released along with the spawn's own arguments; no handler sees partial state.
 
 ### Bare field access (read and write)
 

@@ -13,7 +13,9 @@ actor Worker {
         }
         self.label = label + "!";
         attempts = attempts + 1;
+        println(describe());
     }
+    fn describe() -> string { label + "/" + mode }
     receive fn label() -> string { label }
     receive fn count() -> i64 { count }
     receive fn mode() -> string { mode }

@@ -1417,6 +1417,32 @@ impl Checker {
         }
     }
 
+    /// A plain actor method binds every state field as initialized, so `init`
+    /// may call one only after every deferred field holds a value (D447).
+    pub(super) fn require_deferred_fields_initialized_for_call(
+        &mut self,
+        method_key: &str,
+        span: &Span,
+    ) {
+        let missing: Vec<_> = self
+            .current_actor_fields
+            .iter()
+            .filter(|field| field.deferred && self.env.deferred_field_uninitialized(&field.name))
+            .map(|field| field.name.clone())
+            .collect();
+        let method = method_key.rsplit("::").next().unwrap_or(method_key);
+        for name in missing {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "E_ACTOR_FIELD_UNINITIALIZED: `init` calls `{method}` before initializing \
+                     state field `{name}`; assign it first"
+                ),
+            );
+        }
+    }
+
     /// A branch or loop join left a deferred field initialized on some paths
     /// only (D447). Every arm must initialize it, or none may.
     pub(super) fn report_deferred_init_conflicts(

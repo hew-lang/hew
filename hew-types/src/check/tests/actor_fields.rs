@@ -2022,3 +2022,91 @@ fn main() {
         "neither field is deferred to init"
     );
 }
+
+#[test]
+fn deferred_field_method_call_before_its_store_is_rejected() {
+    // A plain actor method reads the whole state, so calling one while a
+    // deferred field still awaits its store would observe an empty seat.
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    fn describe() -> string { label }
+    init(name: string) {
+        let seen = describe();
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("`describe`") && e.contains("`label`")),
+        "a method call before the first store must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_self_read_before_its_store_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string) {
+        let seen = self.label;
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors.iter().any(|e| e.contains("`label` is read before")),
+        "a `self.` read before the first store must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_method_call_after_every_store_is_accepted() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    let count: i64,
+    fn describe() -> string { if count > 0 { label } else { "" } }
+    init(name: string) {
+        label = name;
+        count = 1;
+        println(describe());
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a method call after every deferred store must be accepted: {:#?}",
+        output.errors
+    );
+}

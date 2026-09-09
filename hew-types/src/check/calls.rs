@@ -2168,6 +2168,11 @@ impl Checker {
                 );
                 return Ty::Error;
             }
+            // A method reads the whole state, so `init` may call one only once
+            // every deferred field holds a value (D447).
+            if self.checking_actor_init {
+                self.require_deferred_fields_initialized_for_call(&resolved_fn_name, span);
+            }
         }
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
             // Visibility enforcement: check that the caller's module is allowed

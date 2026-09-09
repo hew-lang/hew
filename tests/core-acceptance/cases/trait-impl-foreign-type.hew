@@ -1,0 +1,39 @@
+// A locally declared trait implemented for a type owned by another module.
+// The impl target is written through the module binding (`json.Value`), so the
+// implementation must register under that type's identity and dispatch.
+import std.encoding.json;
+
+trait Tagged {
+    fn tag(self) -> string;
+    fn describe(self) -> string {
+        "value:" + self.tag()
+    }
+}
+
+impl Tagged for json.Value {
+    fn tag(self) -> string {
+        "json"
+    }
+
+    fn describe(self) -> string {
+        "value:" + self.tag()
+    }
+}
+
+type Local { n: i64 }
+
+impl Tagged for Local {
+    fn tag(self) -> string {
+        "local"
+    }
+}
+
+fn main() {
+    let value = json.object();
+    println(value.tag());
+    println(value.describe());
+    let local = Local { n: 1 };
+    println(local.tag());
+    // A trait default the impl does not override still materialises.
+    println(local.describe());
+}

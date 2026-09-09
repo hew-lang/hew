@@ -5638,10 +5638,23 @@ impl Checker {
                 }
                 // Register impl methods with Type::method naming
                 if let TypeExpr::Named {
-                    name: type_name,
+                    name: target_name,
                     type_args,
                 } = &id.target_type.0
                 {
+                    // An impl target written through a module binding
+                    // (`impl Tagged for json.Value`) names a declaration whose
+                    // identity is `std.encoding.json.Value`. Resolve that
+                    // surface spelling ONCE, here, so every method table this
+                    // arm writes is keyed by the same identity method
+                    // resolution looks the receiver up under. Leaving it as
+                    // written registers the methods where nothing can find
+                    // them, and the impl is silently ignored.
+                    let canonical_target = self.canonical_impl_target_identity(target_name);
+                    let type_name = canonical_target.as_ref().unwrap_or(target_name);
+                    let prev_impl_surface_target = self
+                        .current_impl_surface_target
+                        .replace(target_name.clone());
                     // Do NOT push generic_ctx here — type params like T should remain
                     // as Ty::Named so that substitute_named_param can replace them
                     // at method call sites with concrete type arguments.
@@ -5874,6 +5887,7 @@ impl Checker {
 
                     // Restore previous self type
                     self.current_self_type = prev_self_type;
+                    self.current_impl_surface_target = prev_impl_surface_target;
                     if scope_pushed {
                         self.exit_impl_scope();
                     }
@@ -7557,7 +7571,17 @@ impl Checker {
         method_name: &str,
         impl_type_params: Option<&[TypeParam]>,
     ) -> ImplMethodDeclarationKeys {
-        let shared = format!("{type_name}::{method_name}");
+        // The compatibility dispatch key follows the SPELLING the impl was
+        // written with, because that is what HIR reconstructs the emitted
+        // symbol from; the canonical key follows the identity the target
+        // resolves to, which is what method resolution looks up. They are the
+        // same string unless the impl targets a type through a module binding.
+        let surface_name = self
+            .current_impl_surface_target
+            .as_deref()
+            .unwrap_or(type_name);
+        let shared = format!("{surface_name}::{method_name}");
+        let identity_key = format!("{type_name}::{method_name}");
         // `scoped_module_item_name` deliberately rejects presentation names
         // containing `::`; an impl method key necessarily has that separator.
         // Build the module-owned form directly.
@@ -7570,7 +7594,7 @@ impl Checker {
                     .map_or_else(|| key.to_string(), |module| format!("{module}.{key}"))
             }
         };
-        let canonical = module_owned(&shared, type_name);
+        let canonical = module_owned(&identity_key, type_name);
         // No impl-level type params means this impl block is concrete; it is a
         // specialisation only when its self type also carries concrete args.
         let is_concrete_specialised_impl = impl_type_params.is_none_or(<[TypeParam]>::is_empty);
@@ -9002,6 +9026,19 @@ impl Checker {
     /// synthetic cursors) has its own arm in
     /// `canonical_primitive_or_builtin_key_for_impl_name` and never reaches
     /// the module-qualifying fallback.
+    /// The canonical identity of an `impl` target spelled through a module
+    /// binding, or `None` when the spelling is already an identity (a bare
+    /// local name, a builtin, an exact owner-qualified path).
+    ///
+    /// Only a qualified spelling is resolved: a bare name is the declaring
+    /// scope's own lexical spelling and the surrounding registration already
+    /// owns its qualification.
+    pub(super) fn canonical_impl_target_identity(&self, name: &str) -> Option<String> {
+        name.contains('.')
+            .then(|| self.canonical_nominal_name(name))
+            .flatten()
+    }
+
     pub(super) fn trait_impl_type_identity(&self, type_name: &str) -> String {
         self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
             .or_else(|| {

@@ -3517,6 +3517,12 @@ pub struct Checker {
     pub(super) local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
     pub(super) current_self_type: Option<(String, Vec<Ty>)>,
+    /// The surface spelling of the active `impl` target when it differs from
+    /// the identity the target resolves to (`json.Value` for
+    /// `std.encoding.json.Value`). HIR derives an impl block's emitted symbol
+    /// from the spelling the source wrote, so the declaration must stay
+    /// reachable under it while every checker table keys the identity.
+    pub(super) current_impl_surface_target: Option<String>,
     /// Source-resolved type of the current impl target.
     ///
     /// Unlike `current_self_type`, this retains the resolver's nominal identity
@@ -4060,6 +4066,7 @@ impl Checker {
             source_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
+            current_impl_surface_target: None,
             current_self_binding_ty: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),

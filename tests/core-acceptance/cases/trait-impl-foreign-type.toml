@@ -1,0 +1,10 @@
+[[case]]
+id = "trait-impl-foreign-type"
+intent = "A local trait implemented for a type owned by another module dispatches through the module binding it was written with, and an impl on a local type in the same program keeps working, including a trait default it does not override."
+source = "cases/trait-impl-foreign-type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "json\nvalue:json\nlocal\nvalue:local\n"
+exit = 0

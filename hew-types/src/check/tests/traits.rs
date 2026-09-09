@@ -3058,3 +3058,158 @@ fn impl_of_marker_trait_without_declared_methods_is_accepted() {
         output.errors
     );
 }
+
+/// Build a two-module graph: `pkg.thing` declares `Thing` and `make`, and the
+/// root implements a LOCAL trait for that imported type through the module
+/// binding (`impl Tagged for thing.Thing`).
+fn foreign_impl_program(root_source: &str) -> TypeCheckOutput {
+    let thing_path: std::path::PathBuf = "pkgs/thing.hew".into();
+    let mut thing = hew_parser::parse(
+        r"
+        pub type Thing { v: i64, }
+        pub fn make() -> Thing { Thing { v: 7 } }
+        ",
+    );
+    let mut root = hew_parser::parse(root_source);
+    for parsed in [&thing, &root] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+
+    let thing_item_count = thing.program.items.len();
+    let root_import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import");
+    root_import.resolved_items = Some(thing.program.items.clone().into());
+    root_import.resolved_item_source_paths =
+        std::iter::repeat_n(thing_path.clone(), thing_item_count).collect();
+    root_import.resolved_source_paths = vec![thing_path.clone()];
+
+    let root_id = ModuleId::root();
+    let thing_id = ModuleId::new(vec!["pkg".to_string(), "thing".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: thing_id.clone(),
+            items: std::mem::take(&mut thing.program.items),
+            imports: vec![],
+            source_paths: vec![thing_path.clone()],
+            doc: None,
+        })
+        .expect("thing module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "pkg.thing".to_string(),
+        std::iter::repeat_n(thing_path, thing_item_count).collect(),
+    );
+    graph.topo_order = vec![thing_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    })
+}
+
+#[test]
+fn local_trait_implemented_for_an_imported_type_dispatches() {
+    let output = foreign_impl_program(
+        r#"
+        import pkg.thing;
+
+        trait Tagged {
+            fn tag(self) -> string;
+        }
+
+        impl Tagged for thing.Thing {
+            fn tag(self) -> string { "thing" }
+        }
+
+        fn main() {
+            let value = thing.make();
+            println(value.tag());
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a local trait implemented for an imported type must dispatch: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.fn_sigs.contains_key("pkg.thing.Thing::tag"),
+        "the impl method must register under the target's identity: {:?}",
+        output
+            .fn_sigs
+            .keys()
+            .filter(|key| key.ends_with("::tag"))
+            .collect::<Vec<_>>()
+    );
+    // HIR reconstructs an impl block's emitted symbol from the spelling the
+    // source wrote, so the declaration stays reachable under it as well — one
+    // declaration, not two.
+    let surface = output.impl_method_declaration_ids.get("thing.Thing::tag");
+    assert!(
+        surface.is_some(),
+        "the surface spelling must select a declaration: {:?}",
+        output.impl_method_declaration_ids
+    );
+    assert_eq!(
+        surface,
+        output
+            .impl_method_declaration_ids
+            .get("pkg.thing.Thing::tag"),
+        "surface and identity keys must select one declaration: {:?}",
+        output.impl_method_declaration_ids
+    );
+}
+
+#[test]
+fn imported_type_without_the_implemented_method_still_fails() {
+    let output = foreign_impl_program(
+        r#"
+        import pkg.thing;
+
+        trait Tagged {
+            fn tag(self) -> string;
+        }
+
+        impl Tagged for thing.Thing {
+            fn tag(self) -> string { "thing" }
+        }
+
+        fn main() {
+            let value = thing.make();
+            println(value.missing());
+        }
+        "#,
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::UndefinedMethod)
+        .expect("a method the impl does not provide must still fail");
+    assert!(
+        error.message.contains("missing"),
+        "diagnostic names the missing method: {}",
+        error.message
+    );
+}

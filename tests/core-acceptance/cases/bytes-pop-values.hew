@@ -1,0 +1,49 @@
+// `bytes.pop()` removes the last byte and answers `Option<u8>`: zero and 255
+// stay distinct from absence, an aliased buffer keeps its own bytes, and an
+// emptied buffer is reusable.
+fn expect_byte(value: Option<u8>, expected: u8) {
+    match value {
+        .Some(byte) => assert(byte == expected),
+        .None => panic("expected a popped byte"),
+    }
+}
+
+fn expect_none(value: Option<u8>) {
+    match value {
+        .Some(_) => panic("popped a byte from an empty buffer"),
+        .None => {},
+    }
+}
+
+fn main() {
+    var value = bytes.new();
+    expect_none(value.pop());
+
+    value.push(0);
+    value.push(255);
+    let alias = value;
+
+    expect_byte(value.pop(), 255);
+    expect_byte(value.pop(), 0);
+    expect_none(value.pop());
+    assert(value.is_empty());
+
+    // The alias kept the buffer it was given.
+    assert(alias.len() == 2);
+    expect_byte(alias.get(0), 0);
+    expect_byte(alias.get(1), 255);
+
+    // An emptied buffer is an ordinary buffer again.
+    value.push(7);
+    value.push(9);
+    expect_byte(value.pop(), 9);
+    assert(value.len() == 1);
+
+    // Popping through a slice reads that slice's own tail.
+    var tail = alias[1..];
+    expect_byte(tail.pop(), 255);
+    expect_none(tail.pop());
+    assert(alias.len() == 2);
+
+    println("optional pop passed");
+}

@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-pop-values"
+intent = "Popping a byte distinguishes zero and 255 from absence, leaves an aliased buffer and a source of a slice untouched, and leaves the emptied receiver reusable."
+source = "cases/bytes-pop-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "optional pop passed\n"
+stderr = ""
+exit = 0

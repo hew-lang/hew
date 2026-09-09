@@ -89,7 +89,7 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
         fn exercise(input: bytes, other: bytes) {
             var buf = input;
             buf.push(65);
-            let _: u8 = buf.pop();
+            let _: Option<u8> = buf.pop();
             let _: i64 = buf.len();
             let _: Option<u8> = buf.get(0);
             buf.set(0, 66);

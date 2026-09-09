@@ -213,7 +213,6 @@ stable = [
   "hew_blocking_pool_stop",
   "hew_blocking_pool_submit",
   "hew_bool_to_string",
-  "hew_bytes_abort_empty_pop",
   "hew_bytes_abort_index_oob",
   "hew_bytes_abort_offset_overflow",
   "hew_bytes_append",

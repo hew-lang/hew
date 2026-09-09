@@ -2323,21 +2323,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_bytes_abort_empty_pop() -> !",
-        "wasm32-wasip1": "fn hew_bytes_abort_empty_pop() -> !"
-      },
-      "symbol": "hew_bytes_abort_empty_pop"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_bytes_abort_index_oob() -> !",
         "wasm32-wasip1": "fn hew_bytes_abort_index_oob() -> !"
       },

@@ -1,0 +1,11 @@
+[[case]]
+id = "string-chars-scalars"
+intent = "Iterating a string's Unicode scalars through `chars` covers ASCII, multi-byte scalars, an embedded NUL and the empty string, and leaves the source string usable."
+source = "cases/string-chars-scalars.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "chars passed\n"
+stderr = ""
+exit = 0

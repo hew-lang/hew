@@ -366,6 +366,7 @@ pub enum RuntimeResultEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeLogicalFailure {
     IndexOutOfBounds,
+    IntegerOverflow,
     /// A selected user callback returns an existing logical fault owner.
     CallbackFault,
 }
@@ -1343,6 +1344,37 @@ pub enum MathIntrinsic {
     Floor,
     Ceil,
     Round,
+}
+
+impl MathIntrinsic {
+    const fn semantic_contract(self) -> RuntimeSemanticContract {
+        use RuntimeResultEffect::BitCopy;
+        use RuntimeValueKind::{F64, I64};
+        const FLOAT_PAIR: &[RuntimeArgumentContract] = &[SIR_F64_COPY[0], SIR_F64_COPY[0]];
+        const INTEGER_PAIR: &[RuntimeArgumentContract] = &[SIR_I64_COPY[0], SIR_I64_COPY[0]];
+        match self {
+            Self::AbsI64 => runtime_semantic_contract(
+                SIR_I64_COPY,
+                BitCopy(I64),
+                &[RuntimeLogicalFailure::IntegerOverflow],
+            ),
+            Self::MinI64 | Self::MaxI64 => {
+                runtime_semantic_contract(INTEGER_PAIR, BitCopy(I64), &[])
+            }
+            Self::MinF64 | Self::MaxF64 | Self::Pow => {
+                runtime_semantic_contract(FLOAT_PAIR, BitCopy(F64), &[])
+            }
+            Self::Sqrt
+            | Self::Exp
+            | Self::Log
+            | Self::Sin
+            | Self::Cos
+            | Self::AbsF64
+            | Self::Floor
+            | Self::Ceil
+            | Self::Round => runtime_semantic_contract(SIR_F64_COPY, BitCopy(F64), &[]),
+        }
+    }
 }
 
 // =============================================================================
@@ -4254,6 +4286,7 @@ impl RuntimeCallFamily {
             Self::BoolToString => {
                 runtime_semantic_contract(SIR_BOOL_COPY, FreshOwned(String), SIR_NO_FAILURES)
             }
+            Self::MathIntrinsic(kind) => kind.semantic_contract(),
             Self::BytesNew => runtime_semantic_contract(&[], FreshOwned(Bytes), SIR_NO_FAILURES),
             Self::BytesLen => {
                 runtime_semantic_contract(SIR_BYTES_BORROW, BitCopy(I64), SIR_NO_FAILURES)

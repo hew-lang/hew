@@ -345,6 +345,7 @@ pub const fn runtime_failure_trap_kind(
 ) -> Option<TrapKind> {
     match failure {
         hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
+        hew_types::RuntimeLogicalFailure::IntegerOverflow => Some(TrapKind::IntegerOverflow),
         hew_types::RuntimeLogicalFailure::CallbackFault => None,
     }
 }

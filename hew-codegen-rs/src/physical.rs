@@ -76,7 +76,7 @@ use hew_runtime::internal::types::{
     HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
-use hew_types::runtime_call::collection_type_arguments;
+use hew_types::runtime_call::{collection_type_arguments, MathIntrinsic};
 use hew_types::{EntryExitAction, EntryIntegerType, ResolvedTy, ValueCapability};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -3926,6 +3926,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::MathIntrinsic(kind) => {
+                return self.emit_math_intrinsic(
+                    kind,
+                    transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
+            }
             PhysicalRuntimeAction::Tcp(op) => {
                 self.emit_tcp_operation(op, transfers, result)?;
             }
@@ -4989,6 +4998,85 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )));
         }
         self.emit_result_edge(result, normal)
+    }
+
+    fn emit_math_intrinsic(
+        &self,
+        kind: MathIntrinsic,
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        use MathIntrinsic as M;
+        let name = match kind {
+            M::Sqrt => "llvm.sqrt",
+            M::Exp => "llvm.exp",
+            M::Log => "llvm.log",
+            M::Sin => "llvm.sin",
+            M::Cos => "llvm.cos",
+            M::AbsI64 => "llvm.abs",
+            M::MinI64 => "llvm.smin",
+            M::MaxI64 => "llvm.smax",
+            M::AbsF64 => "llvm.fabs",
+            M::MinF64 => "llvm.minnum",
+            M::MaxF64 => "llvm.maxnum",
+            M::Pow => "llvm.pow",
+            M::Floor => "llvm.floor",
+            M::Ceil => "llvm.ceil",
+            M::Round => "llvm.round",
+        };
+        let mut arguments = transfers
+            .iter()
+            .map(|transfer| self.load(argument_source(transfer), "math.argument"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let first = *arguments.first().ok_or_else(|| {
+            CodegenError::FailClosed("physical math intrinsic lacks its operand".into())
+        })?;
+        let declaration = Intrinsic::find(name)
+            .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &[first.get_type()]))
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("LLVM math intrinsic `{name}` is unavailable"))
+            })?;
+        if kind == M::AbsI64 {
+            // Keep the minimum input defined while routing it to the checked
+            // overflow edge, rather than creating poison before that branch.
+            arguments.push(self.ctx.bool_type().const_zero().into());
+        }
+        let arguments: Vec<BasicMetadataValueEnum<'ctx>> =
+            arguments.into_iter().map(Into::into).collect();
+        let value = self.runtime_call_value(declaration, &arguments, "math.result")?;
+        if kind == M::AbsI64 {
+            let operand = first.into_int_value();
+            let overflow = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    operand,
+                    operand.get_type().const_int(1 << 63, false),
+                    "math.abs.overflow",
+                )
+                .llvm_ctx("check integer absolute value overflow")?;
+            return self.emit_checked_choice(
+                overflow,
+                value.into_int_value(),
+                result,
+                normal,
+                failure.ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "integer absolute value lacks its overflow edge".into(),
+                    )
+                })?,
+                "math.abs",
+            );
+        }
+        if failure.is_some() {
+            return Err(CodegenError::FailClosed(
+                "infallible math intrinsic carries a failure edge".into(),
+            ));
+        }
+        self.store(result, value)?;
+        self.emit_result_edge(Some(result), normal)
     }
 
     fn new_array_storage(

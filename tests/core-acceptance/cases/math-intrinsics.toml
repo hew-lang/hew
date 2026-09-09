@@ -1,0 +1,11 @@
+[[case]]
+id = "math-intrinsics"
+intent = "The full numeric math family executes transcendental, rounding, power, absolute value and min/max operations with integer and floating-point operands."
+source = "cases/math-intrinsics.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "numeric math intrinsics preserve their checked semantics\n"
+stderr = ""
+exit = 0

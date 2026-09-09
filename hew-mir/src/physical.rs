@@ -10,7 +10,7 @@ pub use hew_sir::{
     SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor,
     SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
-use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
+use hew_types::runtime_call::{sequence_element_type, ArrayValueOp, MathIntrinsic};
 
 pub use hew_sir::{SemWireKind, SemWirePlan};
 use std::collections::{BTreeMap, BTreeSet};
@@ -954,6 +954,7 @@ pub enum PhysicalRuntimeAction {
     StringToLowercase,
     StringSlice,
     StringRepeat,
+    MathIntrinsic(MathIntrinsic),
     StringReplace,
     StringClone,
     StringSplit,
@@ -1060,6 +1061,7 @@ impl PhysicalRuntimeAction {
             Self::StringToLowercase => RuntimeCallFamily::StringToLowercase,
             Self::StringSlice => RuntimeCallFamily::StringSlice,
             Self::StringRepeat => RuntimeCallFamily::StringRepeat,
+            Self::MathIntrinsic(kind) => RuntimeCallFamily::MathIntrinsic(kind),
             Self::StringReplace => RuntimeCallFamily::StringReplace,
             Self::StringClone => RuntimeCallFamily::StringClone,
             Self::StringSplit => RuntimeCallFamily::StringSplit,
@@ -2564,6 +2566,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringToLowercase => PhysicalRuntimeAction::StringToLowercase,
         RuntimeCallFamily::StringSlice => PhysicalRuntimeAction::StringSlice,
         RuntimeCallFamily::StringRepeat => PhysicalRuntimeAction::StringRepeat,
+        RuntimeCallFamily::MathIntrinsic(kind) => PhysicalRuntimeAction::MathIntrinsic(kind),
         RuntimeCallFamily::StringReplace => PhysicalRuntimeAction::StringReplace,
         RuntimeCallFamily::StringClone => PhysicalRuntimeAction::StringClone,
         RuntimeCallFamily::StringSplit => PhysicalRuntimeAction::StringSplit,

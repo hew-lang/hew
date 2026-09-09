@@ -1,0 +1,9 @@
+import std.math;
+
+fn main() {
+    let owner = "owned before overflow".repeat(4);
+    let minimum: i64 = -9223372036854775807 - 1;
+    let impossible = math.abs(minimum);
+    println(owner);
+    println(impossible);
+}

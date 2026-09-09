@@ -226,6 +226,12 @@ fn collect_hew_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
 }
 
 fn canonical_std_module(std_root: &Path, source: &Path) -> Vec<String> {
+    // A directory-module peer (`std/net/http/http_client.hew`) is an alternate
+    // physical spelling of its package owner, not a second nominal module. The
+    // registry owns that rule; do not re-derive it from the path here.
+    if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(source) {
+        return owner.split('.').map(str::to_string).collect();
+    }
     let relative = source.strip_prefix(std_root).expect("source is below std/");
     let mut module = vec!["std".to_string()];
     if let Some(parent) = relative.parent() {
@@ -254,7 +260,7 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
     collect_hew_sources(std_root, &mut sources);
     sources.sort();
 
-    let mut parsed_modules = BTreeMap::new();
+    let mut parsed_modules: ParsedStdModules = BTreeMap::new();
     let mut resource_types = BTreeSet::new();
     for source in sources {
         let text = fs::read_to_string(&source).expect("read stdlib source");
@@ -305,12 +311,12 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
             );
             resource_types.insert(format!("{}.{}", module_path.join("."), declaration.name));
         }
-        assert!(
-            parsed_modules
-                .insert(module_path, parsed.program.items)
-                .is_none(),
-            "canonical std module identity must be unique"
-        );
+        // Peers that collapse onto one owner contribute their items to the
+        // same module rather than claiming a second identity.
+        parsed_modules
+            .entry(module_path)
+            .or_default()
+            .extend(parsed.program.items);
     }
 
     (parsed_modules, resource_types)
@@ -484,6 +490,16 @@ fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
         path.extension().and_then(|value| value.to_str()),
         Some("hew")
     );
+    // The registry owns the directory-module peer rule, so a peer source such as
+    // `std/net/http/http_client.hew` keys on its package owner. Matrix rows hold
+    // repository-relative paths; the registry resolves an absolute one.
+    let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types is below repository root")
+        .join(path);
+    if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(&absolute) {
+        return format!("{owner}.{resource}");
+    }
     let mut module: Vec<_> = path
         .parent()
         .expect("shipped source has a parent")

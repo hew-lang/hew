@@ -2,6 +2,22 @@
   "schema_version": 2,
   "resources": [
     {
+      "source_path": "std/builtins.hew",
+      "resource": "ActorRequestOwner",
+      "runtime": {
+        "path": "hew-runtime/src/mailbox_native.rs",
+        "test": "sealed_request_detach_resume_and_drop_preserve_one_owner",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_msg_envelope_release"
+    },
+    {
       "source_path": "std/channel/channel.hew",
       "resource": "ChannelPair",
       "runtime": {
@@ -50,6 +66,54 @@
       "release_symbol": "hew_file_read_stream_close"
     },
     {
+      "source_path": "std/net/http/http.hew",
+      "resource": "Request",
+      "runtime": {
+        "path": "hew-std/src/http/string_result_retention.rs",
+        "test": "request_body_result_is_transferred_and_request_survives_release",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_http_request_free"
+    },
+    {
+      "source_path": "std/net/http/http.hew",
+      "resource": "Server",
+      "runtime": {
+        "path": "hew-std/src/http/server.rs",
+        "test": "server_close_cancels_streaming_responses_and_drains_threads",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_http_server_close"
+    },
+    {
+      "source_path": "std/net/http/http_client.hew",
+      "resource": "Response",
+      "runtime": {
+        "path": "hew-std/src/http/string_result_retention.rs",
+        "test": "response_body_content_type_and_header_results_are_transferred",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_http_response_free"
+    },
+    {
       "source_path": "std/net/net.hew",
       "resource": "Connection",
       "runtime": {
@@ -80,22 +144,6 @@
         "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_tcp_listener_close"
-    },
-    {
-      "source_path": "std/net/http/http.hew",
-      "resource": "Server",
-      "runtime": {
-        "path": "hew-std/src/http/server.rs",
-        "test": "server_close_cancels_streaming_responses_and_drains_threads",
-        "valid_handle": true,
-        "execution_profile": "external-network"
-      },
-      "wasm": {
-        "profile": "wasm32-wasi",
-        "disposition": "rejected",
-        "proof_kind": "rejected-boundary"
-      },
-      "release_symbol": "hew_http_server_close"
     },
     {
       "source_path": "std/net/quic/quic.hew",
@@ -195,6 +243,22 @@
     },
     {
       "source_path": "std/net/websocket/websocket.hew",
+      "resource": "Message",
+      "runtime": {
+        "path": "hew-std/src/websocket_string_result_retention.rs",
+        "test": "message_text_result_is_transferred_and_message_survives_release",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_ws_message_free"
+    },
+    {
+      "source_path": "std/net/websocket/websocket.hew",
       "resource": "Server",
       "runtime": {
         "path": "hew-std/src/websocket.rs",
@@ -240,22 +304,6 @@
         "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_stream_pair_free"
-    },
-    {
-      "source_path": "std/builtins.hew",
-      "resource": "ActorRequestOwner",
-      "runtime": {
-        "path": "hew-runtime/src/mailbox_native.rs",
-        "test": "sealed_request_detach_resume_and_drop_preserve_one_owner",
-        "valid_handle": true,
-        "execution_profile": "local"
-      },
-      "wasm": {
-        "profile": "wasm32-wasi",
-        "disposition": "rejected",
-        "proof_kind": "rejected-boundary"
-      },
-      "release_symbol": "hew_msg_envelope_release"
     }
   ]
 }

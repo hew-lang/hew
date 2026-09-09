@@ -1490,8 +1490,8 @@ mod tests {
         reg.load("std.net.http").unwrap();
         assert!(reg.is_handle_type("json.Value"), "json.Value still present");
         assert!(
-            !reg.is_handle_type("http.Request"),
-            "http.Request is a fielded resource wrapper, not an opaque handle"
+            reg.is_handle_type("http.Request"),
+            "http.Request is a fieldless opaque resource with one release authority"
         );
     }
 
@@ -1542,8 +1542,9 @@ mod tests {
         reg.load("std.net.http").unwrap();
         assert_eq!(
             reg.drop_func_for("http.Request"),
-            None,
-            "http.Request should not have a drop func"
+            Some("hew_http_request_free"),
+            "http.Request.close consumes the handle itself, so its drop func is \
+             the one release authority"
         );
         reg.load("std.process").unwrap();
         assert_eq!(

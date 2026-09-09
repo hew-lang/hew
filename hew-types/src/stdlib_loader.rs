@@ -1915,9 +1915,14 @@ mod tests {
         let info = load_module("std::net::http", &test_root()).unwrap();
 
         let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
-        assert!(
-            request_drop.is_none(),
-            "http.Request.close forwards through its handle field, so no direct drop func is registered, got: {:?}",
+        assert_eq!(
+            request_drop,
+            Some(&(
+                "http.Request".to_string(),
+                "hew_http_request_free".to_string()
+            )),
+            "http.Request.close consumes the handle itself, so it registers a \
+             direct drop func: {:?}",
             info.drop_funcs
         );
 

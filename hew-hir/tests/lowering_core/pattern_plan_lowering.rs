@@ -364,6 +364,18 @@ fn main() -> i64 {
     a.len()
 }"#,
         ),
+        (
+            "match",
+            r#"
+enum Packet { Data { a: string, b: string }, Empty, }
+fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn main() -> i64 {
+    match make() {
+        Packet.Data { a, .. } => a.len(),
+        Packet.Empty => 0,
+    }
+}"#,
+        ),
     ];
     for (position, source) in cases {
         let (parsed, mut output) = checked(source);

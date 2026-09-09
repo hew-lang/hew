@@ -94,6 +94,67 @@ fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
     path.segments.last().map(String::as_str)
 }
 
+/// The body of one arm handed to [`LowerCtx::lower_pattern_arms`].
+///
+/// `match` arms carry an expression; `if let` and `while let` carry a block
+/// that is lowered against the conditional's result type.
+enum PatternArmBody<'a> {
+    Expr(&'a Spanned<Expr>),
+    Block(&'a Block, Span),
+}
+
+/// One pattern arm to lower. `match`, `if let`, `while let` and `let … else`
+/// all build these so the pattern shapes they accept have a single authority.
+struct PatternArm<'a> {
+    pattern: Spanned<Pattern>,
+    guard: Option<&'a Spanned<Expr>>,
+    body: PatternArmBody<'a>,
+}
+
+impl PatternArm<'_> {
+    /// End offset of the arm body, used to span the whole arm.
+    fn body_end(&self) -> usize {
+        match &self.body {
+            PatternArmBody::Expr(expr) => expr.1.end,
+            PatternArmBody::Block(_, span) => span.end,
+        }
+    }
+}
+
+/// Expand `match` arms into pattern arms, flattening or-patterns into one arm
+/// per leaf alternative. The checker classified each leaf under its own span,
+/// so downstream lowering consumes the leaves, never the `Or` node.
+fn pattern_arms_from_match(arms: &[hew_parser::ast::MatchArm]) -> Vec<PatternArm<'_>> {
+    arms.iter()
+        .flat_map(|arm| {
+            flatten_or_pattern(&arm.pattern)
+                .into_iter()
+                .map(move |pattern| PatternArm {
+                    pattern,
+                    guard: arm.guard.as_ref(),
+                    body: PatternArmBody::Expr(&arm.body),
+                })
+        })
+        .collect()
+}
+
+/// Expand one pattern-condition arm (`if let` / `while let`) into pattern arms,
+/// one per or-pattern leaf, all sharing the same block body.
+fn pattern_arms_from_block<'a>(
+    pattern: &Spanned<Pattern>,
+    body: &'a Block,
+    body_span: &Span,
+) -> Vec<PatternArm<'a>> {
+    flatten_or_pattern(pattern)
+        .into_iter()
+        .map(|pattern| PatternArm {
+            pattern,
+            guard: None,
+            body: PatternArmBody::Block(body, body_span.clone()),
+        })
+        .collect()
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the exhaustive payload classifier keeps all pattern forms in one match"
@@ -10880,62 +10941,28 @@ impl LowerCtx {
         }
     }
 
-    /// Build the `match` that `if let` and `while let` desugar to: the
-    /// resolved constructor arm carrying the pattern's payload bindings and
-    /// nested checks, then a wildcard arm for the fallthrough. Everything
-    /// downstream sees one ordered match instead of a second pattern form.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one desugar assembles the whole resolved arm in a single place"
-    )]
+    /// Build the `match` that `if let` and `while let` desugar to: the success
+    /// arms from `lower_pattern_arms` (one per or-pattern leaf), then a
+    /// wildcard arm for the fallthrough. Everything downstream sees one
+    /// ordered match instead of a second pattern form.
     fn pattern_conditional_match(
         &mut self,
         scrutinee: HirExpr,
-        arm_scope: ScopeId,
-        variant_match: hew_types::VariantMatch,
-        variant_idx: u32,
-        bindings: Vec<HirMatchArmBinding>,
-        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
-        body: HirBlock,
+        mut arms: Vec<HirMatchArm>,
         fallthrough: HirExpr,
         result_ty: &ResolvedTy,
         span: &Span,
     ) -> HirExpr {
-        let body_ty = body.ty.clone();
-        let body_expr = HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            ty: body_ty.clone(),
-            value_class: ValueClass::of_ty(&body_ty, &self.type_classes),
-            intent: IntentKind::Read,
-            kind: HirExprKind::Block(body),
+        arms.push(HirMatchArm {
+            scope: None,
+            predicate: HirMatchArmPredicate::Wildcard,
+            bindings: Vec::new(),
+            payload_predicates: Vec::new(),
+            payload_variant_predicates: Vec::new(),
+            guard: None,
+            body: fallthrough,
             span: span.clone(),
-        };
-        let arms = vec![
-            HirMatchArm {
-                scope: Some(arm_scope),
-                predicate: HirMatchArmPredicate::EnumVariant {
-                    variant_match,
-                    variant_idx,
-                },
-                bindings,
-                payload_predicates: Vec::new(),
-                payload_variant_predicates,
-                guard: None,
-                body: body_expr,
-                span: span.clone(),
-            },
-            HirMatchArm {
-                scope: None,
-                predicate: HirMatchArmPredicate::Wildcard,
-                bindings: Vec::new(),
-                payload_predicates: Vec::new(),
-                payload_variant_predicates: Vec::new(),
-                guard: None,
-                body: fallthrough,
-                span: span.clone(),
-            },
-        ];
+        });
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -16381,22 +16408,14 @@ impl LowerCtx {
                 expr,
                 body,
             } => {
-                // `while let <Ctor>(bindings) = scrutinee { body }` — lowered
-                // to a HIR `WhileLet` expression so that MIR can build the
-                // header/body/exit CFG shape (mirroring `While` + enum-tag
-                // `Match`).
+                // `while let P = e { body }` is a bare loop whose every
+                // iteration re-matches `e` and breaks on the fallthrough arm:
+                // `loop { match e { P => body, _ => break } }`. `break` and
+                // `continue` inside `body` target this loop, and the arm
+                // body's scope gives per-iteration defer cleanup.
                 //
-                // Pattern scope: only a single payload-bearing enum
-                // constructor pattern (`Some(x)`) is accepted here. Unit
-                // variants (`None`), or-patterns, guards, literals, and
-                // plain bindings fail closed with a typed diagnostic, the
-                // same fail-closed shape used by `Match` lowering.
-                //
-                // The checker's `pattern_resolutions` side-table carries the
-                // resolved variant identity + payload binding metadata;
-                // missing entries (or-pattern / checker-rejected shapes)
-                // surface a single `NotYetImplemented` diagnostic so callers
-                // never see a half-built node.
+                // The arms come from `lower_pattern_arms`, so every pattern
+                // shape `match` accepts is accepted here.
                 let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
                 // Register a generic-enum instantiation if the scrutinee's
                 // type is a parameterised enum (`Option<i64>`). No-op for
@@ -16405,19 +16424,11 @@ impl LowerCtx {
                 // `try_register_enum_instantiation(scrutinee.1)` call.
                 self.try_register_enum_instantiation(&expr.1);
 
-                let pattern_span = &pattern.1;
-                let key = self.mk_key(pattern_span);
-                let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "while-let pattern has no resolution; \
-                         only single payload-bearing enum-variant patterns are supported",
-                        "while-let-substrate",
-                    );
-                    // Walk the body for checker-stream coverage.
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
+                let body_span = pattern.1.start..span.end;
+                let arms = pattern_arms_from_block(pattern, body, &body_span);
+                let Some((hir_arms, _)) =
+                    self.lower_pattern_arms(&scrutinee_hir, &arms, &ResolvedTy::Unit)
+                else {
                     let unsupported_expr = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
@@ -16436,236 +16447,6 @@ impl LowerCtx {
                     };
                 };
 
-                // Uniform plan authority: a record-shaped pattern (incl. enum
-                // struct-variant `Packet::Data { a, .. }`) with no checker
-                // `PatternPlan` fails closed here rather than lowering off the
-                // AST-derived resolution.
-                if self.record_shape_missing_plan(pattern) {
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let record-shaped pattern missing PatternPlan".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                }
-
-                if let PatternKind::Literal = resolution.pattern_kind {
-                    let Pattern::Literal(lit) = &pattern.0 else {
-                        self.unsupported(
-                            pattern_span.clone(),
-                            "while-let literal resolution on non-literal pattern",
-                            "while-let-substrate",
-                        );
-                        let unsupported_expr = HirExpr {
-                            node: self.ids.node(),
-                            site: self.ids.site(),
-                            ty: ResolvedTy::Unit,
-                            value_class: ValueClass::BitCopy,
-                            intent: IntentKind::Read,
-                            kind: HirExprKind::Unsupported(
-                                "while-let with invalid literal resolution".into(),
-                            ),
-                            span: span.clone(),
-                        };
-                        return HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Expr(unsupported_expr),
-                            span: span.clone(),
-                        };
-                    };
-                    let condition =
-                        self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
-                    let body_block = self.lower_block(body, &ResolvedTy::Unit);
-                    let while_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::While {
-                            label: label.clone(),
-                            condition: Box::new(condition),
-                            body: body_block,
-                        },
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(while_expr),
-                        span: span.clone(),
-                    };
-                }
-
-                // Only variant-constructor patterns with at least one
-                // payload binding are lowered. Unit-variant patterns
-                // (`None`), wildcards, literals, and plain bindings fail
-                // closed — a `while let None = ...` would never terminate
-                // (the condition is "tag matches None") and a plain
-                // identifier pattern is semantically a `while true` with
-                // a re-bind which is not what users mean.
-                let (PatternKind::VariantCtor, Some(mut variant_match)) =
-                    (resolution.pattern_kind, resolution.variant_match)
-                else {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "while-let supports only payload-bearing enum-variant patterns \
-                         (e.g. `Some(x)`); unit variants, wildcards, literals, \
-                         plain bindings, and or-patterns are reserved for a future lane",
-                        "while-let-substrate",
-                    );
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let with unsupported pattern shape".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                };
-
-                // Resolve variant_idx via `machine_ctor_registry` (same
-                // qualified-key lookup used by `lower_match_expr` so that
-                // MIR/codegen consume identical indices).
-                let Some((registered_type, idx_usize, _)) =
-                    self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
-                else {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "while-let variant not registered in machine/enum ctor registry",
-                        "while-let-substrate",
-                    );
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported("while-let variant index unresolved".into()),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                };
-                variant_match.type_name = registered_type;
-                let variant_idx = u32::try_from(idx_usize)
-                    .expect("variant index exceeds u32::MAX — impossible in Hew");
-
-                // Build per-arm bindings (same shape as `Match`).
-                let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
-                let mut binding_error = false;
-                for payload in &resolution.payload_bindings {
-                    let ty = match ResolvedTy::from_ty(&payload.ty) {
-                        Ok(ty) => self.qualify_current_module_record_ty(ty),
-                        Err(err) => {
-                            self.unsupported(
-                                pattern_span.clone(),
-                                format!("unresolved payload binding type in while-let ({err:?})"),
-                                "while-let-substrate",
-                            );
-                            binding_error = true;
-                            continue;
-                        }
-                    };
-                    let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                        self.unsupported(
-                            pattern_span.clone(),
-                            "while-let payload binding field index exceeds u32::MAX",
-                            "while-let-substrate",
-                        );
-                        binding_error = true;
-                        continue;
-                    };
-                    binding_specs.push((field_idx, payload.binding_name.clone(), ty));
-                }
-
-                let arm_scope = self.ids.scope();
-                let previous_scope_id = std::mem::replace(&mut self.current_scope_id, arm_scope);
-                self.push_scope();
-                let bindings: Vec<HirMatchArmBinding> = if binding_error {
-                    Vec::new()
-                } else {
-                    binding_specs
-                        .into_iter()
-                        .map(|(field_idx, name, ty)| {
-                            let bound =
-                                self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
-                            HirMatchArmBinding {
-                                binding: bound.id,
-                                field_idx,
-                                name,
-                                ty,
-                            }
-                        })
-                        .collect()
-                };
-                let mut payload_variant_predicates =
-                    Vec::with_capacity(resolution.payload_variant_patterns.len());
-                let mut pvp_error = false;
-                for pvp in &resolution.payload_variant_patterns {
-                    if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
-                        payload_variant_predicates.push(pred);
-                    } else {
-                        pvp_error = true;
-                        break;
-                    }
-                }
-                let body_block = self.lower_block(body, &ResolvedTy::Unit);
-                self.current_scope_id = previous_scope_id;
-                self.pop_scope();
-
-                if binding_error || pvp_error {
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let payload binding could not be resolved".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                }
-
-                // `while let PAT = e { body }` is a bare loop whose every
-                // iteration re-matches `e` and breaks on the fallthrough arm.
-                // `break` and `continue` inside `body` target this loop, and
-                // the arm body's scope gives per-iteration defer cleanup.
                 let break_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -16680,12 +16461,7 @@ impl LowerCtx {
                 };
                 let match_expr = self.pattern_conditional_match(
                     scrutinee_hir,
-                    arm_scope,
-                    variant_match,
-                    variant_idx,
-                    bindings,
-                    payload_variant_predicates,
-                    body_block,
+                    hir_arms,
                     break_expr,
                     &ResolvedTy::Unit,
                     &span,
@@ -17450,19 +17226,15 @@ impl LowerCtx {
     ///
     /// Used by both statement position (`Stmt::IfLet`, `result_ty` = Unit) and
     /// expression position (`Expr::IfLet`, `result_ty` = unified branch type).
-    /// Returns `Some(HirExprKind::IfLet { ... })` on success, `None` on a
-    /// fail-closed error (diagnostics already pushed). The `else` arm is an
-    /// expression, so `else if` and `else if let` links lower through the same
-    /// path as an `else { .. }` block.
+    /// The spec's meaning is literal: `if let P = e { a } else { b }` is
+    /// `match e { P => a, _ => b }`, so the arms come from the same
+    /// `lower_pattern_arms` the `match` path uses and every pattern shape
+    /// `match` accepts is accepted here. The `else` arm is an expression, so
+    /// `else if` and `else if let` links lower through the same path as an
+    /// `else { .. }` block.
     ///
-    /// Pattern scope (v0.5 substrate): only single payload-bearing enum-variant
-    /// constructor patterns (e.g. `Some(x)`) are accepted — the same restriction
-    /// as `WhileLet`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "mirrors lower_while_let in structure; splitting would obscure the \
-                  parallel error-handling paths"
-    )]
+    /// Returns `Some(HirExprKind::Match { .. })` on success, `None` on a
+    /// fail-closed error (diagnostics already pushed).
     fn lower_if_let_inner(
         &mut self,
         pattern: &Spanned<Pattern>,
@@ -17477,231 +17249,24 @@ impl LowerCtx {
         // mangled layout — matches the WhileLet/Match path.
         self.try_register_enum_instantiation(&scrutinee_expr.1);
 
-        let pattern_span = &pattern.1;
-        let key = self.mk_key(pattern_span);
-        let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-            self.unsupported(
-                pattern_span.clone(),
-                "if-let pattern has no resolution; \
-                 only single payload-bearing enum-variant patterns are supported",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
+        let body_span = pattern.1.start..span.end;
+        let arms = pattern_arms_from_block(pattern, body, &body_span);
+        let Some((hir_arms, _)) = self.lower_pattern_arms(&scrutinee_hir, &arms, result_ty) else {
             if let Some(eb) = else_body {
                 let _ = self.lower_expr(eb, IntentKind::Read);
             }
             return None;
         };
 
-        // Uniform plan authority: a record-shaped pattern (incl. enum
-        // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
-        // fails closed here rather than lowering off the AST-derived resolution.
-        if self.record_shape_missing_plan(pattern) {
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_expr(eb, IntentKind::Read);
-            }
-            return None;
-        }
-
-        if let PatternKind::Literal = resolution.pattern_kind {
-            let Pattern::Literal(lit) = &pattern.0 else {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "if-let literal resolution on non-literal pattern",
-                    "if-let-substrate",
-                );
-                self.push_scope();
-                let _ = self.lower_block(body, &ResolvedTy::Unit);
-                self.pop_scope();
-                if let Some(eb) = else_body {
-                    let _ = self.lower_expr(eb, IntentKind::Read);
-                }
-                return None;
-            };
-            let condition =
-                self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
-            let then_block = self.lower_block(body, result_ty);
-            let then_ty = then_block.ty.clone();
-            let then_expr = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                ty: then_ty.clone(),
-                value_class: ValueClass::of_ty(&then_ty, &self.type_classes),
-                intent: IntentKind::Read,
-                kind: HirExprKind::Block(then_block),
-                span: span.clone(),
-            };
-            let else_expr = else_body.map(|eb| Box::new(self.lower_expr(eb, IntentKind::Read)));
-            return Some(HirExprKind::If {
-                condition: Box::new(condition),
-                then_expr: Box::new(then_expr),
-                else_expr,
-            });
-        }
-
-        let (PatternKind::VariantCtor, Some(mut variant_match)) =
-            (resolution.pattern_kind, resolution.variant_match)
-        else {
-            self.unsupported(
-                pattern_span.clone(),
-                "if-let supports only payload-bearing enum-variant patterns \
-                 (e.g. `Some(x)`); unit variants, wildcards, literals, \
-                 plain bindings, and or-patterns are reserved for a future lane",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_expr(eb, IntentKind::Read);
-            }
-            return None;
-        };
-
-        let Some((registered_type, idx_usize, _)) =
-            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
-        else {
-            self.unsupported(
-                pattern_span.clone(),
-                "if-let variant not registered in machine/enum ctor registry",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_expr(eb, IntentKind::Read);
-            }
-            return None;
-        };
-        variant_match.type_name = registered_type;
-        let variant_idx =
-            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
-
-        // Build per-arm bindings (same shape as Match / WhileLet).
-        let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
-        let mut binding_error = false;
-        for payload in &resolution.payload_bindings {
-            let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
-                Err(err) => {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        format!("unresolved payload binding type in if-let ({err:?})"),
-                        "if-let-substrate",
-                    );
-                    binding_error = true;
-                    continue;
-                }
-            };
-            let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "if-let payload binding field index exceeds u32::MAX",
-                    "if-let-substrate",
-                );
-                binding_error = true;
-                continue;
-            };
-            binding_specs.push((field_idx, payload.binding_name.clone(), ty));
-        }
-
-        let arm_scope = self.ids.scope();
-        let previous_scope_id = std::mem::replace(&mut self.current_scope_id, arm_scope);
-        self.push_scope();
-        let bindings: Vec<HirMatchArmBinding> = if binding_error {
-            Vec::new()
-        } else {
-            binding_specs
-                .into_iter()
-                .map(|(field_idx, name, ty)| {
-                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
-                    HirMatchArmBinding {
-                        binding: bound.id,
-                        field_idx,
-                        name,
-                        ty,
-                    }
-                })
-                .collect()
-        };
-        let mut payload_variant_predicates =
-            Vec::with_capacity(resolution.payload_variant_patterns.len());
-        let mut pvp_error = false;
-        for pvp in &resolution.payload_variant_patterns {
-            if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
-                payload_variant_predicates.push(pred);
-            } else {
-                pvp_error = true;
-                break;
-            }
-        }
-        let body_block = self.lower_block(body, result_ty);
-        self.current_scope_id = previous_scope_id;
-        self.pop_scope();
-
-        let else_expr = else_body.map(|eb| self.lower_expr(eb, IntentKind::Read));
-
-        if binding_error || pvp_error {
-            return None;
-        }
-
-        // `if let PAT = e { a } else { b }` is `match e { PAT => a, _ => b }`.
-        let fallthrough = match else_expr {
-            Some(expr) => expr,
+        let fallthrough = match else_body {
+            Some(eb) => self.lower_expr(eb, IntentKind::Read),
             None => self.make_unit_expr(span.clone()),
         };
-        Some(
-            self.pattern_conditional_match(
-                scrutinee_hir,
-                arm_scope,
-                variant_match,
-                variant_idx,
-                bindings,
-                payload_variant_predicates,
-                body_block,
-                fallthrough,
-                result_ty,
-                span,
-            )
-            .kind,
-        )
-    }
 
-    fn literal_pattern_condition(
-        &mut self,
-        scrutinee: HirExpr,
-        lit: &Literal,
-        span: Span,
-    ) -> HirExpr {
-        let (literal, _) = literal_to_hir(lit);
-        let literal_expr = HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            ty: scrutinee.ty.clone(),
-            value_class: ValueClass::of_ty(&scrutinee.ty, &self.type_classes),
-            intent: IntentKind::Read,
-            kind: HirExprKind::Literal(literal),
-            span: span.clone(),
-        };
-        HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            ty: ResolvedTy::Bool,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind: HirExprKind::Binary {
-                op: BinaryOp::Equal,
-                left: Box::new(scrutinee),
-                right: Box::new(literal_expr),
-            },
-            span,
-        }
+        Some(
+            self.pattern_conditional_match(scrutinee_hir, hir_arms, fallthrough, result_ty, span)
+                .kind,
+        )
     }
 
     fn lower_compound_assignment(
@@ -29540,48 +29105,87 @@ impl LowerCtx {
         // args; `try_register_enum_instantiation` is a no-op for monomorphic enums.
         self.try_register_enum_instantiation(&scrutinee.1);
 
-        // Or-pattern expansion: flatten `A | B | C => body` into three
-        // synthetic arms sharing the same body and guard before the main loop.
-        // The checker's `bind_pattern` already validated the or-pattern; we
-        // just need to enumerate the leaf alternatives.
-        let expanded_arms: Vec<hew_parser::ast::MatchArm> = arms
-            .iter()
-            .flat_map(|arm| {
-                let leaves = flatten_or_pattern(&arm.pattern);
-                if leaves.len() <= 1 {
-                    // Not an or-pattern: pass through unchanged.
-                    vec![arm.clone()]
-                } else {
-                    // Expand: one synthetic arm per leaf, all sharing the same
-                    // body and guard. We clone the body for each alternative
-                    // (HIR lowering of `Expr` is side-effect-free).
-                    leaves
-                        .into_iter()
-                        .map(|leaf| hew_parser::ast::MatchArm {
-                            pattern: leaf,
-                            guard: arm.guard.clone(),
-                            body: arm.body.clone(),
-                        })
-                        .collect()
-                }
-            })
-            .collect();
+        let pattern_arms = pattern_arms_from_match(arms);
+        let Some((hir_arms, result_ty)) =
+            self.lower_pattern_arms(&scrutinee_hir, &pattern_arms, &ResolvedTy::Unit)
+        else {
+            return (
+                HirExprKind::Unsupported(
+                    "match expression contains an unsupported arm shape".into(),
+                ),
+                ResolvedTy::Unit,
+            );
+        };
 
+        // A checker-proven uninhabited match has no successor or result value.
+        // SIR checks exhaustiveness against the exact enum descriptor.
+        if hir_arms.is_empty() {
+            if self.checker_expr_ty(span, "empty match") == Some(ResolvedTy::Never) {
+                return (
+                    HirExprKind::Match {
+                        scrutinee: Box::new(scrutinee_hir),
+                        arms: hir_arms,
+                    },
+                    ResolvedTy::Never,
+                );
+            }
+            self.unsupported(
+                span.clone(),
+                "match expression with no arms",
+                "match-expression-substrate",
+            );
+            return (
+                HirExprKind::Unsupported("match expression with no arms".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let ty = self.callable_join_type(span, result_ty.unwrap_or(ResolvedTy::Unit));
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee_hir),
+                arms: hir_arms,
+            },
+            ty,
+        )
+    }
+
+    /// Lower a list of pattern arms — the single authority for the pattern
+    /// shapes `match`, `if let`, `while let` and `let … else` accept.
+    ///
+    /// Each arm's predicate, bindings and nested payload checks come from the
+    /// checker's `pattern_resolutions` / `pattern_plans` side-tables, keyed by
+    /// the arm's pattern span. `block_result_ty` is the type block-bodied arms
+    /// (`if let` / `while let`) are lowered against; expression bodies ignore it.
+    ///
+    /// Returns `None` when any arm was rejected: the remaining arm bodies are
+    /// still walked so the checker stream stays complete, and the caller fails
+    /// closed rather than emitting a partial `Match`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one branch per pattern shape; splitting would scatter the \
+                  fail-closed recovery each shape shares"
+    )]
+    fn lower_pattern_arms(
+        &mut self,
+        scrutinee_hir: &HirExpr,
+        arms: &[PatternArm<'_>],
+        block_result_ty: &ResolvedTy,
+    ) -> Option<(Vec<HirMatchArm>, Option<ResolvedTy>)> {
         // Track whether any arm has been rejected; if so we still walk the
-        // arm bodies (for checker-stream coverage) but produce
-        // `HirExprKind::Unsupported` rather than a partial `Match` node.
+        // arm bodies (for checker-stream coverage) but produce no arms at all.
         // A fail-closed shape keeps MIR lowering simple and prevents a
         // half-built Match from reaching codegen.
         let mut rejected = false;
-        let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(expanded_arms.len());
+        let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len());
         let mut result_ty: Option<ResolvedTy> = None;
 
-        for arm in &expanded_arms {
+        for arm in arms {
             let pattern_span = &arm.pattern.1;
             let key = self.mk_key(pattern_span);
 
             let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
                         name: "match pattern".into(),
@@ -29594,6 +29198,16 @@ impl LowerCtx {
                 continue;
             };
 
+            // Uniform plan authority: a record-shaped pattern (incl. enum
+            // struct-variant `Packet.Data { a, .. }`) with no checker
+            // `PatternPlan` fails closed here rather than lowering off the
+            // AST-derived resolution.
+            if self.record_shape_missing_plan(&arm.pattern) {
+                self.walk_pattern_arm_body(&arm.body);
+                rejected = true;
+                continue;
+            }
+
             let predicate = match resolution.pattern_kind {
                 PatternKind::Wildcard => HirMatchArmPredicate::Wildcard,
                 PatternKind::Binding => {
@@ -29604,7 +29218,7 @@ impl LowerCtx {
                     } else {
                         // Checker contract: Binding resolution must come from
                         // an Identifier pattern.
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "binding resolution without an Identifier pattern — checker \
@@ -29626,7 +29240,7 @@ impl LowerCtx {
                 }
                 PatternKind::VariantCtor => {
                     let Some(mut vm) = resolution.variant_match.clone() else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "variant pattern missing variant-match resolution",
@@ -29643,7 +29257,7 @@ impl LowerCtx {
                     let Some((registered_type, idx_usize, _)) =
                         self.lookup_variant_ctor(&vm.variant_name, Some(&scrutinee_hir.ty))
                     else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "match arm variant not registered in machine/enum ctor registry",
@@ -29662,7 +29276,7 @@ impl LowerCtx {
                 }
                 PatternKind::Literal => {
                     let Pattern::Literal(lit) = &arm.pattern.0 else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "literal arm resolution did not correspond to an AST literal pattern",
@@ -29684,7 +29298,7 @@ impl LowerCtx {
                         (HirLiteral::Float(_), ResolvedTy::F32) => ResolvedTy::F32,
                         (HirLiteral::Float(_), ResolvedTy::F64) => ResolvedTy::F64,
                         (HirLiteral::Duration(_) | HirLiteral::Unit, _) => {
-                            let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                            self.walk_pattern_arm_body(&arm.body);
                             self.unsupported(
                                 pattern_span.clone(),
                                 format!("unsupported literal pattern in match arm ({lit:?})"),
@@ -29694,7 +29308,7 @@ impl LowerCtx {
                             continue;
                         }
                         _ => {
-                            let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                            self.walk_pattern_arm_body(&arm.body);
                             self.unsupported(
                                 pattern_span.clone(),
                                 format!(
@@ -29713,7 +29327,7 @@ impl LowerCtx {
                 }
                 PatternKind::StructPattern => {
                     let ResolvedTy::Named { .. } = &scrutinee_hir.ty else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             format!(
@@ -29731,7 +29345,7 @@ impl LowerCtx {
                 }
                 PatternKind::TuplePattern => {
                     let ResolvedTy::Tuple(items) = &scrutinee_hir.ty else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             format!(
@@ -29744,7 +29358,7 @@ impl LowerCtx {
                         continue;
                     };
                     let Ok(arity) = u32::try_from(items.len()) else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "tuple project arity exceeds u32::MAX",
@@ -29814,7 +29428,7 @@ impl LowerCtx {
                 binding_specs.push((field_idx, payload.binding_name.clone(), ty));
             }
             if binding_error {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 rejected = true;
                 continue;
             }
@@ -29823,7 +29437,7 @@ impl LowerCtx {
                 match collect_match_payload_predicates(self, &arm.pattern, &scrutinee_hir.ty) {
                     Ok(predicates) => predicates,
                     Err(reason) => {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             reason,
@@ -29843,7 +29457,7 @@ impl LowerCtx {
             if !resolution.payload_variant_patterns.is_empty()
                 && !matches!(predicate, HirMatchArmPredicate::EnumVariant { .. })
             {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 self.unsupported(
                     pattern_span.clone(),
                     "nested constructor subpatterns on a non-variant match arm — \
@@ -29927,7 +29541,7 @@ impl LowerCtx {
                 binding_error |= had_error;
             }
             if binding_error {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 if let Some(previous) = previous_scope_id {
                     self.current_scope_id = previous;
                 }
@@ -29938,7 +29552,7 @@ impl LowerCtx {
                 continue;
             }
             if !body_prelude.is_empty() && arm.guard.is_some() {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 self.unsupported(
                     pattern_span.clone(),
                     "guarded match arm with nested aggregate payload destructure",
@@ -29969,7 +29583,7 @@ impl LowerCtx {
                 }
             }
             if pvp_error {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 if let Some(previous) = previous_scope_id {
                     self.current_scope_id = previous;
                 }
@@ -29988,10 +29602,10 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let mut body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+            let mut body_hir = self.lower_pattern_arm_body(&arm.body, block_result_ty);
             if !body_prelude.is_empty() {
                 let body_ty = body_hir.ty.clone();
-                let body_span = arm.pattern.1.start..arm.body.1.end;
+                let body_span = arm.pattern.1.start..arm.body_end();
                 body_hir = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -30035,50 +29649,46 @@ impl LowerCtx {
                 payload_variant_predicates,
                 guard: guard_hir,
                 body: body_hir,
-                span: arm.pattern.1.start..arm.body.1.end,
+                span: arm.pattern.1.start..arm.body_end(),
             });
         }
 
         if rejected {
-            return (
-                HirExprKind::Unsupported(
-                    "match expression contains an unsupported arm shape".into(),
-                ),
-                ResolvedTy::Unit,
-            );
+            return None;
         }
+        Some((hir_arms, result_ty))
+    }
 
-        // A checker-proven uninhabited match has no successor or result value.
-        // SIR checks exhaustiveness against the exact enum descriptor.
-        if hir_arms.is_empty() {
-            if self.checker_expr_ty(span, "empty match") == Some(ResolvedTy::Never) {
-                return (
-                    HirExprKind::Match {
-                        scrutinee: Box::new(scrutinee_hir),
-                        arms: hir_arms,
-                    },
-                    ResolvedTy::Never,
-                );
+    /// Lower one pattern arm's body. Expression bodies (`match`) synthesize
+    /// their own type; block bodies (`if let` / `while let`) are lowered
+    /// against the conditional's result type so both branches agree.
+    fn lower_pattern_arm_body(
+        &mut self,
+        body: &PatternArmBody<'_>,
+        block_result_ty: &ResolvedTy,
+    ) -> HirExpr {
+        match body {
+            PatternArmBody::Expr(expr) => self.lower_expr(expr, IntentKind::Read),
+            PatternArmBody::Block(block, span) => {
+                let lowered = self.lower_block(block, block_result_ty);
+                let ty = lowered.ty.clone();
+                HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ty.clone(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Block(lowered),
+                    span: span.clone(),
+                }
             }
-            self.unsupported(
-                span.clone(),
-                "match expression with no arms",
-                "match-expression-substrate",
-            );
-            return (
-                HirExprKind::Unsupported("match expression with no arms".into()),
-                ResolvedTy::Unit,
-            );
         }
+    }
 
-        let ty = self.callable_join_type(span, result_ty.unwrap_or(ResolvedTy::Unit));
-        (
-            HirExprKind::Match {
-                scrutinee: Box::new(scrutinee_hir),
-                arms: hir_arms,
-            },
-            ty,
-        )
+    /// Walk a rejected arm's body so the checker stream stays complete. The
+    /// lowered result is discarded; only the diagnostics it produces matter.
+    fn walk_pattern_arm_body(&mut self, body: &PatternArmBody<'_>) {
+        let _ = self.lower_pattern_arm_body(body, &ResolvedTy::Unit);
     }
 
     /// Convert one checker-resolved [`hew_types::PayloadVariantPattern`] into

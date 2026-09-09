@@ -956,44 +956,6 @@ impl Checker {
         }
         leaves
     }
-
-    /// Validate top-level `if let` / `while let` patterns against current
-    /// codegen support, and reject only unsupported kinds.
-    ///
-    /// Currently supported at the top level: `Literal`, `Constructor`,
-    /// `Struct`, `Tuple`, `Or`, `Wildcard`, and `Identifier` (this method
-    /// returns `false` for these, i.e., no rejection).
-    ///
-    /// Returns `true` only when a pattern is rejected (and an error is emitted).
-    pub(super) fn reject_unsupported_iflet_pattern(
-        &mut self,
-        pattern: &Pattern,
-        span: &Span,
-    ) -> bool {
-        let kind_name = match pattern {
-            Pattern::Regex { .. } => "regex",
-            Pattern::RecordShorthand { .. } => "record shorthand",
-            Pattern::Wildcard
-            | Pattern::Identifier(_)
-            | Pattern::Literal(_)
-            | Pattern::Constructor { .. }
-            | Pattern::NominalPath { .. }
-            | Pattern::ContextVariant(_)
-            | Pattern::Struct { .. }
-            | Pattern::Tuple(_)
-            | Pattern::Or(..) => {
-                return false;
-            }
-        };
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "{kind_name} pattern is unsupported at the top level of `if let` / `while let`; use a `match` expression instead"
-            ),
-        );
-        true
-    }
 }
 
 fn missing_arm_pattern(variant_name: &str, variant: &VariantDef) -> String {

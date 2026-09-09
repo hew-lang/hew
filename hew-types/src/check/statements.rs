@@ -758,9 +758,6 @@ impl Checker {
                 else_body,
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
-                if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
-                    return Ty::Error;
-                }
                 let entry = self.env.ownership_snapshot();
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
@@ -1743,9 +1740,6 @@ impl Checker {
                 else_body,
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
-                if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
-                    return;
-                }
                 let entry = self.env.ownership_snapshot();
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
@@ -2170,9 +2164,6 @@ impl Checker {
                 body,
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
-                if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
-                    return;
-                }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 // Record the pattern resolution so HIR lowering can consume

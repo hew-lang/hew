@@ -102,14 +102,14 @@ pub enum SirLoweringStatus {
 pub enum SirLoweringDemand {
     /// Demand-driven from the module's resolved entry callable: the strict
     /// `--sir-lower` compile route. A declaration the entry never reaches is
-    /// reported [`SirLoweringStatus::NotReached`], and so is a declaration
-    /// whose header was refused, because no call can name it.
+    /// reported [`SirLoweringStatus::NotReached`] and is never admitted a
+    /// header, so it costs the module no signature, shape or type-fact row.
     ///
     /// Library, test, and export consumers add their resolved declarations
     /// through [`lower_module_with_roots`]; they do not broaden this demand by
     /// scanning names or requesting every callable.
     Entry,
-    /// Demand every admitted callable header, entry or not: the coverage
+    /// Demand every monomorphic declaration, entry or not: the coverage
     /// inventory. A refused header is reported
     /// [`SirLoweringStatus::Unsupported`] with the refusal reason, because the
     /// question asked is "would SIR take this body", not "does this program
@@ -185,16 +185,16 @@ impl LoweredModule {
     }
 }
 
-/// Lower the SIR bodies the program actually needs.
+/// Lower the SIR callables the program actually needs.
 ///
-/// The callable *table* is still built eagerly over every admitted
-/// declaration — it is the resolved direct-call authority, and a header must
-/// exist before a call can name it. Body lowering, by contrast, is
-/// demand-driven: it starts at the module's entry callable and follows
-/// resolved call edges into physical MIR. A declaration the entry cannot
-/// reach is reported [`SirLoweringStatus::NotReached`] and costs nothing, so
-/// an unsupported body in an unrelated corner of the module can neither
-/// consume lowering effort nor be mistaken for a fact about this program.
+/// Both halves are demand-driven from the module's entry callable: resolved
+/// call edges mint the headers they name and queue their bodies. A
+/// declaration the entry cannot reach is reported
+/// [`SirLoweringStatus::NotReached`] and costs nothing — no header, no
+/// signature, no aggregate shape, no type-fact row — so the prelude's own
+/// declarations stay out of a program that never calls them, and an
+/// unsupported body in an unrelated corner of the module can neither consume
+/// lowering effort nor be mistaken for a fact about this program.
 ///
 /// A module with no entry callable is not a program: it lowers no bodies.
 #[must_use]
@@ -219,7 +219,7 @@ pub fn lower_module_with_demand(
     // SIR discovers concrete direct-user instances from each resolved call's
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
-    let mut service = InstanceService::new(module, facts, demand);
+    let mut service = InstanceService::new(module, facts);
     match demand {
         SirLoweringDemand::Entry => service.request_entry(),
         SirLoweringDemand::EveryCallable => service.request_every_callable(),
@@ -249,7 +249,7 @@ pub fn lower_module_with_roots(
     facts: &TypeCheckOutput,
     roots: &[DefId],
 ) -> Result<LoweredModule, Vec<SirRootSelectionError>> {
-    let mut service = InstanceService::new(module, facts, SirLoweringDemand::Entry);
+    let mut service = InstanceService::new(module, facts);
     service.request_roots(roots)?;
     service.request_entry();
     service.lower_pending();
@@ -335,6 +335,13 @@ struct CallableTable<'a> {
     entry_callable: Option<CallableId>,
     entry_exit_plan: Option<hew_types::EntryExitPlan>,
     monomorphic_by_declaration: HashMap<DefId, CallableId>,
+    /// Every monomorphic HIR function a call could name, with the emitted
+    /// symbol reserved for it. A header is minted from this only when demand
+    /// reaches the declaration; until then the declaration costs the module
+    /// nothing — no signature, no shapes, no type-fact rows.
+    admissible: HashMap<DefId, AdmissibleFn<'a>>,
+    /// `admissible` in the deterministic order the coverage inventory walks.
+    admissible_order: Vec<DefId>,
     templates: HashMap<DefId, GenericTemplate<'a>>,
     functions_by_item: HashMap<hew_hir::ItemId, &'a HirFn>,
     /// HIR's structured `(declaring trait, self type, trait method) →
@@ -353,30 +360,28 @@ struct CallableTable<'a> {
     ineligible: HashMap<DefId, String>,
 }
 
-type CallableProjection<'a> = (
-    CallableTable<'a>,
-    Vec<SemAggregateShape>,
-    HashMap<ResolvedTy, AggregateShapeId>,
-    Vec<SemVariantShape>,
-    HashMap<ResolvedTy, VariantShapeId>,
-);
+/// One monomorphic HIR function a resolved call may name, before SIR mints a
+/// header for it.
+#[derive(Debug, Clone)]
+struct AdmissibleFn<'a> {
+    function: &'a HirFn,
+    /// The emitted symbol reserved for this declaration by
+    /// [`CallableTable::from_hir`].
+    symbol: String,
+}
 
 impl<'a> CallableTable<'a> {
     #[allow(
         clippy::too_many_lines,
         reason = "one deterministic HIR collection pass keeps monomorphic and generic callable admission auditable together"
     )]
-    fn from_hir(module: &'a HirModule, facts: &mut TypeFactService) -> CallableProjection<'a> {
+    fn from_hir(module: &'a HirModule) -> Self {
         let direct_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
         let mut pending = Vec::new();
         let mut ineligible = HashMap::new();
         let mut templates = HashMap::new();
         let mut generic_templates = Vec::new();
         let mut functions_by_item = HashMap::new();
-        let mut aggregate_shapes = Vec::new();
-        let mut aggregate_shapes_by_type = HashMap::new();
-        let mut variant_shapes = Vec::new();
-        let mut variant_shapes_by_type = HashMap::new();
         for item in &module.items {
             let HirItem::Function(function) = item else {
                 continue;
@@ -438,102 +443,48 @@ impl<'a> CallableTable<'a> {
                 });
                 continue;
             }
-            let signature = match callable_signature(module, function, facts) {
-                Ok(signature) => signature,
-                Err(reason) => {
-                    ineligible.insert(function.declaration.clone(), reason);
-                    continue;
-                }
-            };
-            let prior_shape_count = aggregate_shapes.len();
-            let prior_variant_shape_count = variant_shapes.len();
-            if let Err(reason) = require_signature_shapes(
-                module,
-                facts,
-                &mut aggregate_shapes,
-                &mut aggregate_shapes_by_type,
-                &mut variant_shapes,
-                &mut variant_shapes_by_type,
-                &signature,
-            ) {
-                aggregate_shapes.truncate(prior_shape_count);
-                aggregate_shapes_by_type
-                    .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
-                variant_shapes.truncate(prior_variant_shape_count);
-                variant_shapes_by_type.retain(|_, id| {
-                    usize::try_from(id.0).is_ok_and(|id| id < prior_variant_shape_count)
-                });
-                ineligible.insert(function.declaration.clone(), reason);
-                continue;
-            }
-            pending.push((
-                function,
-                function_source_origin(module, function),
-                symbol.clone(),
-                signature,
-            ));
+            pending.push((function, symbol.clone()));
         }
-        pending.sort_unstable_by(|(left, _, left_symbol, _), (right, _, right_symbol, _)| {
+        pending.sort_unstable_by(|(left, left_symbol), (right, right_symbol)| {
             left.declaration
                 .cmp(&right.declaration)
                 .then_with(|| left_symbol.cmp(right_symbol))
                 .then_with(|| left.id.cmp(&right.id))
         });
-
-        let mut callables = Vec::with_capacity(pending.len());
-        let mut root_unit_callables = Vec::new();
-        let mut entry_callable = None;
-        let mut monomorphic_by_declaration = HashMap::with_capacity(pending.len());
-        for (index, (function, source_origin, symbol, signature)) in pending.into_iter().enumerate()
-        {
-            let id = CallableId(
-                u32::try_from(index).expect("SIR callable count exceeds the module-local ID range"),
-            );
-            if source_origin == FunctionSourceOrigin::RootUnit {
-                root_unit_callables.push(id);
-            }
-            // Entry selection joins on HIR's resolved entry declaration. SIR
-            // never re-applies the language's entry rule, so it never compares
-            // a declaration path or an emitted symbol against "main". A fact
-            // that names a non-root declaration is admitted here and rejected
-            // by the verifier's entry rule rather than silently dropped.
-            if module.entry_exit_plan.as_ref().map(|plan| &plan.entry)
-                == Some(&function.declaration)
+        // A signature — and the aggregate, variant and type-fact rows it drags
+        // in — is computed only when demand reaches the declaration. The
+        // prelude declares far more than any one program calls, and an
+        // uncalled declaration must not put its record shapes and collection
+        // glue into every module's inventory.
+        let mut admissible = HashMap::with_capacity(pending.len());
+        let mut admissible_order = Vec::with_capacity(pending.len());
+        for (function, symbol) in pending {
+            if admissible
+                .insert(
+                    function.declaration.clone(),
+                    AdmissibleFn { function, symbol },
+                )
+                .is_none()
             {
-                entry_callable = Some(id);
+                admissible_order.push(function.declaration.clone());
             }
-            monomorphic_by_declaration.insert(function.declaration.clone(), id);
-            callables.push(SemCallable {
-                id,
-                function: function.id,
-                declaration: function.declaration.clone(),
-                instance: CallableInstance::Monomorphic,
-                symbol,
-                source_origin,
-                signature,
-                call_conv: SemCallConv::Default,
-                kind: SemCallableKind::HewDirect,
-            });
         }
+
         generic_templates.sort_by(|left, right| left.id.cmp(&right.id));
-        (
-            Self {
-                callables,
-                generic_templates,
-                root_unit_callables,
-                entry_callable,
-                entry_exit_plan: module.entry_exit_plan.clone(),
-                monomorphic_by_declaration,
-                templates,
-                functions_by_item,
-                trait_impls: hew_hir::dispatch::build_trait_impl_method_index(&module.items),
-                ineligible,
-            },
-            aggregate_shapes,
-            aggregate_shapes_by_type,
-            variant_shapes,
-            variant_shapes_by_type,
-        )
+        Self {
+            callables: Vec::new(),
+            generic_templates,
+            root_unit_callables: Vec::new(),
+            entry_callable: None,
+            entry_exit_plan: module.entry_exit_plan.clone(),
+            monomorphic_by_declaration: HashMap::new(),
+            admissible,
+            admissible_order,
+            templates,
+            functions_by_item,
+            trait_impls: hew_hir::dispatch::build_trait_impl_method_index(&module.items),
+            ineligible,
+        }
     }
 
     fn callable(&self, id: CallableId) -> Option<&SemCallable> {
@@ -572,7 +523,6 @@ struct InstanceService<'a> {
     /// rather than recomputing one, and projects the rows its own bodies
     /// mention onto the module it produces.
     checked_facts: TypeFactService,
-    demand: SirLoweringDemand,
     table: CallableTable<'a>,
     states: Vec<CallableState>,
     statuses: Vec<Option<SirLoweringStatus>>,
@@ -1084,24 +1034,15 @@ fn require_type_shapes(
 }
 
 impl<'a> InstanceService<'a> {
-    fn new(module: &'a HirModule, facts: &TypeCheckOutput, demand: SirLoweringDemand) -> Self {
-        let mut checked_facts =
+    fn new(module: &'a HirModule, facts: &TypeCheckOutput) -> Self {
+        let checked_facts =
             TypeFactService::new(facts.type_fact_context.clone(), facts.type_facts.clone());
-        let (
-            table,
-            aggregate_shapes,
-            aggregate_shapes_by_type,
-            variant_shapes,
-            variant_shapes_by_type,
-        ) = CallableTable::from_hir(module, &mut checked_facts);
-        let count = table.callables.len();
         Self {
             module,
             checked_facts,
-            demand,
-            table,
-            states: vec![CallableState::Unreached; count],
-            statuses: vec![None; count],
+            table: CallableTable::from_hir(module),
+            states: Vec::new(),
+            statuses: Vec::new(),
             by_instance: HashMap::new(),
             closures: Vec::new(),
             actors: Vec::new(),
@@ -1117,10 +1058,10 @@ impl<'a> InstanceService<'a> {
             scanned_record_closes: 0,
             pending: VecDeque::new(),
             functions: Vec::new(),
-            aggregate_shapes,
-            aggregate_shapes_by_type,
-            variant_shapes,
-            variant_shapes_by_type,
+            aggregate_shapes: Vec::new(),
+            aggregate_shapes_by_type: HashMap::new(),
+            variant_shapes: Vec::new(),
+            variant_shapes_by_type: HashMap::new(),
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
             value_capabilities: BTreeMap::new(),
@@ -1176,17 +1117,12 @@ impl<'a> InstanceService<'a> {
                     if !type_args.is_empty() {
                         return Err("selected nongeneric capability has type arguments".to_string());
                     }
-                    let id = self
-                        .table
-                        .monomorphic_by_declaration
-                        .get(method)
-                        .copied()
-                        .ok_or_else(|| {
-                            format!(
-                                "selected capability `{}` has no admitted HIR callable",
-                                method.full_path()
-                            )
-                        })?;
+                    let id = self.admit_monomorphic(method).map_err(|reason| {
+                        format!(
+                            "selected capability `{}` has no admitted HIR callable: {reason}",
+                            method.full_path()
+                        )
+                    })?;
                     self.request_body(id);
                     id
                 };
@@ -1364,7 +1300,15 @@ impl<'a> InstanceService<'a> {
     /// A module without one is not an executable program, so it has no demand
     /// and lowers nothing.
     fn request_entry(&mut self) {
-        let Some(entry) = self.table.entry_callable else {
+        let Some(declaration) = self
+            .table
+            .entry_exit_plan
+            .as_ref()
+            .map(|plan| plan.entry.clone())
+        else {
+            return;
+        };
+        let Ok(entry) = self.admit_monomorphic(&declaration) else {
             return;
         };
         let result_plan = self
@@ -1452,17 +1396,13 @@ impl<'a> InstanceService<'a> {
                     entry.impl_fn_key
                 )
             })?;
-            let callee = *self
-                .table
-                .monomorphic_by_declaration
-                .get(declaration)
-                .ok_or_else(|| {
-                    format!(
-                        "slot {slot} of `{}` names `{}`, which has no monomorphic SIR callable",
-                        dyn_ty.user_facing(),
-                        declaration.full_path()
-                    )
-                })?;
+            let callee = self.admit_monomorphic(declaration).map_err(|reason| {
+                format!(
+                    "slot {slot} of `{}` names `{}`, which has no monomorphic SIR callable: {reason}",
+                    dyn_ty.user_facing(),
+                    declaration.full_path()
+                )
+            })?;
             // Erasure is what obliges the module to carry every slot body:
             // the dispatch edge cannot demand one, because it names an index
             // rather than a declaration.
@@ -1538,16 +1478,12 @@ impl<'a> InstanceService<'a> {
     ) -> Result<SemCallable, String> {
         let id = match instance {
             hew_types::EntryCallableInstance::Declared => {
-                let id = *self
-                    .table
-                    .monomorphic_by_declaration
-                    .get(declaration)
-                    .ok_or_else(|| {
-                        format!(
-                            "entry Display target `{}` has no SIR callable",
-                            declaration.full_path()
-                        )
-                    })?;
+                let id = self.admit_monomorphic(declaration).map_err(|reason| {
+                    format!(
+                        "entry Display target `{}` has no SIR callable: {reason}",
+                        declaration.full_path()
+                    )
+                })?;
                 self.request_body(id);
                 id
             }
@@ -1561,32 +1497,28 @@ impl<'a> InstanceService<'a> {
     }
 
     /// Seed exact caller-selected declarations after validating the complete
-    /// set. Validation precedes queue mutation so one bad root cannot leave a
+    /// set. No body is queued until every root is admitted, and a failed
+    /// request publishes no module at all, so one bad root cannot leave a
     /// partially selected lowering behind.
     fn request_roots(&mut self, roots: &[DefId]) -> Result<(), Vec<SirRootSelectionError>> {
         let mut callables = Vec::new();
         let mut errors = Vec::new();
         for declaration in roots.iter().collect::<BTreeSet<_>>() {
-            if let Some(callable) = self
-                .table
-                .monomorphic_by_declaration
-                .get(declaration)
-                .copied()
-            {
-                callables.push(callable);
+            if self.table.templates.contains_key(declaration) {
+                errors.push(SirRootSelectionError {
+                    declaration: (*declaration).clone(),
+                    reason: "generic declarations require a concrete call-site specialization"
+                        .to_string(),
+                });
                 continue;
             }
-            let reason = if self.table.templates.contains_key(declaration) {
-                "generic declarations require a concrete call-site specialization".to_string()
-            } else if let Some(reason) = self.table.ineligible.get(declaration) {
-                reason.clone()
-            } else {
-                "the declaration is not present as a HIR function in this module".to_string()
-            };
-            errors.push(SirRootSelectionError {
-                declaration: (*declaration).clone(),
-                reason,
-            });
+            match self.admit_monomorphic(declaration) {
+                Ok(callable) => callables.push(callable),
+                Err(reason) => errors.push(SirRootSelectionError {
+                    declaration: (*declaration).clone(),
+                    reason,
+                }),
+            }
         }
         if !errors.is_empty() {
             return Err(errors);
@@ -1605,15 +1537,85 @@ impl<'a> InstanceService<'a> {
     /// still minted only by resolved call edges, so an uncalled template stays
     /// unproven and its status says so.
     fn request_every_callable(&mut self) {
-        let ids: Vec<CallableId> = self
-            .table
-            .callables
-            .iter()
-            .map(|callable| callable.id)
-            .collect();
-        for id in ids {
-            self.request_body(id);
+        for declaration in self.table.admissible_order.clone() {
+            if let Ok(id) = self.admit_monomorphic(&declaration) {
+                self.request_body(id);
+            }
         }
+    }
+
+    /// Mint the SIR header for one monomorphic declaration, once.
+    ///
+    /// A header is what a resolved call names, and publishing one obliges the
+    /// module to carry its signature's aggregate shapes, variant shapes and
+    /// type-fact rows. Admission is therefore demand-driven in the same way
+    /// body lowering is: a prelude declaration nothing reachable calls never
+    /// becomes a callable, so it puts no record shape, collection glue or row
+    /// into a program that does not use it.
+    ///
+    /// A refusal is recorded once, keyed by the declaration a call would name,
+    /// and reported at the call site that wanted it.
+    fn admit_monomorphic(&mut self, declaration: &DefId) -> Result<CallableId, String> {
+        if let Some(id) = self.table.monomorphic_by_declaration.get(declaration) {
+            return Ok(*id);
+        }
+        if let Some(reason) = self.table.ineligible.get(declaration) {
+            return Err(reason.clone());
+        }
+        let Some(admissible) = self.table.admissible.get(declaration) else {
+            return Err(
+                "the declaration is not present as a HIR function in this module".to_string(),
+            );
+        };
+        let function = admissible.function;
+        let symbol = admissible.symbol.clone();
+        let signature = callable_signature(self.module, function, &mut self.checked_facts)
+            .and_then(|signature| {
+                self.require_signature_shapes(&signature)?;
+                Ok(signature)
+            });
+        let signature = match signature {
+            Ok(signature) => signature,
+            Err(reason) => {
+                self.table
+                    .ineligible
+                    .insert(declaration.clone(), reason.clone());
+                return Err(reason);
+            }
+        };
+        let id = CallableId(
+            u32::try_from(self.table.callables.len())
+                .expect("SIR callable count exceeds the module-local ID range"),
+        );
+        let source_origin = function_source_origin(self.module, function);
+        if source_origin == FunctionSourceOrigin::RootUnit {
+            self.table.root_unit_callables.push(id);
+        }
+        // Entry selection joins on HIR's resolved entry declaration. SIR never
+        // re-applies the language's entry rule, so it never compares a
+        // declaration path or an emitted symbol against "main". A fact that
+        // names a non-root declaration is admitted here and rejected by the
+        // verifier's entry rule rather than silently dropped.
+        if self.module.entry_exit_plan.as_ref().map(|plan| &plan.entry) == Some(declaration) {
+            self.table.entry_callable = Some(id);
+        }
+        self.table
+            .monomorphic_by_declaration
+            .insert(declaration.clone(), id);
+        self.table.callables.push(SemCallable {
+            id,
+            function: function.id,
+            declaration: declaration.clone(),
+            instance: CallableInstance::Monomorphic,
+            symbol,
+            source_origin,
+            signature,
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+        });
+        self.states.push(CallableState::Unreached);
+        self.statuses.push(None);
+        Ok(id)
     }
 
     /// Record demand for one callable's body, once.
@@ -1644,17 +1646,12 @@ impl<'a> InstanceService<'a> {
             else {
                 continue;
             };
-            if let Some(id) = self
-                .table
-                .monomorphic_by_declaration
-                .get(&lifecycle.close_declaration)
-                .copied()
-            {
-                closes.push(id);
-            }
+            closes.push(lifecycle.close_declaration.clone());
         }
-        for id in closes {
-            self.request_body(id);
+        for declaration in closes {
+            if let Ok(id) = self.admit_monomorphic(&declaration) {
+                self.request_body(id);
+            }
         }
     }
 
@@ -1843,21 +1840,12 @@ impl<'a> InstanceService<'a> {
                 )
             });
         }
-        let id = self
-            .table
-            .monomorphic_by_declaration
-            .get(declaration)
-            .copied()
-            .ok_or_else(|| match self.table.ineligible.get(declaration) {
-                Some(reason) => format!(
-                    "direct callee `{}` has no scalar default-call SIR callable: {reason}",
-                    declaration.full_path()
-                ),
-                None => format!(
-                    "direct callee `{}` has no scalar default-call SIR callable",
-                    declaration.full_path()
-                ),
-            })?;
+        let id = self.admit_monomorphic(declaration).map_err(|reason| {
+            format!(
+                "direct callee `{}` has no scalar default-call SIR callable: {reason}",
+                declaration.full_path()
+            )
+        })?;
         // Resolving a call edge is what makes the callee reachable, so this is
         // where its body becomes demanded. Generic callees go through
         // `request_instance`, which queues the instance it mints.
@@ -1906,21 +1894,12 @@ impl<'a> InstanceService<'a> {
             )
         })?;
         if !self.table.templates.contains_key(&entry.method) {
-            let id = self
-                .table
-                .monomorphic_by_declaration
-                .get(&entry.method)
-                .copied()
-                .ok_or_else(|| match self.table.ineligible.get(&entry.method) {
-                    Some(reason) => format!(
-                        "static trait callee `{}` has no scalar default-call SIR callable: {reason}",
-                        entry.method.full_path()
-                    ),
-                    None => format!(
-                        "static trait callee `{}` has no scalar default-call SIR callable",
-                        entry.method.full_path()
-                    ),
-                })?;
+            let id = self.admit_monomorphic(&entry.method).map_err(|reason| {
+                format!(
+                    "static trait callee `{}` has no scalar default-call SIR callable: {reason}",
+                    entry.method.full_path()
+                )
+            })?;
             self.request_body(id);
             return self.callable(id).cloned().ok_or_else(|| {
                 format!("SIR callable {id:?} is absent from its deterministic table")
@@ -2246,21 +2225,15 @@ impl<'a> InstanceService<'a> {
         {
             return self.callable_status(callable);
         }
-        // No admitted header: no resolved call can name this declaration, so
-        // the entry closure never demanded a body from it. Under entry demand
-        // the refusal belongs to the call site that wanted it; under
-        // every-callable demand the refusal is the answer being asked for.
-        match self.demand {
-            SirLoweringDemand::Entry => SirLoweringStatus::NotReached,
-            SirLoweringDemand::EveryCallable => {
-                self.table.ineligible.get(&function.declaration).map_or(
-                    SirLoweringStatus::NotReached,
-                    |reason| SirLoweringStatus::Unsupported {
-                        reason: reason.clone(),
-                    },
-                )
-            }
-        }
+        // No minted header. A recorded refusal means demand did reach the
+        // declaration and admission refused it; anything else means nothing
+        // asked for it.
+        self.table.ineligible.get(&function.declaration).map_or(
+            SirLoweringStatus::NotReached,
+            |reason| SirLoweringStatus::Unsupported {
+                reason: reason.clone(),
+            },
+        )
     }
 
     /// The recorded outcome for one admitted callable header.

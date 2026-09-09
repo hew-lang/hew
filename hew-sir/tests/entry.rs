@@ -5,7 +5,7 @@
 //! does not fall back to a name.
 
 use hew_hir::{lower_program_host_target, HirItem, HirModule, ResolutionCtx};
-use hew_sir::{lower_module, verify_module};
+use hew_sir::{lower_module, lower_module_with_roots, verify_module};
 use hew_types::{
     module_registry::ModuleRegistry, Checker, DefId, EntryExitAction, EntryExitPlan,
     EntryIntegerType,
@@ -122,12 +122,18 @@ fn the_unmodified_entry_fact_still_selects_main() {
 
 /// Fail-closed control: a module with no entry fact has no entry callable even
 /// though a root declaration spelled `main` is right there in the table.
+///
+/// `main` is selected as a root so the table genuinely holds it — without the
+/// entry fact nothing demands it, and the control would otherwise pass on an
+/// empty table.
 #[test]
 fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
     let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
+    let main = declaration_of(&hir, "main");
     hir.entry_exit_plan = None;
 
-    let lowered = lower_module(&hir, &type_facts);
+    let lowered = lower_module_with_roots(&hir, &type_facts, &[main])
+        .expect("an exact monomorphic declaration is selectable as a root");
     assert!(
         lowered
             .module

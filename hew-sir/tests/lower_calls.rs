@@ -168,13 +168,9 @@ fn call_result_outside_its_normal_edge_is_rejected() {
     }
 }
 
-#[test]
-fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
-    // `main` is intentionally written before its callee. The callable table
-    // is declaration-sorted, while body lowering still handles this forward
-    // edge without any name-to-symbol reconstruction.
-    let lowered = lower_source(
-        r"
+/// `main` is intentionally written before its callee, so resolving the call
+/// edge is what admits `add_one`.
+const FORWARD_SCALAR_CALL: &str = r"
         fn main() -> i64 {
             add_one(41)
         }
@@ -182,8 +178,13 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         fn add_one(value: i64) -> i64 {
             value + 1
         }
-        ",
-    );
+        ";
+
+#[test]
+fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
+    // The forward edge resolves through callable IDs, without any
+    // name-to-symbol reconstruction.
+    let lowered = lower_source(FORWARD_SCALAR_CALL);
     assert!(
         ["main", "add_one"].into_iter().all(|name| {
             matches!(
@@ -198,27 +199,33 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         lowered.statuses
     );
     let module = &lowered.module;
-    let add_one = module
-        .callables
-        .iter()
-        .find(|callable| callable.declaration.full_path() == "add_one")
-        .expect("scalar callee must have a resolved callable");
-    let main_callable = module
-        .callables
-        .iter()
-        .find(|callable| callable.declaration.full_path() == "main")
-        .expect("root main must have a resolved callable");
-    assert!(
+    for name in ["add_one", "main"] {
+        assert!(
+            module
+                .callables
+                .iter()
+                .any(|callable| callable.declaration.full_path() == name),
+            "the entry and the callee its edge admits must both have a callable"
+        );
+    }
+    // Callable IDs follow the entry's demand traversal, and that traversal is
+    // a function of the program: lowering the same HIR twice assigns the same
+    // IDs to the same declarations.
+    let again = lower_source(FORWARD_SCALAR_CALL);
+    assert_eq!(
         module
             .callables
             .iter()
-            .map(|callable| &callable.declaration)
-            .collect::<Vec<_>>()
-            .windows(2)
-            .all(|pair| pair[0] <= pair[1]),
-        "callable IDs must come from deterministic declaration ordering, not body order"
+            .map(|callable| (callable.id, callable.declaration.clone()))
+            .collect::<Vec<_>>(),
+        again
+            .module
+            .callables
+            .iter()
+            .map(|callable| (callable.id, callable.declaration.clone()))
+            .collect::<Vec<_>>(),
+        "callable IDs must be a function of the program, not of when a body ran"
     );
-    assert!(add_one.id < main_callable.id);
     assert_eq!(module.root_unit_callables.len(), 2);
     let entry = module
         .entry_callable

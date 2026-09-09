@@ -133,8 +133,7 @@ fn owned_record_shape_and_field_order_are_exact() {
     );
     assert_main_lowered(&lowered);
 
-    // `std.builtins` bodies lower into every module and publish their own record
-    // shapes; this source demands exactly one of its own.
+    // Name the shape this source demands rather than indexing the table.
     let packets: Vec<_> = lowered
         .module
         .aggregate_shapes

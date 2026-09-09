@@ -442,10 +442,21 @@ mod session_completion_tests {
             .into_semantics()
     }
 
+    /// `unused` is declared and never called. Demand reaches neither its
+    /// header nor its body, and that absence is not an incomplete lowering:
+    /// the gate asks for the entry, the callees the bodies name and the
+    /// selected capability plans, not for every declaration in the source.
     #[test]
-    fn complete_entry_allows_unreached_headers_without_bodies() {
+    fn a_declaration_the_entry_never_reaches_does_not_make_a_module_incomplete() {
         let sir = complete_module();
-        assert!(sir.module.callables.len() > sir.module.functions.len());
+        assert!(
+            sir.module
+                .callables
+                .iter()
+                .all(|callable| !callable.symbol.contains("unused")),
+            "an uncalled declaration must not be admitted a callable: {:?}",
+            sir.module.callables
+        );
         require_complete_semantics(&sir, true).unwrap();
     }
 

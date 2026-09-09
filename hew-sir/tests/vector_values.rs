@@ -447,8 +447,8 @@ fn affine_vector_accepts_nested_non_clone_values_without_copy_capability() {
         })
         .unwrap();
     assert_eq!(pushed[1].decision, hew_sir::BoundaryDecision::Move);
-    // `std.builtins` carries its own `Vec<string>` fields, so name the element
-    // this source demands instead of judging every vector row in the module.
+    // Name the element this source demands rather than judging every vector
+    // row in the module.
     let element = module
         .type_facts
         .iter()

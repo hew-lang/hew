@@ -35,6 +35,15 @@ fn lower_source(source: &str) -> LoweredModule {
     }
 }
 
+fn callable_paths(lowered: &LoweredModule) -> Vec<&str> {
+    lowered
+        .module
+        .callables
+        .iter()
+        .map(|callable| callable.declaration.full_path())
+        .collect()
+}
+
 fn status_of<'a>(lowered: &'a LoweredModule, name: &str) -> &'a SirLoweringStatus {
     lowered
         .statuses
@@ -484,35 +493,79 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
     );
 }
 
+/// Header admission follows the program, not the prelude's declaration list:
+/// `std.builtins` lowers into every module, so an uncalled `NodeConfig::at`
+/// would otherwise put its record shape, its `Vec<string>` glue and their
+/// `string` rows into every inventory.
 #[test]
-fn unreached_headers_publish_nested_record_and_variant_shapes() {
+fn prelude_callables_are_admitted_only_where_the_program_calls_them() {
+    let uninterested = lower_source(
+        r"
+        fn double(n: i64) -> i64 { n * 2 }
+        fn main() -> i64 { double(21) }
+        ",
+    );
+    let paths = callable_paths(&uninterested);
+    for absent in ["NodeConfig", "duration", "ActorRequestOwner"] {
+        assert!(
+            paths.iter().all(|path| !path.contains(absent)),
+            "a program that calls no prelude declaration must carry none: `{absent}` in {paths:?}"
+        );
+    }
+
+    let interested = lower_source(
+        r#"
+        fn main() {
+            let config = NodeConfig.at("127.0.0.1:9000");
+            println(config.bind);
+        }
+        "#,
+    );
+    let paths = callable_paths(&interested);
+    assert!(
+        paths.iter().any(|path| path.contains("NodeConfig")),
+        "the prelude declaration the program calls must be admitted: {paths:?}"
+    );
+    assert!(
+        paths.iter().all(|path| !path.contains("duration")),
+        "its uncalled siblings must still stay out: {paths:?}"
+    );
+}
+
+#[test]
+fn a_demanded_header_publishes_nested_shapes_and_an_unreached_one_publishes_none() {
     let (hir, facts) = lower_hir(
         r#"
         type Payload { text: string }
+        type Unused { flag: bool }
         fn unrelated<Payload>(value: Payload) -> Payload { value }
         fn stranded(value: Result<Option<Option<Payload>>, string>) {
-            defer { println("unreached"); }
+            defer { println("selected"); }
         }
+        fn uncalled(value: Unused) -> Unused { value }
         fn main() {}
         "#,
     );
     assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
-    let lowered = lower_module(&hir, &facts);
+    // `stranded` is selected as an export root, so its header is demanded
+    // while nothing calls it. Its body never reads the parameter, so every
+    // shape below can only have come from admitting the signature.
+    let lowered = lower_module_with_roots(&hir, &facts, &[declaration_of(&hir, "stranded")])
+        .expect("an exact monomorphic declaration is selectable as a root");
     assert!(matches!(
         status_of(&lowered, "stranded"),
-        SirLoweringStatus::NotReached
+        SirLoweringStatus::Lowered
     ));
     assert!(matches!(
         status_of(&lowered, "main"),
         SirLoweringStatus::Lowered
     ));
-    assert_eq!(lowered.module.functions.len(), 1);
     let callable = lowered
         .module
         .callables
         .iter()
         .find(|callable| callable.declaration == declaration_of(&hir, "stranded"))
-        .expect("the unreached declaration must retain its admitted header");
+        .expect("the selected root must have a header");
     let result = lowered
         .module
         .variant_shape_for_type(&callable.signature.params[0].ty)
@@ -530,6 +583,22 @@ fn unreached_headers_publish_nested_record_and_variant_shapes() {
         .aggregate_shape_for_type(&inner.variants[0].fields[0].ty)
         .expect("the nested record payload must have a shape");
     assert_eq!(payload.fields[0].ty, hew_types::ResolvedTy::String);
+    // Negative control: nothing demands `uncalled`, so it costs the module no
+    // header and its parameter type costs it no shape.
+    assert!(matches!(
+        status_of(&lowered, "uncalled"),
+        SirLoweringStatus::NotReached
+    ));
+    assert!(lowered
+        .module
+        .callables
+        .iter()
+        .all(|callable| callable.declaration != declaration_of(&hir, "uncalled")));
+    assert!(lowered.module.aggregate_shapes.iter().all(|shape| shape
+        .instance
+        .nominal
+        .display_name()
+        != "Unused"));
     assert!(
         verify_module(&lowered.module).is_empty(),
         "{:#?}",

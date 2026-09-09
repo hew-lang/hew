@@ -31,6 +31,44 @@ fn physical(source: &str) -> PhysicalModule {
     physical_for_triple(source, &native_emission_triple())
 }
 
+/// Lower with extra export roots beside the entry. A root's signature is
+/// admitted with no caller, which is how a program carries glue for a type no
+/// body of its own constructs.
+fn physical_with_roots(source: &str, roots: &[&str]) -> PhysicalModule {
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let selected: Vec<hew_types::DefId> = roots
+        .iter()
+        .map(|name| {
+            hir.module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    hew_hir::HirItem::Function(function) if function.name == *name => {
+                        Some(function.declaration.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("source must define `{name}`"))
+        })
+        .collect();
+    let lowered = hew_sir::lower_module_with_roots(&hir.module, &checked, &selected).unwrap();
+    assert!(hew_sir::verify_module(&lowered.module).is_empty());
+    let target = physical_target_for_inventory(
+        &native_emission_triple(),
+        &hew_mir::physical::physical_type_inventory(&lowered.module),
+    )
+    .unwrap();
+    hew_mir::lower_physical_module(&lowered.module, target)
+        .unwrap()
+        .module()
+        .clone()
+}
+
 fn physical_for_triple(source: &str, triple: &str) -> PhysicalModule {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -574,11 +612,16 @@ fn owned_user_key_methods_receive_borrowed_slots_and_override_structure() {
 
 #[test]
 fn key_descriptors_require_construction_and_complete_selected_plans() {
-    let mut physical = physical(
+    // `inspect` is an export root rather than a callee of `main`: its
+    // signature admits the `HashMap<i64, bool>` glue while no body in the
+    // program constructs one. That is the case the descriptor rule has to
+    // discriminate from the map `main` actually creates.
+    let mut physical = physical_with_roots(
         r"
         fn inspect(values: HashMap<i64, bool>) -> i64 { values.len() }
         fn main() { let values: HashMap<i64, i64> = HashMap.new(); }
     ",
+        &["inspect"],
     );
     let ctx = Context::create();
     let module = llvm(&ctx, &physical);

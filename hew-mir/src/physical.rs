@@ -9568,9 +9568,9 @@ mod tests {
         assert!(inventory.contains(&ResolvedTy::I64));
         assert!(inventory.contains(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64,])));
         // Negative control: the inventory is demand-driven, not a dump of every
-        // registered type. `f64` is registered and no body here mentions it.
-        // (`string` is no longer a control: the `std.builtins` bodies that lower
-        // into every module carry it.)
+        // registered type. Both are registered and no body this module admits
+        // mentions either.
+        assert!(!inventory.contains(&ResolvedTy::String));
         assert!(!inventory.contains(&ResolvedTy::F64));
     }
 
@@ -9621,10 +9621,8 @@ mod tests {
         let verified = lower_physical_module(&module, target_for_inventory(&module))
             .expect("owned aggregate physical lowering");
         let physical = verified.module();
-        // `std.builtins` bodies (`NodeConfig::at`, `duration::from_micros`, ...)
-        // lower into every module, so the inventory legitimately carries their
-        // types too. Select the shapes this source demands rather than counting
-        // every row.
+        // Select the shapes this source demands by their recipe rather than
+        // counting every row.
         let demanded: Vec<_> = physical
             .aggregate_glue
             .iter()
@@ -11177,10 +11175,8 @@ mod tests {
         assert!(inventory
             .aggregates()
             .any(|shape| shape.fields == [ResolvedTy::String]));
-        // `std.builtins` bodies (`NodeConfig::at`, `duration::from_micros`, ...)
-        // lower into every module, so the inventory legitimately carries their
-        // types too. Select the shapes this source demands rather than counting
-        // every row.
+        // Name the vector this source demands by its copy recipe rather than
+        // indexing the glue table.
         let physical = lower_physical_module(&module, target_for_inventory(&module)).unwrap();
         let physical = physical.module();
         let vector = physical
@@ -11219,10 +11215,8 @@ mod tests {
             }
         ",
         );
-        // `std.builtins` bodies (`NodeConfig::at`, `duration::from_micros`, ...)
-        // lower into every module, so the inventory legitimately carries their
-        // types too. Select the shapes this source demands rather than counting
-        // every row.
+        // Name the vector this source demands by its zero-sized element rather
+        // than indexing the glue table.
         let physical = lower_physical_module(&module, target_for_inventory(&module)).unwrap();
         let physical = physical.module();
         let element = &physical

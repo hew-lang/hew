@@ -8524,9 +8524,9 @@ mod tests {
             let target = physical_target_for_inventory(&triple, &inventory).unwrap();
             let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
             let physical = verified.module();
-            // `std.builtins` bodies lower into every module and carry their own
-            // vector glue, so select the fixed-array element rather than
-            // counting every row.
+            // Select the fixed-array element rather than counting every row:
+            // the pin is about this source's own vector, not the module's
+            // total glue count.
             assert_eq!(
                 physical
                     .vector_glue
@@ -8970,8 +8970,7 @@ mod tests {
         let inventory = hew_mir::physical::physical_type_inventory(&semantic);
         let target = physical_target_for_inventory(&triple, &inventory)
             .expect("exact aggregate target layout");
-        // `std.builtins` bodies lower into every module and publish their own
-        // record shapes; this source demands exactly one of its own.
+        // Name the shape this source demands rather than indexing the table.
         let shape = semantic
             .aggregate_shapes
             .iter()

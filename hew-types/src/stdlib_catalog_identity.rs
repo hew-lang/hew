@@ -10,8 +10,11 @@
 /// Closed identities of catalog callables that are both monomorphic in the
 /// checker and executable as ordinary HIR/MIR calls.
 pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
+    "Node::connect",
     "Node::id",
     "Node::identity_key",
+    "Node::shutdown",
+    "Node::start",
     "abs",
     "assert",
     "bytes::new",

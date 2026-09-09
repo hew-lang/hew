@@ -396,6 +396,7 @@ const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
+const NODE_CONFIG: &[BuiltinTy] = &[BuiltinTy::NodeConfig];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
@@ -2348,6 +2349,42 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
     // harmlessly discarded by the caller — this is the standard C idiom for
     // ignoring a return value.  The runtime still surfaces a peer-auth setup
+    // `Node::start(config: NodeConfig) -> Result<(), NodeError>` — apply one
+    // complete node configuration and bind the listener. The record is passed
+    // by pointer (`*const HewNodeConfig`) and the shim's `c_int` becomes the
+    // typed node result.
+    direct(
+        "Node::start",
+        BuiltinClass::ClassB,
+        NODE_CONFIG,
+        BuiltinTy::NodeResult,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_start_config",
+        },
+    ),
+    // `Node::connect(addr: String) -> Result<(), NodeError>` — dial a peer at
+    // `slot@host:port`, where the slot is the peer's position in this node's
+    // own `NodeConfig.peers`.
+    direct(
+        "Node::connect",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::NodeResult,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_connect",
+        },
+    ),
+    // `Node::shutdown()` — stop the public node. No args in, `c_int` discarded
+    // as Unit.
+    direct(
+        "Node::shutdown",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_shutdown",
+        },
+    ),
     direct(
         "Node::identity_key",
         BuiltinClass::ClassB,

@@ -4213,7 +4213,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
     {"hew_node_api_register_by_pid_string",
      "{\"native\": \"fn hew_node_api_register_by_pid_string( *const HewString, "
      "u64, ) -> c_int\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_send_location",
      "{\"native\": \"fn hew_node_api_send_location( *const HewRemotePid, "
@@ -4235,7 +4235,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
     {"hew_node_api_start_config",
      "{\"native\": \"fn hew_node_api_start_config( *const HewNodeConfig) -> "
      "c_int\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_unregister",
      "{\"native\": \"fn hew_node_api_unregister( *const c_char) -> c_int\"}",

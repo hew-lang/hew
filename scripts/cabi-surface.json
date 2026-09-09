@@ -11325,7 +11325,7 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
+      "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -11390,7 +11390,7 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
+      "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",

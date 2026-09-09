@@ -1,0 +1,10 @@
+[[case]]
+id = "sir-whole-scrutinee-binding"
+intent = "A match arm that binds the whole scrutinee and moves it into a constructor rebuilds the value the variant switch took apart. A guarded binding arm whose guard fails hands live payloads to the next candidate. Controls name every variant instead and render an absent config."
+source = "cases/sir-whole-scrutinee-binding.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "u/env:E\ncli is refused\nu/env:E\nenv env:E\nother cli:c\nabsent\n"
+exit = 0

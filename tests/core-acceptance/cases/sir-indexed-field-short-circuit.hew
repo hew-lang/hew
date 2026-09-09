@@ -1,0 +1,48 @@
+type Claim {
+    run_id: string,
+    fence: i64,
+}
+
+// An owned string field read from an indexed element in the left operand of
+// `&&`, with a second index on the right: the right operand releases its own
+// temporary on its own edge, never after the join.
+fn matches(claims: Vec<Claim>, run_id: string, fence: i64) -> bool {
+    claims[0].run_id == run_id && claims[0].fence == fence
+}
+
+// The short-circuit edge: the right operand is never evaluated, and its
+// element is never read.
+fn matches_short(claims: Vec<Claim>, run_id: string, fence: i64) -> bool {
+    claims[0].run_id == run_id && claims[1].fence == fence
+}
+
+// Control: the same test with the operands swapped.
+fn matches_swapped(claims: Vec<Claim>, run_id: string, fence: i64) -> bool {
+    claims[0].fence == fence && claims[0].run_id == run_id
+}
+
+// Control: `||` over the same operands.
+fn matches_either(claims: Vec<Claim>, run_id: string, fence: i64) -> bool {
+    claims[0].run_id == run_id || claims[0].fence == fence
+}
+
+// Control: the element bound once before either operand.
+fn matches_bound(claims: Vec<Claim>, run_id: string, fence: i64) -> bool {
+    let claim = claims[0];
+    claim.run_id == run_id && claim.fence == fence
+}
+
+fn main() {
+    var claims: Vec<Claim> = Vec.new();
+    claims.push(Claim { run_id: "r", fence: 1 });
+    claims.push(Claim { run_id: "s", fence: 2 });
+
+    println(matches(claims, "r", 1));
+    println(matches(claims, "r", 9));
+    println(matches(claims, "z", 1));
+    println(matches_short(claims, "z", 2));
+    println(matches_short(claims, "r", 2));
+    println(matches_swapped(claims, "r", 1));
+    println(matches_either(claims, "z", 1));
+    println(matches_bound(claims, "r", 1));
+}

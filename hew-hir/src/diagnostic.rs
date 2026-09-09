@@ -295,10 +295,6 @@ pub enum HirDiagnosticKind {
     /// is permitted at most once; multiple deadlines would have no
     /// meaningful join semantics.
     SelectMultipleAfterArms,
-    /// A `select` expression contains zero arms (neither sealed arms
-    /// nor an `after` timer). An empty select cannot fire and is
-    /// rejected at the surface.
-    SelectNoArms,
     /// A `select` arm names a `next(...)` call with an arity other
     /// than one. The sealed stream form is `next(<stream-expr>)` —
     /// exactly one argument.

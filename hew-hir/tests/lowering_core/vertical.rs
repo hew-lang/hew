@@ -629,19 +629,6 @@ fn select_binds_a_bare_task_source() {
 }
 
 #[test]
-fn select_empty_rejected() {
-    let output = lower("fn main() { let result = select {}; }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectNoArms)),
-        "{:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
 fn select_timer_only_lowers_without_diagnostics() {
     let output = lower_checked_task("fn main() { let result: i64 = select { after 1ms => 42, }; }");
     let select = find_first_select(&output);

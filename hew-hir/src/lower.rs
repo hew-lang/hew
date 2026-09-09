@@ -20050,19 +20050,6 @@ impl LowerCtx {
         timeout: Option<&TimeoutClause>,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        // Empty select — neither arms nor a timer — fires nothing.
-        if arms.is_empty() && timeout.is_none() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::SelectNoArms,
-                span.clone(),
-                "select expression contains no arms",
-            ));
-            return (
-                HirExprKind::Unsupported("empty select".into()),
-                ResolvedTy::Unit,
-            );
-        }
-
         // Multiple `after` arms have no meaningful join semantics and are
         // rejected. An `Expr::Timeout`-sourced arm in the `arms` vec is
         // treated as an `AfterTimer` arm; if that is combined with the

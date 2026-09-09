@@ -708,7 +708,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::SelectArmNotSealedForm { .. } => "SelectArmNotSealedForm",
         K::SelectArmTypeMismatch { .. } => "SelectArmTypeMismatch",
         K::SelectMultipleAfterArms => "SelectMultipleAfterArms",
-        K::SelectNoArms => "SelectNoArms",
         K::SelectStreamNextArity { .. } => "SelectStreamNextArity",
         K::MachineEmitCycle { .. } => "MachineEmitCycle",
         K::MachineEmitNotInManifest { .. } => "MachineEmitNotInManifest",

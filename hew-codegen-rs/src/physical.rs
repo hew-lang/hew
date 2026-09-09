@@ -4945,6 +4945,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.push.owned",
                 )?;
             }
+            PhysicalRuntimeAction::BytesAppendOwned => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bytes_append_owned",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[
+                        self.slots[source(0)?.0 as usize].into(),
+                        self.slots[source(1)?.0 as usize].into(),
+                        self.slots[required_result()?.0 as usize].into(),
+                    ],
+                    "bytes.append.owned",
+                )?;
+            }
         }
         if failure.is_some() {
             return Err(CodegenError::FailClosed(format!(

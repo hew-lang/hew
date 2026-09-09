@@ -4087,6 +4087,16 @@ impl RuntimeCallFamily {
                 effect: Copy,
             },
         ];
+        const BYTES_APPEND: &[RuntimeArgumentContract] = &[
+            RuntimeArgumentContract {
+                ty: Bytes,
+                effect: Move,
+            },
+            RuntimeArgumentContract {
+                ty: Bytes,
+                effect: Borrow,
+            },
+        ];
 
         if let Some(contract) = self.collection_semantic_contract() {
             return Some(contract);
@@ -4225,6 +4235,9 @@ impl RuntimeCallFamily {
             }
             Self::BytesPush => {
                 runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
+            }
+            Self::BytesAppend => {
+                runtime_semantic_contract(BYTES_APPEND, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
             }
             Self::NodeStart => runtime_semantic_contract(
                 &[RuntimeArgumentContract {

@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-append"
+intent = "Appending borrowed bytes grows shared receivers without changing their original or sliced source, handles sliced receivers, empty inputs and embedded NUL."
+source = "cases/bytes-append.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "bytes append preserves borrowed buffers and slices\n"
+stderr = ""
+exit = 0

@@ -439,6 +439,50 @@ pub unsafe extern "C" fn hew_bytes_push_owned(
     unsafe { out.write(value) };
 }
 
+/// Transfer bytes into an output owner after appending a borrowed buffer.
+///
+/// Shared source storage stays alive while copy-on-write or growth replaces
+/// the receiver's allocation. Allocation exhaustion follows append's abort policy.
+///
+/// # Safety
+///
+/// `old` must point to a uniquely writable, initialized owning `BytesTriple`.
+/// `source` must point to an initialized valid header and may alias `old`.
+/// `out` must point to distinct, aligned, uniquely writable uninitialized
+/// storage. All header pointers must remain valid throughout the call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_append_owned(
+    old: *mut BytesTriple,
+    source: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: source is initialized; copy its header before clearing old,
+    // because source may be the receiver itself.
+    let source = unsafe { source.read() };
+    // SAFETY: old is initialized and uniquely writable by the caller's contract.
+    let mut value = unsafe {
+        old.replace(BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        })
+    };
+    let shared_source = !source.ptr.is_null() && source.ptr == value.ptr;
+    if shared_source {
+        // SAFETY: the receiver still owns the live shared allocation. Pin it
+        // so append cannot invalidate the source through growth or compaction.
+        unsafe { hew_bytes_clone_ref(source.ptr) };
+    }
+    // SAFETY: value owns the receiver and the borrowed source remains valid.
+    unsafe { hew_bytes_append(&mut value, source.ptr, source.offset, source.len) };
+    if shared_source {
+        // SAFETY: release precisely the temporary reference retained above.
+        unsafe { hew_bytes_drop(source.ptr) };
+    }
+    // SAFETY: out is distinct uninitialized storage for the transferred owner.
+    unsafe { out.write(value) };
+}
+
 /// Trap with a bytes empty-buffer panic message.
 ///
 /// Backs `bytes.pop()` on an empty buffer: the spec signature is `() -> i64`
@@ -1362,6 +1406,30 @@ mod tests {
         // SAFETY: updated owns one initialized byte, then is released once.
         unsafe {
             assert_eq!(*updated.ptr.add(updated.offset as usize), b'A');
+            hew_bytes_drop(updated.ptr);
+        }
+    }
+
+    #[test]
+    fn append_owned_self_alias_survives_growth_and_clears_moved_header() {
+        let input = b"0123456789abcdef";
+        // SAFETY: input contains input.len() readable bytes.
+        let mut old = unsafe { hew_bytes_from_static(input.as_ptr(), input.len() as u32) };
+        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        let old_ptr = &raw mut old;
+        // SAFETY: the source may alias the initialized receiver; out is distinct.
+        unsafe { hew_bytes_append_owned(old_ptr, old_ptr, out.as_mut_ptr()) };
+        // SAFETY: append initializes the output owner on return.
+        let updated = unsafe { out.assume_init() };
+        assert!(old.ptr.is_null());
+        assert_eq!((old.offset, old.len), (0, 0));
+        assert_eq!(updated.len, 32);
+        // SAFETY: updated owns its initialized region, then is released once.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(updated.ptr.add(updated.offset as usize), 32),
+                b"0123456789abcdef0123456789abcdef"
+            );
             hew_bytes_drop(updated.ptr);
         }
     }

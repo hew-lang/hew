@@ -993,6 +993,7 @@ pub enum PhysicalRuntimeAction {
     BytesSlice,
     BytesSliceFrom,
     BytesPushOwned,
+    BytesAppendOwned,
     Array {
         operation: ArrayValueOp,
         glue: PhysicalVectorId,
@@ -1087,6 +1088,7 @@ impl PhysicalRuntimeAction {
             Self::BytesSlice => RuntimeCallFamily::BytesSlice,
             Self::BytesSliceFrom => RuntimeCallFamily::BytesSliceFrom,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
+            Self::BytesAppendOwned => RuntimeCallFamily::BytesAppend,
             Self::Array { operation, .. } => RuntimeCallFamily::Array(operation),
             Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
             Self::Map { operation, .. } => RuntimeCallFamily::Map(operation.semantic_op()),
@@ -2598,6 +2600,7 @@ fn physical_runtime_action(
         | RuntimeCallFamily::DurationAbs
         | RuntimeCallFamily::DurationIsZero) => PhysicalRuntimeAction::TimeScalar(family),
         RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
+        RuntimeCallFamily::BytesAppend => PhysicalRuntimeAction::BytesAppendOwned,
         RuntimeCallFamily::NodeShutdown => PhysicalRuntimeAction::NodeShutdown,
         RuntimeCallFamily::NodeRegister => PhysicalRuntimeAction::NodeRegister,
         _ => {

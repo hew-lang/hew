@@ -1743,6 +1743,7 @@ non-declarable = [
   "hew_bytes_decode_utf8_lossy",
   "hew_bytes_literal_new",
   "hew_bytes_push_owned",
+  "hew_bytes_append_owned",
   "hew_string_literal_new",
   "hew_string_to_bytes_owned",
   "hew_is_shutting_down",
@@ -7040,6 +7041,13 @@ discharge-depth = "none"
 # the legacy return-provenance table cannot express this output-pointer effect.
 [[ownership.contracts]]
 symbol = "hew_bytes_push_owned"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_append_owned"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = ""

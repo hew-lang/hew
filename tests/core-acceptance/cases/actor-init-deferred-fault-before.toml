@@ -1,0 +1,12 @@
+[[case]]
+id = "actor-init-deferred-fault-before"
+intent = "An init fault before any deferred field is stored releases the spawn-supplied owned field and the unpublished state without touching the uninitialized seats."
+source = "cases/actor-init-deferred-fault-before.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): init failed before any field\n"
+exit = 1

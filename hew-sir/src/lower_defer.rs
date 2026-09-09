@@ -164,6 +164,18 @@ impl Builder<'_, '_> {
             .unwrap_or_default();
         self.destroy_live_since(&preserved)?;
         self.drain_scopes(boundary.as_ref().map_or(0, |b| b.floor), false)?;
+        if boundary.is_none() {
+            // The fault leaves init: release the deferred state seats this
+            // path initialized (D447). Spawn-supplied fields stay with the
+            // spawn, which destroys them when init reports failure.
+            for place in self.deferred_initialized.clone().into_iter().rev() {
+                self.emit_place_operation(
+                    SemOpKind::EndLifetime { place },
+                    Provenance::Synthesized,
+                )?;
+                self.deferred_initialized.remove(&place);
+            }
+        }
         self.set_terminator(boundary.map_or(SemTerminator::ResumeUnwind, |body| {
             SemTerminator::Goto(edge(body.finish))
         }))?;

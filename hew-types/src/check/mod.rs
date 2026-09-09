@@ -2475,6 +2475,8 @@ impl Checker {
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
             numeric_operand_coercions: std::mem::take(&mut self.numeric_operand_coercions),
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
+            actor_deferred_field_decls: std::mem::take(&mut self.actor_deferred_field_decls),
+            actor_init_first_stores: std::mem::take(&mut self.actor_init_first_stores),
             borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
             borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),
             owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),

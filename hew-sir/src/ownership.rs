@@ -296,11 +296,14 @@ pub enum OwnerRoot {
 pub enum PlaceOrigin {
     Local,
     Runtime,
-    /// Initialized state protected by the enclosing strict actor turn.
+    /// State protected by the enclosing strict actor turn. `initialized`
+    /// is false only in the actor's `init` body for a field init owns
+    /// (D447): that seat holds no value until init's first store.
     ActorState {
         actor: crate::ActorId,
         state: ValueId,
         field: u32,
+        initialized: bool,
     },
     /// An initialized field of this closure body's explicit receiver.
     Capture {

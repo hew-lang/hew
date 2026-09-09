@@ -1902,6 +1902,7 @@ impl Checker {
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
+            let deferred_init = binding.deferred_init();
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding
@@ -1912,7 +1913,16 @@ impl Checker {
             // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
             // that plugs the hole, not a use of the value that left.
             let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
-            if is_moved && !is_write_target {
+            if is_moved && deferred_init && !is_write_target {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "E_ACTOR_FIELD_UNINITIALIZED: state field `{name}` is read before \
+                         `init` initializes it; assign it first"
+                    ),
+                );
+            } else if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
                     Ty::Named { name, .. } if self.registry.is_linear(name)
@@ -8753,6 +8763,28 @@ impl Checker {
                 .as_ref()
                 .and_then(|params| params.iter().find(|p| &p.name == field_name))
                 .map(|p| p.ty.clone());
+            // A field init initializes has no spawn value (D447): one init
+            // body cannot be a first store at one spawn site and a
+            // replacement at another.
+            if declared_init_param.is_none()
+                && self
+                    .actor_deferred_fields
+                    .get(actor_name)
+                    .is_some_and(|deferred| deferred.contains(field_name))
+            {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    as_,
+                    format!(
+                        "E_ACTOR_FIELD_DEFERRED: state field `{field_name}` of actor \
+                         `{actor_name}` is initialized by `init`; remove it from the spawn \
+                         arguments"
+                    ),
+                );
+                let ty_raw = self.synthesize(arg, as_);
+                self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
+                continue;
+            }
             // A spawn arg name that matches BOTH an init parameter and a state
             // field with a DIFFERENT declared type is unsatisfiable: the one
             // provided value cannot simultaneously be the init parameter's type

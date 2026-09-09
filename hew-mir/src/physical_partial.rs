@@ -621,9 +621,16 @@ pub(super) fn require_local(
     function: &PhysicalFunction,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
-    if !matches!(storage(function, id)?.origin, StorageOrigin::Local(_)) {
+    if !matches!(
+        storage(function, id)?.origin,
+        StorageOrigin::Local(_)
+            | StorageOrigin::ActorState {
+                initialized: false,
+                ..
+            }
+    ) {
         return Err(PhysicalError::new(
-            "physical storage lifetime requires a function-owned local",
+            "physical storage lifetime requires a function-owned local or a deferred actor seat",
         ));
     }
     Ok(())

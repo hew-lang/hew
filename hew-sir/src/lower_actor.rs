@@ -162,6 +162,7 @@ impl InstanceService<'_> {
             .map(|field| crate::SemActorField {
                 ty: substitution.apply(&field.ty),
                 mutable: field.is_mutable,
+                deferred: field.deferred,
             })
             .collect();
         let state_ty = ResolvedTy::Tuple(fields.iter().map(|field| field.ty.clone()).collect());
@@ -929,6 +930,11 @@ impl Builder<'_, '_> {
                 let mut argument_order = Vec::new();
                 let mut used = BTreeSet::new();
                 for field in &source.state_fields {
+                    if field.deferred {
+                        // Initialized inside init (D447); the checker refused
+                        // any spawn argument naming it.
+                        continue;
+                    }
                     if let Some((index, _)) = args
                         .iter()
                         .enumerate()
@@ -1213,6 +1219,7 @@ impl Builder<'_, '_> {
                     actor: *actor,
                     state: ValueId(0),
                     field: u32::try_from(index).map_err(|_| "state field count exceeds u32")?,
+                    initialized: !(field.deferred && descriptor.init == Some(self.callable.id)),
                 },
             });
             self.bindings

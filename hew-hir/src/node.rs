@@ -1013,6 +1013,10 @@ pub struct HirField {
     /// event fields are `false` (writes are governed by the binding root,
     /// not the field).
     pub is_mutable: bool,
+    /// An actor state field that `init` initializes (D447): it has no
+    /// default, a spawn cannot supply it, and its storage is uninitialized
+    /// until init's first store.
+    pub deferred: bool,
     pub span: Span,
 }
 
@@ -1168,6 +1172,10 @@ pub enum HirStmtKind {
     Assign {
         target: HirExpr,
         value: Box<HirExpr>,
+        /// The target is a deferred actor state field receiving its first
+        /// value in `init` (D447): the store initializes empty storage and
+        /// destroys nothing. Decided by the checker, never re-derived.
+        first_store: bool,
     },
     Expr(HirExpr),
     Return(Option<HirExpr>),

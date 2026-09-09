@@ -25,7 +25,7 @@ pub(super) fn allocate_storage<'ctx>(
             if matches!(storage.origin, StorageOrigin::Aggregate(_)) {
                 return Ok(None);
             }
-            if let StorageOrigin::ActorState { state, field } = storage.origin {
+            if let StorageOrigin::ActorState { state, field, .. } = storage.origin {
                 let index = function
                     .parameters
                     .iter()

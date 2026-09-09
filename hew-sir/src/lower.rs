@@ -2967,6 +2967,7 @@ struct ControlState {
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,
+    deferred_initialized: BTreeSet<PlaceId>,
 }
 
 /// The scope loans one `let` binding holds on a borrowed collection.
@@ -3162,6 +3163,10 @@ struct Builder<'hir, 'service> {
     task_scopes: Vec<tasks::TaskScopeFrame>,
     cleanup_may_fail: bool,
     cleanup_draining: bool,
+    /// Deferred actor state seats (D447) this init body has initialized on
+    /// the current path. The checker rejects a join whose arms disagree, so
+    /// the set is exact at every fault exit and names what init must release.
+    deferred_initialized: BTreeSet<PlaceId>,
     /// A stream producer body: the caller's sink it yields into and the
     /// element type each yield transfers.
     stream_sink: Option<(ValueId, ResolvedTy)>,
@@ -3297,6 +3302,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             task_scopes: Vec::new(),
             cleanup_may_fail: false,
             cleanup_draining: false,
+            deferred_initialized: BTreeSet::new(),
             stream_sink,
         };
         builder.bind_captures(source)?;
@@ -4068,6 +4074,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             task_scopes: self.task_scopes.clone(),
             cleanup_may_fail: self.cleanup_may_fail,
             cleanup_draining: self.cleanup_draining,
+            deferred_initialized: self.deferred_initialized.clone(),
         }
     }
 
@@ -4086,6 +4093,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.task_scopes.clone_from(&state.task_scopes);
         self.cleanup_may_fail = state.cleanup_may_fail;
         self.cleanup_draining = state.cleanup_draining;
+        self.deferred_initialized
+            .clone_from(&state.deferred_initialized);
     }
 
     fn retain_bindings(
@@ -4178,6 +4187,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .any(|state| state.owned_live != first.owned_live)
         {
             return Err("control-flow predecessors leave different temporary owners live".into());
+        }
+        if states
+            .iter()
+            .any(|state| state.deferred_initialized != first.deferred_initialized)
+        {
+            return Err(
+                "control-flow predecessors disagree on which deferred actor fields are initialized"
+                    .into(),
+            );
         }
         for binding in &keys {
             if states
@@ -4320,8 +4338,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 HirStmtKind::Return(value) => {
                     self.lower_function_return(value.as_ref())?;
                 }
-                HirStmtKind::Assign { target, value } => {
-                    self.lower_assignment(target, value)?;
+                HirStmtKind::Assign {
+                    target,
+                    value,
+                    first_store,
+                } => {
+                    self.lower_assignment(target, value, *first_store)?;
                 }
                 HirStmtKind::Destructure { value, fields } => {
                     self.lower_destructure(value, fields)?;
@@ -4390,7 +4412,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(result)
     }
 
-    fn lower_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
+    fn lower_assignment(
+        &mut self,
+        target: &HirExpr,
+        value: &HirExpr,
+        first_store: bool,
+    ) -> Result<(), String> {
         if let HirExprKind::Index { container, index } = &target.kind {
             let family = match self.ty(&container.ty) {
                 ResolvedTy::Array(_, _) => Some(hew_types::RuntimeCallFamily::Array(
@@ -4445,6 +4472,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             lower_initial_value_transfer(self, value, "assignment value", OwnedBindingUse::Copy)?;
         let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
         match target {
+            BindingTarget::Place(place) if first_store => {
+                // A deferred actor field's first store (D447): the seat holds
+                // nothing to release, and from here the fault path owns it.
+                if !matches!(
+                    self.places[place.0 as usize].origin,
+                    PlaceOrigin::ActorState {
+                        initialized: false,
+                        ..
+                    }
+                ) {
+                    return Err("a first store requires an uninitialized actor state seat".into());
+                }
+                self.emit_place_operation(
+                    SemOpKind::StoreInit {
+                        place,
+                        value: Operand { value: new },
+                    },
+                    Provenance::Site(value.site),
+                )?;
+                self.owned_live.remove(&new);
+                self.deferred_initialized.insert(place);
+                Ok(())
+            }
             BindingTarget::Place(place) => {
                 self.store_projected(place, new, Provenance::Site(value.site))
             }

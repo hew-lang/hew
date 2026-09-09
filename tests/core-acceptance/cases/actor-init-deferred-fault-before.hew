@@ -1,0 +1,22 @@
+import std.stream;
+
+actor Loader {
+    var owner: string,
+    var label: string,
+    var input: Stream<string>,
+    init(path: string) {
+        if path.len() > 0 { panic("init failed before any field"); }
+        label = path.to_upper();
+        input = match stream.from_file(path) {
+            .Ok(opened) => opened,
+            .Err(_) => panic("fixture open failed"),
+        };
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let loader = spawn Loader(owner: "caller".to_upper(), path: "resource-fault-local.bin");
+    println(loader.label().expect("unreachable"));
+    close(loader);
+}

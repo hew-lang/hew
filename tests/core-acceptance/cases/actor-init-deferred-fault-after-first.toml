@@ -1,0 +1,12 @@
+[[case]]
+id = "actor-init-deferred-fault-after-first"
+intent = "An init fault after the first deferred store releases that owned string and the spawn-supplied field, leaving the never-opened resource seat untouched."
+source = "cases/actor-init-deferred-fault-after-first.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): init failed after the first field\n"
+exit = 1

@@ -2792,13 +2792,34 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(*dest, value)?;
                 self.clear_owned(*source)
             }
-            PhysicalOp::StorageDead { storage, .. } => {
-                if !self.destroy_place_contents(*storage)? {
-                    return Err(CodegenError::FailClosed(
-                        "local lifetime lacks a verified content partition".into(),
-                    ));
+            PhysicalOp::StorageDead {
+                storage, destroy, ..
+            } => {
+                if self.destroy_place_contents(*storage)? {
+                    return Ok(());
                 }
-                Ok(())
+                // A deferred actor seat (D447) has no local partition: the
+                // verifier proved it initialized here, so release directly.
+                if matches!(
+                    self.storage(*storage)?.origin,
+                    hew_mir::physical::StorageOrigin::ActorState {
+                        initialized: false,
+                        ..
+                    }
+                ) {
+                    if let Some(action) = destroy {
+                        let value = self.load(*storage, "seat.release")?;
+                        self.value_emitter().destroy_loaded_value(
+                            value,
+                            &self.storage(*storage)?.layout,
+                            *action,
+                        )?;
+                    }
+                    return Ok(());
+                }
+                Err(CodegenError::FailClosed(
+                    "local lifetime lacks a verified content partition".into(),
+                ))
             }
         }
     }

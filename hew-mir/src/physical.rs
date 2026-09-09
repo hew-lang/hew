@@ -6,9 +6,9 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorOperation, LocalObservationKind, SemActor, SemActorHandler, SemActorOverflow,
-    SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor,
-    SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    ActorId, ActorOperation, LocalObservationKind, SemActor, SemActorField, SemActorHandler,
+    SemActorOverflow, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
+    SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp, MathIntrinsic};
 
@@ -302,9 +302,14 @@ impl PhysicalTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageOrigin {
+    /// A field of the actor state receiver. `initialized` is false only in
+    /// init for a field init owns (D447): the slot starts uninitialized,
+    /// must be initialized at every return and uninitialized at every fault
+    /// propagation.
     ActorState {
         state: StorageId,
         field: u32,
+        initialized: bool,
     },
     Capture {
         environment: StorageId,
@@ -2353,12 +2358,16 @@ fn lower_function(
                 OwnKind::of_ty(&place.ty, &module.type_facts).map_err(PhysicalError::new)?
             },
             origin: match place.origin {
-                hew_sir::PlaceOrigin::ActorState { state, field, .. } => {
-                    StorageOrigin::ActorState {
-                        state: lowerer.value(state)?,
-                        field,
-                    }
-                }
+                hew_sir::PlaceOrigin::ActorState {
+                    state,
+                    field,
+                    initialized,
+                    ..
+                } => StorageOrigin::ActorState {
+                    state: lowerer.value(state)?,
+                    field,
+                    initialized,
+                },
                 hew_sir::PlaceOrigin::Capture { environment, field } => StorageOrigin::Capture {
                     environment: lowerer.value(environment)?,
                     field,
@@ -5961,7 +5970,11 @@ fn verify_initialization(
     for slot in &function.storage {
         if matches!(
             slot.origin,
-            StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+            StorageOrigin::Capture { .. }
+                | StorageOrigin::ActorState {
+                    initialized: true,
+                    ..
+                }
         ) {
             entry.slots[slot.id.0 as usize] = InitState::Initialized;
         }
@@ -6349,6 +6362,17 @@ fn apply_operation(
             partial::require_droppable(module, function, state, *id, cleanup.mode())?;
             require_no_live_borrows(function, state, *id)?;
             partial::set_leaves(function, state, *id, InitState::Uninitialized);
+            if matches!(
+                storage(function, *id)?.origin,
+                StorageOrigin::ActorState {
+                    initialized: false,
+                    ..
+                }
+            ) {
+                // A deferred actor seat (D447) has no partition of its own:
+                // ending its lifetime releases the seat itself.
+                state.slots[id.0 as usize] = InitState::Uninitialized;
+            }
             state.active[id.0 as usize] = InitState::Uninitialized;
         }
     }
@@ -6905,6 +6929,20 @@ fn terminator_successors(
                     "physical trap cleanup cannot return normally",
                 ));
             }
+            if function.storage.iter().any(|slot| {
+                matches!(
+                    slot.origin,
+                    StorageOrigin::ActorState {
+                        initialized: false,
+                        ..
+                    }
+                ) && state.slots[slot.id.0 as usize] != InitState::Initialized
+            }) {
+                return Err(PhysicalError::new(format!(
+                    "physical bb{} returns from init with a deferred actor field uninitialized",
+                    block.0
+                )));
+            }
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(format!(
                     "physical bb{} returns normally while owning an active fault",
@@ -7166,7 +7204,11 @@ fn terminator_successors(
                 slot.own == OwnKind::Owned
                     && !matches!(
                         slot.origin,
-                        StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+                        StorageOrigin::Capture { .. }
+                            | StorageOrigin::ActorState {
+                                initialized: true,
+                                ..
+                            }
                     )
                     && function
                         .place_storage

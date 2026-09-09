@@ -7094,7 +7094,7 @@ fn collect_call_sites_in_stmt(
         HirStmtKind::Destructure { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirStmtKind::Assign { target, value } => {
+        HirStmtKind::Assign { target, value, .. } => {
             collect_call_sites_in_expr(target, out, trait_out);
             collect_call_sites_in_expr(value, out, trait_out);
         }
@@ -7810,6 +7810,10 @@ struct LowerCtx {
     /// and the enclosing scope are both in hand, so lowering consumes the
     /// answer rather than re-deriving it from a mirror of the field names.
     actor_self_state_fields: HashSet<SpanKey>,
+    /// Type-annotation spans of state fields that `init` initializes (D447).
+    actor_deferred_field_decls: HashSet<SpanKey>,
+    /// Assignment target spans that are a deferred field's first store (D447).
+    actor_init_first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
     borrowed_element_for_loops: HashSet<SpanKey>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
@@ -8504,6 +8508,8 @@ impl LowerCtx {
             current_return_type: None,
             current_actor_self: None,
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
+            actor_deferred_field_decls: tc_output.actor_deferred_field_decls.clone(),
+            actor_init_first_stores: tc_output.actor_init_first_stores.clone(),
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
@@ -11008,7 +11014,7 @@ impl LowerCtx {
             HirStmtKind::Destructure { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
@@ -14516,6 +14522,7 @@ impl LowerCtx {
                     ty: self.lower_type(ty),
                     default: None,
                     is_mutable: false,
+                    deferred: false,
                     span: field_span.clone(),
                 });
             }
@@ -14635,6 +14642,7 @@ impl LowerCtx {
                         ty: self.lower_type(&rf.ty),
                         default: None,
                         is_mutable: false,
+                        deferred: false,
                         span: rf.span.clone(),
                     })
                     .collect(),
@@ -15102,6 +15110,9 @@ impl LowerCtx {
                     // already rejected writes to immutable fields outside
                     // `init`, so this is the enforced mutability.
                     is_mutable: f.is_mutable,
+                    deferred: self
+                        .actor_deferred_field_decls
+                        .contains(&self.mk_key(&f.ty.1)),
                     span: f.ty.1.clone(),
                 }
             })
@@ -16206,11 +16217,15 @@ impl LowerCtx {
                 if let Some(op) = op {
                     self.lower_compound_assignment(target, *op, value, &span)
                 } else {
+                    let first_store = self
+                        .actor_init_first_stores
+                        .contains(&self.mk_key(&target.1));
                     let target = self.lower_expr(target, IntentKind::Modify);
                     let value = self.lower_expr(value, IntentKind::Consume);
                     HirStmtKind::Assign {
                         target,
                         value: Box::new(value),
+                        first_store,
                     }
                 }
             }
@@ -17739,6 +17754,7 @@ impl LowerCtx {
         HirStmtKind::Assign {
             target: target_write,
             value: Box::new(value),
+            first_store: false,
         }
     }
 
@@ -20785,6 +20801,7 @@ impl LowerCtx {
                 ty: capture.ty.clone(),
                 default: None,
                 is_mutable: false,
+                deferred: false,
                 span: span.clone(),
             })
             .collect();
@@ -22425,6 +22442,7 @@ impl LowerCtx {
                     kind: HirStmtKind::Assign {
                         target: acc_target,
                         value: Box::new(folded),
+                        first_store: false,
                     },
                     span: span.clone(),
                 };
@@ -25255,6 +25273,7 @@ impl LowerCtx {
             kind: HirStmtKind::Assign {
                 target: idx_assign_target,
                 value: Box::new(idx_plus_one),
+                first_store: false,
             },
             span: span.clone(),
         };
@@ -30785,7 +30804,7 @@ fn collect_general_closure_captures_walk_block(
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_general_closure_captures_walk(expr, outer_bindings, seen, captures);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 collect_general_closure_captures_walk(target, outer_bindings, seen, captures);
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
@@ -30857,7 +30876,7 @@ fn collect_captures_walk_block(
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_captures_walk(expr, &locally_bound, seen, captures, self_id);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 collect_captures_walk(target, &locally_bound, seen, captures, self_id);
                 collect_captures_walk(value, &locally_bound, seen, captures, self_id);
             }
@@ -32276,7 +32295,7 @@ fn scan_block_for_call_shape(
             HirStmtKind::Destructure { value, .. } => {
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 scan_expr_for_call_shape(target, callable, diagnostics);
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }

@@ -71,7 +71,7 @@ fn block_contains_remote_actor_ask(block: &HirBlock) -> bool {
         | HirStmtKind::Expr(expr)
         | HirStmtKind::Return(Some(expr)) => expr_contains_remote_actor_ask(expr),
         HirStmtKind::Destructure { value, .. } => expr_contains_remote_actor_ask(value),
-        HirStmtKind::Assign { target, value } => {
+        HirStmtKind::Assign { target, value, .. } => {
             expr_contains_remote_actor_ask(target) || expr_contains_remote_actor_ask(value)
         }
         HirStmtKind::Defer { body, .. } => expr_contains_remote_actor_ask(body),

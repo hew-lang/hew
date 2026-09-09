@@ -112,6 +112,16 @@ impl Verifier {
                         if let Some(default) = &field.default {
                             self.expr(default);
                         }
+                        if field.deferred && field.default.is_some() {
+                            self.diagnostics.push(self.diagnostic(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: format!("actor field {}", field.name),
+                                    reason: "a deferred init field cannot carry a default".to_string(),
+                                },
+                                field.span.clone(),
+                                "a state field is initialized by its default or by init, never both",
+                            ));
+                        }
                     }
                     if let Some(init) = &actor.init {
                         for param in &init.params {
@@ -238,7 +248,7 @@ impl Verifier {
                 HirStmtKind::Destructure { value, fields } => {
                     self.destructure_bindings(value, fields);
                 }
-                HirStmtKind::Assign { target, value } => {
+                HirStmtKind::Assign { target, value, .. } => {
                     self.expr(target);
                     self.expr(value);
                 }

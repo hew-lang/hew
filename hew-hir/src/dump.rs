@@ -73,7 +73,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                         HirStmtKind::Destructure { value, fields } => {
                             dump_destructure(&mut out, value, fields, 2);
                         }
-                        HirStmtKind::Assign { target, value } => {
+                        HirStmtKind::Assign { target, value, .. } => {
                             writeln!(out, "  assign").expect("write to string");
                             dump_expr(&mut out, target, 4);
                             dump_expr(&mut out, value, 4);
@@ -332,7 +332,7 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
             HirStmtKind::Destructure { value, fields } => {
                 dump_destructure(out, value, fields, indent);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 writeln!(out, "{pad}assign").expect("write to string");
                 dump_expr(out, target, indent + 2);
                 dump_expr(out, value, indent + 2);
@@ -666,7 +666,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Destructure { value, fields } => {
                         dump_destructure(out, value, fields, indent + 4);
                     }
-                    HirStmtKind::Assign { target, value } => {
+                    HirStmtKind::Assign { target, value, .. } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
                         dump_expr(out, target, indent + 6);
                         dump_expr(out, value, indent + 6);
@@ -720,7 +720,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Destructure { value, fields } => {
                         dump_destructure(out, value, fields, indent + 4);
                     }
-                    HirStmtKind::Assign { target, value } => {
+                    HirStmtKind::Assign { target, value, .. } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
                         dump_expr(out, target, indent + 6);
                         dump_expr(out, value, indent + 6);
@@ -790,7 +790,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Destructure { value, fields } => {
                         dump_destructure(out, value, fields, indent + 4);
                     }
-                    HirStmtKind::Assign { target, value } => {
+                    HirStmtKind::Assign { target, value, .. } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
                         dump_expr(out, target, indent + 6);
                         dump_expr(out, value, indent + 6);

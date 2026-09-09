@@ -1801,3 +1801,224 @@ mod reserved_names {
         );
     }
 }
+
+// ── Deferred init fields (D447) ──────────────────────────────────────────
+//
+// A field without a default that `init` assigns is init's to initialize: it
+// is uninitialized on entry, must be stored on every path before init
+// finishes, may be read only after its store, and a spawn cannot name it.
+
+fn deferred_field_errors(output: &TypeCheckOutput, code: &str) -> Vec<String> {
+    output
+        .errors
+        .iter()
+        .filter(|e| e.message.starts_with(code))
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+#[test]
+fn deferred_field_initialized_in_every_arm_is_accepted() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    let count: i64,
+    init(name: string, fast: bool) {
+        count = 1;
+        if fast { label = name; } else { label = name.to_upper(); }
+        label = label + "!";
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready", fast: true);
+    let _ = worker.label();
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unconditional initialization must be accepted: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.actor_deferred_field_decls.len(),
+        2,
+        "both assigned fields are deferred to init"
+    );
+    assert_eq!(
+        output.actor_init_first_stores.len(),
+        3,
+        "count once and label in each arm; the trailing assignment replaces a value"
+    );
+}
+
+#[test]
+fn deferred_field_read_before_its_store_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string) {
+        let seen = label;
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors.iter().any(|e| e.contains("`label` is read before")),
+        "read before the first store must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_missing_on_one_arm_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string, fast: bool) {
+        if fast { label = name; }
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready", fast: true);
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_CONDITIONAL_INIT");
+    assert!(
+        errors.iter().any(|e| e.contains("`label`")),
+        "a one-armed initialization must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_left_uninitialized_at_return_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    var count: i64,
+    init(name: string) {
+        count = 1;
+        if name == "" { return; }
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("can return without initializing state field `label`")),
+        "an early return must initialize every deferred field: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_initialized_inside_a_loop_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(names: Vec<string>) {
+        for name in names { label = name; }
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(names: ["a"]);
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_CONDITIONAL_INIT");
+    assert!(
+        errors.iter().any(|e| e.contains("`label`")),
+        "a loop-body initialization must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn spawn_naming_a_deferred_field_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string) {
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(label: "ready", name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_DEFERRED");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("`label` of actor `Worker` is initialized by `init`")),
+        "a spawn cannot supply a field init initializes: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn defaulted_or_parameter_shadowed_fields_are_not_deferred() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string = "start",
+    var count: i64,
+    init(count: i64) {
+        label = label + "!";
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(count: 1);
+    let _ = worker.label();
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a defaulted field is replaced, a parameter-named field is spawn-supplied: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.actor_deferred_field_decls.is_empty(),
+        "neither field is deferred to init"
+    );
+}

@@ -2,8 +2,21 @@
 
 use super::suspend::call_value;
 use super::*;
-use hew_mir::physical::{ActorId, ActorOperation, SemActor, SemActorHandler, SemFailureDisplay};
+use hew_mir::physical::{
+    ActorId, ActorOperation, SemActor, SemActorField, SemActorHandler, SemFailureDisplay,
+};
 use inkwell::types::StructType;
+
+/// One pre-publication body's failure exit inside `emit_actor_spawn`.
+struct SpawnFailure<'ctx> {
+    /// The block the failed status branches to; it releases what the body
+    /// left behind and then joins the spawn's completion.
+    block: BasicBlock<'ctx>,
+    status: IntValue<'ctx>,
+    /// Init leaves only the spawn-supplied fields; a start hook leaves the
+    /// complete state.
+    is_init: bool,
+}
 
 #[path = "physical_actor_ask.rs"]
 mod ask;
@@ -1352,16 +1365,29 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .layout(&actor.state_ty)
             .ok_or_else(|| CodegenError::FailClosed("missing actor state layout".into()))?;
         let state = allocate(self.module, self.ctx, self.llvm, &self.builder, layout.size)?;
-        for (index, source) in sources.iter().take(actor.fields.len()).enumerate() {
+        let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+        // Deferred fields (D447) receive their value inside init; the spawn
+        // operands cover the remaining fields in declaration order.
+        let spawn_fields: Vec<(u32, &SemActorField)> = actor
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| !field.deferred)
+            .map(|(index, field)| {
+                u32::try_from(index)
+                    .map(|index| (index, field))
+                    .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))
+            })
+            .collect::<CodegenResult<_>>()?;
+        if sources.len() < spawn_fields.len() {
+            return Err(CodegenError::FailClosed(
+                "spawn operands do not cover the spawn-supplied fields".into(),
+            ));
+        }
+        for ((index, _), source) in spawn_fields.iter().zip(sources) {
             let field = self
                 .builder
-                .build_struct_gep(
-                    llvm_type(self.ctx, &layout.repr)?.into_struct_type(),
-                    state,
-                    u32::try_from(index)
-                        .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?,
-                    "spawn.field",
-                )
+                .build_struct_gep(state_repr, state, *index, "spawn.field")
                 .llvm_ctx("address initial actor field")?;
             self.builder
                 .build_store(field, self.load(*source, "spawn.value")?)
@@ -1369,20 +1395,27 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         // Init and then `#[on(start)]` run before publication; a fault in
-        // either destroys the unpublished state and fails the spawn.
+        // either fails the spawn. Init releases the deferred seats it
+        // initialized and its own arguments before reporting, so its failure
+        // destroys only the spawn-supplied fields; a start fault after init
+        // leaves complete state for the ordinary destructor.
         let bodies: Vec<_> = actor.init.iter().chain(&actor.start).copied().collect();
         let init_failure = if bodies.is_empty() {
             None
         } else {
-            let failed = self.ctx.append_basic_block(self.value, "actor.init.failed");
-            let mut failures = Vec::new();
+            let joined = self
+                .ctx
+                .append_basic_block(self.value, "actor.spawn.complete");
+            let mut failure_edges: Vec<(IntValue<'ctx>, BasicBlock<'ctx>)> = Vec::new();
+            let mut cleanups: Vec<SpawnFailure<'ctx>> = Vec::new();
             for body in bodies {
                 let callable = callable(self.module, body)?;
+                let is_init = Some(body) == actor.init;
                 let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
-                if Some(body) == actor.init {
+                if is_init {
                     for (source, parameter) in sources
                         .iter()
-                        .skip(actor.fields.len())
+                        .skip(spawn_fields.len())
                         .zip(callable.params.iter().skip(1))
                     {
                         arguments.push(match parameter.carrier {
@@ -1401,6 +1434,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .unwrap()
                     .into_int_value();
                 let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
+                let failed = self.ctx.append_basic_block(
+                    self.value,
+                    if is_init {
+                        "actor.init.failed"
+                    } else {
+                        "actor.start.failed"
+                    },
+                );
                 let ok = self
                     .builder
                     .build_int_compare(
@@ -1413,40 +1454,74 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.builder
                     .build_conditional_branch(ok, initialized, failed)
                     .llvm_ctx("publish only successfully initialized actors")?;
-                failures.push((status, self.builder.get_insert_block().unwrap()));
+                cleanups.push(SpawnFailure {
+                    block: failed,
+                    status,
+                    is_init,
+                });
                 self.builder.position_at_end(initialized);
             }
             let initialized = self.builder.get_insert_block().unwrap();
-            self.builder.position_at_end(failed);
-            let status = self
-                .builder
-                .build_phi(self.ctx.i32_type(), "actor.init.failure")
-                .llvm_ctx("join initialization failures")?;
-            for (value, block) in &failures {
-                status.add_incoming(&[(value, *block)]);
-            }
-            let status = status.as_basic_value().into_int_value();
-            let drop = self
-                .llvm
-                .get_function(&symbol(actor.id, "state_drop"))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("actor init cleanup lacks state destructor".into())
-                })?;
-            self.builder
-                .build_call(drop, &[state.into()], "")
-                .llvm_ctx("destroy unpublished actor state")?;
             let free = external_drop(self.ctx, self.llvm, "free")?;
-            self.builder
-                .build_call(free, &[state.into()], "")
-                .llvm_ctx("free unpublished actor state")?;
-            let joined = self
-                .ctx
-                .append_basic_block(self.value, "actor.spawn.complete");
-            self.builder
-                .build_unconditional_branch(joined)
-                .llvm_ctx("propagate actor init failure")?;
+            for SpawnFailure {
+                block: failed,
+                status,
+                is_init,
+            } in cleanups
+            {
+                self.builder.position_at_end(failed);
+                if is_init {
+                    for (index, field) in &spawn_fields {
+                        let Some(action) = self
+                            .module
+                            .actor_recipes
+                            .get(&field.ty)
+                            .and_then(|recipe| recipe.destroy)
+                        else {
+                            continue;
+                        };
+                        let field_layout =
+                            self.module.target.layout(&field.ty).ok_or_else(|| {
+                                CodegenError::FailClosed("actor field lacks its layout".into())
+                            })?;
+                        let slot = self
+                            .builder
+                            .build_struct_gep(state_repr, state, *index, "spawn.field.failed")
+                            .llvm_ctx("address spawn-supplied actor field")?;
+                        let loaded = self
+                            .builder
+                            .build_load(
+                                llvm_type(self.ctx, &field_layout.repr)?,
+                                slot,
+                                "spawn.field.value",
+                            )
+                            .llvm_ctx("load spawn-supplied actor field")?;
+                        self.value_emitter()
+                            .destroy_loaded_value(loaded, field_layout, action)?;
+                    }
+                } else {
+                    let drop = self
+                        .llvm
+                        .get_function(&symbol(actor.id, "state_drop"))
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "actor start cleanup lacks state destructor".into(),
+                            )
+                        })?;
+                    self.builder
+                        .build_call(drop, &[state.into()], "")
+                        .llvm_ctx("destroy unpublished actor state")?;
+                }
+                self.builder
+                    .build_call(free, &[state.into()], "")
+                    .llvm_ctx("free unpublished actor state")?;
+                self.builder
+                    .build_unconditional_branch(joined)
+                    .llvm_ctx("propagate actor init failure")?;
+                failure_edges.push((status, self.builder.get_insert_block().unwrap()));
+            }
             self.builder.position_at_end(initialized);
-            Some((status, failed, joined))
+            Some((failure_edges, joined))
         };
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
@@ -1587,7 +1662,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("select actor publication status")?
             .into_int_value();
-        if let Some((init_status, failed, joined)) = init_failure {
+        if let Some((failure_edges, joined)) = init_failure {
             let published = self.builder.get_insert_block().ok_or_else(|| {
                 CodegenError::FailClosed("actor publication has no LLVM block".into())
             })?;
@@ -1599,7 +1674,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .builder
                 .build_phi(self.ctx.i32_type(), "actor.spawn.status")
                 .llvm_ctx("join initialization and publication statuses")?;
-            result.add_incoming(&[(&init_status, failed), (&status, published)]);
+            for (failure_status, block) in &failure_edges {
+                result.add_incoming(&[(failure_status, *block)]);
+            }
+            result.add_incoming(&[(&status, published)]);
             Ok(result.as_basic_value().into_int_value())
         } else {
             Ok(status)

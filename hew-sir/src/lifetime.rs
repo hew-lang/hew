@@ -111,7 +111,7 @@ pub(crate) fn verify(
             .places
             .iter()
             .map(|(id, _)| {
-                if flow.projections.projection(*id).is_some() {
+                if flow.projections.projection(*id).is_some() || flow.deferred_places.contains(id) {
                     DEAD
                 } else {
                     LIVE
@@ -123,8 +123,8 @@ pub(crate) fn verify(
         if let Some(&index) = flow.indices.get(&param.value) {
             initial.values[index] = LIVE;
         }
-        for (index, (_, owner)) in flow.places.iter().enumerate() {
-            if *owner == OwnerRoot::Value(param.value) {
+        for (index, (place, owner)) in flow.places.iter().enumerate() {
+            if *owner == OwnerRoot::Value(param.value) && !flow.deferred_places.contains(place) {
                 initial.places[index] = LIVE;
             }
         }
@@ -336,6 +336,10 @@ struct Flow<'a> {
     linear_values: BTreeSet<ValueId>,
     cleanup_suffixes: BTreeMap<BlockId, usize>,
     places: Vec<(crate::PlaceId, OwnerRoot)>,
+    /// Actor state seats that enter this body uninitialized (D447): dead at
+    /// entry, live at every normal return and dead again at every unwind,
+    /// because init releases what it initialized before the fault leaves.
+    deferred_places: BTreeSet<crate::PlaceId>,
     projections: &'a crate::PlacePlan,
     place_indices: BTreeMap<crate::PlaceId, usize>,
 }
@@ -509,6 +513,20 @@ impl<'a> Flow<'a> {
             .enumerate()
             .map(|(index, (place, _))| (*place, index))
             .collect();
+        let deferred_places = function
+            .places
+            .iter()
+            .filter(|place| {
+                matches!(
+                    place.origin,
+                    crate::PlaceOrigin::ActorState {
+                        initialized: false,
+                        ..
+                    }
+                )
+            })
+            .map(|place| place.id)
+            .collect();
         Self {
             defers: crate::defer::plan(function).unwrap_or_default(),
             blocks: function
@@ -531,6 +549,7 @@ impl<'a> Flow<'a> {
             linear_values,
             cleanup_suffixes: cleanup_suffixes(function),
             places,
+            deferred_places,
             place_indices,
             projections,
         }
@@ -1088,6 +1107,34 @@ impl<'a> Flow<'a> {
             DEAD
         };
         Self::require_fault(id, expected, state, emit);
+        if matches!(
+            terminator,
+            SemTerminator::Return { .. } | SemTerminator::ResumeUnwind
+        ) {
+            // Init publishes complete state on return and owns nothing of the
+            // deferred seats once a fault leaves it (D447).
+            let (required, reason) = if matches!(terminator, SemTerminator::Return { .. }) {
+                (
+                    LIVE,
+                    "deferred actor state field is not initialized at init's return",
+                )
+            } else {
+                (
+                    DEAD,
+                    "deferred actor state field remains initialized when init unwinds",
+                )
+            };
+            for place in &self.deferred_places {
+                if state.places[self.place_indices[place]] != required {
+                    emit(Violation {
+                        block: id,
+                        value: None,
+                        place: Some(*place),
+                        reason,
+                    });
+                }
+            }
+        }
         for (index, &value) in self.values.iter().enumerate() {
             if state.values[index] & LIVE != 0 {
                 emit(Violation {
@@ -1381,6 +1428,22 @@ impl<'a> Flow<'a> {
         let (SemOpKind::AllocPlace { place } | SemOpKind::EndLifetime { place }) = *kind else {
             return;
         };
+        if self.deferred_places.contains(&place) {
+            // Init releases a deferred seat it initialized (D447): the seat
+            // must hold a value here and holds none afterwards.
+            let index = self.place_indices[&place];
+            if state.places[index] != LIVE {
+                emit(Violation {
+                    block,
+                    value: None,
+                    place: Some(place),
+                    reason: "deferred actor state field is released without a value",
+                });
+            }
+            self.require_no_live_borrows(block, PlaceBase::Place(place), state, emit);
+            state.places[index] = DEAD;
+            return;
+        }
         let Some(&index) = self.local_indices.get(&place) else {
             return;
         };
@@ -1492,18 +1555,31 @@ impl<'a> Flow<'a> {
             unreachable!("only capture places have no local or aggregate selection")
         };
         self.access(block, owner, false, state, emit);
-        if state.places[index] != LIVE {
+        // A deferred actor seat's first store needs a dead seat; every other
+        // access needs a live one (D447).
+        let initializing =
+            matches!(kind, SemOpKind::StoreInit { .. }) && self.deferred_places.contains(&place);
+        let expected = if initializing { DEAD } else { LIVE };
+        if state.places[index] != expected {
             emit(Violation {
                 place: None,
                 block,
                 value: Some(owner),
-                reason: "capture field is not initialized on every incoming path",
+                reason: if initializing {
+                    "actor state field is already initialized on an incoming path"
+                } else if self.deferred_places.contains(&place) {
+                    "actor state field is not initialized on every incoming path"
+                } else {
+                    "capture field is not initialized on every incoming path"
+                },
             });
         }
         if changes {
             self.require_no_live_borrows(block, PlaceBase::Value(owner), state, emit);
         }
-        if matches!(kind, SemOpKind::LoadTake { .. }) {
+        if initializing {
+            state.places[index] = LIVE;
+        } else if matches!(kind, SemOpKind::LoadTake { .. }) {
             state.places[index] = DEAD;
         }
     }

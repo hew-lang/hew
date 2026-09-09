@@ -1,0 +1,37 @@
+actor Worker {
+    var label: string,
+    let count: i64,
+    var mode: string,
+    var attempts: i64 = 0,
+    init(name: string, size: i64, fast: bool) {
+        label = name.to_upper();
+        count = size + 1;
+        if fast {
+            mode = "quick";
+        } else {
+            mode = "slow".to_upper();
+        }
+        self.label = label + "!";
+        attempts = attempts + 1;
+    }
+    receive fn label() -> string { label }
+    receive fn count() -> i64 { count }
+    receive fn mode() -> string { mode }
+    receive fn attempts() -> i64 { attempts }
+}
+
+fn show(worker: LocalPid<Worker>) {
+    println(worker.label().expect("label"));
+    println(worker.count().expect("count"));
+    println(worker.mode().expect("mode"));
+    println(worker.attempts().expect("attempts"));
+}
+
+fn main() {
+    let quick = spawn Worker(name: "ready", size: 6, fast: true);
+    show(quick);
+    close(quick);
+    let slow = spawn Worker(name: "later", size: 41, fast: false);
+    show(slow);
+    close(slow);
+}

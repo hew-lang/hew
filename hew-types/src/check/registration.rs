@@ -4863,6 +4863,23 @@ impl Checker {
             vec![]
         };
         self.actor_init_params.insert(identity.to_string(), params);
+        // A field without a default that init assigns is init's to
+        // initialize (D447). An init parameter of the same name shadows the
+        // field inside init, so its assignments target the parameter.
+        let deferred = ad.init.as_ref().map_or_else(Vec::new, |init| {
+            let assigned = hew_parser::init_analysis::assigned_bare_names(&init.body);
+            ad.fields
+                .iter()
+                .filter(|field| {
+                    field.default.is_none()
+                        && assigned.contains(&field.name)
+                        && !init.params.iter().any(|param| param.name == field.name)
+                })
+                .map(|field| field.name.clone())
+                .collect()
+        });
+        self.actor_deferred_fields
+            .insert(identity.to_string(), deferred);
         self.record_type_def_inference_holes(identity, hole_vars);
     }
 

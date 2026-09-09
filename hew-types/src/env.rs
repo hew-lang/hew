@@ -172,9 +172,19 @@ pub enum BindingOrigin {
     /// A method receiver parameter. Receivers have caller-visible write-back
     /// semantics and are exempt from ordinary by-value parameter guards.
     ReceiverParameter,
+    /// An actor state field that `init` owns (D447): it enters the init body
+    /// uninitialized, so `is_moved` means "not yet initialized" until the
+    /// first store, and every branch join must agree on it.
+    DeferredField,
 }
 
 impl Binding {
+    /// Whether this binding is a deferred actor init field (D447).
+    #[must_use]
+    pub fn deferred_init(&self) -> bool {
+        matches!(self.origin, BindingOrigin::DeferredField)
+    }
+
     /// Whether this binding is a function parameter.
     #[must_use]
     pub fn is_param(&self) -> bool {
@@ -205,6 +215,8 @@ pub struct OwnershipState {
     pub is_moved: bool,
     /// Where the move happened, for error reporting.
     pub moved_at: Option<Span>,
+    /// See [`Binding::deferred_init`].
+    pub deferred_init: bool,
     /// Strict sub-places consumed on this path.
     pub moved_places: Vec<MovedPlace>,
     /// Where the close obligation was discharged on this path.
@@ -389,7 +401,7 @@ impl TypeEnv {
     ///
     /// Panics if no loop boundary is active, which indicates an unbalanced
     /// checker traversal.
-    pub fn exit_loop(&mut self) {
+    pub fn exit_loop(&mut self) -> Vec<TypeBindingId> {
         let mut scope = self
             .loop_scope_floors
             .pop()
@@ -398,7 +410,7 @@ impl TypeEnv {
         // early edges. They all use the same ownership join as branch arms.
         scope.exits.push(scope.entry.clone());
         scope.exits.push(self.ownership_snapshot());
-        self.merge_ownership(&scope.entry, &scope.exits);
+        self.merge_ownership(&scope.entry, &scope.exits)
     }
 
     /// Deferred bodies materialized by a `break` or `continue` edge.
@@ -447,6 +459,31 @@ impl TypeEnv {
                 },
             );
         }
+    }
+
+    /// Bind an actor state field that `init` must initialize (D447). It is
+    /// mutable, uninitialized on entry and exempt from the unused lint.
+    pub fn define_deferred_field(&mut self, name: &str, ty: Ty) {
+        self.define(name.to_string(), ty, true);
+        if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+            binding.origin = BindingOrigin::DeferredField;
+            binding.is_moved = true;
+        }
+    }
+
+    /// Whether `name` is a deferred init field still awaiting its first store.
+    #[must_use]
+    pub fn deferred_field_uninitialized(&self, name: &str) -> bool {
+        self.lookup_ref(name)
+            .is_some_and(|binding| binding.deferred_init() && binding.is_moved)
+    }
+
+    /// The binding id of `name` when it is a deferred init field.
+    #[must_use]
+    pub fn deferred_field_id(&self, name: &str) -> Option<TypeBindingId> {
+        self.lookup_ref(name)
+            .filter(|binding| binding.deferred_init())
+            .map(|binding| binding.id)
     }
 
     /// Define a user-visible variable with a source span for diagnostics.
@@ -749,6 +786,7 @@ impl TypeEnv {
                         parameter_replacements: binding.parameter_replacements.clone(),
                         is_moved: binding.is_moved,
                         moved_at: binding.moved_at.clone(),
+                        deferred_init: binding.deferred_init(),
                         moved_places: binding.moved_places.clone(),
                         released_at: binding.released_at.clone(),
                     },
@@ -775,15 +813,27 @@ impl TypeEnv {
     /// on any path is not usable after the join. Callers pass one exit snapshot
     /// per path that reaches the join — including the implicit fall-through
     /// path of an `if` without an `else`.
-    pub fn merge_ownership(&mut self, entry: &OwnershipSnapshot, exits: &[OwnershipSnapshot]) {
+    ///
+    /// Returns the deferred init fields (D447) whose initialization differs
+    /// between reaching paths: a field initialized on one path and not on
+    /// another has no single store kind, so the join is a source error.
+    pub fn merge_ownership(
+        &mut self,
+        entry: &OwnershipSnapshot,
+        exits: &[OwnershipSnapshot],
+    ) -> Vec<TypeBindingId> {
         let mut merged: HashMap<TypeBindingId, OwnershipState> =
             HashMap::with_capacity(entry.states.len());
+        let mut conflicts = Vec::new();
         for (id, entry_state) in &entry.states {
             let mut reaching = exits.iter().filter_map(|exit| exit.states.get(id));
             // Entry identifies bindings, not an additional execution path.
             // Joining only reaching exits lets every arm repair a moved field.
             let mut state = reaching.next().unwrap_or(entry_state).clone();
             for exit_state in reaching {
+                if state.deferred_init && exit_state.is_moved != state.is_moved {
+                    conflicts.push(*id);
+                }
                 state.parameter_replacements = common_parameter_replacements(
                     &state.parameter_replacements,
                     &exit_state.parameter_replacements,
@@ -808,6 +858,9 @@ impl TypeEnv {
             merged.insert(*id, state);
         }
         Self::apply_ownership(&mut self.scopes, &merged);
+        conflicts.sort_unstable_by_key(|id| id.0);
+        conflicts.dedup();
+        conflicts
     }
 
     fn apply_ownership(

@@ -513,7 +513,7 @@ fn walk_stmt(
                 );
             }
         }
-        HirStmtKind::Assign { target, value } => {
+        HirStmtKind::Assign { target, value, .. } => {
             walk_expr(target, subst, residual_domain, disc);
             walk_expr(value, subst, residual_domain, disc);
         }

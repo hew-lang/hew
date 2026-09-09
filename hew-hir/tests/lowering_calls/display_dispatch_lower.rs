@@ -96,7 +96,7 @@ fn walk_block(block: &hew_hir::HirBlock, f: &mut impl FnMut(&HirExpr)) {
             }
             HirStmtKind::Destructure { value, .. } => walk_expr(value, f),
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 walk_expr(target, f);
                 walk_expr(value, f);
             }

@@ -643,6 +643,9 @@ impl Checker {
             self.recheck_return_edge_defers();
             return;
         }
+        if self.checking_actor_init {
+            self.require_deferred_fields_initialized("return");
+        }
         if let Some(expected) = self.current_return_type.clone() {
             // Inside a gen{} body, `current_return_type` is shaped as
             // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
@@ -1677,6 +1680,15 @@ impl Checker {
                 // Evaluated after the RHS so `sock = take_from(sock)` still
                 // reports the read.
                 if op.is_none() {
+                    // A deferred field's first store initializes storage that
+                    // held no value (D447); HIR carries the site so SIR emits
+                    // an initializing store rather than a replacement.
+                    if let Expr::Identifier(name) = &target.0 {
+                        if self.env.deferred_field_uninitialized(name) {
+                            self.actor_init_first_stores
+                                .insert(SpanKey::in_module(&target.1, self.current_module_idx));
+                        }
+                    }
                     if let Some((root, path)) = self.expr_place(&target.0) {
                         self.env.reinit_place(&root, &path);
                     }
@@ -1755,7 +1767,7 @@ impl Checker {
                 self.loop_depth += 1;
                 self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
-                self.env.exit_loop();
+                self.exit_loop_checked();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2092,7 +2104,7 @@ impl Checker {
                 self.loop_depth += 1;
                 self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
-                self.env.exit_loop();
+                self.exit_loop_checked();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2125,7 +2137,7 @@ impl Checker {
                 self.loop_depth += 1;
                 self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
-                self.env.exit_loop();
+                self.exit_loop_checked();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -2155,7 +2167,7 @@ impl Checker {
                 self.loop_depth += 1;
                 self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
-                self.env.exit_loop();
+                self.exit_loop_checked();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();

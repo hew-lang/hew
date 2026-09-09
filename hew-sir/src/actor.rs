@@ -12,6 +12,9 @@ pub struct ActorId(pub u32);
 pub struct SemActorField {
     pub ty: ResolvedTy,
     pub mutable: bool,
+    /// `init` initializes the field (D447): a spawn supplies no value and
+    /// the seat is uninitialized until init's first store.
+    pub deferred: bool,
 }
 
 /// A checker-selected receive protocol member and its private body.
@@ -464,15 +467,27 @@ pub(crate) fn verify_places(
         return Err("actor body must borrow its complete exclusive state".into());
     }
     for (index, (place, field)) in places.iter().zip(&actor.fields).enumerate() {
+        let expected_index = u32::try_from(index).map_err(|_| "actor field count exceeds u32")?;
+        let crate::PlaceOrigin::ActorState {
+            actor: place_actor,
+            state,
+            field: place_field,
+            initialized,
+        } = place.origin
+        else {
+            unreachable!("filtered to actor state places")
+        };
         if place.ty != field.ty
-            || place.origin
-                != (crate::PlaceOrigin::ActorState {
-                    actor: actor.id,
-                    state: receiver.value,
-                    field: u32::try_from(index).map_err(|_| "actor field count exceeds u32")?,
-                })
+            || place_actor != actor.id
+            || state != receiver.value
+            || place_field != expected_index
         {
             return Err("actor place differs from its declared state field".into());
+        }
+        if initialized == (field.deferred && actor.init == Some(function.callable)) {
+            return Err(
+                "actor place initialization differs from its field's init ownership".into(),
+            );
         }
     }
     Ok(())
@@ -516,6 +531,14 @@ pub(crate) fn verify_operation(
             // Registration observes availability. The defer plan independently
             // verifies the complete set of free places and their lifetimes.
             SemOpKind::RegisterDefer { .. } => {}
+            // Init's fault path releases a deferred seat it initialized (D447).
+            SemOpKind::EndLifetime { .. }
+                if field.deferred && actor.init == Some(function.callable) =>
+            {
+                if !op.results.is_empty() {
+                    return Err("actor state release has no result".into());
+                }
+            }
             SemOpKind::LoadCopy { .. } | SemOpKind::LoadBorrow { .. } => {
                 let [result] = op.results.as_slice() else {
                     return Err("actor state load needs one result".into());
@@ -542,6 +565,14 @@ pub(crate) fn verify_operation(
                 }
                 if !op.results.is_empty() || types.get(&value.value) != Some(&field.ty) {
                     return Err("actor state replacement requires one exact field value".into());
+                }
+            }
+            SemOpKind::StoreInit { value, .. } => {
+                if !(field.deferred && actor.init == Some(function.callable)) {
+                    return Err("only init initializes a deferred actor state field".into());
+                }
+                if !op.results.is_empty() || types.get(&value.value) != Some(&field.ty) {
+                    return Err("actor state initialization requires one exact field value".into());
                 }
             }
             _ => return Err("a handler cannot end or extract an actor state seat".into()),
@@ -869,10 +900,12 @@ impl ActorOperation {
             | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),
             Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
             Self::SelfHandle(_) => (Vec::new(), actor.handle_ty.clone()),
+            // Deferred fields (D447) receive their value inside init.
             Self::Spawn(_) => (
                 actor
                     .fields
                     .iter()
+                    .filter(|field| !field.deferred)
                     .map(|field| field.ty.clone())
                     .collect::<Vec<_>>(),
                 actor.handle_ty.clone(),

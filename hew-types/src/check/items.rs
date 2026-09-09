@@ -1069,6 +1069,17 @@ impl Checker {
                 .push(TypeParamScope::new(bounds, HashMap::new()));
         }
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
+        let deferred_fields = self
+            .actor_deferred_fields
+            .get(&identity)
+            .cloned()
+            .unwrap_or_default();
+        for field in &ad.fields {
+            if deferred_fields.contains(&field.name) {
+                self.actor_deferred_field_decls
+                    .insert(SpanKey::in_module(&field.ty.1, self.current_module_idx));
+            }
+        }
         let prev_actor_fields = std::mem::replace(
             &mut self.current_actor_fields,
             ad.fields
@@ -1077,6 +1088,7 @@ impl Checker {
                     name: f.name.clone(),
                     is_mutable: f.is_mutable,
                     decl_span: f.ty.1.clone(),
+                    deferred: deferred_fields.contains(&f.name),
                 })
                 .collect(),
         );
@@ -1372,8 +1384,78 @@ impl Checker {
     pub(super) fn bind_actor_fields_for_init(&mut self, fields: &[FieldDecl]) {
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty);
-            self.env.define(field.name.clone(), field_ty, true);
+            let deferred = self
+                .current_actor_fields
+                .iter()
+                .any(|info| info.name == field.name && info.deferred);
+            if deferred {
+                self.env.define_deferred_field(&field.name, field_ty);
+            } else {
+                self.env.define(field.name.clone(), field_ty, true);
+            }
         }
+    }
+
+    /// Every deferred field must hold a value when init finishes normally
+    /// (D447): a normal exit publishes the state to the actor.
+    pub(super) fn require_deferred_fields_initialized(&mut self, exit: &str) {
+        let missing: Vec<_> = self
+            .current_actor_fields
+            .iter()
+            .filter(|field| field.deferred && self.env.deferred_field_uninitialized(&field.name))
+            .map(|field| (field.name.clone(), field.decl_span.clone()))
+            .collect();
+        for (name, decl_span) in missing {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &decl_span,
+                format!(
+                    "E_ACTOR_FIELD_UNINITIALIZED: `init` can {exit} without initializing state \
+                     field `{name}`; assign it on every path before init finishes"
+                ),
+            );
+        }
+    }
+
+    /// A branch or loop join left a deferred field initialized on some paths
+    /// only (D447). Every arm must initialize it, or none may.
+    pub(super) fn report_deferred_init_conflicts(
+        &mut self,
+        conflicts: &[crate::env::TypeBindingId],
+    ) {
+        if conflicts.is_empty() {
+            return;
+        }
+        let conflicting: Vec<_> = self
+            .current_actor_fields
+            .iter()
+            .filter(|field| {
+                field.deferred
+                    && self
+                        .env
+                        .deferred_field_id(&field.name)
+                        .is_some_and(|id| conflicts.contains(&id))
+            })
+            .map(|field| (field.name.clone(), field.decl_span.clone()))
+            .collect();
+        for (name, decl_span) in conflicting {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &decl_span,
+                format!(
+                    "E_ACTOR_FIELD_CONDITIONAL_INIT: state field `{name}` is initialized on \
+                     only some paths of a branch or loop in `init`; initialize it in every \
+                     arm, or before the branch"
+                ),
+            );
+        }
+    }
+
+    /// Close the innermost loop boundary and report deferred fields whose
+    /// initialization differs between its entry and its exits.
+    pub(super) fn exit_loop_checked(&mut self) {
+        let conflicts = self.env.exit_loop();
+        self.report_deferred_init_conflicts(&conflicts);
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
@@ -1408,7 +1490,12 @@ impl Checker {
 
         // Init returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
-        self.check_block(&init.body, None);
+        let previous_init = std::mem::replace(&mut self.checking_actor_init, true);
+        let body_ty = self.check_block(&init.body, None);
+        self.checking_actor_init = previous_init;
+        if !matches!(body_ty, Ty::Never) {
+            self.require_deferred_fields_initialized("finish");
+        }
         self.current_return_type = None;
 
         self.current_function = prev_function;

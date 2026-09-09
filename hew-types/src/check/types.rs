@@ -355,6 +355,12 @@ pub struct TypeCheckOutput {
     /// of the field names, so the two spellings cannot drift apart in one
     /// backend and not another.
     pub actor_self_state_fields: HashSet<SpanKey>,
+    /// Type-annotation spans of actor state fields that `init` initializes
+    /// (D447). Their storage is uninitialized until init's first store.
+    pub actor_deferred_field_decls: HashSet<SpanKey>,
+    /// Target spans of the assignments in `init` that are a deferred field's
+    /// first store. Every other assignment to a state field replaces a value.
+    pub actor_init_first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops whose element type has no clone, so each
     /// element is bound as a loan of the slot the sequence still owns (D432).
     /// The checker decides borrow versus clone once, here; no lowering stage
@@ -1386,6 +1392,8 @@ impl Default for TypeCheckOutput {
             user_comparison_dispatch: HashMap::new(),
             numeric_operand_coercions: HashMap::new(),
             actor_self_state_fields: HashSet::new(),
+            actor_deferred_field_decls: HashSet::new(),
+            actor_init_first_stores: HashSet::new(),
             borrowed_element_for_loops: HashSet::new(),
             borrowed_element_index_reads: HashSet::new(),
             owning_take_vec_cursors: HashSet::new(),
@@ -1544,6 +1552,9 @@ pub(super) struct ActorFieldInfo {
     pub is_mutable: bool,
     /// Span of the field's type annotation (the declaration line).
     pub decl_span: Span,
+    /// `init` owns the field's first store (D447): no default, assigned in
+    /// the init body. A spawn cannot name it.
+    pub deferred: bool,
 }
 
 /// Position context for `synthesize_index` (`obj[k]`).
@@ -2774,6 +2785,16 @@ pub struct Checker {
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::actor_self_state_fields`].
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::actor_deferred_field_decls`].
+    pub(super) actor_deferred_field_decls: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::actor_init_first_stores`].
+    pub(super) actor_init_first_stores: HashSet<SpanKey>,
+    /// Deferred field names per actor identity, in declaration order,
+    /// decided at registration from the init body's assignment targets.
+    pub(super) actor_deferred_fields: HashMap<String, Vec<String>>,
+    /// Whether the body being checked is an actor `init`, where a `return`
+    /// must leave every deferred field initialized.
+    pub(super) checking_actor_init: bool,
     /// See [`TypeCheckOutput::borrowed_element_for_loops`].
     pub(super) borrowed_element_for_loops: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::borrowed_element_index_reads`].
@@ -3867,6 +3888,10 @@ impl Checker {
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
+            actor_deferred_field_decls: HashSet::new(),
+            actor_init_first_stores: HashSet::new(),
+            actor_deferred_fields: HashMap::new(),
+            checking_actor_init: false,
             borrowed_element_for_loops: HashSet::new(),
             borrowed_element_index_reads: HashSet::new(),
             owning_take_vec_cursors: HashSet::new(),

@@ -90,7 +90,8 @@ impl Checker {
             // any diagnostic that still walks the unreachable tail.
             reaching = arms.iter().map(|arm| arm.ownership.clone()).collect();
         }
-        self.env.merge_ownership(entry, &reaching);
+        let conflicts = self.env.merge_ownership(entry, &reaching);
+        self.report_deferred_init_conflicts(&conflicts);
     }
 
     /// Join a two-armed branch whose second arm has just finished checking.

@@ -1124,6 +1124,7 @@ Hew uses a file-based module system inspired by Rust:
 - **File = module**: Each `.hew` file is a module. The file name is the module name.
 - **Directory = namespace**: Directories create nested namespaces.
 - **Visibility**: All declarations are private by default. Use `pub` to export.
+- **Imports form a DAG (normative)**: a module may not import itself, directly or through other modules, whatever the imported declarations are. The compiler reports the cycle with every import on its path; break it by moving the shared declarations into a module both sides import.
 
 ```hew
 // src/network/tcp.hew

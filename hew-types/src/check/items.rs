@@ -1504,8 +1504,15 @@ impl Checker {
         // their initial values). Hew uses bare names, not `self.field`.
         self.bind_actor_fields_for_init(fields);
 
+        // Push a separate scope for parameters so shadowing checks can
+        // detect collisions with actor field names in the outer scope,
+        // exactly as `check_receive_fn` does (D458): an init parameter
+        // named like a field is refused, not a silent alias for it.
+        self.env.push_scope();
+
         // Bind init parameters
         for p in &init.params {
+            self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_annotation_with_holes(
                 &p.ty,
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
@@ -1525,8 +1532,9 @@ impl Checker {
         self.current_return_type = None;
 
         self.current_function = prev_function;
+        self.env.pop_scope(); // params scope
         self.reject_unplugged_actor_state_fields(fields);
-        self.env.pop_scope();
+        self.env.pop_scope(); // fields scope
     }
 
     /// Type-check an actor lifecycle hook (`#[on(start)]` or `#[on(stop)]`).

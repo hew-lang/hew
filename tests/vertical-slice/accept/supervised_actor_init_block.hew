@@ -21,11 +21,14 @@
 //   3. The init() dispatch ran and the actor replied correctly.
 actor Worker {
     var value: i64,
-    init(value: i64) {
+    init() {
 
-        // The init() block generates Worker__init in codegen.
-        // Supervisor sets value = 42 via HewChildSpec.init_state; the
-        // init dispatch fires the ActorHandler path on the fresh mailbox.
+        // The init() block generates Worker__init in codegen. It takes no
+        // parameters: the field `value` has no default and init never
+        // assigns it, so it is a plain spawn-supplied field, and the
+        // supervisor's `value = 42` in HewChildSpec.init_state targets it
+        // directly. The init dispatch still fires the ActorHandler path on
+        // the fresh mailbox.
     }
     receive fn get_value() -> i64 {
         value

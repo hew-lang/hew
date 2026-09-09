@@ -1995,31 +1995,119 @@ fn main() {
 
 #[test]
 fn defaulted_or_parameter_shadowed_fields_are_not_deferred() {
+    // A field with a default is never deferred to init, regardless of what
+    // init assigns or names its parameters.
     let output = check_source(
         r#"
 actor Worker {
     var label: string = "start",
-    var count: i64,
-    init(count: i64) {
-        label = label + "!";
+    init(suffix: string) {
+        label = label + suffix;
     }
     receive fn label() -> string { label }
 }
 
 fn main() {
-    let worker = spawn Worker(count: 1);
+    let worker = spawn Worker(suffix: "!");
     let _ = worker.label();
 }
 "#,
     );
     assert!(
         output.errors.is_empty(),
-        "a defaulted field is replaced, a parameter-named field is spawn-supplied: {:#?}",
+        "a defaulted field is replaced by init, no diagnostic expected: {:#?}",
         output.errors
     );
     assert!(
         output.actor_deferred_field_decls.is_empty(),
-        "neither field is deferred to init"
+        "a defaulted field is never deferred to init"
+    );
+
+    // D458: an init parameter sharing a field's name is refused outright,
+    // not treated as the field's initializer (D447's retired carve-out).
+    let shadowed = check_source(
+        r"
+actor Bag {
+    var count: i64,
+    init(count: i64) {
+        count = count;
+    }
+    receive fn get() -> i64 { count }
+}
+
+fn main() {
+    let bag = spawn Bag(count: 1);
+    let _ = bag.get();
+}
+",
+    );
+    assert!(
+        shadowed
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message
+                    .contains("variable `count` shadows a binding in an outer scope")),
+        "an init parameter named like a field must be refused: {:#?}",
+        shadowed.errors
+    );
+
+    // Positive control: a differently named parameter is not a shadow and
+    // is accepted plainly.
+    let accepted = check_source(
+        r"
+actor Bag {
+    var count: i64,
+    init(initial: i64) {
+        count = initial;
+    }
+    receive fn get() -> i64 { count }
+}
+
+fn main() {
+    let bag = spawn Bag(initial: 1);
+    let _ = bag.get();
+}
+",
+    );
+    assert!(
+        accepted.errors.is_empty(),
+        "a differently named init parameter is not a shadow: {:#?}",
+        accepted.errors
+    );
+}
+
+#[test]
+fn spawn_plus_init_parameter_of_the_same_name_is_refused() {
+    // D458: a spawn-supplied field plus an init parameter of the same name
+    // used to feed both from one label (D447); now the parameter's name
+    // collides with the field the moment `init` declares it, and the
+    // actor is refused rather than accepted with the ambiguous binding.
+    let output = check_source(
+        r"
+actor Bag {
+    var items: i64,
+    init(items: i64) {
+        items = items;
+    }
+    receive fn get() -> i64 { items }
+}
+
+fn main() {
+    let bag = spawn Bag(items: 3);
+    let _ = bag.get();
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message
+                    .contains("variable `items` shadows a binding in an outer scope")),
+        "an init parameter named like a spawn-supplied field must be refused: {:#?}",
+        output.errors
     );
 }
 
@@ -2112,67 +2200,12 @@ fn main() {
 }
 
 #[test]
-fn init_parameter_shadowing_a_field_reports_the_parameter() {
-    // D447: an `init` parameter with a field's name shadows the field, so
-    // `items = items` assigns to the parameter, not to the `var` field. Both
-    // spellings reach the parameter - there is no `self.` escape - so the
-    // diagnostic names the shadowing and asks for a rename.
-    for target in ["items", "self.items"] {
-        let output = check_source(&format!(
-            "
-actor Bag {{
-    var items: i64,
-    init(items: i64) {{
-        {target} = items;
-    }}
-    receive fn get() -> i64 {{ items }}
-}}
-
-fn main() {{
-    let bag = spawn Bag(items: 3);
-    let _ = bag.get();
-}}
-"
-        ));
-        let error = output
-            .errors
-            .iter()
-            .find(|error| matches!(error.kind, TypeErrorKind::MutabilityError))
-            .unwrap_or_else(|| {
-                panic!(
-                    "`{target} = items` must be rejected; got: {:#?}",
-                    output.errors
-                )
-            });
-        assert!(
-            error
-                .message
-                .contains("cannot assign to immutable parameter `items`"),
-            "the shadowing parameter is the assignment target, not the field; got: {error:#?}"
-        );
-        assert!(
-            error
-                .notes
-                .iter()
-                .any(|note| note.1.contains("shadows the state field")),
-            "the diagnostic must name the shadowing; got: {error:#?}"
-        );
-        assert!(
-            error.suggestions.iter().any(|s| s.contains("rename")),
-            "making the field `var` cannot help - the fix is a rename; got: {error:#?}"
-        );
-        assert!(
-            !error.suggestions.iter().any(|s| s.contains("`var items")),
-            "the field is already `var`; suggesting `var` again is wrong: {error:#?}"
-        );
-    }
-}
-
-#[test]
 fn an_unshadowed_immutable_field_write_keeps_the_field_diagnostic() {
-    // Negative control for the shadowing arm above: with no parameter in the
-    // way, a write to an immutable field outside `init` still reports the
-    // field and still suggests `var`.
+    // With no parameter in the way, a write to an immutable field outside
+    // `init` still reports the field and still suggests `var`. (An init
+    // parameter sharing the field's name is refused outright under D458 —
+    // see `defaulted_or_parameter_shadowed_fields_are_not_deferred` — so it
+    // no longer reaches an assignment-target diagnostic at all.)
     let output = check_source(
         r"
 actor Bag {

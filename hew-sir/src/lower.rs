@@ -9294,21 +9294,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         right: &HirExpr,
         short_circuit_value: bool,
     ) -> Result<ValueId, String> {
-        if self.ty(&whole.ty) != ResolvedTy::Bool {
+        let result_ty = self.ty(&whole.ty);
+        if result_ty != ResolvedTy::Bool {
             return Err("short-circuit logical expressions must have bool type in SIR".to_string());
         }
         let condition = self.lower_read_operand(left, "logical condition")?;
         let evaluate_right = self.new_block(Vec::new());
         let short_circuit = self.new_block(Vec::new());
-        let result = self.fresh_value();
-        let join_ty = self.ty(&whole.ty);
-        self.service.require_type_facts(&join_ty)?;
-        let join_own = OwnKind::of_ty(&join_ty, self.service.checked_facts.rows())?;
-        let join = self.new_block(vec![BlockArg {
-            value: result,
-            own: join_own,
-            ty: join_ty,
-        }]);
         let (then_target, else_target) = if short_circuit_value {
             (short_circuit, evaluate_right)
         } else {
@@ -9326,27 +9318,40 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             },
         })?;
 
-        let before = self.bindings.clone();
+        let before = self.control_state();
+        let mut exits = Vec::new();
+        // Both operands are conditional paths: a loan may not end inside one.
+        self.branch_depth += 1;
+
         self.current = evaluate_right;
-        self.bindings = before.clone();
+        let loan_floor = self.scope_loans.len();
         let right_value = self.lower_read_operand(right, "logical right value")?;
         if self.is_open() {
-            self.set_terminator(SemTerminator::Goto(Edge {
-                target: join,
-                args: vec![right_value],
-            }))?;
+            // The right operand runs on one edge only. Its temporaries and
+            // interior loans end on that edge, never after the join, where the
+            // short-circuit edge never created them.
+            if self.scope_loans.len() > loan_floor {
+                let loans = self.scope_loans.split_off(loan_floor);
+                self.end_call_loans(&loans)?;
+            }
+            self.destroy_live_since(&before.owned_live)?;
+            exits.push(MatchExit {
+                state: self.control_state(),
+                result: Some(right_value),
+            });
         }
 
+        self.restore_control_state(&before);
         self.current = short_circuit;
-        self.bindings = before;
         let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value))?;
-        self.set_terminator(SemTerminator::Goto(Edge {
-            target: join,
-            args: vec![Operand { value: constant }],
-        }))?;
+        exits.push(MatchExit {
+            state: self.control_state(),
+            result: Some(Operand { value: constant }),
+        });
 
-        self.current = join;
-        Ok(result)
+        self.branch_depth -= 1;
+        self.merge_match_exits(exits, &result_ty)?
+            .ok_or_else(|| "short-circuit logical expression produced no SSA value".to_string())
     }
 
     fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {

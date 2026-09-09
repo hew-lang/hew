@@ -4360,14 +4360,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringFind { result: option } => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_find",
-                    self.ctx
-                        .i64_type()
-                        .fn_type(&[ptr.into(), ptr.into()], false),
-                )?;
+            PhysicalRuntimeAction::StringFind { result: option }
+            | PhysicalRuntimeAction::StringCharAt { result: option } => {
+                let character = matches!(action, PhysicalRuntimeAction::StringCharAt { .. });
+                let (symbol, function_type) = if character {
+                    (
+                        "hew_string_char_at",
+                        self.ctx
+                            .i32_type()
+                            .fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+                    )
+                } else {
+                    (
+                        "hew_string_find",
+                        self.ctx
+                            .i64_type()
+                            .fn_type(&[ptr.into(), ptr.into()], false),
+                    )
+                };
+                let function = get_or_declare_external(self.llvm, symbol, function_type)?;
                 let index = self
                     .runtime_call_value(
                         function,
@@ -4383,7 +4394,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_int_compare(
                         IntPredicate::SGE,
                         index,
-                        self.ctx.i64_type().const_zero(),
+                        index.get_type().const_zero(),
                         "find.found",
                     )
                     .llvm_ctx("check string find sentinel")?;

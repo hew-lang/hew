@@ -2468,6 +2468,13 @@ impl RuntimeCallFamily {
         }];
         const STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
             &[STRING_BORROW[0], STRING_BORROW[0]];
+        const STRING_INDEX_BORROW: &[RuntimeArgumentContract] = &[
+            STRING_BORROW[0],
+            RuntimeArgumentContract {
+                ty: I64,
+                effect: Copy,
+            },
+        ];
         const BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
             ty: Bytes,
             effect: Borrow,
@@ -2480,6 +2487,14 @@ impl RuntimeCallFamily {
                 RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
                     BuiltinType::Option,
                     &[I64],
+                )),
+                NO_FAILURES,
+            ),
+            Self::StringCharAt => runtime_semantic_contract(
+                STRING_INDEX_BORROW,
+                RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Option,
+                    &[RuntimeValueKind::Char],
                 )),
                 NO_FAILURES,
             ),

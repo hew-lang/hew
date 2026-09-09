@@ -945,6 +945,9 @@ pub enum PhysicalRuntimeAction {
     StringFind {
         result: PhysicalVariantId,
     },
+    StringCharAt {
+        result: PhysicalVariantId,
+    },
     StringIsEmpty,
     StringToBytesOwned,
     StringToUppercase,
@@ -1047,6 +1050,7 @@ impl PhysicalRuntimeAction {
             Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
             Self::StringContains => RuntimeCallFamily::StringContains,
             Self::StringFind { .. } => RuntimeCallFamily::StringFind,
+            Self::StringCharAt { .. } => RuntimeCallFamily::StringCharAt,
             Self::StringIsEmpty => RuntimeCallFamily::StringIsEmpty,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
@@ -4107,12 +4111,18 @@ impl FunctionLowerer<'_> {
                 error: self.variant_id(error_ty)?,
             });
         }
-        if family == RuntimeCallFamily::StringFind {
+        if matches!(
+            family,
+            RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAt
+        ) {
             let CallResult::Value(value) = result else {
                 return Err(PhysicalError::new("string find has no optional result"));
             };
-            return Ok(PhysicalRuntimeAction::StringFind {
-                result: self.variant_id(&value.ty)?,
+            let result = self.variant_id(&value.ty)?;
+            return Ok(if family == RuntimeCallFamily::StringFind {
+                PhysicalRuntimeAction::StringFind { result }
+            } else {
+                PhysicalRuntimeAction::StringCharAt { result }
             });
         }
         if family != RuntimeCallFamily::BytesDecodeUtf8 {
@@ -8112,7 +8122,14 @@ fn verify_terminator(
                     )));
                 }
             }
-            if let PhysicalRuntimeAction::StringFind { result: descriptor } = action {
+            if let PhysicalRuntimeAction::StringFind { result: descriptor }
+            | PhysicalRuntimeAction::StringCharAt { result: descriptor } = action
+            {
+                let payload = if matches!(action, PhysicalRuntimeAction::StringCharAt { .. }) {
+                    ResolvedTy::Char
+                } else {
+                    ResolvedTy::I64
+                };
                 let Some(output) = result else {
                     return Err(PhysicalError::new("string find has no result storage"));
                 };
@@ -8121,7 +8138,7 @@ fn verify_terminator(
                     || descriptor.is_indirect
                     || descriptor.variants.len() != 2
                     || descriptor.variants[0].fields.len() != 1
-                    || descriptor.variants[0].fields[0].ty != ResolvedTy::I64
+                    || descriptor.variants[0].fields[0].ty != payload
                     || !descriptor.variants[1].fields.is_empty()
                 {
                     return Err(PhysicalError::new(

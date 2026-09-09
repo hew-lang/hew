@@ -7263,6 +7263,18 @@ impl Checker {
         }
 
         match &resolved {
+            // `Range<T>` exposes its bounds as `start`/`end`. It carries no
+            // `TypeDef` (it is a compiler builtin, not a user declaration), so
+            // the two fields resolve straight from the type's own argument
+            // instead of the `type_defs` table the generic `Named` arm below
+            // reads from. Any other field name falls through to that arm,
+            // finds no `TypeDef` for `Range`, and reports `UndefinedField`
+            // exactly as before.
+            Ty::Named {
+                builtin: Some(BuiltinType::Range),
+                args,
+                ..
+            } if args.len() == 1 && matches!(field, "start" | "end") => args[0].clone(),
             Ty::Named { name, args, .. } => {
                 // A role retains the child's complete type after substituting
                 // the owning supervisor's concrete arguments.

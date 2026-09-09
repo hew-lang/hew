@@ -3380,6 +3380,27 @@ fn range_literal_assigned_to_range_i32() {
     );
 }
 
+/// Negative control for the field-access arm above: `Range<T>` exposes only
+/// `start` and `end`, so any other field name still refuses.
+#[test]
+fn range_literal_field_access_rejects_unknown_field() {
+    let output = typecheck_inline(
+        r"fn test() {
+    let r: Range<i32> = 0..10;
+    let _: i32 = r.middle;
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedField),
+        "unknown field on Range<i32> should be refused: {:#?}",
+        output.errors
+    );
+}
+
 /// Returning an Rc parameter as a bare identifier must be a fail-closed error
 /// under borrow-on-call semantics (double-free at runtime).
 #[test]

@@ -4403,10 +4403,22 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         tail_binding_use: OwnedBindingUse,
     ) -> Result<Option<Operand>, String> {
         let floor = self.scopes.len();
+        let live_before = self.owned_live.clone();
         self.open_scope();
         let result = self.lower_block(block, tail_binding_use)?;
         if self.is_open() {
             self.end_scopes(floor)?;
+            // Temporaries created inside the block die with it, exactly as its
+            // bindings do. Only the block's own result leaves; without this a
+            // conditional block hands its leftover owners to the join, which
+            // then sees predecessors with different live temporaries.
+            let mut keep = live_before;
+            if let Some(result) = &result {
+                if let Some(ty) = self.owned_live.get(&result.value) {
+                    keep.insert(result.value, ty.clone());
+                }
+            }
+            self.destroy_live_since(&keep)?;
         }
         self.leave_scope();
         Ok(result)

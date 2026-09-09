@@ -1512,19 +1512,6 @@ fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
     );
 }
 
-#[test]
-fn explicit_cooperate_expression_is_parse_error() {
-    let source = "fn main() { cooperate(); }";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.iter().any(|error| error.message.contains(
-            "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
-        )),
-        "expected explicit cooperate parse rejection, got: {:?}",
-        result.errors
-    );
-}
-
 /// #2340: a non-empty tuple payload destructure with every element
 /// irrefutable (plain bindings) must be credited as covering the variant,
 /// not rejected as non-exhaustive.

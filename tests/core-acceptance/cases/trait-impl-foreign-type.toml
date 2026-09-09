@@ -1,6 +1,6 @@
 [[case]]
 id = "trait-impl-foreign-type"
-intent = "A local trait implemented for a type owned by another module dispatches through the module binding it was written with, and an impl on a local type in the same program keeps working, including a trait default it does not override."
+intent = "A local trait implemented for a type owned by another module dispatches through the module binding it was written with, and an impl on a local type in the same program keeps working. Neither impl overrides the trait default, so both materialise it and both reach the concrete `tag` body from inside it."
 source = "cases/trait-impl-foreign-type.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

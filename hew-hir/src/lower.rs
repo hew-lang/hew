@@ -27795,6 +27795,37 @@ impl LowerCtx {
                                     ret_ty,
                                 );
                             }
+                            // The identity path locates the declaration; it is
+                            // not the symbol the body was emitted under. An
+                            // impl written through a module binding
+                            // (`impl Tagged for json.Value`) emits under the
+                            // spelling the source wrote, so project the
+                            // emitted symbol from the declaration rather than
+                            // rebuilding it from the identity.
+                            let c_symbol = match &concrete_target {
+                                CallTarget::ImplMethod(declaration) => {
+                                    let Some(symbol) =
+                                        self.registered_impl_method_symbol(declaration)
+                                    else {
+                                        self.diagnostics.push(HirDiagnostic::new(
+                                            HirDiagnosticKind::CallableUnsupportedInMir {
+                                                name: declaration.full_path().to_string(),
+                                            },
+                                            span.clone(),
+                                            "checker selected an implementation declaration whose                                              HIR body was not registered; a trait default body                                              cannot dispatch to it",
+                                        ));
+                                        return (
+                                            HirExprKind::Unsupported(
+                                                "trait default call has no registered HIR body"
+                                                    .to_string(),
+                                            ),
+                                            ret_ty,
+                                        );
+                                    };
+                                    symbol
+                                }
+                                _ => c_symbol,
+                            };
                             self.try_register_enum_instantiation(&span);
                             self.record_var_self_direct_monomorphisation(
                                 &c_symbol,

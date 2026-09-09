@@ -940,15 +940,23 @@ pub enum PhysicalRuntimeAction {
     JsonObjectKeys,
     StringConcat,
     StringEquals,
+    StringCompare,
     StringStartsWith,
+    StringEndsWith,
     StringContains,
     StringFind {
+        result: PhysicalVariantId,
+    },
+    BytesGet {
         result: PhysicalVariantId,
     },
     StringCharAt {
         result: PhysicalVariantId,
     },
     StringIsEmpty,
+    StringIsDigit,
+    StringIsAlpha,
+    StringIsAlphanumeric,
     StringToBytesOwned,
     StringToUppercase,
     StringToLowercase,
@@ -958,6 +966,7 @@ pub enum PhysicalRuntimeAction {
     StringReplace,
     StringClone,
     StringSplit,
+    StringLines,
     StringIndex,
     StringSliceCodepoints,
     StringSliceCodepointsFrom,
@@ -992,6 +1001,10 @@ pub enum PhysicalRuntimeAction {
     StderrWrite,
     BytesNew,
     BytesLen,
+    BytesIsEmpty,
+    BytesClear,
+    BytesContains,
+    BytesSet,
     BytesIndex,
     BytesSlice,
     BytesSliceFrom,
@@ -1051,11 +1064,17 @@ impl PhysicalRuntimeAction {
             Self::JsonObjectKeys => RuntimeCallFamily::JsonObjectKeys,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
+            Self::StringCompare => RuntimeCallFamily::StringCompare,
             Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
+            Self::StringEndsWith => RuntimeCallFamily::StringEndsWith,
             Self::StringContains => RuntimeCallFamily::StringContains,
             Self::StringFind { .. } => RuntimeCallFamily::StringFind,
+            Self::BytesGet { .. } => RuntimeCallFamily::BytesGet,
             Self::StringCharAt { .. } => RuntimeCallFamily::StringCharAt,
             Self::StringIsEmpty => RuntimeCallFamily::StringIsEmpty,
+            Self::StringIsDigit => RuntimeCallFamily::StringIsDigit,
+            Self::StringIsAlpha => RuntimeCallFamily::StringIsAlpha,
+            Self::StringIsAlphanumeric => RuntimeCallFamily::StringIsAlphanumeric,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::StringToLowercase => RuntimeCallFamily::StringToLowercase,
@@ -1065,6 +1084,7 @@ impl PhysicalRuntimeAction {
             Self::StringReplace => RuntimeCallFamily::StringReplace,
             Self::StringClone => RuntimeCallFamily::StringClone,
             Self::StringSplit => RuntimeCallFamily::StringSplit,
+            Self::StringLines => RuntimeCallFamily::StringLines,
             Self::StringIndex => RuntimeCallFamily::StringIndex,
             Self::StringSliceCodepoints => RuntimeCallFamily::StringSliceCodepoints,
             Self::StringSliceCodepointsFrom => RuntimeCallFamily::StringSliceCodepointsFrom,
@@ -1090,6 +1110,10 @@ impl PhysicalRuntimeAction {
             Self::StderrWrite => RuntimeCallFamily::StderrWrite,
             Self::BytesNew => RuntimeCallFamily::BytesNew,
             Self::BytesLen => RuntimeCallFamily::BytesLen,
+            Self::BytesIsEmpty => RuntimeCallFamily::BytesIsEmpty,
+            Self::BytesClear => RuntimeCallFamily::BytesClear,
+            Self::BytesContains => RuntimeCallFamily::BytesContains,
+            Self::BytesSet => RuntimeCallFamily::BytesSet,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
             Self::BytesSlice => RuntimeCallFamily::BytesSlice,
             Self::BytesSliceFrom => RuntimeCallFamily::BytesSliceFrom,
@@ -2558,9 +2582,14 @@ fn physical_runtime_action(
         RuntimeCallFamily::JsonObjectKeys => PhysicalRuntimeAction::JsonObjectKeys,
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
+        RuntimeCallFamily::StringCompare => PhysicalRuntimeAction::StringCompare,
         RuntimeCallFamily::StringStartsWith => PhysicalRuntimeAction::StringStartsWith,
+        RuntimeCallFamily::StringEndsWith => PhysicalRuntimeAction::StringEndsWith,
         RuntimeCallFamily::StringContains => PhysicalRuntimeAction::StringContains,
         RuntimeCallFamily::StringIsEmpty => PhysicalRuntimeAction::StringIsEmpty,
+        RuntimeCallFamily::StringIsDigit => PhysicalRuntimeAction::StringIsDigit,
+        RuntimeCallFamily::StringIsAlpha => PhysicalRuntimeAction::StringIsAlpha,
+        RuntimeCallFamily::StringIsAlphanumeric => PhysicalRuntimeAction::StringIsAlphanumeric,
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
         RuntimeCallFamily::StringToLowercase => PhysicalRuntimeAction::StringToLowercase,
@@ -2570,6 +2599,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringReplace => PhysicalRuntimeAction::StringReplace,
         RuntimeCallFamily::StringClone => PhysicalRuntimeAction::StringClone,
         RuntimeCallFamily::StringSplit => PhysicalRuntimeAction::StringSplit,
+        RuntimeCallFamily::StringLines => PhysicalRuntimeAction::StringLines,
         RuntimeCallFamily::StringIndex => PhysicalRuntimeAction::StringIndex,
         RuntimeCallFamily::StringSliceCodepoints => PhysicalRuntimeAction::StringSliceCodepoints,
         RuntimeCallFamily::StringSliceCodepointsFrom => {
@@ -2594,6 +2624,10 @@ fn physical_runtime_action(
         RuntimeCallFamily::StderrWrite => PhysicalRuntimeAction::StderrWrite,
         RuntimeCallFamily::BytesNew => PhysicalRuntimeAction::BytesNew,
         RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
+        RuntimeCallFamily::BytesIsEmpty => PhysicalRuntimeAction::BytesIsEmpty,
+        RuntimeCallFamily::BytesClear => PhysicalRuntimeAction::BytesClear,
+        RuntimeCallFamily::BytesContains => PhysicalRuntimeAction::BytesContains,
+        RuntimeCallFamily::BytesSet => PhysicalRuntimeAction::BytesSet,
         RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
         RuntimeCallFamily::BytesSlice => PhysicalRuntimeAction::BytesSlice,
         RuntimeCallFamily::BytesSliceFrom => PhysicalRuntimeAction::BytesSliceFrom,
@@ -4125,16 +4159,19 @@ impl FunctionLowerer<'_> {
         }
         if matches!(
             family,
-            RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAt
+            RuntimeCallFamily::StringFind
+                | RuntimeCallFamily::StringCharAt
+                | RuntimeCallFamily::BytesGet
         ) {
             let CallResult::Value(value) = result else {
                 return Err(PhysicalError::new("string find has no optional result"));
             };
             let result = self.variant_id(&value.ty)?;
-            return Ok(if family == RuntimeCallFamily::StringFind {
-                PhysicalRuntimeAction::StringFind { result }
-            } else {
-                PhysicalRuntimeAction::StringCharAt { result }
+            return Ok(match family {
+                RuntimeCallFamily::StringFind => PhysicalRuntimeAction::StringFind { result },
+                RuntimeCallFamily::StringCharAt => PhysicalRuntimeAction::StringCharAt { result },
+                RuntimeCallFamily::BytesGet => PhysicalRuntimeAction::BytesGet { result },
+                _ => unreachable!("matched optional runtime family"),
             });
         }
         if family != RuntimeCallFamily::BytesDecodeUtf8 {
@@ -8135,12 +8172,13 @@ fn verify_terminator(
                 }
             }
             if let PhysicalRuntimeAction::StringFind { result: descriptor }
-            | PhysicalRuntimeAction::StringCharAt { result: descriptor } = action
+            | PhysicalRuntimeAction::StringCharAt { result: descriptor }
+            | PhysicalRuntimeAction::BytesGet { result: descriptor } = action
             {
-                let payload = if matches!(action, PhysicalRuntimeAction::StringCharAt { .. }) {
-                    ResolvedTy::Char
-                } else {
-                    ResolvedTy::I64
+                let payload = match action {
+                    PhysicalRuntimeAction::StringCharAt { .. } => ResolvedTy::Char,
+                    PhysicalRuntimeAction::BytesGet { .. } => ResolvedTy::U8,
+                    _ => ResolvedTy::I64,
                 };
                 let Some(output) = result else {
                     return Err(PhysicalError::new("string find has no result storage"));
@@ -8154,7 +8192,7 @@ fn verify_terminator(
                     || !descriptor.variants[1].fields.is_empty()
                 {
                     return Err(PhysicalError::new(
-                        "string find optional descriptor disagrees with result",
+                        "optional runtime descriptor disagrees with result",
                     ));
                 }
             }

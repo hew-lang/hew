@@ -1,0 +1,36 @@
+fn selected(value: Result<string, string>) -> string {
+    match value {
+        .Ok(text) => text,
+        .Err(error) => {
+            return error;
+            "unreachable".to_upper()
+        },
+    }
+}
+
+fn choose(early: bool, text: string) -> string {
+    if early {
+        return text;
+        "unreachable".to_upper()
+    } else {
+        text + " tail"
+    }
+}
+
+fn checked(value: Result<string, string>) -> string {
+    match value {
+        .Ok(text) => text,
+        .Err(error) => {
+            panic(error);
+            "unreachable".to_upper()
+        },
+    }
+}
+
+fn main() {
+    println(selected(Ok("normal".to_upper())));
+    println(selected(Err("early".to_upper())));
+    println(choose(true, "if".to_upper()));
+    println(choose(false, "else".to_upper()));
+    println(checked(Ok("checked".to_upper())));
+}

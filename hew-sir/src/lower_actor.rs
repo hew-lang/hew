@@ -4,9 +4,9 @@ use super::{
     function_source_origin, lower_initial_value_transfer, Binding, BindingTarget, BlockArg,
     BodySource, Builder, CallResult, CallUnwind, CallableId, CallableInstance, CallableState,
     DefId, Edge, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirModule,
-    InstanceService, OpId, Operand, OwnKind, OwnedBindingUse, PlaceId, PlaceOrigin, ResolvedTy,
-    SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemParamPassing, SemSignature,
-    SemTerminator, TypeSubstitution, ValueDef, ValueId,
+    InstanceService, OpId, Operand, OwnKind, OwnedBindingUse, PlaceId, PlaceOrigin, Provenance,
+    ResolvedTy, SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, TypeSubstitution, ValueDef, ValueId,
 };
 use std::collections::BTreeSet;
 
@@ -953,12 +953,7 @@ impl Builder<'_, '_> {
                             .enumerate()
                             .find(|(_, (name, _))| *name == parameter.name)
                             .ok_or("actor init argument is missing")?;
-                        if !used.insert(index) {
-                            return Err(
-                                "spawn argument cannot initialize both state and an init parameter"
-                                    .into(),
-                            );
-                        }
+                        used.insert(index);
                         argument_order.push(index);
                     }
                 }
@@ -1043,11 +1038,41 @@ impl Builder<'_, '_> {
             return Err("actor argument count differs from its protocol".into());
         }
         let mut args = Vec::new();
+        let mut transferred = BTreeSet::new();
         for (index, parameter) in argument_order.into_iter().zip(&signature.params) {
             if self.value_ty(values[index]).as_ref() != Some(&parameter.ty) {
                 return Err("actor argument changes its protocol type".into());
             }
-            args.push(values[index]);
+            let value = if !transferred.insert(index)
+                && OwnKind::of_ty(&parameter.ty, self.service.checked_facts.rows())?
+                    == OwnKind::Owned
+            {
+                // One evaluated spawn argument may initialize both state and
+                // an init parameter. Each owning destination needs its own
+                // copy, created before either owner crosses the boundary.
+                if self.service.checked_facts.rows()
+                    [&hew_types::TypeInstanceKey(parameter.ty.clone())]
+                    .clone
+                    == hew_types::CloneKind::None
+                {
+                    return Err(
+                        "a non-cloneable spawn argument cannot initialize both state and an init parameter"
+                            .into(),
+                    );
+                }
+                self.emit_typed(
+                    Provenance::Site(expression.site),
+                    &parameter.ty,
+                    SemOpKind::CopyValue {
+                        source: Operand {
+                            value: values[index],
+                        },
+                    },
+                )?
+            } else {
+                values[index]
+            };
+            args.push(value);
         }
         self.emit_actor_call(operation, signature, args)
     }

@@ -1,0 +1,28 @@
+actor Worker {
+    var label: string,
+    var count: i64,
+    init(label: string, count: i64) {
+        println(label + " initialized");
+        println(count);
+    }
+    receive fn current() -> string { label }
+    receive fn current_count() -> i64 { count }
+}
+
+fn make_label() -> string {
+    println("evaluated");
+    "ready".to_upper()
+}
+
+fn main() {
+    let worker = spawn Worker(label: make_label(), count: 7);
+    match worker.current() {
+        .Ok(value) => println(value),
+        .Err(_) => panic("label query failed"),
+    }
+    match worker.current_count() {
+        .Ok(value) => println(value),
+        .Err(_) => panic("count query failed"),
+    }
+    close(worker);
+}

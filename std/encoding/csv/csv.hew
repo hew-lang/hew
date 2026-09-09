@@ -9,10 +9,10 @@
 //! import std.encoding.csv;
 //!
 //! fn main() {
-//!     let table = csv.parse("name,age\nAlice,30\nBob,25");
-//!     let rows = table.rows();
-//!     let name = table.get_by_name(0, "name");
-//!     println(name);  // "Alice"
+//!     match csv.parse("name,age\nAlice,30\nBob,25") {
+//!         .Ok(table) => println(table.get_by_name(0, "name")), // "Alice"
+//!         .Err(error) => println(error),
+//!     }
 //! }
 //! ```
 

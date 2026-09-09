@@ -1,0 +1,21 @@
+fn index() -> i32 {
+    println("index");
+    0
+}
+fn replacement() -> string {
+    println("replacement");
+    "new".to_upper()
+}
+fn main() {
+    var vector: Vec<string> = ["old".to_upper()];
+    let vector_alias = vector;
+    vector[index()] = replacement();
+    assert(vector[0] == "NEW");
+    assert(vector_alias[0] == "OLD");
+    var array: [string; 1] = ["original".to_upper()];
+    let array_alias = array;
+    array[0] = replacement();
+    assert(array[0] == "NEW");
+    assert(array_alias[0] == "ORIGINAL");
+    println("assigned");
+}

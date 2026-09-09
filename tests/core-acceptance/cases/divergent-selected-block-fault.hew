@@ -1,0 +1,13 @@
+fn checked(value: Result<string, string>) -> string {
+    let live = ["retained".to_upper()];
+    match value {
+        .Ok(text) => text + live[0],
+        .Err(error) => {
+            panic(error);
+            "unreachable".to_upper()
+        },
+    }
+}
+fn main() {
+    println(checked(Err("selected fault".to_upper())));
+}

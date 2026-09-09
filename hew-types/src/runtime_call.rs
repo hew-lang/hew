@@ -1791,9 +1791,14 @@ pub enum RuntimeCallFamily {
     StringByteLen,
     StringConcat,
     StringEquals,
+    StringCompare,
     StringStartsWith,
+    StringEndsWith,
     StringContains,
     StringIsEmpty,
+    StringIsDigit,
+    StringIsAlpha,
+    StringIsAlphanumeric,
     StructuralFormat,
     StringFind,
     StringGet,
@@ -1805,6 +1810,8 @@ pub enum RuntimeCallFamily {
     StringClone,
     /// `s.split(sep)` - a fresh `Vec<string>` of the separated parts.
     StringSplit,
+    /// `s.lines()` - a fresh `Vec<string>` split on line boundaries.
+    StringLines,
     StringSliceCodepoints,
     StringSliceCodepointsFrom,
     StringSlice,
@@ -2228,9 +2235,41 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
+        signature_key: "string::ends_with",
+        symbol: "hew_string_ends_with",
+        family: Some(RuntimeCallFamily::StringEndsWith),
+        params: STRING,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
         signature_key: "string::is_empty",
         symbol: "hew_string_is_empty",
         family: Some(RuntimeCallFamily::StringIsEmpty),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::is_digit",
+        symbol: "hew_string_is_digit",
+        family: Some(RuntimeCallFamily::StringIsDigit),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::is_alpha",
+        symbol: "hew_string_is_alpha",
+        family: Some(RuntimeCallFamily::StringIsAlpha),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::is_alphanumeric",
+        symbol: "hew_string_is_alphanumeric",
+        family: Some(RuntimeCallFamily::StringIsAlphanumeric),
         params: EMPTY,
         result: CanonicalExternTy::Bool,
     },
@@ -2320,6 +2359,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         symbol: "hew_string_split",
         family: Some(RuntimeCallFamily::StringSplit),
         params: &[CanonicalExternTy::String],
+        result: CanonicalExternTy::VecString,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::lines",
+        symbol: "hew_string_lines",
+        family: Some(RuntimeCallFamily::StringLines),
+        params: EMPTY,
         result: CanonicalExternTy::VecString,
     },
     CanonicalStdlibExternSignature {
@@ -2531,6 +2578,13 @@ impl RuntimeCallFamily {
             ty: Bytes,
             effect: Borrow,
         }];
+        const BYTES_GET: &[RuntimeArgumentContract] = &[
+            BYTES_BORROW[0],
+            RuntimeArgumentContract {
+                ty: I64,
+                effect: Copy,
+            },
+        ];
         const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
 
         Some(match self {
@@ -2547,6 +2601,14 @@ impl RuntimeCallFamily {
                 RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
                     BuiltinType::Option,
                     &[RuntimeValueKind::Char],
+                )),
+                NO_FAILURES,
+            ),
+            Self::BytesGet => runtime_semantic_contract(
+                BYTES_GET,
+                RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Option,
+                    &[RuntimeValueKind::U8],
                 )),
                 NO_FAILURES,
             ),
@@ -2663,6 +2725,11 @@ impl RuntimeCallFamily {
             ),
             Self::StringSplit => RuntimeSemanticContract {
                 arguments: STRING_PAIR_BORROW,
+                result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
+                failures: NO_FAILURES,
+            },
+            Self::StringLines => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
                 result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
                 failures: NO_FAILURES,
             },
@@ -3069,9 +3136,14 @@ impl RuntimeCallFamily {
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
             Self::StringEquals => "hew_string_equals",
+            Self::StringCompare => "hew_string_compare",
             Self::StringStartsWith => "hew_string_starts_with",
+            Self::StringEndsWith => "hew_string_ends_with",
             Self::StringContains => "hew_string_contains",
             Self::StringIsEmpty => "hew_string_is_empty",
+            Self::StringIsDigit => "hew_string_is_digit",
+            Self::StringIsAlpha => "hew_string_is_alpha",
+            Self::StringIsAlphanumeric => "hew_string_is_alphanumeric",
             Self::StructuralFormat => "hew_structural_format",
             Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
@@ -3083,6 +3155,7 @@ impl RuntimeCallFamily {
             Self::StringReplace => "hew_string_replace",
             Self::StringClone => "hew_string_clone",
             Self::StringSplit => "hew_string_split",
+            Self::StringLines => "hew_string_lines",
             Self::StringSlice => "hew_string_slice",
             Self::StringToLowercase => "hew_string_to_lowercase",
             Self::StringToBytes => "hew_string_to_bytes",
@@ -3481,9 +3554,14 @@ impl RuntimeCallFamily {
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
             "hew_string_equals" => Self::StringEquals,
+            "hew_string_compare" => Self::StringCompare,
             "hew_string_starts_with" => Self::StringStartsWith,
+            "hew_string_ends_with" => Self::StringEndsWith,
             "hew_string_contains" => Self::StringContains,
             "hew_string_is_empty" => Self::StringIsEmpty,
+            "hew_string_is_digit" => Self::StringIsDigit,
+            "hew_string_is_alpha" => Self::StringIsAlpha,
+            "hew_string_is_alphanumeric" => Self::StringIsAlphanumeric,
             "hew_structural_format" => Self::StructuralFormat,
             "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
@@ -3495,6 +3573,7 @@ impl RuntimeCallFamily {
             "hew_string_replace" => Self::StringReplace,
             "hew_string_clone" => Self::StringClone,
             "hew_string_split" => Self::StringSplit,
+            "hew_string_lines" => Self::StringLines,
             "hew_string_slice" => Self::StringSlice,
             "hew_string_to_lowercase" => Self::StringToLowercase,
             "hew_string_to_bytes" => Self::StringToBytes,
@@ -4157,6 +4236,34 @@ impl RuntimeCallFamily {
                 effect: Borrow,
             },
         ];
+        const BYTES_CLEAR: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: Bytes,
+            effect: Move,
+        }];
+        const BYTES_CONTAINS: &[RuntimeArgumentContract] = &[
+            RuntimeArgumentContract {
+                ty: Bytes,
+                effect: Borrow,
+            },
+            RuntimeArgumentContract {
+                ty: U8,
+                effect: Copy,
+            },
+        ];
+        const BYTES_SET: &[RuntimeArgumentContract] = &[
+            RuntimeArgumentContract {
+                ty: Bytes,
+                effect: Move,
+            },
+            RuntimeArgumentContract {
+                ty: I64,
+                effect: Copy,
+            },
+            RuntimeArgumentContract {
+                ty: U8,
+                effect: Copy,
+            },
+        ];
 
         if let Some(contract) = self.collection_semantic_contract() {
             return Some(contract);
@@ -4240,10 +4347,21 @@ impl RuntimeCallFamily {
                 FreshOwned(RuntimeValueKind::Receiver(BuiltinType::JsonValue)),
                 SIR_NO_FAILURES,
             ),
-            Self::StringEquals | Self::StringStartsWith | Self::StringContains => {
+            Self::StringCompare => runtime_semantic_contract(
+                SIR_STRING_PAIR_BORROW,
+                BitCopy(RuntimeValueKind::I32),
+                SIR_NO_FAILURES,
+            ),
+            Self::StringEquals
+            | Self::StringStartsWith
+            | Self::StringEndsWith
+            | Self::StringContains => {
                 runtime_semantic_contract(SIR_STRING_PAIR_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
             }
-            Self::StringIsEmpty => {
+            Self::StringIsEmpty
+            | Self::StringIsDigit
+            | Self::StringIsAlpha
+            | Self::StringIsAlphanumeric => {
                 runtime_semantic_contract(SIR_STRING_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
             }
             Self::StringConcat => runtime_semantic_contract(
@@ -4290,6 +4408,18 @@ impl RuntimeCallFamily {
             Self::BytesNew => runtime_semantic_contract(&[], FreshOwned(Bytes), SIR_NO_FAILURES),
             Self::BytesLen => {
                 runtime_semantic_contract(SIR_BYTES_BORROW, BitCopy(I64), SIR_NO_FAILURES)
+            }
+            Self::BytesIsEmpty => {
+                runtime_semantic_contract(SIR_BYTES_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
+            }
+            Self::BytesClear => {
+                runtime_semantic_contract(BYTES_CLEAR, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
+            }
+            Self::BytesContains => {
+                runtime_semantic_contract(BYTES_CONTAINS, BitCopy(Bool), SIR_NO_FAILURES)
+            }
+            Self::BytesSet => {
+                runtime_semantic_contract(BYTES_SET, UpdatedReceiver(Bytes), SIR_INDEX_FAILURES)
             }
             Self::BytesIndex => {
                 runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), SIR_INDEX_FAILURES)
@@ -4736,9 +4866,14 @@ impl RuntimeCallFamily {
             | F::StderrWrite
             | F::BoolToString
             | F::StringEquals
+            | F::StringCompare
             | F::StringContains
             | F::StringStartsWith
+            | F::StringEndsWith
             | F::StringIsEmpty
+            | F::StringIsDigit
+            | F::StringIsAlpha
+            | F::StringIsAlphanumeric
             | F::StructuralFormat
             | F::StringFind
             | F::StringGet
@@ -4749,6 +4884,7 @@ impl RuntimeCallFamily {
             | F::StringReplace
             | F::StringClone
             | F::StringSplit
+            | F::StringLines
             | F::StringToLowercase
             | F::StringSliceCodepoints
             | F::StringSliceCodepointsFrom

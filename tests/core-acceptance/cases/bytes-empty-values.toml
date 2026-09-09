@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-empty-values"
+intent = "Managed bytes is_empty follows the same length boundary as len across new, populated and cleared values."
+source = "cases/bytes-empty-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\ntrue\n"
+stderr = ""
+exit = 0

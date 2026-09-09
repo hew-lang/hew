@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-shared-init-argument"
+intent = "A spawn argument shared by state and init is evaluated once and each owning destination receives an independent value."
+source = "cases/actor-shared-init-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "evaluated\nREADY initialized\n7\nREADY\n7\n"
+exit = 0

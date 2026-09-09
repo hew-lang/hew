@@ -178,9 +178,14 @@ fn host_runtime(action: PhysicalRuntimeAction) -> bool {
         action,
         PhysicalRuntimeAction::StringConcat
             | PhysicalRuntimeAction::StringEquals
+            | PhysicalRuntimeAction::StringCompare
             | PhysicalRuntimeAction::StringContains
             | PhysicalRuntimeAction::StringStartsWith
+            | PhysicalRuntimeAction::StringEndsWith
             | PhysicalRuntimeAction::StringIsEmpty
+            | PhysicalRuntimeAction::StringIsDigit
+            | PhysicalRuntimeAction::StringIsAlpha
+            | PhysicalRuntimeAction::StringIsAlphanumeric
             | PhysicalRuntimeAction::StringSlice
             | PhysicalRuntimeAction::StringIndex
             | PhysicalRuntimeAction::StringSliceCodepoints
@@ -190,6 +195,10 @@ fn host_runtime(action: PhysicalRuntimeAction) -> bool {
             | PhysicalRuntimeAction::StringTrim
             | PhysicalRuntimeAction::StringLen
             | PhysicalRuntimeAction::StringByteLen
+            | PhysicalRuntimeAction::StringLines
+            | PhysicalRuntimeAction::BytesLen
+            | PhysicalRuntimeAction::BytesIsEmpty
+            | PhysicalRuntimeAction::BytesContains
             | PhysicalRuntimeAction::U8ToString
             | PhysicalRuntimeAction::I64ToString
     )

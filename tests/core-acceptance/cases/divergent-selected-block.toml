@@ -1,0 +1,10 @@
+[[case]]
+id = "divergent-selected-block"
+intent = "Value-producing match and if branches may return or fault before an unreachable value tail without contributing an invented join operand."
+source = "cases/divergent-selected-block.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "NORMAL\nEARLY\nIF\nELSE tail\nCHECKED\n"
+exit = 0

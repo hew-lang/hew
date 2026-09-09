@@ -708,7 +708,11 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::StringConcat
             | R::StringEquals
             | R::StringStartsWith
+            | R::StringEndsWith
             | R::StringIsEmpty
+            | R::StringIsDigit
+            | R::StringIsAlpha
+            | R::StringIsAlphanumeric
             | R::StringFind
             | R::StringGet
             | R::StringIndex

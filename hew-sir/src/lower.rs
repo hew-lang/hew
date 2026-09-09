@@ -4392,14 +4392,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn lower_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
         if let HirExprKind::Index { container, index } = &target.kind {
-            if matches!(self.ty(&container.ty), ResolvedTy::Array(_, _)) {
+            let family = match self.ty(&container.ty) {
+                ResolvedTy::Array(_, _) => Some(hew_types::RuntimeCallFamily::Array(
+                    hew_types::runtime_call::ArrayValueOp::Set,
+                )),
+                ResolvedTy::Bytes => Some(hew_types::RuntimeCallFamily::BytesSet),
+                ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Vec),
+                    ..
+                } => Some(hew_types::RuntimeCallFamily::Vector(
+                    hew_types::runtime_call::VecValueOp::Set,
+                )),
+                _ => None,
+            };
+            if let Some(family) = family {
                 let mut operation = target.clone();
                 operation.ty = ResolvedTy::Unit;
                 let mut replacement = value.clone();
                 replacement.intent = IntentKind::Read;
                 self.lower_runtime_operation(
                     &operation,
-                    hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set),
+                    family,
                     &[container.as_ref(), index.as_ref(), &replacement],
                     false,
                 )?;
@@ -5196,6 +5209,34 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             } else {
                                 Ok(equals)
                             }
+                        }
+                        hew_parser::ast::BinaryOp::Less
+                        | hew_parser::ast::BinaryOp::LessEqual
+                        | hew_parser::ast::BinaryOp::Greater
+                        | hew_parser::ast::BinaryOp::GreaterEqual => {
+                            let mut comparison = expr.clone();
+                            comparison.ty = ResolvedTy::I32;
+                            let ordering = self
+                                .lower_runtime_operation(
+                                    &comparison,
+                                    hew_types::RuntimeCallFamily::StringCompare,
+                                    &[left.as_ref(), right.as_ref()],
+                                    true,
+                                )?
+                                .ok_or("string ordering must produce a value")?;
+                            let zero = self.emit_typed(
+                                Provenance::Site(expr.site),
+                                &ResolvedTy::I32,
+                                SemOpKind::ConstInteger(0),
+                            )?;
+                            self.emit(
+                                expr,
+                                SemOpKind::Binary {
+                                    op: *op,
+                                    lhs: Operand { value: ordering },
+                                    rhs: Operand { value: zero },
+                                },
+                            )
                         }
                         _ => Err(format!(
                             "string binary `{op}` has no ownership-SIR runtime operation"
@@ -6087,8 +6128,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             return Ok(None);
         }
-        let value =
-            lower_initial_value_transfer(self, body, "selected arm result", OwnedBindingUse::Copy)?;
+        let value = if let HirExprKind::Block(block) = &body.kind {
+            // A checked value tail may be unreachable after a return or fault.
+            // Preserve the block's terminated control flow without inventing
+            // an operand for a branch that never reaches the join.
+            let result = self.lower_scoped_block(block, OwnedBindingUse::Copy)?;
+            if !self.is_open() {
+                return Ok(None);
+            }
+            result
+                .ok_or("non-divergent selected block does not produce its result")?
+                .value
+        } else {
+            lower_initial_value_transfer(self, body, "selected arm result", OwnedBindingUse::Copy)?
+        };
         let value = self.coerce_value(value, result_ty, Provenance::Site(body.site))?;
         Ok(Some(Operand { value }))
     }
@@ -9126,23 +9179,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for (block, expression) in [(then_block, then_expr), (else_block, else_expr)] {
             self.restore_control_state(&before);
             self.current = block;
-            if matches!(
-                self.ty(&expression.ty),
-                ResolvedTy::Unit | ResolvedTy::Never
-            ) {
-                self.lower_discarded_expr(expression)?;
-                if self.is_open() {
-                    return Err("non-divergent if branch does not produce its result".to_string());
-                }
+            let result = self.lower_selected_body(expression, &join_ty)?;
+            if !self.is_open() {
                 continue;
             }
-            let value = lower_initial_value_transfer(
-                self,
-                expression,
-                "if branch value",
-                OwnedBindingUse::Copy,
-            )?;
-            let value = self.coerce_value(value, &join_ty, Provenance::Site(expression.site))?;
+            let value = result
+                .ok_or("non-divergent if branch does not produce its result")?
+                .value;
             self.owned_live.remove(&value);
             exits.push(MatchExit {
                 state: self.control_state(),

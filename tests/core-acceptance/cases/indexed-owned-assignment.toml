@@ -1,0 +1,10 @@
+[[case]]
+id = "indexed-owned-assignment"
+intent = "Indexed Vec and fixed-array assignment evaluates the index before its owned replacement and preserves independent aliases."
+source = "cases/indexed-owned-assignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "index\nreplacement\nreplacement\nassigned\n"
+exit = 0

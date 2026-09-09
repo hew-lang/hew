@@ -1,0 +1,11 @@
+[[case]]
+id = "csv-table-values"
+intent = "CSV parsing exposes owned table fields and imported methods after explicit Result handling, preserves Unicode and quoted separators, and rejects malformed input."
+source = "cases/csv-table-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "name\nZoë\na,b\n雪\nmalformed CSV rejected\n"
+stderr = ""
+exit = 0

@@ -4426,10 +4426,38 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish string find miss")?;
                 self.builder.position_at_end(complete);
             }
+            PhysicalRuntimeAction::BytesGet { result: option } => {
+                return self.emit_bytes_get(
+                    source(0)?,
+                    source(1)?,
+                    required_result()?,
+                    option,
+                    normal,
+                );
+            }
+            PhysicalRuntimeAction::StringCompare => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_compare",
+                    self.ctx
+                        .i32_type()
+                        .fn_type(&[ptr.into(), ptr.into()], false),
+                )?;
+                let arguments = [
+                    self.load(source(0)?, "compare.left")?.into(),
+                    self.load(source(1)?, "compare.right")?.into(),
+                ];
+                let value = self.runtime_call_value(function, &arguments, "string.compare")?;
+                self.store(required_result()?, value)?;
+            }
             PhysicalRuntimeAction::StringEquals
             | PhysicalRuntimeAction::StringStartsWith
+            | PhysicalRuntimeAction::StringEndsWith
             | PhysicalRuntimeAction::StringContains
-            | PhysicalRuntimeAction::StringIsEmpty => {
+            | PhysicalRuntimeAction::StringIsEmpty
+            | PhysicalRuntimeAction::StringIsDigit
+            | PhysicalRuntimeAction::StringIsAlpha
+            | PhysicalRuntimeAction::StringIsAlphanumeric => {
                 let (symbol, return_type) = match action {
                     PhysicalRuntimeAction::StringEquals => {
                         ("hew_string_equals", self.ctx.i32_type())
@@ -4437,11 +4465,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     PhysicalRuntimeAction::StringStartsWith => {
                         ("hew_string_starts_with", self.ctx.bool_type())
                     }
+                    PhysicalRuntimeAction::StringEndsWith => {
+                        ("hew_string_ends_with", self.ctx.bool_type())
+                    }
                     PhysicalRuntimeAction::StringContains => {
                         ("hew_string_contains", self.ctx.bool_type())
                     }
                     PhysicalRuntimeAction::StringIsEmpty => {
                         ("hew_string_is_empty", self.ctx.bool_type())
+                    }
+                    PhysicalRuntimeAction::StringIsDigit => {
+                        ("hew_string_is_digit", self.ctx.bool_type())
+                    }
+                    PhysicalRuntimeAction::StringIsAlpha => {
+                        ("hew_string_is_alpha", self.ctx.bool_type())
+                    }
+                    PhysicalRuntimeAction::StringIsAlphanumeric => {
+                        ("hew_string_is_alphanumeric", self.ctx.bool_type())
                     }
                     _ => unreachable!("matched string predicate"),
                 };
@@ -4575,6 +4615,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         self.load(source(1)?, "split.separator")?.into(),
                     ],
                     "string.split",
+                )?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::StringLines => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_lines",
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "lines.text")?.into()],
+                    "string.lines",
                 )?;
                 self.store(required_result()?, value)?;
             }
@@ -4913,6 +4966,83 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.len",
                 )?;
                 self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::BytesIsEmpty => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bytes_is_empty",
+                    self.ctx.bool_type().fn_type(&[ptr.into()], false),
+                )?;
+                let value = self
+                    .runtime_call_value(
+                        function,
+                        &[self.slots[source(0)?.0 as usize].into()],
+                        "bytes.is_empty",
+                    )?
+                    .into_int_value();
+                let result = required_result()?;
+                let bool_ty =
+                    llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_int_type();
+                let value = self
+                    .builder
+                    .build_int_z_extend(value, bool_ty, "bytes.is_empty.bool")
+                    .llvm_ctx("widen bytes is_empty result")?;
+                self.store(result, value.into())?;
+            }
+            PhysicalRuntimeAction::BytesClear => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bytes_clear",
+                    self.ctx.void_type().fn_type(&[ptr.into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[self.slots[source(0)?.0 as usize].into()],
+                    "bytes.clear",
+                )?;
+                let value = self.load(source(0)?, "bytes.clear.result")?;
+                self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::BytesContains => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_bytes_contains",
+                    self.ctx
+                        .bool_type()
+                        .fn_type(&[ptr.into(), self.ctx.i8_type().into()], false),
+                )?;
+                let value = self
+                    .runtime_call_value(
+                        function,
+                        &[
+                            self.slots[source(0)?.0 as usize].into(),
+                            self.load(source(1)?, "bytes.contains.byte")?.into(),
+                        ],
+                        "bytes.contains",
+                    )?
+                    .into_int_value();
+                let result = required_result()?;
+                let bool_ty =
+                    llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_int_type();
+                let value = self
+                    .builder
+                    .build_int_z_extend(value, bool_ty, "bytes.contains.bool")
+                    .llvm_ctx("widen bytes contains result")?;
+                self.store(result, value.into())?;
+            }
+            PhysicalRuntimeAction::BytesSet => {
+                return self.emit_bytes_set(
+                    source(0)?,
+                    source(1)?,
+                    source(2)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical bytes set lacks its bounds failure edge".into(),
+                        )
+                    })?,
+                );
             }
             PhysicalRuntimeAction::BytesIndex => {
                 return self.emit_bytes_index(
@@ -6344,6 +6474,206 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_load(self.ctx.i8_type(), read_at, "bytes.index.load")
             .llvm_ctx("load indexed byte")?;
         self.store(result, indexed)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    fn emit_bytes_get(
+        &self,
+        bytes: StorageId,
+        index: StorageId,
+        result: StorageId,
+        option: PhysicalVariantId,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let value = self.load(bytes, "bytes.get.value")?.into_struct_value();
+        let pointer = self
+            .builder
+            .build_extract_value(value, 0, "bytes.get.pointer")
+            .llvm_ctx("extract bytes get pointer")?
+            .into_pointer_value();
+        let offset = self
+            .builder
+            .build_extract_value(value, 1, "bytes.get.offset")
+            .llvm_ctx("extract bytes get offset")?
+            .into_int_value();
+        let len = self
+            .builder
+            .build_extract_value(value, 2, "bytes.get.length")
+            .llvm_ctx("extract bytes get length")?
+            .into_int_value();
+        let index = self.load(index, "bytes.get.index")?.into_int_value();
+        let len64 = self
+            .builder
+            .build_int_z_extend(len, self.ctx.i64_type(), "bytes.get.length.i64")
+            .llvm_ctx("widen bytes get length")?;
+        let offset64 = self
+            .builder
+            .build_int_z_extend(offset, self.ctx.i64_type(), "bytes.get.offset.i64")
+            .llvm_ctx("widen bytes get offset")?;
+        let byte_offset = self
+            .builder
+            .build_int_add(offset64, index, "bytes.get.byte.offset")
+            .llvm_ctx("calculate bytes get offset")?;
+        let negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                index,
+                self.ctx.i64_type().const_zero(),
+                "bytes.get.negative",
+            )
+            .llvm_ctx("guard negative bytes get index")?;
+        let past_end = self
+            .builder
+            .build_int_compare(IntPredicate::SGE, index, len64, "bytes.get.past.end")
+            .llvm_ctx("guard bytes get upper bound")?;
+        let null = self
+            .builder
+            .build_is_null(pointer, "bytes.get.null")
+            .llvm_ctx("guard null bytes get pointer")?;
+        let overflow = self
+            .builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                byte_offset,
+                self.ctx.i64_type().const_int(u64::from(u32::MAX), false),
+                "bytes.get.offset.overflow",
+            )
+            .llvm_ctx("guard bytes get offset overflow")?;
+        let invalid = self
+            .builder
+            .build_or(negative, past_end, "bytes.get.bounds")
+            .and_then(|v| self.builder.build_or(v, null, "bytes.get.invalid"))
+            .and_then(|v| self.builder.build_or(v, overflow, "bytes.get.failure"))
+            .llvm_ctx("combine bytes get guards")?;
+        let some = self.ctx.append_basic_block(self.value, "bytes.get.some");
+        let none = self.ctx.append_basic_block(self.value, "bytes.get.none");
+        self.builder
+            .build_conditional_branch(invalid, none, some)
+            .llvm_ctx("select bytes get result")?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(some);
+        let read_at = unsafe {
+            self.builder.build_gep(
+                self.ctx.i8_type(),
+                pointer,
+                &[byte_offset],
+                "bytes.get.address",
+            )
+        }
+        .llvm_ctx("calculate bytes get address")?;
+        let byte = self
+            .builder
+            .build_load(self.ctx.i8_type(), read_at, "bytes.get.byte")
+            .llvm_ctx("load bytes get byte")?;
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[byte], option)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    fn emit_bytes_set(
+        &self,
+        bytes: StorageId,
+        index: StorageId,
+        byte: StorageId,
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let value = self.load(bytes, "bytes.set.value")?.into_struct_value();
+        let pointer = self
+            .builder
+            .build_extract_value(value, 0, "bytes.set.pointer")
+            .llvm_ctx("extract bytes set pointer")?
+            .into_pointer_value();
+        let offset = self
+            .builder
+            .build_extract_value(value, 1, "bytes.set.offset")
+            .llvm_ctx("extract bytes set offset")?
+            .into_int_value();
+        let len = self
+            .builder
+            .build_extract_value(value, 2, "bytes.set.length")
+            .llvm_ctx("extract bytes set length")?
+            .into_int_value();
+        let index = self.load(index, "bytes.set.index")?.into_int_value();
+        let len64 = self
+            .builder
+            .build_int_z_extend(len, self.ctx.i64_type(), "bytes.set.length.i64")
+            .llvm_ctx("widen bytes set length")?;
+        let offset64 = self
+            .builder
+            .build_int_z_extend(offset, self.ctx.i64_type(), "bytes.set.offset.i64")
+            .llvm_ctx("widen bytes set offset")?;
+        let byte_offset = self
+            .builder
+            .build_int_add(offset64, index, "bytes.set.byte.offset")
+            .llvm_ctx("calculate bytes set offset")?;
+        let negative = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                index,
+                self.ctx.i64_type().const_zero(),
+                "bytes.set.negative",
+            )
+            .llvm_ctx("guard negative bytes set index")?;
+        let past_end = self
+            .builder
+            .build_int_compare(IntPredicate::SGE, index, len64, "bytes.set.past.end")
+            .llvm_ctx("guard bytes set upper bound")?;
+        let null = self
+            .builder
+            .build_is_null(pointer, "bytes.set.null")
+            .llvm_ctx("guard null bytes set pointer")?;
+        let overflow = self
+            .builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                byte_offset,
+                self.ctx.i64_type().const_int(u64::from(u32::MAX), false),
+                "bytes.set.offset.overflow",
+            )
+            .llvm_ctx("guard bytes set offset overflow")?;
+        let invalid = self
+            .builder
+            .build_or(negative, past_end, "bytes.set.bounds")
+            .and_then(|v| self.builder.build_or(v, null, "bytes.set.invalid"))
+            .and_then(|v| self.builder.build_or(v, overflow, "bytes.set.failure"))
+            .llvm_ctx("combine bytes set guards")?;
+        let safe = self.ctx.append_basic_block(self.value, "bytes.set.safe");
+        let failed = self.ctx.append_basic_block(self.value, "bytes.set.failure");
+        self.builder
+            .build_conditional_branch(invalid, failed, safe)
+            .llvm_ctx("select bytes set outcome")?;
+        self.builder.position_at_end(failed);
+        self.emit_edge(failure)?;
+        self.builder.position_at_end(safe);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_bytes_set",
+            self.ctx.void_type().fn_type(
+                &[
+                    ptr.into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i8_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        self.runtime_call_void(
+            function,
+            &[
+                self.slots[bytes.0 as usize].into(),
+                index.into(),
+                self.load(byte, "bytes.set.byte")?.into(),
+            ],
+            "bytes.set",
+        )?;
+        let updated = self.load(bytes, "bytes.set.result")?;
+        self.store(result, updated)?;
         self.emit_result_edge(Some(result), normal)
     }
 

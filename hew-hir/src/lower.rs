@@ -19314,40 +19314,6 @@ impl LowerCtx {
                         };
                     }
 
-                    if intent == IntentKind::Modify
-                        && matches!(
-                            &container.ty,
-                            ResolvedTy::Named {
-                                builtin: Some(BuiltinType::Vec),
-                                ..
-                            }
-                        )
-                    {
-                        if let Some(resolved) =
-                            self.resolved_calls.get(&self.mk_key(&span)).cloned()
-                        {
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                                ty: result_ty.clone(),
-                                intent,
-                                kind: HirExprKind::ResolvedImplCall {
-                                    receiver: Box::new(container),
-                                    target: resolved.target,
-                                    impl_id: resolved.impl_id,
-                                    method_name: resolved.method_name,
-                                    target_symbol: resolved.method_target.symbol_name,
-                                    target_family: resolved.method_target.family,
-                                    type_args: resolved.type_args,
-                                    args: vec![index_expr],
-                                    ret_ty: result_ty.clone(),
-                                },
-                                span: span.clone(),
-                            };
-                        }
-                    }
-
                     // `m[k]` over a `HashMap<K, V>` in READ position is the
                     // trapping `Index::at` accessor (`-> V`): a missing key
                     // aborts with IndexOutOfBounds (the map analogue of `v[i]`

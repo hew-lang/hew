@@ -34,6 +34,12 @@ supervisor Pool {
     pool workers: Worker(value: 7) count: 2,
 }
 
+// This fixture is blocked twice over and does not run today: SIR refuses pool
+// supervision (`pool supervision needs its fungible-slot contract`), and
+// `await_restart` — the barrier every other supervisor fixture uses — accepts
+// only a static child accessor, not a pool member. The extern below passes a
+// `LocalPid` where the runtime reads a `*mut HewSupervisor`, so it must not be
+// copied into a new fixture; a pool restart needs a pool-aware barrier.
 extern "C" {
     fn hew_supervisor_wait_restart(sup: LocalPid<Pool>, target: i64, timeout_ms: i64) -> i64;
 }

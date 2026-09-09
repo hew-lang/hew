@@ -2172,16 +2172,15 @@ run_accept_expect_status "supervised_actor_init_block" 42
 # Before the fix: hew_supervisor_child_get returned a null pointer for Transient
 # children, causing SIGSEGV.  After the fix: MIR lower_supervisor_child_get traps
 # with code 206 on non-Live, and returns the handle safely on Live (tag=0).
-# This test crashes the child, waits on hew_supervisor_wait_restart until the
-# restart completion notification fires, then accesses sup.w1 and expects a
-# Live handle (exit 7).
+# This test crashes the child, waits on `await_restart sup.w1`, discards the
+# handle that barrier re-fetches, then reads sup.w1 again and expects a Live
+# handle (exit 7) - the slot lookup, not the barrier's own re-fetch.
 # A Transient result would fire SIGTRAP (exit 133) — a visible failure.
 # (No WASM check needed: same reason as above.)
 run_accept_expect_status "supervisor_child_after_restart" 7
 
 # await_restart keyword (issue #2124): the language-primitive restart barrier.
-# Replaces the extern hew_supervisor_wait_restart + manual re-fetch with
-# `let w2 = await_restart sup.w`, which suspends (or blocks, in main) until the
+# `let w2 = await_restart sup.w` suspends (or blocks, in main) until the
 # supervised child's slot is Live again, then re-fetches the now-Live handle.
 # Crashes the worker, await_restarts it, then asks the restarted child — exit 7
 # proves a Live re-fetch through the deep-clone restart path (a Transient slot
@@ -2327,13 +2326,12 @@ fi
 
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
 # fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.
-# The child is spawned with `value: 7` (the template seed); init() overwrites it
-# to 100 and #[on(start)] adds 10, so `get()` returns 110 only when the hooks
+# `value` is a D447 deferred field, so init() is its only writer: init() sets
+# 100 and #[on(start)] adds 10, and `get()` returns 110 only when both hooks
 # actually ran. Exit 220 = 110 (initial) + 110 (after a barrier-driven restart).
-# Pre-fix this read 7 + 7 = 14 (init never fired under supervision) — a distinct,
-# visible failure. This DISTINGUISHES init-firing from template byte-seeding,
-# which the sibling supervised_actor_init_block (empty init, reads the template)
-# cannot. (No WASM check: supervisor fixtures are HIR-gated off wasm32.)
+# This DISTINGUISHES init-firing from spawn-argument seeding, which the sibling
+# supervised_actor_init_block (empty init) cannot. (No WASM check: supervisor
+# fixtures are HIR-gated off wasm32.)
 run_accept_expect_status "supervisor_lifecycle_fires" 220
 
 # The lifecycle phase discriminator must also hold on the supervisor wrapper

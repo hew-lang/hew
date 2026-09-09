@@ -1,11 +1,11 @@
 //! Hew runtime: URL parsing and construction.
 //!
 //! Provides URL parsing, component access, and URL joining for compiled Hew
-//! programs. All returned strings are allocated with `libc::malloc` and
-//! NUL-terminated. All returned [`HewUrl`] pointers are heap-allocated via
-//! `Box` and must be freed with [`hew_url_free`].
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::ffi::c_char;
+//! programs. Returned strings are managed strings; release them with
+//! `hew_string_drop`. Null is the canonical empty string. All returned
+//! [`HewUrl`] pointers are heap-allocated via `Box` and must be freed with
+//! [`hew_url_free`].
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 /// Opaque wrapper around a [`url::Url`].
 ///
@@ -26,13 +26,11 @@ pub struct HewUrl {
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string, or null.
+/// `s` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_parse(s: *const c_char) -> *mut HewUrl {
-    // SAFETY: If non-null, s is a valid NUL-terminated C string per caller contract.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_url_parse(s: *const HewString) -> *mut HewUrl {
+    // SAFETY: s borrows a live managed string or canonical empty, per caller contract.
+    let rust_str = unsafe { string_as_str(s) };
     match url::Url::parse(rust_str) {
         Ok(parsed) => Box::into_raw(Box::new(HewUrl { inner: parsed })),
         Err(_) => std::ptr::null_mut(),
@@ -47,39 +45,39 @@ pub extern "C" fn hew_url_is_valid(url: *const HewUrl) -> bool {
 
 /// Get the scheme component (e.g. `"https"`) of a [`HewUrl`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null if `url` is null.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null if `url` is null.
 ///
 /// # Safety
 ///
 /// `url` must be a valid pointer to a [`HewUrl`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_scheme(url: *const HewUrl) -> *mut c_char {
+pub unsafe extern "C" fn hew_url_scheme(url: *const HewUrl) -> *mut HewString {
     if url.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: url is a valid HewUrl pointer per caller contract.
     let u = unsafe { &*url };
-    str_to_malloc(u.inner.scheme())
+    string_from_str(u.inner.scheme())
 }
 
 /// Get the host component of a [`HewUrl`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null if the URL has no host or `url` is null.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null if the URL has no host or `url` is null.
 ///
 /// # Safety
 ///
 /// `url` must be a valid pointer to a [`HewUrl`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_host(url: *const HewUrl) -> *mut c_char {
+pub unsafe extern "C" fn hew_url_host(url: *const HewUrl) -> *mut HewString {
     if url.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: url is a valid HewUrl pointer per caller contract.
     let u = unsafe { &*url };
     match u.inner.host_str() {
-        Some(h) => str_to_malloc(h),
+        Some(h) => string_from_str(h),
         None => std::ptr::null_mut(),
     }
 }
@@ -106,81 +104,88 @@ pub unsafe extern "C" fn hew_url_port(url: *const HewUrl) -> i32 {
 
 /// Get the path component of a [`HewUrl`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null if `url` is null.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null if `url` is null.
 ///
 /// # Safety
 ///
 /// `url` must be a valid pointer to a [`HewUrl`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_path(url: *const HewUrl) -> *mut c_char {
+pub unsafe extern "C" fn hew_url_path(url: *const HewUrl) -> *mut HewString {
     if url.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: url is a valid HewUrl pointer per caller contract.
     let u = unsafe { &*url };
-    str_to_malloc(u.inner.path())
+    string_from_str(u.inner.path())
 }
 
 /// Get the query string of a [`HewUrl`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null if the URL has no query or `url` is null.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null if the URL has no query or `url` is null. The `.hew` wrapper
+/// (`UrlMethods::query`) returns this value directly as a `string`, so an
+/// absent query and a present-but-empty query (`?` with nothing after it)
+/// were already indistinguishable before this migration; the managed
+/// canonical-empty convention preserves that.
 ///
 /// # Safety
 ///
 /// `url` must be a valid pointer to a [`HewUrl`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_query(url: *const HewUrl) -> *mut c_char {
+pub unsafe extern "C" fn hew_url_query(url: *const HewUrl) -> *mut HewString {
     if url.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: url is a valid HewUrl pointer per caller contract.
     let u = unsafe { &*url };
     match u.inner.query() {
-        Some(q) => str_to_malloc(q),
+        Some(q) => string_from_str(q),
         None => std::ptr::null_mut(),
     }
 }
 
 /// Get the fragment component of a [`HewUrl`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null if the URL has no fragment or `url` is
-/// null.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null if the URL has no fragment or `url` is null. As with
+/// [`hew_url_query`], the `.hew` wrapper returns this value directly as a
+/// `string`, so an absent fragment and a present-but-empty fragment (`#`
+/// with nothing after it) were already indistinguishable before this
+/// migration.
 ///
 /// # Safety
 ///
 /// `url` must be a valid pointer to a [`HewUrl`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_fragment(url: *const HewUrl) -> *mut c_char {
+pub unsafe extern "C" fn hew_url_fragment(url: *const HewUrl) -> *mut HewString {
     if url.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: url is a valid HewUrl pointer per caller contract.
     let u = unsafe { &*url };
     match u.inner.fragment() {
-        Some(f) => str_to_malloc(f),
+        Some(f) => string_from_str(f),
         None => std::ptr::null_mut(),
     }
 }
 
 /// Serialize a [`HewUrl`] back to its full string representation.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null if `url` is null.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null if `url` is null.
 ///
 /// # Safety
 ///
 /// `url` must be a valid pointer to a [`HewUrl`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_to_string(url: *const HewUrl) -> *mut c_char {
+pub unsafe extern "C" fn hew_url_to_string(url: *const HewUrl) -> *mut HewString {
     if url.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: url is a valid HewUrl pointer per caller contract.
     let u = unsafe { &*url };
-    str_to_malloc(u.inner.as_str())
+    string_from_str(u.inner.as_str())
 }
 
 /// Join a relative URL against a base [`HewUrl`].
@@ -190,18 +195,19 @@ pub unsafe extern "C" fn hew_url_to_string(url: *const HewUrl) -> *mut c_char {
 /// # Safety
 ///
 /// `base` must be a valid pointer to a [`HewUrl`], or null.
-/// `relative` must be a valid NUL-terminated C string, or null.
+/// `relative` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_url_join(base: *const HewUrl, relative: *const c_char) -> *mut HewUrl {
+pub unsafe extern "C" fn hew_url_join(
+    base: *const HewUrl,
+    relative: *const HewString,
+) -> *mut HewUrl {
     if base.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: base is a valid HewUrl pointer per caller contract.
     let b = unsafe { &*base };
-    // SAFETY: If non-null, relative is a valid NUL-terminated C string per caller contract.
-    let Some(rel_str) = (unsafe { cstr_to_str(relative) }) else {
-        return std::ptr::null_mut();
-    };
+    // SAFETY: relative borrows a live managed string or canonical empty.
+    let rel_str = unsafe { string_as_str(relative) };
     match b.inner.join(rel_str) {
         Ok(joined) => Box::into_raw(Box::new(HewUrl { inner: joined })),
         Err(_) => std::ptr::null_mut(),
@@ -231,22 +237,23 @@ pub unsafe extern "C" fn hew_url_free(url: *mut HewUrl) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
 
     /// Helper: parse a URL string and return the owned pointer.
     fn parse(s: &str) -> *mut HewUrl {
-        let c = CString::new(s).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
-        unsafe { hew_url_parse(c.as_ptr()) }
+        let managed = ManagedString::new(s);
+        // SAFETY: managed owns a live managed string for this call.
+        unsafe { hew_url_parse(managed.as_ptr()) }
     }
 
-    /// Helper: read a C string pointer and free it.
-    unsafe fn read_and_free_cstr(ptr: *mut c_char) -> String {
+    /// Helper: read an owned managed string result and release it.
+    unsafe fn read_and_release(ptr: *mut HewString) -> String {
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
+        // SAFETY: ptr is the live owner returned by the producer.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: this test holds the only owner of `ptr`.
+        unsafe { string_release(ptr) };
         s
     }
 
@@ -257,14 +264,14 @@ mod tests {
 
         // SAFETY: url is a valid HewUrl from parse.
         unsafe {
-            assert_eq!(read_and_free_cstr(hew_url_scheme(url)), "https");
-            assert_eq!(read_and_free_cstr(hew_url_host(url)), "example.com");
+            assert_eq!(read_and_release(hew_url_scheme(url)), "https");
+            assert_eq!(read_and_release(hew_url_host(url)), "example.com");
             assert_eq!(hew_url_port(url), 8080);
-            assert_eq!(read_and_free_cstr(hew_url_path(url)), "/path/to");
-            assert_eq!(read_and_free_cstr(hew_url_query(url)), "key=val");
-            assert_eq!(read_and_free_cstr(hew_url_fragment(url)), "frag");
+            assert_eq!(read_and_release(hew_url_path(url)), "/path/to");
+            assert_eq!(read_and_release(hew_url_query(url)), "key=val");
+            assert_eq!(read_and_release(hew_url_fragment(url)), "frag");
             assert_eq!(
-                read_and_free_cstr(hew_url_to_string(url)),
+                read_and_release(hew_url_to_string(url)),
                 "https://example.com:8080/path/to?key=val#frag"
             );
             hew_url_free(url);
@@ -278,8 +285,8 @@ mod tests {
 
         // SAFETY: url is a valid HewUrl from parse.
         unsafe {
-            assert_eq!(read_and_free_cstr(hew_url_scheme(url)), "http");
-            assert_eq!(read_and_free_cstr(hew_url_host(url)), "localhost");
+            assert_eq!(read_and_release(hew_url_scheme(url)), "http");
+            assert_eq!(read_and_release(hew_url_host(url)), "localhost");
             assert_eq!(hew_url_port(url), -1);
             assert!(hew_url_query(url).is_null());
             assert!(hew_url_fragment(url).is_null());
@@ -292,15 +299,15 @@ mod tests {
         let base = parse("https://example.com/base/");
         assert!(!base.is_null());
 
-        let relative = CString::new("sub/page?q=1").unwrap();
-        // SAFETY: base is a valid HewUrl; relative is a valid C string.
+        let relative = ManagedString::new("sub/page?q=1");
+        // SAFETY: base is a valid HewUrl; relative is a live managed string.
         let joined = unsafe { hew_url_join(base, relative.as_ptr()) };
         assert!(!joined.is_null());
 
         // SAFETY: joined is a valid HewUrl.
         unsafe {
             assert_eq!(
-                read_and_free_cstr(hew_url_to_string(joined)),
+                read_and_release(hew_url_to_string(joined)),
                 "https://example.com/base/sub/page?q=1"
             );
             hew_url_free(joined);
@@ -344,7 +351,7 @@ mod tests {
 
         // SAFETY: url is a valid HewUrl from parse.
         unsafe {
-            assert_eq!(read_and_free_cstr(hew_url_scheme(url)), "data");
+            assert_eq!(read_and_release(hew_url_scheme(url)), "data");
             // data URIs have no host.
             assert!(hew_url_host(url).is_null());
             hew_url_free(url);

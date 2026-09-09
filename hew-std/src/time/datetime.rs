@@ -2,11 +2,11 @@
 //!
 //! Provides datetime utilities for compiled Hew programs using Unix epoch
 //! milliseconds as the canonical time representation. Returned strings are
-//! allocated with `libc::malloc` so callers can free them with `libc::free`;
+//! managed strings: the caller receives one owner and releases it with
+//! `hew_string_drop`. Null is the canonical empty string;
 //! [`hew_datetime_last_error`] returns null when no error has been recorded.
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::ffi::c_char;
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
@@ -63,19 +63,19 @@ pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
 
 /// Format epoch milliseconds using a `strftime` format string.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// free it with `libc::free`. Returns null on invalid input.
+/// Returns an owned managed string; release it with `hew_string_drop`.
+/// Returns null on invalid input.
 ///
 /// # Safety
 ///
-/// `fmt` must be a valid NUL-terminated C string.
+/// `fmt` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) -> *mut c_char {
-    // SAFETY: caller guarantees fmt is a valid NUL-terminated C string.
-    let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
-        set_datetime_last_error("invalid datetime format: null pointer or invalid UTF-8");
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_datetime_format(
+    epoch_ms: i64,
+    fmt: *const HewString,
+) -> *mut HewString {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let fmt_str = unsafe { string_as_str(fmt) };
     if StrftimeItems::new(fmt_str).any(|item| matches!(item, Item::Error)) {
         set_datetime_last_error("invalid datetime format directive");
         return std::ptr::null_mut();
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
     };
     clear_datetime_last_error();
     let formatted = dt.format(fmt_str).to_string();
-    str_to_malloc(&formatted)
+    string_from_str(&formatted)
 }
 
 /// Parse a datetime string with the given `strftime` format, returning epoch
@@ -95,19 +95,13 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
 ///
 /// # Safety
 ///
-/// Both `s` and `fmt` must be valid NUL-terminated C strings.
+/// `s` and `fmt` must each be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char) -> i64 {
-    // SAFETY: caller guarantees `s` is a valid NUL-terminated C string.
-    let Some(s_str) = (unsafe { cstr_to_str(s) }) else {
-        set_datetime_last_error("invalid datetime input: null pointer or invalid UTF-8");
-        return -1;
-    };
-    // SAFETY: caller guarantees `fmt` is a valid NUL-terminated C string.
-    let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
-        set_datetime_last_error("invalid datetime format: null pointer or invalid UTF-8");
-        return -1;
-    };
+pub unsafe extern "C" fn hew_datetime_parse(s: *const HewString, fmt: *const HewString) -> i64 {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let s_str = unsafe { string_as_str(s) };
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let fmt_str = unsafe { string_as_str(fmt) };
     match NaiveDateTime::parse_from_str(s_str, fmt_str) {
         Ok(naive) => {
             clear_datetime_last_error();
@@ -122,15 +116,15 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char
 
 /// Return the most recent parse error for this Hew actor.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null when no error is set.
+/// Returns an owned managed string; release it with `hew_string_drop`.
+/// Returns canonical empty (null) when no error is set.
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
 #[no_mangle]
-pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
+pub extern "C" fn hew_datetime_last_error() -> *mut HewString {
     match clone_datetime_last_error() {
-        Some(message) => str_to_malloc(&message),
+        Some(message) => string_from_str(&message),
         None => std::ptr::null_mut(),
     }
 }
@@ -246,19 +240,20 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
 
-    /// Helper to read a malloc'd C string and free it.
+    /// Helper to read a managed string and release it.
     ///
     /// # Safety
     ///
-    /// `ptr` must be a non-null, NUL-terminated, malloc-allocated C string.
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
+    /// `ptr` must be a non-null, live managed string owner.
+    unsafe fn read_and_free(ptr: *mut HewString) -> String {
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string per caller.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
+        // SAFETY: ptr is the live owner returned by the producer per caller.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: this test holds the only owner of `ptr`.
+        unsafe { string_release(ptr) };
         s
     }
 
@@ -266,16 +261,16 @@ mod tests {
     fn test_format_parse_roundtrip() {
         // 2024-01-15 09:30:00 UTC
         let epoch_ms: i64 = 1_705_311_000_000;
-        let fmt = CString::new("%Y-%m-%d %H:%M:%S").unwrap();
+        let fmt = ManagedString::new("%Y-%m-%d %H:%M:%S");
 
-        // SAFETY: fmt.as_ptr() is a valid NUL-terminated C string.
+        // SAFETY: fmt is a live managed string handle.
         let formatted = unsafe { hew_datetime_format(epoch_ms, fmt.as_ptr()) };
         // SAFETY: formatted was returned by hew_datetime_format.
         let text = unsafe { read_and_free(formatted) };
         assert_eq!(text, "2024-01-15 09:30:00");
 
-        let input = CString::new(text).unwrap();
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let input = ManagedString::new(&text);
+        // SAFETY: both handles are live managed strings.
         let parsed = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(parsed, epoch_ms);
     }
@@ -309,22 +304,22 @@ mod tests {
 
     #[test]
     fn test_parse_error_returns_negative_one() {
-        let bad_input = CString::new("not-a-date").unwrap();
-        let fmt = CString::new("%Y-%m-%dT%H:%M:%S%.3fZ").unwrap();
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let bad_input = ManagedString::new("not-a-date");
+        let fmt = ManagedString::new("%Y-%m-%dT%H:%M:%S%.3fZ");
+        // SAFETY: both handles are live managed strings.
         let result = unsafe { hew_datetime_parse(bad_input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, -1);
 
-        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
+        // SAFETY: hew_datetime_last_error returns a live managed string.
         let err = unsafe { read_and_free(hew_datetime_last_error()) };
         assert!(err.contains("parse"));
     }
 
     #[test]
     fn test_valid_pre_epoch_negative_one_has_no_last_error() {
-        let input = CString::new("1969-12-31T23:59:59.999Z").unwrap();
-        let fmt = CString::new("%Y-%m-%dT%H:%M:%S%.3fZ").unwrap();
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let input = ManagedString::new("1969-12-31T23:59:59.999Z");
+        let fmt = ManagedString::new("%Y-%m-%dT%H:%M:%S%.3fZ");
+        // SAFETY: both handles are live managed strings.
         let result = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, -1);
         // SAFETY: hew_datetime_year has no preconditions for a valid epoch timestamp.
@@ -335,9 +330,9 @@ mod tests {
 
     #[test]
     fn test_positive_epoch_parse_returns_legitimate_value() {
-        let input = CString::new("2026-01-01T00:00:00Z").unwrap();
-        let fmt = CString::new("%Y-%m-%dT%H:%M:%SZ").unwrap();
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let input = ManagedString::new("2026-01-01T00:00:00Z");
+        let fmt = ManagedString::new("%Y-%m-%dT%H:%M:%SZ");
+        // SAFETY: both handles are live managed strings.
         let result = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, 1_767_225_600_000);
         let err = hew_datetime_last_error();
@@ -346,18 +341,18 @@ mod tests {
 
     #[test]
     fn test_successful_parse_clears_last_error() {
-        let bad_input = CString::new("not-a-date").unwrap();
-        let bad_fmt = CString::new("%Y-%m-%dT%H:%M:%S%.3fZ").unwrap();
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let bad_input = ManagedString::new("not-a-date");
+        let bad_fmt = ManagedString::new("%Y-%m-%dT%H:%M:%S%.3fZ");
+        // SAFETY: both handles are live managed strings.
         let bad_result = unsafe { hew_datetime_parse(bad_input.as_ptr(), bad_fmt.as_ptr()) };
         assert_eq!(bad_result, -1);
-        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
+        // SAFETY: hew_datetime_last_error returns a live managed string.
         let err = unsafe { read_and_free(hew_datetime_last_error()) };
         assert!(err.contains("parse"));
 
-        let input = CString::new("2026-01-01T00:00:00Z").unwrap();
-        let fmt = CString::new("%Y-%m-%dT%H:%M:%SZ").unwrap();
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let input = ManagedString::new("2026-01-01T00:00:00Z");
+        let fmt = ManagedString::new("%Y-%m-%dT%H:%M:%SZ");
+        // SAFETY: both handles are live managed strings.
         let result = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, 1_767_225_600_000);
         let err = hew_datetime_last_error();

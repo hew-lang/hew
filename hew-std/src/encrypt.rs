@@ -1,13 +1,15 @@
 //! Hew runtime: `encrypt` module.
 //!
 //! Provides AES-256-GCM seal/open helpers for compiled Hew programs.
-//! Returned `bytes` use the runtime `HewVec` allocation path; returned strings
-//! are allocated with `libc::malloc` and must follow the standard runtime drop
-//! path (`free`).
+//! Returned `bytes` use the runtime `HewVec` allocation path. The Hew-facing
+//! entrypoints (`*_hew`) return managed strings, released with
+//! `hew_string_drop`; the raw two-pass entrypoints still return strings
+//! allocated with `libc::malloc`, freed with `free_cstring`.
 // WASM-TODO(crypto-encrypt): `std::crypto::encrypt` mirrors the sibling native-only crypto
 // modules and is excluded from the wasm runtime's ecosystem-FFI link set.
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::BytesTriple;
 use ring::{
     aead::{self, Aad, LessSafeKey, Nonce, UnboundKey},
@@ -22,7 +24,6 @@ const TAG_LEN: usize = 16;
 
 const OPEN_FAILURE_MSG: &[u8] =
     b"encrypt.open failed: authentication failed or ciphertext was malformed\0";
-const OPEN_ALLOC_FAILURE_MSG: &[u8] = b"encrypt.open failed: native string allocation failed\0";
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,32 +215,28 @@ pub extern "C" fn hew_encrypt_last_seal_error_code() -> i32 {
 
 /// Hew-facing fallible seal wrapper that returns base64 text.
 ///
-/// A key that is not a valid AES-256 key, a malformed plaintext, an entropy
-/// failure, and an allocation failure all return a null string pointer with
-/// the reason recorded for [`hew_encrypt_last_seal_error_code`], rather than
-/// panicking out of the FFI boundary where a caller cannot handle it. The key
-/// copy is zeroized before this function returns on every path.
+/// A key that is not a valid AES-256 key and an entropy failure both return a
+/// null string pointer with the reason recorded for
+/// [`hew_encrypt_last_seal_error_code`], rather than panicking out of the FFI
+/// boundary where a caller cannot handle it. The key copy is zeroized before
+/// this function returns on every path.
 ///
 /// # Safety
 ///
-/// `key` must be a valid `bytes` value and `plaintext` must be a valid
-/// NUL-terminated string pointer.
+/// `key` must be a valid `bytes` value and `plaintext` must be null
+/// (canonical empty) or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_encrypt_try_seal_base64_hew(
     key: *const BytesTriple,
-    plaintext: *const c_char,
-) -> *mut c_char {
+    plaintext: *const HewString,
+) -> *mut HewString {
     // SAFETY: Hew caller provides a valid bytes value.
     let Some(mut key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
         set_last_seal_error(HewEncryptError::InvalidKey);
         return ptr::null_mut();
     };
-    // SAFETY: Hew caller provides a valid string pointer.
-    let Some(plaintext_str) = (unsafe { cstr_to_str(plaintext) }) else {
-        key_bytes.zeroize();
-        set_last_seal_error(HewEncryptError::InvalidUtf8);
-        return ptr::null_mut();
-    };
+    // SAFETY: plaintext is null (canonical empty) or a live managed string handle.
+    let plaintext_str = unsafe { string_as_str(plaintext) };
 
     let sealed = seal_impl(&key_bytes, plaintext_str);
     key_bytes.zeroize();
@@ -252,13 +249,8 @@ pub unsafe extern "C" fn hew_encrypt_try_seal_base64_hew(
         }
     };
     let encoded = BASE64_STANDARD.encode(ciphertext);
-    let out = str_to_malloc(&encoded);
-    if out.is_null() {
-        set_last_seal_error(HewEncryptError::AllocationFailure);
-        return ptr::null_mut();
-    }
     set_last_seal_error(HewEncryptError::None);
-    out
+    string_from_str(&encoded)
 }
 
 /// Encrypt `plaintext` with AES-256-GCM, writing `nonce || ciphertext || tag`
@@ -385,11 +377,13 @@ pub unsafe extern "C" fn hew_encrypt_try_open(
     }
 }
 
-/// Hew-facing fallible wrapper for [`hew_encrypt_try_open`].
+/// Hew-facing fallible wrapper that opens directly to a managed string.
 ///
 /// Authentication failure and malformed ciphertext return a null string pointer
 /// plus an error tag observable through [`hew_encrypt_last_open_error_code`];
-/// no process abort is triggered on the fallible path.
+/// no process abort is triggered on the fallible path. A null return with
+/// `HewEncryptError::None` recorded means the plaintext genuinely was the
+/// empty string — the managed-string ABI has no other spelling for it.
 ///
 /// # Safety
 ///
@@ -398,7 +392,7 @@ pub unsafe extern "C" fn hew_encrypt_try_open(
 pub unsafe extern "C" fn hew_encrypt_try_open_hew(
     key: *const BytesTriple,
     ciphertext: *const BytesTriple,
-) -> *mut c_char {
+) -> *mut HewString {
     // SAFETY: Hew caller provides valid bytes values.
     let Some(mut key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
         set_last_open_error(HewEncryptError::InvalidKey);
@@ -411,29 +405,28 @@ pub unsafe extern "C" fn hew_encrypt_try_open_hew(
         return ptr::null_mut();
     };
 
-    let mut err = HewEncryptError::None;
-    // SAFETY: arguments satisfy the contract inherited from `hew_encrypt_try_open`.
-    let result = unsafe {
-        hew_encrypt_try_open(
-            key_bytes.as_ptr(),
-            key_bytes.len(),
-            ciphertext_bytes.as_ptr(),
-            ciphertext_bytes.len(),
-            &raw mut err,
-        )
-    };
+    let result = open_impl(&key_bytes, &ciphertext_bytes);
     key_bytes.zeroize();
-    set_last_open_error(err);
-    result
+    match result {
+        Ok(plaintext) => {
+            set_last_open_error(HewEncryptError::None);
+            string_from_str(&plaintext)
+        }
+        Err(err) => {
+            set_last_open_error(err.into());
+            ptr::null_mut()
+        }
+    }
 }
 
 ///
-/// Hew-facing compatibility wrapper for [`hew_encrypt_open`].
+/// Hew-facing compatibility wrapper for [`hew_encrypt_try_open_hew`].
 ///
-/// The returned C string is allocated with `libc::malloc` via
-/// [`str_to_malloc`]; the Hew runtime's standard string drop path (`free`) is
-/// the canonical release. `open` fails loudly rather than silently returning an
-/// empty string on authentication failure.
+/// The returned managed string is released with `hew_string_drop`. `open`
+/// fails loudly rather than silently returning an empty string on
+/// authentication failure — a null return only ever means the genuine empty
+/// plaintext (`HewEncryptError::None`); every other null return panics.
+///
 /// # Safety
 ///
 /// `key` and `ciphertext` must be valid `bytes` values.
@@ -441,12 +434,11 @@ pub unsafe extern "C" fn hew_encrypt_try_open_hew(
 pub unsafe extern "C" fn hew_encrypt_open_hew(
     key: *const BytesTriple,
     ciphertext: *const BytesTriple,
-) -> *mut c_char {
+) -> *mut HewString {
     // SAFETY: arguments satisfy `hew_encrypt_try_open_hew`.
     let ptr = unsafe { hew_encrypt_try_open_hew(key, ciphertext) };
     match last_open_error() {
-        HewEncryptError::None if !ptr.is_null() => ptr,
-        HewEncryptError::AllocationFailure => panic_with_message(OPEN_ALLOC_FAILURE_MSG),
+        HewEncryptError::None => ptr,
         _ => panic_with_message(OPEN_FAILURE_MSG),
     }
 }
@@ -460,7 +452,7 @@ pub unsafe extern "C" fn hew_encrypt_open_hew(
 pub unsafe extern "C" fn hew_encrypt_must_open_hew(
     key: *const BytesTriple,
     ciphertext: *const BytesTriple,
-) -> *mut c_char {
+) -> *mut HewString {
     // SAFETY: arguments satisfy `hew_encrypt_open_hew`.
     unsafe { hew_encrypt_open_hew(key, ciphertext) }
 }
@@ -468,7 +460,9 @@ pub unsafe extern "C" fn hew_encrypt_must_open_hew(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use hew_cabi::cabi::free_cstring;
+    use hew_cabi::string::string_release;
     use std::ffi::{CStr, CString};
 
     const TEST_KEY: [u8; AES_256_KEY_LEN] = [
@@ -491,7 +485,7 @@ mod tests {
         let _ = hew_encrypt_last_seal_error_code();
         let mut key = TEST_KEY;
         let triple = borrowed_triple(&mut key);
-        let plaintext = CString::new("hew").expect("no interior NUL");
+        let plaintext = ManagedString::new("hew");
         FORCE_SEAL_RNG_FAILURE.with(|slot| slot.set(true));
 
         // SAFETY: both arguments are valid for the duration of the call.
@@ -512,7 +506,7 @@ mod tests {
         let _ = hew_encrypt_last_seal_error_code();
         let mut key = [0x11u8; AES_256_KEY_LEN - 1];
         let triple = borrowed_triple(&mut key);
-        let plaintext = CString::new("hew").expect("no interior NUL");
+        let plaintext = ManagedString::new("hew");
 
         // SAFETY: both arguments are valid for the duration of the call.
         let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
@@ -534,7 +528,7 @@ mod tests {
         let _ = hew_encrypt_last_seal_error_code();
         let mut key = [0x5Au8; AES_256_KEY_LEN - 1];
         let triple = borrowed_triple(&mut key);
-        let plaintext = CString::new("a secret plaintext").expect("no interior NUL");
+        let plaintext = ManagedString::new("a secret plaintext");
 
         // SAFETY: both arguments are valid for the duration of the call.
         let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
@@ -553,7 +547,7 @@ mod tests {
         let _ = hew_encrypt_last_seal_error_code();
         let mut key = TEST_KEY;
         let triple = borrowed_triple(&mut key);
-        let plaintext = CString::new("hew round trip").expect("no interior NUL");
+        let plaintext = ManagedString::new("hew round trip");
 
         // SAFETY: both arguments are valid for the duration of the call.
         let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
@@ -563,13 +557,10 @@ mod tests {
             HewEncryptError::None as i32
         );
 
-        // SAFETY: `out` is a fresh NUL-terminated string owned by this test.
-        let encoded = unsafe { CStr::from_ptr(out) }
-            .to_str()
-            .expect("base64 is valid UTF-8")
-            .to_owned();
-        // SAFETY: `out` is a fresh string this test now owns.
-        unsafe { free_cstring(out) };
+        // SAFETY: `out` is a fresh managed string owned by this test.
+        let encoded = unsafe { string_as_str(out) }.to_owned();
+        // SAFETY: `out` is a fresh managed string this test now owns.
+        unsafe { string_release(out) };
 
         let ciphertext = BASE64_STANDARD
             .decode(&encoded)
@@ -667,6 +658,71 @@ mod tests {
         assert_eq!(err, HewEncryptError::AuthFailed);
         assert_eq!(2 + 2, 4, "process must continue after auth failure");
     }
+
+    /// Managed-string open path: a normal roundtrip through
+    /// `hew_encrypt_try_open_hew`/`hew_encrypt_open_hew`/`hew_encrypt_must_open_hew`.
+    #[test]
+    fn open_hew_roundtrip_returns_plaintext() {
+        let mut key = TEST_KEY;
+        let key_triple = borrowed_triple(&mut key);
+        let mut ciphertext = seal_impl(&TEST_KEY, "hello").expect("seal should succeed");
+        let ct_triple = borrowed_triple(&mut ciphertext);
+
+        // SAFETY: both triples are valid for the duration of the call.
+        let ptr = unsafe { hew_encrypt_try_open_hew(&raw const key_triple, &raw const ct_triple) };
+        assert!(!ptr.is_null());
+        assert_eq!(last_open_error(), HewEncryptError::None);
+        // SAFETY: `ptr` is a fresh managed string owned by this test.
+        assert_eq!(unsafe { string_as_str(ptr) }, "hello");
+        // SAFETY: `ptr` is a fresh managed string this test now owns.
+        unsafe { string_release(ptr) };
+
+        // SAFETY: both triples are valid for the duration of the call.
+        let must_ptr =
+            unsafe { hew_encrypt_must_open_hew(&raw const key_triple, &raw const ct_triple) };
+        assert!(!must_ptr.is_null());
+        // SAFETY: `must_ptr` is a fresh managed string owned by this test.
+        assert_eq!(unsafe { string_as_str(must_ptr) }, "hello");
+        // SAFETY: `must_ptr` is a fresh managed string this test now owns.
+        unsafe { string_release(must_ptr) };
+    }
+
+    /// Regression for the empty-plaintext trap: under the managed-string ABI,
+    /// a successful open of an empty plaintext returns null with
+    /// `HewEncryptError::None`, indistinguishable at the pointer level from a
+    /// null returned on failure. `hew_encrypt_open_hew`/`must_open_hew` must
+    /// key off the error slot alone and must NOT panic on this null-but-ok
+    /// result (the bug this migration fixed: the prior `!ptr.is_null()`
+    /// guard read a genuine empty plaintext as a failure).
+    #[test]
+    fn open_hew_empty_plaintext_does_not_panic() {
+        let mut key = TEST_KEY;
+        let key_triple = borrowed_triple(&mut key);
+        let mut ciphertext = seal_impl(&TEST_KEY, "").expect("seal should succeed");
+        let ct_triple = borrowed_triple(&mut ciphertext);
+
+        // SAFETY: both triples are valid for the duration of the call.
+        let ptr = unsafe { hew_encrypt_try_open_hew(&raw const key_triple, &raw const ct_triple) };
+        assert!(
+            ptr.is_null(),
+            "the managed-string ABI has no non-null spelling of the empty string"
+        );
+        assert_eq!(last_open_error(), HewEncryptError::None);
+
+        // SAFETY: both triples are valid for the duration of the call; a
+        // panic here would mean the empty-plaintext regression came back.
+        let must_ptr =
+            unsafe { hew_encrypt_must_open_hew(&raw const key_triple, &raw const ct_triple) };
+        assert!(must_ptr.is_null(), "null is the correct spelling of \"\"");
+    }
+
+    // `hew_encrypt_open_hew`'s authentication-failure path panics through
+    // `hew_panic_msg`, which exits the process outside a Hew actor/scheduler
+    // context rather than unwinding — not a `#[should_panic]`-safe path in a
+    // plain `cargo test` binary. `hew_encrypt_try_open_hew`'s auth-failure
+    // behaviour (null return, `AuthFailed` on the error slot) is covered by
+    // `try_open_tampered_ciphertext_returns_err_without_aborting` above via
+    // the raw ABI, which exercises the same `open_impl` error path.
 
     #[test]
     fn raw_abi_roundtrip_uses_two_pass_contract() {

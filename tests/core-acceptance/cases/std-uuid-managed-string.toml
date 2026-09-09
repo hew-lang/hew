@@ -1,10 +1,10 @@
 [[case]]
 id = "std-uuid-managed-string"
-intent = "A std extern that returns a string hands back one owned managed value: uuid.v4 is readable alone, as a concatenation operand and repeatedly in a loop, and ipnet carries managed strings in both directions."
+intent = "A std extern that returns a string hands back one owned managed value: uuid.v4 is readable alone, as a concatenation operand and repeatedly in a loop, while ipnet, url, datetime and markdown carry managed strings in both directions across a borrowed argument, an opaque handle accessor and a text transform."
 source = "cases/std-uuid-managed-string.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "36\ntrue\n39\ntrue\n36\ntrue\nfalse\n10.0.0.0\n192.168.1.255/32\ntrue\ntrue\ntrue\ntrue\n144\n"
+stdout = "36\ntrue\n39\ntrue\n36\ntrue\nfalse\n10.0.0.0\n192.168.1.255/32\ntrue\ntrue\ntrue\ntrue\nhttps|example.test|/a/b|q=hew|frag\nhttps://example.test:8080/a/b?q=hew#frag\n1970-01-01T00:00:00Z\n<h1>title</h1>\n144\n"
 exit = 0

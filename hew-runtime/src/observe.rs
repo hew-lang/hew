@@ -6,7 +6,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -15,10 +15,10 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::actor::HEW_MAX_WORKERS;
-use crate::cabi::{free_cstring, str_to_malloc};
 use crate::lifetime::PoisonSafe;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::util::{CondvarExt, MutexExt};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 const SHARD_COUNT: usize = HEW_MAX_WORKERS + 1;
 const OBSERVE_BARRIER_OK: i64 = 0;
@@ -1089,52 +1089,33 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
 ///
 /// # Safety
 ///
-/// `name` must be null or a valid NUL-terminated C string.
+/// `name` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_observe_read_u64(name: *const c_char) -> i64 {
-    if name.is_null() {
-        return -1;
-    }
-    // SAFETY: caller passes a valid C string per the function contract.
-    let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() else {
-        return -1;
-    };
+pub unsafe extern "C" fn hew_observe_read_u64(name: *const HewString) -> i64 {
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    let name = unsafe { string_as_str(name) };
     read_u64(name).map_or(-1, u64_to_i64_saturating)
 }
 
-/// Return the current scrape text as an owned string.
+/// Return the current scrape text as an owned managed string.
 ///
 /// # Ownership
 ///
-/// The returned pointer is allocated with the Hew C-string allocator. Compiled
-/// Hew `string` values release it through the normal string drop path; embedders
-/// that call this C ABI directly may release it with [`hew_observe_string_free`].
+/// The caller receives one owner and releases it with `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_observe_scrape() -> *mut c_char {
-    str_to_malloc(&scrape_text())
+pub extern "C" fn hew_observe_scrape() -> *mut HewString {
+    string_from_str(&scrape_text())
 }
 
 /// Return the canonical metric series names as newline-delimited text.
 ///
 /// # Ownership
 ///
-/// The returned pointer follows the same ownership rules as
+/// The returned handle follows the same ownership rules as
 /// [`hew_observe_scrape`].
 #[no_mangle]
-pub extern "C" fn hew_observe_series() -> *mut c_char {
-    str_to_malloc(&series_text())
-}
-
-/// Release a string returned by observe C ABI helpers.
-///
-/// # Safety
-///
-/// `ptr` must be null or a pointer returned by an observe C ABI string helper.
-#[no_mangle]
-pub unsafe extern "C" fn hew_observe_string_free(ptr: *mut c_char) {
-    // SAFETY: observe string helpers allocate through the header-aware Hew
-    // C-string allocator and transfer ownership to the caller.
-    unsafe { free_cstring(ptr) };
+pub extern "C" fn hew_observe_series() -> *mut HewString {
+    string_from_str(&series_text())
 }
 
 /// Reset metrics that are safe to clear while dispatchers are live.
@@ -1225,13 +1206,14 @@ pub(crate) fn register_reset_hooks() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
 
     #[test]
     fn read_known_metric_and_unknown_sentinel() {
-        let known = CString::new("heap.live_bytes").unwrap();
-        let unknown = CString::new("does.not.exist").unwrap();
-        // SAFETY: CStrings provide valid NUL-terminated names.
+        let known = ManagedString::new("heap.live_bytes");
+        let unknown = ManagedString::new("does.not.exist");
+        // SAFETY: both fixtures own live managed names.
         unsafe {
             assert!(hew_observe_read_u64(known.as_ptr()) >= 0);
             assert_eq!(hew_observe_read_u64(unknown.as_ptr()), -1);
@@ -1463,11 +1445,14 @@ mod tests {
     }
 
     #[test]
-    fn observe_scrape_string_free_uses_header_aware_release() {
-        let ptr = hew_observe_scrape();
-        assert!(!ptr.is_null());
-        // SAFETY: ptr was returned by hew_observe_scrape and is released once.
-        unsafe { hew_observe_string_free(ptr) };
+    fn observe_scrape_transfers_one_managed_owner() {
+        let value = hew_observe_scrape();
+        assert!(!value.is_null());
+        // SAFETY: `value` is the live owner returned by the producer.
+        unsafe {
+            assert!(hew_cabi::string::string_as_str(value).contains("heap_live_bytes"));
+            string_release(value);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -1,5 +1,8 @@
 import std.misc.uuid;
 import std.net.ipnet;
+import std.net.url;
+import std.time.datetime;
+import std.encoding.markdown;
 
 fn main() {
     // A string returned by an extern is one owned managed value: readable on
@@ -24,6 +27,18 @@ fn main() {
     println(ipnet.is_v6("::1"));
     println(ipnet.is_private("10.1.2.3"));
     println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3"));
+
+    // Accessors on an opaque handle each hand back their own owner.
+    let u = url.parse("https://example.test:8080/a/b?q=hew#frag");
+    println(u.scheme() + "|" + u.host() + "|" + u.path() + "|" + u.query() + "|" + u.fragment());
+    println(u.to_string());
+
+    // A borrowed format string with an owned result, and a text transform.
+    match datetime.format(0, "%Y-%m-%dT%H:%M:%SZ") {
+        .Ok(text) => println(text),
+        .Err(reason) => println("format failed: " + reason),
+    }
+    println(markdown.to_html_safe("# title").trim());
 
     // Repeated production and release inside a loop leaves the producer usable.
     var total = 0;

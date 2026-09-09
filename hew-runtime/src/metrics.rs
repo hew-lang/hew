@@ -931,6 +931,7 @@ pub fn session_reset_metrics() {
 // Handles are non-owning index IDs — Copy on the Hew side, no free, no
 // double-free class.
 
+use hew_cabi::string::{string_as_str, HewString};
 use std::ffi::{c_char, CStr};
 
 /// Borrow a C string as `&str`, or `None` on null / non-UTF-8.
@@ -979,14 +980,11 @@ unsafe fn cstr_array(arr: *const *const c_char, n: i64) -> Option<Vec<String>> {
 ///
 /// # Safety
 ///
-/// `name` must be null or a valid NUL-terminated C string.
+/// `name` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_metric_counter_register(name: *const c_char) -> i64 {
-    // SAFETY: forwarded contract on `name`.
-    match unsafe { cstr_opt(name) } {
-        Some(name) => register_counter(name),
-        None => REGISTER_FAILED,
-    }
+pub unsafe extern "C" fn hew_metric_counter_register(name: *const HewString) -> i64 {
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    register_counter(unsafe { string_as_str(name) })
 }
 
 /// Increment a counter by one.
@@ -1005,14 +1003,11 @@ pub extern "C" fn hew_metric_counter_add(handle: i64, n: i64) {
 ///
 /// # Safety
 ///
-/// `name` must be null or a valid NUL-terminated C string.
+/// `name` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_metric_gauge_register(name: *const c_char) -> i64 {
-    // SAFETY: forwarded contract on `name`.
-    match unsafe { cstr_opt(name) } {
-        Some(name) => register_gauge(name),
-        None => REGISTER_FAILED,
-    }
+pub unsafe extern "C" fn hew_metric_gauge_register(name: *const HewString) -> i64 {
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    register_gauge(unsafe { string_as_str(name) })
 }
 
 /// Set a gauge to `n`.
@@ -1078,14 +1073,11 @@ pub unsafe extern "C" fn hew_metric_histogram_register(
 ///
 /// # Safety
 ///
-/// `name` must be null or a valid NUL-terminated C string.
+/// `name` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_metric_histogram_register_simple(name: *const c_char) -> i64 {
-    // SAFETY: forwarded contract on `name`.
-    match unsafe { cstr_opt(name) } {
-        Some(name) => register_histogram(name, &[]),
-        None => REGISTER_FAILED,
-    }
+pub unsafe extern "C" fn hew_metric_histogram_register_simple(name: *const HewString) -> i64 {
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    register_histogram(unsafe { string_as_str(name) }, &[])
 }
 
 /// Record one histogram observation. Fractional observations contribute their
@@ -1714,8 +1706,8 @@ mod tests {
     #[test]
     fn ffi_counter_register_inc_add_round_trips() {
         let _g = guard();
-        let name = CString::new("ffi.counter").unwrap();
-        // SAFETY: name is a valid C string.
+        let name = crate::test_string::ManagedString::new("ffi.counter");
+        // SAFETY: `name` owns a live managed string.
         let h = unsafe { hew_metric_counter_register(name.as_ptr()) };
         assert!(h >= 0);
         hew_metric_counter_inc(h);
@@ -1725,10 +1717,11 @@ mod tests {
         assert_eq!(self_metrics().invalid_ops, 1);
     }
 
+    /// Null is the canonical empty name, which the registry rejects.
     #[test]
-    fn ffi_counter_register_null_name_is_failed_sentinel() {
+    fn ffi_counter_register_empty_name_is_failed_sentinel() {
         let _g = guard();
-        // SAFETY: null is an explicitly handled input.
+        // SAFETY: null is the canonical empty managed string.
         let h = unsafe { hew_metric_counter_register(std::ptr::null()) };
         assert_eq!(h, REGISTER_FAILED);
     }
@@ -1736,8 +1729,8 @@ mod tests {
     #[test]
     fn ffi_gauge_full_surface_round_trips() {
         let _g = guard();
-        let name = CString::new("ffi.gauge").unwrap();
-        // SAFETY: valid C string.
+        let name = crate::test_string::ManagedString::new("ffi.gauge");
+        // SAFETY: `name` owns a live managed string.
         let h = unsafe { hew_metric_gauge_register(name.as_ptr()) };
         assert!(h >= 0);
         hew_metric_gauge_set(h, 10);

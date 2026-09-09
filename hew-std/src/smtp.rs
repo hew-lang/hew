@@ -1,10 +1,10 @@
 //! Hew runtime: SMTP email sending via lettre.
 //!
 //! Provides SMTP client functionality for compiled Hew programs.
-//! All returned strings and connection handles are allocated with `libc::malloc`
-//! / `Box` so callers can free them with the corresponding free function.
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::os::raw::c_char;
+//! Text arguments and results use managed UTF-8 strings; connection handles
+//! are `Box`-allocated so callers can free them with the corresponding free
+//! function. Null is the canonical empty string.
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::time::Duration;
 
 use lettre::message::{header::ContentType, Mailbox};
@@ -44,8 +44,8 @@ pub struct HewSmtpConn {
 ///
 /// Returns an empty string when no SMTP client error has been recorded.
 #[no_mangle]
-pub extern "C" fn hew_smtp_last_error() -> *mut c_char {
-    str_to_malloc(&get_smtp_last_error())
+pub extern "C" fn hew_smtp_last_error() -> *mut HewString {
+    string_from_str(&get_smtp_last_error())
 }
 
 impl std::fmt::Debug for HewSmtpConn {
@@ -152,24 +152,36 @@ fn normalize_port(port: i64) -> Option<u16> {
     u16::try_from(port).ok()
 }
 
+/// Treat the managed-string canonical empty as "not provided".
+///
+/// A managed empty string and a null handle are indistinguishable, so an
+/// explicit empty username/password now reads as "no credentials given" too
+/// — the previous C-string contract could tell an empty string from null and
+/// would build `Credentials("", "")` for the former; that distinction cannot
+/// exist under the managed carrier.
+fn non_empty(text: &str) -> Option<&str> {
+    (!text.is_empty()).then_some(text)
+}
+
 /// Connect to an SMTP server using STARTTLS.
 ///
 /// Returns a heap-allocated [`HewSmtpConn`] on success, or null on error.
-/// `user` and `pass` may be null for unauthenticated connections. `port` is
-/// `i64` (not `i32`) so a caller-supplied out-of-range value is rejected by
-/// `normalize_port` directly instead of being narrowed by a lossy cast first.
-/// The caller must close the connection with [`hew_smtp_close`].
+/// `user` and `pass` may be null (canonical empty) for unauthenticated
+/// connections. `port` is `i64` (not `i32`) so a caller-supplied out-of-range
+/// value is rejected by `normalize_port` directly instead of being narrowed
+/// by a lossy cast first. The caller must close the connection with
+/// [`hew_smtp_close`].
 ///
 /// # Safety
 ///
-/// - `host` must be a valid NUL-terminated C string.
-/// - If non-null, `user` and `pass` must be valid NUL-terminated C strings.
+/// `host`, `user`, and `pass` must each be null (canonical empty) or a live
+/// managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_connect(
-    host: *const c_char,
+    host: *const HewString,
     port: i64,
-    user: *const c_char,
-    pass: *const c_char,
+    user: *const HewString,
+    pass: *const HewString,
 ) -> *mut HewSmtpConn {
     let Some(port) = normalize_port(port) else {
         set_smtp_last_error(format!(
@@ -177,15 +189,17 @@ pub unsafe extern "C" fn hew_smtp_connect(
         ));
         return std::ptr::null_mut();
     };
-    // SAFETY: host is a valid NUL-terminated C string per caller contract.
-    let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
-        set_smtp_last_error("SMTP connect failed: host is null or invalid UTF-8");
+    // SAFETY: host borrows a live managed string or canonical empty.
+    let host_str = unsafe { string_as_str(host) };
+    if host_str.is_empty() {
+        set_smtp_last_error("SMTP connect failed: host is empty");
         return std::ptr::null_mut();
-    };
-    // SAFETY: user is a valid NUL-terminated C string (or null) per caller contract.
-    let user_str = unsafe { cstr_to_str(user) };
-    // SAFETY: pass is a valid NUL-terminated C string (or null) per caller contract.
-    let pass_str = unsafe { cstr_to_str(pass) };
+    }
+    // SAFETY: user/pass borrow live managed strings or canonical empty; an
+    // empty value now means "no credentials" (see `non_empty`).
+    let user_str = non_empty(unsafe { string_as_str(user) });
+    // SAFETY: as above.
+    let pass_str = non_empty(unsafe { string_as_str(pass) });
 
     let Ok(builder) = SmtpTransport::starttls_relay(host_str) else {
         set_smtp_last_error(format!(
@@ -206,20 +220,21 @@ pub unsafe extern "C" fn hew_smtp_connect(
 /// Connect to an SMTP server using implicit TLS (typically port 465).
 ///
 /// Returns a heap-allocated [`HewSmtpConn`] on success, or null on error.
-/// `user` and `pass` may be null for unauthenticated connections. `port` is
-/// `i64` for the same lossless-validation reason as [`hew_smtp_connect`].
-/// The caller must close the connection with [`hew_smtp_close`].
+/// `user` and `pass` may be null (canonical empty) for unauthenticated
+/// connections. `port` is `i64` for the same lossless-validation reason as
+/// [`hew_smtp_connect`]. The caller must close the connection with
+/// [`hew_smtp_close`].
 ///
 /// # Safety
 ///
-/// - `host` must be a valid NUL-terminated C string.
-/// - If non-null, `user` and `pass` must be valid NUL-terminated C strings.
+/// `host`, `user`, and `pass` must each be null (canonical empty) or a live
+/// managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_connect_tls(
-    host: *const c_char,
+    host: *const HewString,
     port: i64,
-    user: *const c_char,
-    pass: *const c_char,
+    user: *const HewString,
+    pass: *const HewString,
 ) -> *mut HewSmtpConn {
     let Some(port) = normalize_port(port) else {
         set_smtp_last_error(format!(
@@ -227,15 +242,17 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
         ));
         return std::ptr::null_mut();
     };
-    // SAFETY: host is a valid NUL-terminated C string per caller contract.
-    let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
-        set_smtp_last_error("SMTP connect failed: host is null or invalid UTF-8");
+    // SAFETY: host borrows a live managed string or canonical empty.
+    let host_str = unsafe { string_as_str(host) };
+    if host_str.is_empty() {
+        set_smtp_last_error("SMTP connect failed: host is empty");
         return std::ptr::null_mut();
-    };
-    // SAFETY: user is a valid NUL-terminated C string (or null) per caller contract.
-    let user_str = unsafe { cstr_to_str(user) };
-    // SAFETY: pass is a valid NUL-terminated C string (or null) per caller contract.
-    let pass_str = unsafe { cstr_to_str(pass) };
+    }
+    // SAFETY: user/pass borrow live managed strings or canonical empty; an
+    // empty value now means "no credentials" (see `non_empty`).
+    let user_str = non_empty(unsafe { string_as_str(user) });
+    // SAFETY: as above.
+    let pass_str = non_empty(unsafe { string_as_str(pass) });
 
     let Ok(builder) = SmtpTransport::relay(host_str) else {
         set_smtp_last_error(format!(
@@ -253,35 +270,31 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
     Box::into_raw(Box::new(HewSmtpConn { transport }))
 }
 
-/// Build an email [`Message`] from C string arguments.
+/// Build an email [`Message`] from managed string arguments.
 ///
-/// Returns an error if any pointer is null, contains invalid UTF-8, or the
-/// addresses/message cannot be parsed.
+/// Returns an error if the addresses/message cannot be parsed, or if subject
+/// and body are both empty.
 ///
 /// # Safety
 ///
-/// All non-null pointers must point to valid NUL-terminated C strings.
+/// Each argument must be null (canonical empty) or a live managed string handle.
 unsafe fn build_message(
-    from: *const c_char,
-    to: *const c_char,
-    subject: *const c_char,
-    body: *const c_char,
+    from: *const HewString,
+    to: *const HewString,
+    subject: *const HewString,
+    body: *const HewString,
     html: bool,
 ) -> Result<Message, String> {
-    // SAFETY: from is a valid NUL-terminated C string per caller contract.
-    let from_str = unsafe { cstr_to_str(from) }.ok_or_else(|| {
-        "SMTP message build failed: from address is null or invalid UTF-8".to_string()
-    })?;
-    // SAFETY: to is a valid NUL-terminated C string per caller contract.
-    let to_str = unsafe { cstr_to_str(to) }.ok_or_else(|| {
-        "SMTP message build failed: to address is null or invalid UTF-8".to_string()
-    })?;
-    // SAFETY: subject is a valid NUL-terminated C string per caller contract.
-    let subject_str = unsafe { cstr_to_str(subject) }
-        .ok_or_else(|| "SMTP message build failed: subject is null or invalid UTF-8".to_string())?;
-    // SAFETY: body is a valid NUL-terminated C string per caller contract.
-    let body_str = unsafe { cstr_to_str(body) }
-        .ok_or_else(|| "SMTP message build failed: body is null or invalid UTF-8".to_string())?;
+    // SAFETY: each argument borrows a live managed string or canonical empty
+    // for this call.
+    let (from_str, to_str, subject_str, body_str) = unsafe {
+        (
+            string_as_str(from),
+            string_as_str(to),
+            string_as_str(subject),
+            string_as_str(body),
+        )
+    };
 
     let from_mbox: Mailbox = match from_str.parse() {
         Ok(mailbox) => mailbox,
@@ -324,17 +337,18 @@ unsafe fn build_message(
 
 fn smtp_send_impl(
     conn: *mut HewSmtpConn,
-    from: *const c_char,
-    to: *const c_char,
-    subject: *const c_char,
-    body: *const c_char,
+    from: *const HewString,
+    to: *const HewString,
+    subject: *const HewString,
+    body: *const HewString,
     html: bool,
     send: impl FnOnce(&HewSmtpConn, &Message) -> Result<(), String>,
 ) -> i32 {
     if conn.is_null() {
         return smtp_error_result("SMTP send failed: connection pointer is null");
     }
-    // SAFETY: from/to/subject/body are valid NUL-terminated C strings per caller contract.
+    // SAFETY: from/to/subject/body each borrow a live managed string or
+    // canonical empty per caller contract.
     let message = match unsafe { build_message(from, to, subject, body, html) } {
         Ok(message) => message,
         Err(err) => return smtp_error_result(err),
@@ -358,14 +372,15 @@ fn smtp_send_impl(
 ///
 /// - `conn` must be a valid pointer returned by [`hew_smtp_connect`] or
 ///   [`hew_smtp_connect_tls`].
-/// - `from`, `to`, `subject`, and `body` must be valid NUL-terminated C strings.
+/// - `from`, `to`, `subject`, and `body` must each be null (canonical empty)
+///   or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send(
     conn: *mut HewSmtpConn,
-    from: *const c_char,
-    to: *const c_char,
-    subject: *const c_char,
-    body: *const c_char,
+    from: *const HewString,
+    to: *const HewString,
+    subject: *const HewString,
+    body: *const HewString,
 ) -> i32 {
     smtp_send_impl(conn, from, to, subject, body, false, |conn, message| {
         conn.transport
@@ -383,14 +398,15 @@ pub unsafe extern "C" fn hew_smtp_send(
 ///
 /// - `conn` must be a valid pointer returned by [`hew_smtp_connect`] or
 ///   [`hew_smtp_connect_tls`].
-/// - `from`, `to`, `subject`, and `html` must be valid NUL-terminated C strings.
+/// - `from`, `to`, `subject`, and `html` must each be null (canonical empty)
+///   or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_html(
     conn: *mut HewSmtpConn,
-    from: *const c_char,
-    to: *const c_char,
-    subject: *const c_char,
-    html: *const c_char,
+    from: *const HewString,
+    to: *const HewString,
+    subject: *const HewString,
+    html: *const HewString,
 ) -> i32 {
     smtp_send_impl(conn, from, to, subject, html, true, |conn, message| {
         conn.transport
@@ -401,10 +417,10 @@ pub unsafe extern "C" fn hew_smtp_send_html(
 }
 
 unsafe fn connect_send_close(
-    host: *const c_char,
+    host: *const HewString,
     port: i64,
-    user: *const c_char,
-    pass: *const c_char,
+    user: *const HewString,
+    pass: *const HewString,
     send: impl FnOnce(*mut HewSmtpConn) -> i32,
 ) -> i32 {
     with_connection(
@@ -428,19 +444,18 @@ unsafe fn connect_send_close(
 ///
 /// # Safety
 ///
-/// - `host` must be a valid NUL-terminated C string.
-/// - If non-null, `user` and `pass` must be valid NUL-terminated C strings.
-/// - `from`, `to`, `subject`, and `body` must be valid NUL-terminated C strings.
+/// `host`, `user`, `pass`, `from`, `to`, `subject`, and `body` must each be
+/// null (canonical empty) or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_once(
-    host: *const c_char,
+    host: *const HewString,
     port: i64,
-    user: *const c_char,
-    pass: *const c_char,
-    from: *const c_char,
-    to: *const c_char,
-    subject: *const c_char,
-    body: *const c_char,
+    user: *const HewString,
+    pass: *const HewString,
+    from: *const HewString,
+    to: *const HewString,
+    subject: *const HewString,
+    body: *const HewString,
 ) -> i32 {
     // SAFETY: all pointers satisfy the contracts of connect_send_close/hew_smtp_send.
     unsafe {
@@ -457,19 +472,18 @@ pub unsafe extern "C" fn hew_smtp_send_once(
 ///
 /// # Safety
 ///
-/// - `host` must be a valid NUL-terminated C string.
-/// - If non-null, `user` and `pass` must be valid NUL-terminated C strings.
-/// - `from`, `to`, `subject`, and `html` must be valid NUL-terminated C strings.
+/// `host`, `user`, `pass`, `from`, `to`, `subject`, and `html` must each be
+/// null (canonical empty) or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_html_once(
-    host: *const c_char,
+    host: *const HewString,
     port: i64,
-    user: *const c_char,
-    pass: *const c_char,
-    from: *const c_char,
-    to: *const c_char,
-    subject: *const c_char,
-    html: *const c_char,
+    user: *const HewString,
+    pass: *const HewString,
+    from: *const HewString,
+    to: *const HewString,
+    subject: *const HewString,
+    html: *const HewString,
 ) -> i32 {
     // SAFETY: all pointers satisfy the contracts of connect_send_close/hew_smtp_send_html.
     unsafe {
@@ -498,9 +512,10 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
     use lettre::transport::smtp::client::Tls;
     use std::cell::RefCell;
-    use std::ffi::{CStr, CString};
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::ptr;
@@ -512,13 +527,16 @@ mod tests {
         }))
     }
 
+    /// Last-error accessor returns "" (null) with no error recorded; a
+    /// non-empty result is a live managed string owner this helper releases.
     fn last_error_text() -> String {
         let err = hew_smtp_last_error();
-        assert!(!err.is_null());
-        // SAFETY: `err` was allocated by `hew_smtp_last_error`.
-        let text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
-        // SAFETY: `err` was allocated via `malloc`.
-        unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (test frees str_to_malloc error)
+        // SAFETY: `err` is null (canonical empty) or a live managed owner
+        // returned by `hew_smtp_last_error`.
+        let text = unsafe { string_as_str(err) }.to_owned();
+        // SAFETY: `err` is the owner this call just produced; releasing is a
+        // no-op when it is null.
+        unsafe { string_release(err) };
         text
     }
 
@@ -581,8 +599,8 @@ mod tests {
                 .expect("write junk");
         });
 
-        let host = CString::new("127.0.0.1").expect("host CString");
-        // SAFETY: host is a valid C string and optional credentials are null.
+        let host = ManagedString::new("127.0.0.1");
+        // SAFETY: host is a live managed string and optional credentials are null.
         let conn =
             unsafe { hew_smtp_connect(host.as_ptr(), i64::from(port), ptr::null(), ptr::null()) };
         assert!(
@@ -628,12 +646,12 @@ mod tests {
 
     #[test]
     fn build_plain_message() {
-        let from = CString::new("sender@example.com").unwrap();
-        let to = CString::new("recipient@example.com").unwrap();
-        let subject = CString::new("Test Subject").unwrap();
-        let body = CString::new("Hello, world!").unwrap();
+        let from = ManagedString::new("sender@example.com");
+        let to = ManagedString::new("recipient@example.com");
+        let subject = ManagedString::new("Test Subject");
+        let body = ManagedString::new("Hello, world!");
 
-        // SAFETY: All CString pointers are valid NUL-terminated C strings.
+        // SAFETY: each argument is a live managed string handle.
         let msg = unsafe {
             build_message(
                 from.as_ptr(),
@@ -648,12 +666,12 @@ mod tests {
 
     #[test]
     fn build_html_message() {
-        let from = CString::new("sender@example.com").unwrap();
-        let to = CString::new("recipient@example.com").unwrap();
-        let subject = CString::new("HTML Test").unwrap();
-        let html = CString::new("<h1>Hello</h1>").unwrap();
+        let from = ManagedString::new("sender@example.com");
+        let to = ManagedString::new("recipient@example.com");
+        let subject = ManagedString::new("HTML Test");
+        let html = ManagedString::new("<h1>Hello</h1>");
 
-        // SAFETY: All CString pointers are valid NUL-terminated C strings.
+        // SAFETY: each argument is a live managed string handle.
         let msg = unsafe {
             build_message(
                 from.as_ptr(),
@@ -679,11 +697,11 @@ mod tests {
         assert!(conn.is_null());
 
         // hew_smtp_send with null conn returns -1.
-        let from = CString::new("a@b.com").unwrap();
-        let to = CString::new("c@d.com").unwrap();
-        let subj = CString::new("s").unwrap();
-        let body = CString::new("b").unwrap();
-        // SAFETY: conn is null (tested), other pointers are valid CStrings.
+        let from = ManagedString::new("a@b.com");
+        let to = ManagedString::new("c@d.com");
+        let subj = ManagedString::new("s");
+        let body = ManagedString::new("b");
+        // SAFETY: conn is null (tested), other pointers are live managed strings.
         let rc = unsafe {
             hew_smtp_send(
                 ptr::null_mut(),
@@ -696,7 +714,7 @@ mod tests {
         assert_eq!(rc, -1);
 
         // hew_smtp_send_once with null host returns -1.
-        // SAFETY: host is null (tested), remaining pointers are valid CStrings.
+        // SAFETY: host is null (tested), remaining pointers are live managed strings.
         let rc = unsafe {
             hew_smtp_send_once(
                 ptr::null(),
@@ -712,7 +730,7 @@ mod tests {
         assert_eq!(rc, -1);
 
         // hew_smtp_send_html_once with null host returns -1.
-        // SAFETY: host is null (tested), remaining pointers are valid CStrings.
+        // SAFETY: host is null (tested), remaining pointers are live managed strings.
         let rc = unsafe {
             hew_smtp_send_html_once(
                 ptr::null(),
@@ -728,7 +746,7 @@ mod tests {
         assert_eq!(rc, -1);
 
         // hew_smtp_send_html with null conn returns -1.
-        // SAFETY: conn is null (tested), other pointers are valid CStrings.
+        // SAFETY: conn is null (tested), other pointers are live managed strings.
         let rc = unsafe {
             hew_smtp_send_html(
                 ptr::null_mut(),
@@ -747,9 +765,11 @@ mod tests {
 
     #[test]
     fn build_message_null_args() {
-        let valid = CString::new("a@b.com").unwrap();
+        // Null is the canonical empty managed string; an empty from/to address
+        // fails Mailbox parsing the same way it did under the old contract.
+        let valid = ManagedString::new("a@b.com");
 
-        // SAFETY: Testing null-pointer handling in build_message.
+        // SAFETY: null is canonical empty; `valid` is a live managed string.
         let msg = unsafe {
             build_message(
                 ptr::null(),
@@ -759,9 +779,9 @@ mod tests {
                 false,
             )
         };
-        assert!(msg.is_err(), "null from should return an error");
+        assert!(msg.is_err(), "empty from should return an error");
 
-        // SAFETY: Testing null-pointer handling in build_message.
+        // SAFETY: null is canonical empty; `valid` is a live managed string.
         let msg = unsafe {
             build_message(
                 valid.as_ptr(),
@@ -771,19 +791,19 @@ mod tests {
                 false,
             )
         };
-        assert!(msg.is_err(), "null to should return an error");
+        assert!(msg.is_err(), "empty to should return an error");
     }
 
     #[test]
     fn bad_from_address_sets_last_error() {
         clear_smtp_last_error();
         let conn = make_test_conn();
-        let from = CString::new("not-an-email").unwrap();
-        let to = CString::new("recipient@example.com").unwrap();
-        let subject = CString::new("Hello").unwrap();
-        let body = CString::new("Body").unwrap();
+        let from = ManagedString::new("not-an-email");
+        let to = ManagedString::new("recipient@example.com");
+        let subject = ManagedString::new("Hello");
+        let body = ManagedString::new("Body");
 
-        // SAFETY: `conn` is a valid test connection and the strings are valid C strings.
+        // SAFETY: `conn` is a valid test connection and the strings are live managed strings.
         let rc = unsafe {
             hew_smtp_send(
                 conn,
@@ -805,11 +825,11 @@ mod tests {
     fn empty_subject_and_body_set_distinct_last_error() {
         clear_smtp_last_error();
         let conn = make_test_conn();
-        let from = CString::new("sender@example.com").unwrap();
-        let to = CString::new("recipient@example.com").unwrap();
-        let empty = CString::new("").unwrap();
+        let from = ManagedString::new("sender@example.com");
+        let to = ManagedString::new("recipient@example.com");
+        let empty = ManagedString::new("");
 
-        // SAFETY: `conn` is a valid test connection and the strings are valid C strings.
+        // SAFETY: `conn` is a valid test connection and the strings are live managed strings.
         let rc = unsafe {
             hew_smtp_send(
                 conn,
@@ -833,11 +853,11 @@ mod tests {
     fn successful_send_clears_last_error() {
         clear_smtp_last_error();
         let conn = make_test_conn();
-        let bad_from = CString::new("not-an-email").unwrap();
-        let from = CString::new("sender@example.com").unwrap();
-        let to = CString::new("recipient@example.com").unwrap();
-        let subject = CString::new("Hello").unwrap();
-        let body = CString::new("Body").unwrap();
+        let bad_from = ManagedString::new("not-an-email");
+        let from = ManagedString::new("sender@example.com");
+        let to = ManagedString::new("recipient@example.com");
+        let subject = ManagedString::new("Hello");
+        let body = ManagedString::new("Body");
 
         let rc = smtp_send_impl(
             conn,
@@ -955,10 +975,10 @@ mod tests {
             let actor_addr = test_actor as usize;
 
             let conn = make_test_conn();
-            let from = CString::new("not-an-email").unwrap();
-            let to = CString::new("recipient@example.com").unwrap();
-            let subject = CString::new("Hello").unwrap();
-            let body = CString::new("Body").unwrap();
+            let from = ManagedString::new("not-an-email");
+            let to = ManagedString::new("recipient@example.com");
+            let subject = ManagedString::new("Hello");
+            let body = ManagedString::new("Body");
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let barrier2 = barrier.clone();
@@ -976,8 +996,8 @@ mod tests {
             // producer, not a direct slot poke.
             with_actor_context(test_actor, || {
                 // SAFETY: `conn` is a valid test connection and the strings
-                // are valid C strings; the malformed `from` address is the
-                // documented failure path.
+                // are live managed strings; the malformed `from` address is
+                // the documented failure path.
                 let rc = unsafe {
                     hew_smtp_send(
                         conn,

@@ -492,7 +492,6 @@ stable = [
   "hew_observe_read_u64",
   "hew_observe_scrape",
   "hew_observe_series",
-  "hew_observe_string_free",
   "hew_panic",
   "hew_panic_msg",
   "hew_path_absolute",
@@ -4437,8 +4436,8 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 # observe C ABI — read borrows its metric-name string. Scrape/series allocate
-# results through str_to_malloc, retain no pointer into them, and the normal
-# Hew string release is the balancing shallow discharge.
+# owned managed strings, retain no pointer into them, and the normal Hew string
+# release is the balancing shallow discharge.
 [[ownership.contracts]]
 symbol = "hew_observe_read_u64"
 result = "none"

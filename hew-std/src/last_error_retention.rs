@@ -8,9 +8,9 @@
 //! full argument for the legacy instrument. JSON/YAML use managed handles
 //! and additionally preserve embedded NUL text after the slot changes or clears.
 //!
-//! R1 (two live results are distinct addresses), R2 (`rc == 1` at handoff, read
-//! through the non-destructive `cstring_ensure_unique`) and R3 (the slot
-//! survives the caller's release) together say the returned buffer is the
+//! R1 (two live results are distinct allocations), R2 (releasing one result
+//! leaves its sibling readable, so each is an independent owner) and R3 (the
+//! slot survives the caller's release) together say the returned string is the
 //! caller's to release and nothing here retains a pointer into it.
 //!
 //! Each symbol names its own inducer. The slots backed by
@@ -24,10 +24,13 @@
 //! transport state, so their real loopback R1/R2/R3 proofs live in
 //! `quic/string_result_retention.rs` rather than this I/O-free family module.
 
-use std::ffi::{c_char, CStr};
-
-use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
+use crate::test_string::ManagedString;
+use hew_cabi::string::{string_as_str, string_release, HewString};
 use hew_runtime::parse_error_slot::{set_error, ErrorSlotKind};
+
+/// The diagnostics the two module-private slots hold once their inducer runs.
+const CRON_PARSE_ERROR: &str = "cron parse error: not a cron expression\n^\nThe 'Seconds' field does not support using names. 'not' specified.";
+const XML_PARSE_ERROR: &str = "xml: parse error";
 
 /// Run R1/R2/R3 against one `-> string` export and assert the returned buffer
 /// is transferred to the caller.
@@ -39,11 +42,10 @@ fn assert_result_is_transferred(
     symbol: &str,
     induce: &dyn Fn(),
     expected: &str,
-    call: unsafe extern "C" fn() -> *mut c_char,
+    call: unsafe extern "C" fn() -> *mut HewString,
 ) {
     induce();
-    // SAFETY: the export takes no arguments and returns a header-aware Hew
-    // string allocated by `str_to_malloc`.
+    // SAFETY: the export takes no arguments and returns one managed owner.
     let first = unsafe { call() };
     induce();
     // SAFETY: as above.
@@ -61,34 +63,30 @@ fn assert_result_is_transferred(
          allocate a fresh buffer per call"
     );
 
-    // R2 — the caller holds the sole owner of each result.
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: the pointer is a live header-aware Hew string from the export.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "{symbol}: the {label} result was not solely owned at handoff \
-             (rc > 1), so the caller's release would not balance it"
-        );
-    }
-
-    // SAFETY: `first` is a live header-aware Hew string.
-    let text = unsafe { CStr::from_ptr(first) }.to_owned();
+    // SAFETY: `first` is a live managed owner held by this test.
+    let text = unsafe { string_as_str(first) }.to_owned();
     assert_eq!(
-        text.to_str().expect("the oracle message is UTF-8"),
-        expected,
+        text, expected,
         "{symbol}: the export must report the message its slot holds"
     );
 
-    // R3 — release both through the release symbol the contract names
-    // (`hew_string_drop` is `free_cstring` with the static-literal skip in
-    // front), then read again: the slot must be untouched by the free.
-    // SAFETY: each pointer is live and solely owned (R2), so this is its
-    // balancing release.
+    // R2 — each result is an independent owner, so releasing one leaves its
+    // sibling readable.
+    // SAFETY: both results are live owners held by this test.
     unsafe {
-        free_cstring(first);
-        free_cstring(second);
+        string_release(first);
+        assert_eq!(
+            string_as_str(second),
+            expected,
+            "{symbol}: releasing one result disturbed its sibling, so the two \
+             results share one owner"
+        );
     }
+
+    // R3 — release the second owner through the release symbol the contract
+    // names (`hew_string_drop`), then read again: the slot must be untouched.
+    // SAFETY: `second` is live and solely owned.
+    unsafe { string_release(second) };
     induce();
     // SAFETY: as above.
     let third = unsafe { call() };
@@ -96,15 +94,16 @@ fn assert_result_is_transferred(
         !third.is_null(),
         "{symbol}: the slot did not survive the release"
     );
-    // SAFETY: `third` is a live header-aware Hew string.
-    let after = unsafe { CStr::from_ptr(third) }.to_owned();
-    assert_eq!(
-        text, after,
-        "{symbol}: the message changed after the caller released an earlier \
-         result, so the export retained a pointer into the freed buffer"
-    );
-    // SAFETY: `third` is live and solely owned.
-    unsafe { free_cstring(third) };
+    // SAFETY: `third` is a live managed owner.
+    unsafe {
+        assert_eq!(
+            string_as_str(third),
+            text,
+            "{symbol}: the message changed after the caller released an earlier \
+             result, so the export retained a pointer into the freed buffer"
+        );
+        string_release(third);
+    }
 }
 
 /// Probe an export whose message lives in the shared
@@ -112,7 +111,7 @@ fn assert_result_is_transferred(
 fn assert_slot_backed_result_is_transferred(
     symbol: &str,
     slot: ErrorSlotKind,
-    call: unsafe extern "C" fn() -> *mut c_char,
+    call: unsafe extern "C" fn() -> *mut HewString,
 ) {
     let message = format!("hew-2828-oracle: {symbol}");
     let induce = || set_error(slot, message.clone());
@@ -152,7 +151,6 @@ fn assert_managed_error_is_transferred(
     call: extern "C" fn() -> *mut hew_cabi::string::HewString,
     release: unsafe extern "C" fn(*mut hew_cabi::string::HewString),
 ) {
-    use hew_cabi::string::string_as_str;
     use hew_runtime::parse_error_slot::clear_error;
 
     let message = "parse diagnostic: clé\0雪\0tail";
@@ -219,18 +217,18 @@ fn quic_last_error_result_is_transferred() {
 }
 
 /// `cron` keeps its message in a module-private thread-local, so the inducer is
-/// the public parse entry point rejecting a null expression.
+/// the public parse entry point rejecting an expression.
 #[test]
 fn cron_last_error_result_is_transferred() {
+    let expression = ManagedString::new("not a cron expression");
     let induce = || {
-        // SAFETY: a null expression is an accepted input; the export records
-        // the error and returns null without dereferencing it.
-        unsafe { crate::time::cron::hew_cron_parse(std::ptr::null()) };
+        // SAFETY: `expression` owns a live managed string for the call.
+        unsafe { crate::time::cron::hew_cron_parse(expression.as_ptr()) };
     };
     assert_result_is_transferred(
         "hew_cron_last_error",
         &induce,
-        "invalid cron expression: null pointer or invalid UTF-8",
+        CRON_PARSE_ERROR,
         crate::time::cron::hew_cron_last_error,
     );
 }
@@ -238,15 +236,15 @@ fn cron_last_error_result_is_transferred() {
 /// `xml` keeps its message in a module-private thread-local; same shape.
 #[test]
 fn xml_last_error_result_is_transferred() {
+    let document = ManagedString::new("<unclosed>");
     let induce = || {
-        // SAFETY: a null document is an accepted input; the export records the
-        // error and returns null without dereferencing it.
-        unsafe { crate::xml::hew_xml_parse(std::ptr::null()) };
+        // SAFETY: `document` owns a live managed string for the call.
+        unsafe { crate::xml::hew_xml_parse(document.as_ptr()) };
     };
     assert_result_is_transferred(
         "hew_xml_last_error",
         &induce,
-        "xml: invalid input: null pointer",
+        XML_PARSE_ERROR,
         crate::xml::hew_xml_last_error,
     );
 }
@@ -258,8 +256,7 @@ fn msgpack_last_error_result_is_transferred() {
         // SAFETY: a null triple is an accepted input; the export records the
         // error and returns an empty string without dereferencing it.
         let empty = unsafe { crate::msgpack::hew_msgpack_to_json_hew(std::ptr::null()) };
-        // SAFETY: `empty` is a live, solely-owned header-aware Hew string.
-        unsafe { free_cstring(empty) };
+        assert!(empty.is_null(), "a rejected buffer reports no JSON text");
     };
     assert_result_is_transferred(
         "hew_msgpack_last_error",

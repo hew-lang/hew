@@ -3,66 +3,18 @@
 //! Every promoted symbol is named at its own call site below. The shared
 //! instrument proves two live results are distinct (R1), each arrives solely
 //! owned (R2), and the producer/input remains usable after the caller releases
-//! both (R3). Managed-string producers use the managed instrument for the same
-//! three properties. JSON/YAML instead verify results after container
-//! destruction, including canonical empty and embedded NUL.
+//! both (R3). JSON/YAML instead verify results after container destruction,
+//! including canonical empty and embedded NUL.
 //! An unmeasured symbol has no call site here and must remain absent
 //! from the classification's `result-retention` axis.
 
-use std::ffi::{c_char, CStr, CString};
-
 use crate::test_string::ManagedString;
-use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
 use hew_cabi::string::{string_as_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_drop, BytesTriple};
 
-fn assert_transferred(
-    symbol: &str,
-    mut call: impl FnMut() -> *mut c_char,
-    validate: impl Fn(&CStr),
-) {
-    let first = call();
-    let second = call();
-    assert!(
-        !first.is_null() && !second.is_null(),
-        "{symbol}: expected two live results"
-    );
-    assert_ne!(
-        first, second,
-        "{symbol}: R1 failed: two live results share an address"
-    );
-
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: `ptr` is a live header-aware result from the named producer.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "{symbol}: R2 failed: the {label} result was shared at handoff"
-        );
-        // SAFETY: the uniqueness probe returned the live pointer unchanged.
-        validate(unsafe { CStr::from_ptr(ptr) });
-    }
-
-    // SAFETY: R1/R2 establish two distinct, solely-owned live results.
-    unsafe {
-        free_cstring(first);
-        free_cstring(second);
-    }
-
-    let third = call();
-    assert!(
-        !third.is_null(),
-        "{symbol}: R3 failed after caller releases"
-    );
-    // SAFETY: `third` is a fresh live result.
-    validate(unsafe { CStr::from_ptr(third) });
-    // SAFETY: the third result is solely owned by this caller.
-    unsafe { free_cstring(third) };
-}
-
-/// Managed-string counterpart of [`assert_transferred`]: two live results are
-/// distinct owners (R1), each stays readable while its sibling is released
-/// (R2), and the producer keeps working after both are released (R3).
+/// Two live results are distinct owners (R1), each stays readable while its
+/// sibling is released (R2), and the producer keeps working after both are
+/// released (R3).
 fn assert_managed_transferred(
     symbol: &str,
     mut call: impl FnMut() -> *mut HewString,
@@ -130,8 +82,8 @@ fn cidr_results_are_transferred() {
 
 #[test]
 fn url_results_are_transferred() {
-    let input = CString::new("https://example.test/a/b?q=hew#frag").unwrap();
-    // SAFETY: `input` is a valid NUL-terminated URL.
+    let input = ManagedString::new("https://example.test/a/b?q=hew#frag");
+    // SAFETY: `input` owns a live managed URL string.
     let url = unsafe { crate::url::hew_url_parse(input.as_ptr()) };
     assert!(!url.is_null());
 
@@ -140,7 +92,7 @@ fn url_results_are_transferred() {
             "hew_url_scheme",
             "https",
             crate::url::hew_url_scheme
-                as unsafe extern "C" fn(*const crate::url::HewUrl) -> *mut c_char,
+                as unsafe extern "C" fn(*const crate::url::HewUrl) -> *mut HewString,
         ),
         ("hew_url_host", "example.test", crate::url::hew_url_host),
         ("hew_url_path", "/a/b", crate::url::hew_url_path),
@@ -152,11 +104,11 @@ fn url_results_are_transferred() {
             crate::url::hew_url_to_string,
         ),
     ] {
-        assert_transferred(
+        assert_managed_transferred(
             symbol,
             // SAFETY: `url` remains live through the whole loop.
             || unsafe { call(url) },
-            |text| assert_eq!(text.to_str().unwrap(), expected),
+            |text| assert_eq!(text, expected),
         );
     }
     // SAFETY: all accessors borrowed `url`; the handle is still owned here.
@@ -241,66 +193,59 @@ fn yaml_managed_results_survive_value_destruction() {
 
 #[test]
 fn toml_results_are_transferred() {
-    let scalar = CString::new("retention probe").unwrap();
+    let scalar = ManagedString::new("retention probe");
 
-    // SAFETY: `scalar` is a valid NUL-terminated string.
+    // SAFETY: `scalar` owns a live managed string.
     let toml_scalar = unsafe { crate::toml::hew_toml_from_string(scalar.as_ptr()) };
-    assert_transferred(
+    assert_managed_transferred(
         "hew_toml_get_string",
         // SAFETY: `toml_scalar` stays live through the measurement.
         || unsafe { crate::toml::hew_toml_get_string(toml_scalar) },
-        |text| assert_eq!(text.to_str().unwrap(), "retention probe"),
+        |text| assert_eq!(text, "retention probe"),
     );
     // SAFETY: the getter borrowed the live value.
     unsafe { crate::toml::hew_toml_free(toml_scalar) };
 
-    let key = CString::new("answer").unwrap();
+    let key = ManagedString::new("answer");
     let table = crate::toml::hew_toml_table_new();
     // SAFETY: table/key are live; the setter copies the scalar value.
     unsafe { crate::toml::hew_toml_table_set_int(table, key.as_ptr(), 42) };
-    assert_transferred(
+    assert_managed_transferred(
         "hew_toml_stringify",
         // SAFETY: `table` stays live through the measurement.
         || unsafe { crate::toml::hew_toml_stringify(table) },
-        |text| assert_eq!(text.to_str().unwrap(), "answer = 42\n"),
+        |text| assert_eq!(text, "answer = 42\n"),
     );
     // SAFETY: stringify borrowed the live value.
     unsafe { crate::toml::hew_toml_free(table) };
 
-    assert_transferred(
+    assert_managed_transferred(
         "hew_toml_last_serialize_error",
         || {
             // Induce the documented deterministic error before every read.
             // SAFETY: null is an explicitly accepted invalid-value sentinel.
             let empty = unsafe { crate::toml::hew_toml_stringify(std::ptr::null()) };
-            // SAFETY: the failed stringify still returns an owned empty string.
-            unsafe { free_cstring(empty) };
+            assert!(empty.is_null(), "a failed stringify reports no text");
             crate::toml::hew_toml_last_serialize_error()
         },
-        |text| {
-            assert_eq!(
-                text.to_str().unwrap(),
-                "toml: cannot serialize an invalid value"
-            );
-        },
+        |text| assert_eq!(text, "toml: cannot serialize an invalid value"),
     );
 }
 
 #[test]
 fn markdown_results_are_transferred() {
-    let markdown = CString::new("# heading\n\n<script>bad()</script>").unwrap();
-    assert_transferred(
+    let markdown = ManagedString::new("# heading\n\n<script>bad()</script>");
+    assert_managed_transferred(
         "hew_markdown_to_html",
-        // SAFETY: `markdown` is a live NUL-terminated string.
+        // SAFETY: `markdown` owns a live managed string.
         || unsafe { crate::markdown::hew_markdown_to_html(markdown.as_ptr()) },
-        |text| assert!(text.to_str().unwrap().contains("<h1>heading</h1>")),
+        |text| assert!(text.contains("<h1>heading</h1>")),
     );
-    assert_transferred(
+    assert_managed_transferred(
         "hew_markdown_to_html_safe",
-        // SAFETY: `markdown` is a live NUL-terminated string.
+        // SAFETY: `markdown` owns a live managed string.
         || unsafe { crate::markdown::hew_markdown_to_html_safe(markdown.as_ptr()) },
         |text| {
-            let text = text.to_str().unwrap();
             assert!(text.contains("<h1>heading</h1>"));
             assert!(!text.contains("<script>"));
         },
@@ -358,11 +303,12 @@ fn borrowed_triple(data: &mut [u8]) -> BytesTriple {
 
 #[test]
 fn encrypt_results_are_transferred() {
+    const PLAINTEXT: &str = "local encryption retention probe";
     let mut key = [0x5au8; 32];
     let key_triple = borrowed_triple(&mut key);
-    let plaintext = CString::new("local encryption retention probe").unwrap();
+    let plaintext = ManagedString::new(PLAINTEXT);
 
-    assert_transferred(
+    assert_managed_transferred(
         "hew_encrypt_try_seal_base64_hew",
         // SAFETY: key/plaintext stay live through the measurement.
         || unsafe {
@@ -371,20 +317,19 @@ fn encrypt_results_are_transferred() {
                 plaintext.as_ptr(),
             )
         },
-        |text| {
-            let text = text.to_bytes();
-            assert!(text.len() > 32 && text.iter().all(u8::is_ascii));
-        },
+        |text| assert!(text.len() > 32 && text.is_ascii()),
     );
 
     // Build one raw nonce+ciphertext+tag buffer through the same implementation
     // used by the Hew wrapper so both open producers receive valid local input.
+    // `hew_encrypt_seal` is the raw C entry point, so it takes a C string.
+    let raw_plaintext = std::ffi::CString::new(PLAINTEXT).unwrap();
     // SAFETY: key/plaintext are live; null output asks for the required size.
     let ciphertext_len = unsafe {
         crate::encrypt::hew_encrypt_seal(
             key.as_ptr(),
             key.len(),
-            plaintext.as_ptr(),
+            raw_plaintext.as_ptr(),
             std::ptr::null_mut(),
             0,
         )
@@ -396,7 +341,7 @@ fn encrypt_results_are_transferred() {
         crate::encrypt::hew_encrypt_seal(
             key.as_ptr(),
             key.len(),
-            plaintext.as_ptr(),
+            raw_plaintext.as_ptr(),
             ciphertext.as_mut_ptr(),
             ciphertext.len(),
         )
@@ -404,7 +349,7 @@ fn encrypt_results_are_transferred() {
     assert_eq!(written, ciphertext_len);
     let ciphertext_triple = borrowed_triple(&mut ciphertext);
 
-    assert_transferred(
+    assert_managed_transferred(
         "hew_encrypt_try_open_hew",
         // SAFETY: both borrowed triples stay live through the measurement.
         || unsafe {
@@ -413,9 +358,9 @@ fn encrypt_results_are_transferred() {
                 &raw const ciphertext_triple,
             )
         },
-        |text| assert_eq!(text, plaintext.as_c_str()),
+        |text| assert_eq!(text, PLAINTEXT),
     );
-    assert_transferred(
+    assert_managed_transferred(
         "hew_encrypt_must_open_hew",
         // SAFETY: both borrowed triples stay live through the measurement.
         || unsafe {
@@ -424,9 +369,9 @@ fn encrypt_results_are_transferred() {
                 &raw const ciphertext_triple,
             )
         },
-        |text| assert_eq!(text, plaintext.as_c_str()),
+        |text| assert_eq!(text, PLAINTEXT),
     );
-    assert_transferred(
+    assert_managed_transferred(
         "hew_encrypt_open_hew",
         // SAFETY: both borrowed triples stay live through the measurement.
         || unsafe {
@@ -435,76 +380,78 @@ fn encrypt_results_are_transferred() {
                 &raw const ciphertext_triple,
             )
         },
-        |text| assert_eq!(text, plaintext.as_c_str()),
+        |text| assert_eq!(text, PLAINTEXT),
     );
 }
 
 #[test]
 fn jwt_and_password_results_are_transferred() {
-    let payload = CString::new(r#"{"sub":"hew"}"#).unwrap();
-    let secret = CString::new("local-retention-secret").unwrap();
-    assert_transferred(
+    const CLAIMS: &str = r#"{"sub":"hew"}"#;
+    let payload = ManagedString::new(CLAIMS);
+    let secret = ManagedString::new("local-retention-secret");
+    assert_managed_transferred(
         "hew_jwt_encode_hew",
         // SAFETY: payload/secret stay live through the measurement.
         || unsafe { crate::jwt::hew_jwt_encode_hew(payload.as_ptr(), secret.as_ptr(), 0) },
-        |text| assert_eq!(text.to_str().unwrap().split('.').count(), 3),
+        |text| assert_eq!(text.split('.').count(), 3),
     );
 
     // Produce a valid token once; the decode calls borrow this independent copy.
-    // SAFETY: payload/secret are live NUL-terminated strings.
-    let token_ptr = unsafe { crate::jwt::hew_jwt_encode_hew(payload.as_ptr(), secret.as_ptr(), 0) };
-    assert!(!token_ptr.is_null());
-    // SAFETY: token_ptr is a live NUL-terminated JWT result.
-    let token = unsafe { CStr::from_ptr(token_ptr) }.to_owned();
-    // SAFETY: token_ptr is the sole owner of the temporary token result.
-    unsafe { free_cstring(token_ptr) };
-    assert_transferred(
+    // SAFETY: payload/secret are live managed strings.
+    let token_result =
+        unsafe { crate::jwt::hew_jwt_encode_hew(payload.as_ptr(), secret.as_ptr(), 0) };
+    assert!(!token_result.is_null());
+    // SAFETY: `token_result` is the sole owner of the temporary token.
+    let token = unsafe { ManagedString::new(string_as_str(token_result)) };
+    // SAFETY: the copy above is independent of the producer's owner.
+    unsafe { string_release(token_result) };
+    assert_managed_transferred(
         "hew_jwt_decode_hew",
         // SAFETY: token/secret stay live through the measurement.
         || unsafe { crate::jwt::hew_jwt_decode_hew(token.as_ptr(), secret.as_ptr(), 0) },
-        |text| assert_eq!(text.to_str().unwrap(), r#"{"sub":"hew"}"#),
+        |text| assert_eq!(text, CLAIMS),
     );
-    assert_transferred(
+    assert_managed_transferred(
         "hew_jwt_decode_insecure",
         // SAFETY: token stays live through the measurement.
         || unsafe { crate::jwt::hew_jwt_decode_insecure(token.as_ptr()) },
-        |text| assert_eq!(text.to_str().unwrap(), r#"{"sub":"hew"}"#),
+        |text| assert_eq!(text, CLAIMS),
     );
 
-    let password = CString::new("correct horse battery staple").unwrap();
-    assert_transferred(
+    let password = ManagedString::new("correct horse battery staple");
+    assert_managed_transferred(
         "hew_password_hash",
         // SAFETY: password stays live through the measurement.
         || unsafe { crate::password::hew_password_hash(password.as_ptr()) },
-        |text| assert!(text.to_bytes().starts_with(b"$argon2id$")),
+        |text| assert!(text.starts_with("$argon2id$")),
     );
-    assert_transferred(
+    assert_managed_transferred(
         "hew_password_hash_custom",
         // SAFETY: password stays live through the measurement; cost 1 is valid.
         || unsafe { crate::password::hew_password_hash_custom(password.as_ptr(), 1) },
-        |text| assert!(text.to_bytes().starts_with(b"$argon2id$")),
+        |text| assert!(text.starts_with("$argon2id$")),
     );
 }
 
 #[test]
 fn datetime_and_cron_results_are_transferred() {
-    let format = CString::new("%Y-%m-%dT%H:%M:%SZ").unwrap();
-    assert_transferred(
+    let format = ManagedString::new("%Y-%m-%dT%H:%M:%SZ");
+    assert_managed_transferred(
         "hew_datetime_format",
-        // SAFETY: format is a live NUL-terminated strftime format.
+        // SAFETY: format owns a live managed strftime format.
         || unsafe { crate::time::datetime::hew_datetime_format(0, format.as_ptr()) },
-        |text| assert_eq!(text.to_str().unwrap(), "1970-01-01T00:00:00Z"),
+        |text| assert_eq!(text, "1970-01-01T00:00:00Z"),
     );
 
-    let source = CString::new("0 15 10 * * * *").unwrap();
-    // SAFETY: source is a live NUL-terminated cron expression.
+    let source = ManagedString::new("0 15 10 * * * *");
+    // SAFETY: source owns a live managed cron expression.
     let cron = unsafe { crate::time::cron::hew_cron_parse(source.as_ptr()) };
     assert!(!cron.is_null());
-    assert_transferred(
+    assert_managed_transferred(
         "hew_cron_to_string",
         // SAFETY: cron stays live through the measurement.
         || unsafe { crate::time::cron::hew_cron_to_string(cron) },
-        |text| assert!(!text.to_bytes().is_empty()),
+        |text| assert!(!text.is_empty()),
     );
     // SAFETY: to_string borrowed the live cron handle.
     unsafe { crate::time::cron::hew_cron_free(cron) };
@@ -512,29 +459,30 @@ fn datetime_and_cron_results_are_transferred() {
 
 #[test]
 fn local_codec_string_results_are_transferred() {
+    const FIELD: &str = "protobuf retention probe";
     let message = crate::protobuf::hew_proto_msg_new();
-    let value = CString::new("protobuf retention probe").unwrap();
+    let value = ManagedString::new(FIELD);
     // SAFETY: message/value stay live and the setter copies the input.
     unsafe { crate::protobuf::hew_proto_msg_set_string(message, 7, value.as_ptr()) };
-    assert_transferred(
+    assert_managed_transferred(
         "hew_proto_msg_get_string",
         // SAFETY: message stays live through the measurement.
         || unsafe { crate::protobuf::hew_proto_msg_get_string(message, 7) },
-        |text| assert_eq!(text, value.as_c_str()),
+        |text| assert_eq!(text, FIELD),
     );
     // SAFETY: the getter borrowed the live message.
     unsafe { crate::protobuf::hew_proto_msg_free(message) };
 
-    let json = CString::new(r#"{"codec":"msgpack","n":7}"#).unwrap();
-    // SAFETY: json is a live NUL-terminated document.
+    let json = ManagedString::new(r#"{"codec":"msgpack","n":7}"#);
+    // SAFETY: json owns a live managed document.
     let encoded = unsafe { crate::msgpack::hew_msgpack_from_json_hew(json.as_ptr()) };
     assert!(!encoded.ptr.is_null());
-    assert_transferred(
+    assert_managed_transferred(
         "hew_msgpack_to_json_hew",
         // SAFETY: encoded stays live through the measurement.
         || unsafe { crate::msgpack::hew_msgpack_to_json_hew(&raw const encoded) },
         |text| {
-            let value: serde_json::Value = serde_json::from_slice(text.to_bytes()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(text).unwrap();
             assert_eq!(value["codec"], "msgpack");
             assert_eq!(value["n"], 7);
         },

@@ -1487,8 +1487,9 @@ the symbol comes from `header.symbol` looked up by key.
   `Consume` (§5.6: one disposition, the handler takes the payload) — no header
   fact is derived from whether the body suspends; `LifecycleHook` params are
   `Borrow` (their payload is runtime-owned across the call, §5.6).
-- **Carriers**: the runtime representation per class — `string` = header-aware
-  `*mut c_char`; `bytes` = `BytesTriple` (a bytes mutator rewrites the whole
+- **Carriers**: the runtime representation per class — `string` = one managed
+  `*mut HewString` handle (byte length in the header, released with
+  `hew_string_drop`); `bytes` = `BytesTriple` (a bytes mutator rewrites the whole
   triple: `ensure_unique` returns a new buffer with `offset` reset to 0 and
   consumes one owner of the old, bytes.rs:181-205, 435-440); collections =
   `*mut HewVec` etc.; closures = `{fn, env}` pair with an `hew_arc_*` env

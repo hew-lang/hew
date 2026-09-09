@@ -1824,6 +1824,15 @@ verify-ffi: cabi-surface-check
 
 # Python only; no artifacts.
 
+# A `.hew` extern declaring `string` or `bytes` reaches its Rust definition
+# through the managed carrier. Nothing else compares the two sides, so a stale
+# `c_char` signature is a runtime fault rather than a link error.
+LINT_GATES += verify-extern-string-abi
+verify-extern-string-abi:
+	$(PYTHON) scripts/verify-extern-string-abi.py
+
+# Python only; no artifacts.
+
 test-verify-ffi:
 	$(PYTHON) scripts/tests/test_verify_ffi_symbols.py
 

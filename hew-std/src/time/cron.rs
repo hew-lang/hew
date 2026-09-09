@@ -2,13 +2,12 @@
 //!
 //! Provides cron expression parsing and next-occurrence calculation for
 //! compiled Hew programs. The opaque [`HewCronExpr`] handle wraps a
-//! [`cron::Schedule`] and must be freed with [`hew_cron_free`]. All returned
-//! strings are allocated with `libc::malloc` so callers can free them with
-//! [`hew_cron_free_string`] or `libc::free`.
+//! [`cron::Schedule`] and must be freed with [`hew_cron_free`]. Returned
+//! strings are managed strings: the caller receives one owner and releases
+//! it with `hew_string_drop`. Null is the canonical empty string.
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::cell::RefCell;
-use std::ffi::c_char;
 use std::str::FromStr;
 
 use chrono::Utc;
@@ -78,14 +77,11 @@ pub struct HewCronNextResult {
 ///
 /// # Safety
 ///
-/// `expr` must be a valid NUL-terminated C string.
+/// `expr` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_cron_parse(expr: *const c_char) -> *mut HewCronExpr {
-    // SAFETY: caller guarantees expr is a valid NUL-terminated C string.
-    let Some(s) = (unsafe { cstr_to_str(expr) }) else {
-        set_cron_last_error("invalid cron expression: null pointer or invalid UTF-8");
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_cron_parse(expr: *const HewString) -> *mut HewCronExpr {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let s = unsafe { string_as_str(expr) };
     let normalized = normalize_cron_expr(s);
     match Schedule::from_str(&normalized) {
         Ok(schedule) => {
@@ -239,50 +235,33 @@ pub unsafe extern "C" fn hew_cron_next_n(
 
 /// Return this actor's last cron error.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with [`hew_cron_free_string`] or `libc::free`. Returns null when no cron
-/// error has been recorded.
+/// Returns an owned managed string; release it with `hew_string_drop`.
+/// Returns canonical empty (null) when no cron error has been recorded.
 #[no_mangle]
-pub extern "C" fn hew_cron_last_error() -> *mut c_char {
+pub extern "C" fn hew_cron_last_error() -> *mut HewString {
     match clone_cron_last_error() {
-        Some(message) => str_to_malloc(&message),
+        Some(message) => string_from_str(&message),
         None => std::ptr::null_mut(),
     }
 }
 
-/// Free a malloc-allocated string returned by cron APIs.
-///
-/// # Safety
-///
-/// `s` must be a pointer previously returned by a cron API that documents
-/// malloc-backed string ownership, and must not have been freed already.
-#[no_mangle]
-pub unsafe extern "C" fn hew_cron_free_string(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: `s` was allocated with libc::malloc by a cron API in this module.
-    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (frees str_to_malloc output)
-}
-
 /// Return the string representation of a cron expression.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// free it with [`hew_cron_free_string`] or `libc::free`. Returns null on
-/// error.
+/// Returns an owned managed string; release it with `hew_string_drop`.
+/// Returns null on error.
 ///
 /// # Safety
 ///
 /// `expr` must be a valid pointer returned by [`hew_cron_parse`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_cron_to_string(expr: *const HewCronExpr) -> *mut c_char {
+pub unsafe extern "C" fn hew_cron_to_string(expr: *const HewCronExpr) -> *mut HewString {
     if expr.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: expr is a valid HewCronExpr pointer per caller contract.
     let cron_expr = unsafe { &*expr };
     let s = cron_expr.inner.to_string();
-    str_to_malloc(&s)
+    string_from_str(&s)
 }
 
 /// Free a [`HewCronExpr`] previously returned by [`hew_cron_parse`].
@@ -307,19 +286,17 @@ pub unsafe extern "C" fn hew_cron_free(expr: *mut HewCronExpr) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
 
-    unsafe fn read_and_free_optional(s: *mut c_char) -> Option<String> {
+    unsafe fn read_and_free_optional(s: *mut HewString) -> Option<String> {
         if s.is_null() {
             return None;
         }
-        // SAFETY: `s` is a valid NUL-terminated C string allocated with malloc.
-        let text = unsafe { CStr::from_ptr(s) }
-            .to_str()
-            .expect("test error string should be valid UTF-8")
-            .to_owned();
-        // SAFETY: `s` was allocated with libc::malloc.
-        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test str_to_malloc)
+        // SAFETY: `s` is the live owner returned by the producer.
+        let text = unsafe { string_as_str(s) }.to_owned();
+        // SAFETY: this test holds the only owner of `s`.
+        unsafe { string_release(s) };
         Some(text)
     }
 
@@ -332,8 +309,8 @@ mod tests {
 
     #[test]
     fn parse_valid_expression() {
-        let expr_str = CString::new("0 30 9 * * Mon-Fri *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 30 9 * * Mon-Fri *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
         assert!(hew_cron_is_valid(expr));
@@ -343,8 +320,8 @@ mod tests {
 
     #[test]
     fn parse_valid_five_field_expression() {
-        let expr_str = CString::new("* * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("* * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
         assert!(hew_cron_is_valid(expr));
@@ -354,34 +331,34 @@ mod tests {
 
     #[test]
     fn parse_invalid_expression() {
-        let bad = CString::new("not a cron expression").unwrap();
-        // SAFETY: bad is a valid NUL-terminated C string.
+        let bad = ManagedString::new("not a cron expression");
+        // SAFETY: bad is a live managed string handle.
         let expr = unsafe { hew_cron_parse(bad.as_ptr()) };
         assert!(expr.is_null());
         assert!(!hew_cron_is_valid(expr));
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         let err = unsafe { read_and_free_optional(hew_cron_last_error()) };
         assert!(err.is_some());
         assert!(err
             .as_deref()
             .is_some_and(|message| message.contains("parse") || message.contains("cron")));
 
-        // Null input.
+        // Null is the canonical empty string and fails to parse as a schedule.
         // SAFETY: testing null pointer handling.
         assert!(unsafe { hew_cron_parse(std::ptr::null()) }.is_null());
     }
 
     #[test]
     fn invalid_expression_then_next_preserves_parse_error() {
-        let bad = CString::new("not a cron expression").unwrap();
-        // SAFETY: bad is a valid NUL-terminated C string.
+        let bad = ManagedString::new("not a cron expression");
+        // SAFETY: bad is a live managed string handle.
         let expr = unsafe { hew_cron_parse(bad.as_ptr()) };
         assert!(expr.is_null());
 
         // SAFETY: null expr should be rejected without erasing the parse error.
         let (status, _) = unsafe { next_status_and_value(expr, 0) };
         assert_eq!(status, HEW_CRON_STATUS_INVALID_INPUT);
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         let err = unsafe { read_and_free_optional(hew_cron_last_error()) };
         assert!(err
             .as_deref()
@@ -391,8 +368,8 @@ mod tests {
     #[test]
     fn next_occurrence() {
         // Every minute: "0 * * * * * *"
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
@@ -404,7 +381,7 @@ mod tests {
         assert!(next > after, "next ({next}) should be after {after}");
         // Should be exactly one minute later.
         assert_eq!(next, after + 60);
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }.is_none());
 
         // SAFETY: expr was returned by hew_cron_parse.
@@ -413,15 +390,15 @@ mod tests {
 
     #[test]
     fn missing_next_occurrence_sets_last_error() {
-        let expr_str = CString::new("0 0 0 1 1 * 2024").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 0 0 1 1 * 2024");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
         // SAFETY: expr is valid.
         let (status, _) = unsafe { next_status_and_value(expr, 1_735_689_600) };
         assert_eq!(status, HEW_CRON_STATUS_NO_NEXT_OCCURRENCE);
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }
             .is_some_and(|message| message.contains("no next occurrence")));
 
@@ -432,8 +409,8 @@ mod tests {
     #[test]
     fn next_n_occurrences() {
         // Every minute.
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
@@ -459,19 +436,19 @@ mod tests {
     #[test]
     fn to_string_roundtrip() {
         let original = "0 30 9 * * Mon-Fri *";
-        let expr_str = CString::new(original).unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new(original);
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
         // SAFETY: expr is valid.
         let s = unsafe { hew_cron_to_string(expr) };
         assert!(!s.is_null());
-        // SAFETY: s is a valid NUL-terminated C string from malloc.
-        let result = unsafe { CStr::from_ptr(s) }.to_str().unwrap();
+        // SAFETY: s is the live owner returned by hew_cron_to_string.
+        let result = unsafe { string_as_str(s) }.to_owned();
         assert!(!result.is_empty());
-        // SAFETY: s was allocated with libc::malloc.
-        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test str_to_malloc)
+        // SAFETY: this test holds the only owner of `s`.
+        unsafe { string_release(s) };
 
         // SAFETY: expr was returned by hew_cron_parse.
         unsafe { hew_cron_free(expr) };
@@ -509,11 +486,11 @@ mod tests {
         // SAFETY: `next` is a valid writable out-pointer for this stack frame.
         let status = unsafe { hew_cron_next(std::ptr::null(), 0, &raw mut next) };
         assert_eq!(status, HEW_CRON_STATUS_INVALID_INPUT);
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }.is_some());
 
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
@@ -521,7 +498,7 @@ mod tests {
         let (status, next) = unsafe { next_status_and_value(expr, 1_704_067_200) };
         assert_eq!(status, HEW_CRON_STATUS_SUCCESS);
         assert!(next > 1_704_067_200);
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }.is_none());
 
         // SAFETY: expr was returned by hew_cron_parse.
@@ -544,15 +521,15 @@ mod tests {
 
     #[test]
     fn invalid_epoch_returns_distinct_status() {
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
         // SAFETY: test helper writes to a valid stack-allocated out-pointer.
         let (status, _) = unsafe { next_status_and_value(expr, i64::MIN) };
         assert_eq!(status, HEW_CRON_STATUS_INVALID_EPOCH);
-        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        // SAFETY: hew_cron_last_error returns either null or a live managed string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }
             .is_some_and(|message| message.contains("invalid epoch timestamp")));
 
@@ -565,8 +542,8 @@ mod tests {
     #[test]
     fn cron_next_hew_success_returns_timestamp_greater_than_input() {
         // Every minute — guaranteed to have a next occurrence.
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
@@ -592,8 +569,8 @@ mod tests {
     fn cron_next_hew_success_timestamp_matches_hew_cron_next_out_param() {
         // The wrapper must report the same timestamp that hew_cron_next writes
         // into its out-parameter — verifying the packaging step is correct.
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
@@ -626,8 +603,8 @@ mod tests {
     #[test]
     fn cron_next_hew_no_next_occurrence_returns_correct_status() {
         // Fixed-year expression in the past has no future occurrence.
-        let expr_str = CString::new("0 0 0 1 1 * 2024").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 0 0 1 1 * 2024");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 
@@ -646,8 +623,8 @@ mod tests {
 
     #[test]
     fn cron_next_hew_invalid_epoch_returns_correct_status() {
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr_str = ManagedString::new("0 * * * * * *");
+        // SAFETY: expr_str is a live managed string handle.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
 

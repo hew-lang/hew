@@ -1,6 +1,6 @@
 use hew_parser::ast::{
-    Block, Expr, Item, LambdaParam, MatchArm, Pattern, PatternField, SelectArm, Span, Stmt,
-    StringPart, TraitItem, TypeBodyItem,
+    Block, ConditionItem, Expr, Item, LambdaParam, MatchArm, Pattern, PatternField, SelectArm,
+    Span, Stmt, StringPart, TraitItem, TypeBodyItem,
 };
 use hew_parser::ParseResult;
 
@@ -623,15 +623,15 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body: inner_body,
                 else_body,
             } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.push_scope(pattern_bindings(self.source, pattern));
+                let scopes = self.walk_condition(conditions, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
+                for _ in 0..scopes {
+                    self.pop_scope();
+                }
                 if let Some(else_body) = else_body {
                     self.walk_expr(&else_body.0, &else_body.1, body);
                 }
@@ -654,15 +654,15 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block(inner_body, body);
             }
             Stmt::WhileLet {
-                pattern,
-                expr,
+                conditions,
                 body: inner_body,
                 ..
             } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.push_scope(pattern_bindings(self.source, pattern));
+                let scopes = self.walk_condition(conditions, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
+                for _ in 0..scopes {
+                    self.pop_scope();
+                }
             }
             Stmt::For {
                 pattern,
@@ -807,15 +807,15 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body: inner_body,
                 else_body,
             } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.push_scope(pattern_bindings(self.source, pattern));
+                let scopes = self.walk_condition(conditions, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
+                for _ in 0..scopes {
+                    self.pop_scope();
+                }
                 if let Some(else_body) = else_body {
                     self.walk_expr(&else_body.0, &else_body.1, body);
                 }
@@ -923,6 +923,28 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
         }
+    }
+
+    /// Walk a pattern condition (§12.5), opening one scope per `let` operand so
+    /// the operands to its right and the then block see its binders. Returns
+    /// how many scopes were opened; the caller pops that many after the body.
+    fn walk_condition(
+        &mut self,
+        conditions: &'ast [ConditionItem],
+        body: Option<BodyInfo<'ast>>,
+    ) -> usize {
+        let mut opened = 0;
+        for item in conditions {
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    self.walk_expr(&expr.0, &expr.1, body);
+                    self.push_scope(pattern_bindings(self.source, pattern));
+                    opened += 1;
+                }
+                ConditionItem::Expr(expr) => self.walk_expr(&expr.0, &expr.1, body),
+            }
+        }
+        opened
     }
 
     fn push_scope(&mut self, bindings: Vec<BindingInfo<'ast>>) {

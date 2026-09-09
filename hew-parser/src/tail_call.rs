@@ -3,7 +3,9 @@
 //! Walks the AST and marks `Expr::Call` nodes as tail calls when they appear
 //! directly in tail position or as the direct value of a `return`.
 
-use crate::ast::{Block, Expr, Item, Program, Stmt, StringPart};
+use crate::ast::{
+    condition_exprs, condition_exprs_mut, Block, Expr, Item, Program, Stmt, StringPart,
+};
 
 /// Marks tail calls in a parsed program.
 ///
@@ -92,12 +94,11 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
                 })
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_contains_defer(&expr.0)
+            condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
                 || block_contains_defer(body)
                 || else_body
                     .as_ref()
@@ -119,8 +120,11 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
         Stmt::While {
             condition, body, ..
         } => expr_contains_defer(&condition.0) || block_contains_defer(body),
-        Stmt::WhileLet { expr, body, .. } => {
-            expr_contains_defer(&expr.0) || block_contains_defer(body)
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
+                || block_contains_defer(body)
         }
         Stmt::Break { value, .. } => value
             .as_ref()
@@ -204,12 +208,11 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                     .is_some_and(|else_expr| expr_contains_defer(&else_expr.0))
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_contains_defer(&expr.0)
+            condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
                 || block_contains_defer(body)
                 || else_body
                     .as_ref()
@@ -312,12 +315,13 @@ fn mark_stmt(stmt: &mut Stmt) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            mark_expr(&mut expr.0, false);
+            for expr in condition_exprs_mut(conditions) {
+                mark_expr(&mut expr.0, false);
+            }
             mark_block(body, false);
             if let Some(else_expr) = else_body {
                 mark_expr(&mut else_expr.0, false);
@@ -343,8 +347,12 @@ fn mark_stmt(stmt: &mut Stmt) {
             mark_expr(&mut condition.0, false);
             mark_block(body, false);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            mark_expr(&mut expr.0, false);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs_mut(conditions) {
+                mark_expr(&mut expr.0, false);
+            }
             mark_block(body, false);
         }
         Stmt::Continue { .. } | Stmt::Return(None) => {}
@@ -446,12 +454,13 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            mark_expr(&mut expr.0, false);
+            for expr in condition_exprs_mut(conditions) {
+                mark_expr(&mut expr.0, false);
+            }
             mark_block(body, is_tail_position);
             if let Some(else_expr) = else_body {
                 mark_expr(&mut else_expr.0, is_tail_position);

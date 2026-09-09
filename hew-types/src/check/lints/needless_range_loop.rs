@@ -30,8 +30,8 @@
 //! - at least one real `xs[i]` / `xs.get(i)` access must be present.
 
 use hew_parser::ast::{
-    BinaryOp, Block, CallArg, ElseBlock, Expr, Literal, MatchArm, Pattern, SelectArm, Spanned,
-    Stmt, StringPart,
+    condition_exprs, BinaryOp, Block, CallArg, ConditionItem, ElseBlock, Expr, Literal, MatchArm,
+    Pattern, SelectArm, Spanned, Stmt, StringPart,
 };
 
 use crate::builtin_type::BuiltinType;
@@ -81,8 +81,12 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
             find_in_expr(ctx, levels, &condition.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
         }
         Stmt::If {
@@ -97,12 +101,13 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(eb) = else_body {
                 find_in_expr(ctx, levels, &eb.0, out);
@@ -188,12 +193,13 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(eb) = else_body {
                 find_in_expr(ctx, levels, &eb.0, out);
@@ -439,16 +445,17 @@ impl BodyScan<'_> {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                if self.pattern_shadows(&pattern.0) {
+                if self.condition_shadows(conditions) {
                     self.ok = false;
                     return;
                 }
-                self.expr(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.expr(&expr.0);
+                }
                 self.block(body);
                 if let Some(eb) = else_body {
                     self.expr(&eb.0);
@@ -484,16 +491,15 @@ impl BodyScan<'_> {
                 self.block(body);
             }
             Stmt::WhileLet {
-                pattern,
-                expr,
-                body,
-                ..
+                conditions, body, ..
             } => {
-                if self.pattern_shadows(&pattern.0) {
+                if self.condition_shadows(conditions) {
                     self.ok = false;
                     return;
                 }
-                self.expr(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.expr(&expr.0);
+                }
                 self.block(body);
             }
             Stmt::Break { value, .. } | Stmt::Return(value) => {
@@ -626,16 +632,17 @@ impl BodyScan<'_> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                if self.pattern_shadows(&pattern.0) {
+                if self.condition_shadows(conditions) {
                     self.ok = false;
                     return;
                 }
-                self.expr(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.expr(&expr.0);
+                }
                 self.block(body);
                 if let Some(eb) = else_body {
                     self.expr(&eb.0);
@@ -792,6 +799,15 @@ impl BodyScan<'_> {
     /// longer prove safety — disqualify conservatively.
     fn pattern_shadows(&self, pattern: &Pattern) -> bool {
         pattern_binds(pattern, self.idx) || pattern_binds(pattern, self.coll)
+    }
+
+    /// Whether any `let` operand of a pattern condition rebinds the loop's
+    /// index or collection name.
+    fn condition_shadows(&self, conditions: &[ConditionItem]) -> bool {
+        conditions.iter().any(|item| match item {
+            ConditionItem::Let { pattern, .. } => self.pattern_shadows(&pattern.0),
+            ConditionItem::Expr(_) => false,
+        })
     }
 }
 

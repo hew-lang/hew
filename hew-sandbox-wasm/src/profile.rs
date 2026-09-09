@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use hew_parser::ast::{
-    BinaryOp, CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr,
+    BinaryOp, CallArg, ConditionItem, Expr, ImportDecl, Item, Pattern, Program, Span, Spanned,
+    Stmt, TypeExpr,
 };
 use hew_types::{check::SpanKey, BuiltinType, Ty};
 
@@ -473,8 +474,7 @@ impl<'a> ProfileChecker<'a> {
                 self.check_block(body);
             }
             Stmt::WhileLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 label,
             } => {
@@ -485,18 +485,7 @@ impl<'a> ProfileChecker<'a> {
                         "labeled while-let loops are not yet admitted in the sandbox profile",
                     );
                 }
-                self.check_pattern(pattern);
-                if !matches!(
-                    pattern.0,
-                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
-                ) {
-                    self.reject(
-                        pattern.1.clone(),
-                        "reserved_runtime_feature",
-                        "non-constructor while-let patterns are reserved until native HIR lowering supports them",
-                    );
-                }
-                self.check_expr(expr);
+                self.check_condition(conditions, span);
                 self.check_block(body);
             }
             Stmt::Break { value, label } => {
@@ -530,23 +519,11 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.check_pattern(pattern);
-                if !matches!(
-                    pattern.0,
-                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
-                ) {
-                    self.reject(
-                        pattern.1.clone(),
-                        "reserved_runtime_feature",
-                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
-                    );
-                }
-                self.check_expr(expr);
+                self.check_condition(conditions, span);
                 self.check_block(body);
                 if let Some(else_expr) = else_body {
                     self.check_expr(else_expr);
@@ -769,23 +746,11 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.check_pattern(pattern);
-                if !matches!(
-                    pattern.0,
-                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
-                ) {
-                    self.reject(
-                        pattern.1.clone(),
-                        "reserved_runtime_feature",
-                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
-                    );
-                }
-                self.check_expr(expr);
+                self.check_condition(conditions, span);
                 self.check_block(body);
                 if let Some(else_expr) = else_body {
                     self.check_expr(else_expr);
@@ -1082,6 +1047,38 @@ impl<'a> ProfileChecker<'a> {
                     "unknown_indirect_call",
                     "indirect calls are not admitted to sandbox bytecode export yet",
                 );
+            }
+        }
+    }
+
+    /// Admit a pattern condition (§12.5). The sandbox emitter lowers one
+    /// constructor `let` operand; chained operands and the wider pattern shapes
+    /// the native lowering now accepts are refused until it catches up.
+    fn check_condition(&mut self, conditions: &[ConditionItem], span: &Span) {
+        if conditions.len() > 1 {
+            self.reject(
+                span.clone(),
+                "reserved_runtime_feature",
+                "chained `let` conditions are reserved until the sandbox emitter supports them",
+            );
+        }
+        for item in conditions {
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    self.check_pattern(pattern);
+                    if !matches!(
+                        pattern.0,
+                        Pattern::Constructor { .. } | Pattern::ContextVariant(_)
+                    ) {
+                        self.reject(
+                            pattern.1.clone(),
+                            "reserved_runtime_feature",
+                            "non-constructor pattern-condition patterns are reserved until the sandbox emitter supports them",
+                        );
+                    }
+                    self.check_expr(expr);
+                }
+                ConditionItem::Expr(expr) => self.check_expr(expr),
             }
         }
     }

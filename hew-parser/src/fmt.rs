@@ -7,9 +7,9 @@ use finl_unicode::categories::CharacterCategories;
 
 use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
-    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
+    FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal,
+    MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
     ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Spanned,
     Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
@@ -2601,16 +2601,13 @@ impl<'a> Formatter<'a> {
                 self.newline();
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
                 self.write_indent();
-                self.write("if let ");
-                self.format_pattern(&pattern.0);
-                self.write(" = ");
-                self.format_expr(&expr.0);
+                self.write("if ");
+                self.format_condition(conditions);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
@@ -2704,8 +2701,7 @@ impl<'a> Formatter<'a> {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
                 self.write_indent();
@@ -2714,10 +2710,8 @@ impl<'a> Formatter<'a> {
                     self.write(label);
                     self.write(": ");
                 }
-                self.write("while let ");
-                self.format_pattern(&pattern.0);
-                self.write(" = ");
-                self.format_expr(&expr.0);
+                self.write("while ");
+                self.format_condition(conditions);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 self.newline();
@@ -2797,15 +2791,12 @@ impl<'a> Formatter<'a> {
                         }
                     }
                     Stmt::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     } => {
-                        self.write("if let ");
-                        self.format_pattern(&pattern.0);
-                        self.write(" = ");
-                        self.format_expr(&expr.0);
+                        self.write("if ");
+                        self.format_condition(conditions);
                         self.write(" ");
                         self.format_block(body, self.source.len());
                         if let Some(else_block) = else_body {
@@ -2918,6 +2909,25 @@ impl<'a> Formatter<'a> {
     /// the struct body swallowing the block. Only a direct `StructInit` needs
     /// this — every other condition form (binary ops, calls, blocks, nested
     /// `if`/`match`) re-parses unchanged.
+    /// Print an `if` / `while` condition (§12.5) as written: `&&`-joined
+    /// operands, each either `let PATTERN = expr` or a boolean expression.
+    fn format_condition(&mut self, conditions: &[ConditionItem]) {
+        for (index, item) in conditions.iter().enumerate() {
+            if index > 0 {
+                self.write(" && ");
+            }
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    self.write("let ");
+                    self.format_pattern(&pattern.0);
+                    self.write(" = ");
+                    self.format_expr(&expr.0);
+                }
+                ConditionItem::Expr(expr) => self.format_cond_expr(&expr.0),
+            }
+        }
+    }
+
     fn format_cond_expr(&mut self, expr: &Expr) {
         if matches!(expr, Expr::StructInit { .. }) {
             self.write("(");
@@ -3107,15 +3117,12 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.write("if let ");
-                self.format_pattern(&pattern.0);
-                self.write(" = ");
-                self.format_expr(&expr.0);
+                self.write("if ");
+                self.format_condition(conditions);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {

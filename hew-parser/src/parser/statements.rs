@@ -281,16 +281,14 @@ impl Parser<'_> {
                 ))
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
                 // Stmt::IfLet and Expr::IfLet share the same `else_body` type.
                 Some((
                     Expr::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     },
@@ -346,6 +344,66 @@ impl Parser<'_> {
                 parent_end..parent_end,
             )
         }
+    }
+
+    /// Parse an `if` / `while` condition (§12.5): one or more operands joined
+    /// with `&&`, each either `let PATTERN = expr` or a boolean expression.
+    ///
+    /// A plain boolean condition parses as a single operand through the
+    /// ordinary expression parser, so `a || b && c` keeps its precedence. Once
+    /// a `let` joins the chain the operands bind tighter than `&&` and `||`, so
+    /// each one ends at its joiner; `||` cannot join a `let` operand and is
+    /// refused here rather than silently regrouping the condition.
+    pub(crate) fn parse_condition(&mut self) -> Option<Vec<ConditionItem>> {
+        let mut items = Vec::new();
+        let mut has_let = false;
+        if self.eat(&Token::Let) {
+            items.push(self.parse_let_condition()?);
+            has_let = true;
+        } else {
+            items.push(ConditionItem::Expr(self.parse_cond_expr()?));
+        }
+        while self.eat(&Token::AmpAmp) {
+            if self.eat(&Token::Let) {
+                items.push(self.parse_let_condition()?);
+                has_let = true;
+            } else {
+                items.push(ConditionItem::Expr(self.parse_condition_operand()?));
+            }
+        }
+        if has_let && self.peek() == Some(&Token::PipePipe) {
+            self.error_with_hint(
+                "E_OR_JOINED_LET_CONDITION: `||` cannot join a `let` pattern in a condition"
+                    .to_string(),
+                "split the alternatives into separate `if let` arms, or match on the value",
+            );
+            // Recovery: consume the rest of the condition so the block still
+            // parses and the reader gets one diagnostic instead of a cascade.
+            while self.eat(&Token::PipePipe) || self.eat(&Token::AmpAmp) {
+                let _ = self.eat(&Token::Let);
+                items.push(ConditionItem::Expr(self.parse_condition_operand()?));
+            }
+        }
+        Some(items)
+    }
+
+    /// Parse one `let PATTERN = expr` condition operand, the `let` already
+    /// consumed.
+    fn parse_let_condition(&mut self) -> Option<ConditionItem> {
+        let pattern = self.parse_pattern()?;
+        self.expect(&Token::Equal)?;
+        // The scrutinee keeps ordinary expression rules, so a struct literal
+        // still reads as one (`if let P = Point { x: 1, y: 2 } { … }`); only
+        // the joiner precedence is capped so the operand ends at `&&`.
+        let expr = self.parse_expr_bp(CONDITION_OPERAND_BP)?;
+        Some(ConditionItem::Let { pattern, expr })
+    }
+
+    /// Parse one operand of a pattern condition: an expression that stops at
+    /// the `&&` or `||` that joins it to the next operand.
+    fn parse_condition_operand(&mut self) -> Option<Spanned<Expr>> {
+        let _guard = self.set_no_struct_literal(true);
+        self.parse_expr_bp(CONDITION_OPERAND_BP)
     }
 
     #[expect(clippy::too_many_lines, reason = "parser function with many branches")]
@@ -492,10 +550,11 @@ impl Parser<'_> {
             // These don't need semicolons (they have blocks)
             Some(Token::If) => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     let else_body = if self.eat(&Token::Else) {
                         Some(self.parse_if_let_else_arm()?)
@@ -503,13 +562,14 @@ impl Parser<'_> {
                         None
                     };
                     Stmt::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     }
                 } else {
-                    let condition = self.parse_cond_expr()?;
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
                     let then_block = self.parse_block()?;
 
                     let else_block = if self.eat(&Token::Else) {
@@ -570,19 +630,21 @@ impl Parser<'_> {
             }
             Some(Token::While) => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     Stmt::WhileLet {
                         label: None,
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                     }
                 } else {
-                    let condition = self.parse_cond_expr()?;
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
                     let body = self.parse_block()?;
                     Stmt::While {
                         label: None,
@@ -697,19 +759,21 @@ impl Parser<'_> {
         let stmt = match self.peek() {
             Some(Token::While) => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     Stmt::WhileLet {
                         label: Some(label),
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                     }
                 } else {
-                    let condition = self.parse_cond_expr()?;
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
                     let body = self.parse_block()?;
                     Stmt::While {
                         label: Some(label),

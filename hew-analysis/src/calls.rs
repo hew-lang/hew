@@ -5,7 +5,7 @@
 //! without an extra allocation layer.
 
 use crate::ast_visit::{self, AstVisitor};
-use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart};
+use hew_parser::ast::{condition_exprs, Block, Expr, Item, Span, Stmt, StringPart};
 use hew_parser::ParseResult;
 
 /// A single call site found in the AST.
@@ -133,8 +133,12 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(condition, calls);
             collect_calls_in_block(body, calls);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                collect_calls_in_expr(expr, calls);
+            }
             collect_calls_in_block(body, calls);
         }
         Stmt::If {
@@ -156,12 +160,13 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
+            for expr in condition_exprs(conditions) {
+                collect_calls_in_expr(expr, calls);
+            }
             collect_calls_in_block(body, calls);
             if let Some(else_expr) = else_body {
                 collect_calls_in_expr(else_expr, calls);
@@ -241,12 +246,13 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
+            for expr in condition_exprs(conditions) {
+                collect_calls_in_expr(expr, calls);
+            }
             collect_calls_in_block(body, calls);
             if let Some(else_expr) = else_body {
                 collect_calls_in_expr(else_expr, calls);

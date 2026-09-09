@@ -17,12 +17,13 @@ use std::{
 };
 
 use hew_parser::ast::{
-    ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
-    ImportSpec, Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl,
-    RecordDecl, RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm,
-    ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, UnaryOp, VariantKind,
+    condition_exprs, ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp,
+    ConditionItem, ConstDecl, Expr, FnDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl,
+    Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
+    VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -100,7 +101,23 @@ fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
 /// that is lowered against the conditional's result type.
 enum PatternArmBody<'a> {
     Expr(&'a Spanned<Expr>),
-    Block(&'a Block, Span),
+    /// The rest of a pattern condition: the operands to the right of this
+    /// `let`, then the then block. Lowered inside the arm scope so those
+    /// operands and the block see the names this pattern bound.
+    Condition {
+        rest: &'a [ConditionItem],
+        body: &'a Block,
+        body_span: Span,
+        fallthrough: ConditionFallthrough<'a>,
+    },
+}
+
+/// What a pattern condition does when an operand fails: run `if let`'s `else`
+/// arm (unit when there is none), or leave `while let`'s loop.
+#[derive(Clone, Copy)]
+enum ConditionFallthrough<'a> {
+    Else(Option<&'a Spanned<Expr>>),
+    Break,
 }
 
 /// One pattern arm to lower. `match`, `if let`, `while let` and `let … else`
@@ -116,7 +133,7 @@ impl PatternArm<'_> {
     fn body_end(&self) -> usize {
         match &self.body {
             PatternArmBody::Expr(expr) => expr.1.end,
-            PatternArmBody::Block(_, span) => span.end,
+            PatternArmBody::Condition { body_span, .. } => body_span.end,
         }
     }
 }
@@ -134,23 +151,6 @@ fn pattern_arms_from_match(arms: &[hew_parser::ast::MatchArm]) -> Vec<PatternArm
                     guard: arm.guard.as_ref(),
                     body: PatternArmBody::Expr(&arm.body),
                 })
-        })
-        .collect()
-}
-
-/// Expand one pattern-condition arm (`if let` / `while let`) into pattern arms,
-/// one per or-pattern leaf, all sharing the same block body.
-fn pattern_arms_from_block<'a>(
-    pattern: &Spanned<Pattern>,
-    body: &'a Block,
-    body_span: &Span,
-) -> Vec<PatternArm<'a>> {
-    flatten_or_pattern(pattern)
-        .into_iter()
-        .map(|pattern| PatternArm {
-            pattern,
-            guard: None,
-            body: PatternArmBody::Block(body, body_span.clone()),
         })
         .collect()
 }
@@ -10160,12 +10160,13 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_private_refs(&expr.0, pf, out);
+            }
             scan_block_for_private_refs(body, pf, out);
             if let Some(eb) = else_body {
                 scan_expr_for_private_refs(&eb.0, pf, out);
@@ -10191,8 +10192,12 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
             scan_expr_for_private_refs(&condition.0, pf, out);
             scan_block_for_private_refs(body, pf, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_private_refs(&expr.0, pf, out);
+            }
             scan_block_for_private_refs(body, pf, out);
         }
         Stmt::Break { value: Some(v), .. } => scan_expr_for_private_refs(&v.0, pf, out),
@@ -10271,12 +10276,13 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_private_refs(&expr.0, pf, out);
+            }
             scan_block_for_private_refs(body, pf, out);
             if let Some(eb) = else_body {
                 scan_expr_for_private_refs(&eb.0, pf, out);
@@ -16404,65 +16410,20 @@ impl LowerCtx {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
-                // `while let P = e { body }` is a bare loop whose every
-                // iteration re-matches `e` and breaks on the fallthrough arm:
-                // `loop { match e { P => body, _ => break } }`. `break` and
-                // `continue` inside `body` target this loop, and the arm
-                // body's scope gives per-iteration defer cleanup.
-                //
-                // The arms come from `lower_pattern_arms`, so every pattern
-                // shape `match` accepts is accepted here.
-                let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
-                // Register a generic-enum instantiation if the scrutinee's
-                // type is a parameterised enum (`Option<i64>`). No-op for
-                // monomorphic enums; required so MIR/codegen find the
-                // `Option$$i64` layout — matches the Match path's
-                // `try_register_enum_instantiation(scrutinee.1)` call.
-                self.try_register_enum_instantiation(&expr.1);
-
-                let body_span = pattern.1.start..span.end;
-                let arms = pattern_arms_from_block(pattern, body, &body_span);
-                let Some((hir_arms, _)) =
-                    self.lower_pattern_arms(&scrutinee_hir, &arms, &ResolvedTy::Unit)
-                else {
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let with unsupported pattern shape".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                };
-
-                let break_expr = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::Break {
-                        label: None,
-                        value: None,
-                    },
-                    span: span.clone(),
-                };
-                let match_expr = self.pattern_conditional_match(
-                    scrutinee_hir,
-                    hir_arms,
-                    break_expr,
+                // `while <condition> { body }` with a `let` operand is a bare
+                // loop whose every iteration re-evaluates the condition and
+                // breaks on the fallthrough arm. `break` and `continue` inside
+                // `body` target this loop, and the arm body's scope gives
+                // per-iteration defer cleanup.
+                let body_span = span.clone();
+                let match_expr = self.lower_condition_chain(
+                    conditions,
+                    body,
+                    &body_span,
+                    ConditionFallthrough::Break,
                     &ResolvedTy::Unit,
                     &span,
                 );
@@ -16791,35 +16752,22 @@ impl LowerCtx {
                 HirStmtKind::Expr(continue_expr)
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                // `if let PAT = scrutinee { then } else { else }` in statement
-                // position — result type is always Unit. Delegates to the shared
-                // `lower_if_let_inner` helper (same one used by expression position).
-                let kind = match self.lower_if_let_inner(
-                    pattern,
-                    expr,
+                // A pattern condition in statement position — result type is
+                // always Unit. The chain lowers to nested matches and boolean
+                // branches; `lower_condition_chain` is the one authority.
+                let body_span = span.clone();
+                let if_let_expr = self.lower_condition_chain(
+                    conditions,
                     body,
-                    else_body.as_deref(),
+                    &body_span,
+                    ConditionFallthrough::Else(else_body.as_deref()),
                     &ResolvedTy::Unit,
                     &span,
-                ) {
-                    Some(k) => k,
-                    None => HirExprKind::Unsupported("if-let lowering failed".into()),
-                };
-                let if_let_expr = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
-                    intent: IntentKind::Read,
-                    kind,
-                    span: span.clone(),
-                };
+                );
                 HirStmtKind::Expr(if_let_expr)
             }
         };
@@ -17220,53 +17168,6 @@ impl LowerCtx {
             },
             span: span.clone(),
         })
-    }
-
-    /// Shared core of `if let PAT = scrutinee { body } else { else_body }`.
-    ///
-    /// Used by both statement position (`Stmt::IfLet`, `result_ty` = Unit) and
-    /// expression position (`Expr::IfLet`, `result_ty` = unified branch type).
-    /// The spec's meaning is literal: `if let P = e { a } else { b }` is
-    /// `match e { P => a, _ => b }`, so the arms come from the same
-    /// `lower_pattern_arms` the `match` path uses and every pattern shape
-    /// `match` accepts is accepted here. The `else` arm is an expression, so
-    /// `else if` and `else if let` links lower through the same path as an
-    /// `else { .. }` block.
-    ///
-    /// Returns `Some(HirExprKind::Match { .. })` on success, `None` on a
-    /// fail-closed error (diagnostics already pushed).
-    fn lower_if_let_inner(
-        &mut self,
-        pattern: &Spanned<Pattern>,
-        scrutinee_expr: &Spanned<Expr>,
-        body: &Block,
-        else_body: Option<&Spanned<Expr>>,
-        result_ty: &ResolvedTy,
-        span: &Span,
-    ) -> Option<HirExprKind> {
-        let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
-        // Register a generic-enum instantiation so MIR/codegen find the
-        // mangled layout — matches the WhileLet/Match path.
-        self.try_register_enum_instantiation(&scrutinee_expr.1);
-
-        let body_span = pattern.1.start..span.end;
-        let arms = pattern_arms_from_block(pattern, body, &body_span);
-        let Some((hir_arms, _)) = self.lower_pattern_arms(&scrutinee_hir, &arms, result_ty) else {
-            if let Some(eb) = else_body {
-                let _ = self.lower_expr(eb, IntentKind::Read);
-            }
-            return None;
-        };
-
-        let fallthrough = match else_body {
-            Some(eb) => self.lower_expr(eb, IntentKind::Read),
-            None => self.make_unit_expr(span.clone()),
-        };
-
-        Some(
-            self.pattern_conditional_match(scrutinee_hir, hir_arms, fallthrough, result_ty, span)
-                .kind,
-        )
     }
 
     fn lower_compound_assignment(
@@ -19266,12 +19167,12 @@ impl LowerCtx {
             Expr::MapLiteral { entries } => self.lower_map_literal(entries, &span),
             Expr::Cast { expr: value, ty } => self.lower_numeric_cast_expr(value, ty, &span),
             Expr::IfLet {
-                pattern,
-                expr: scrutinee_expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                // Expression-position `if let` — delegates to the shared helper.
+                // Expression-position pattern condition — delegates to the
+                // shared chain lowering.
                 // The result type is looked up from the checker's `resolved_expr_types`
                 // side-table, mirroring `Expr::If` (same authority path).
                 let result_ty = self
@@ -19279,20 +19180,15 @@ impl LowerCtx {
                     .get(&self.mk_key(&span))
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                match self.lower_if_let_inner(
-                    pattern,
-                    scrutinee_expr,
+                let lowered = self.lower_condition_chain(
+                    conditions,
                     body,
-                    else_body.as_deref(),
+                    &span,
+                    ConditionFallthrough::Else(else_body.as_deref()),
                     &result_ty,
                     &span,
-                ) {
-                    Some(kind) => (kind, result_ty),
-                    None => (
-                        HirExprKind::Unsupported("if-let lowering failed".into()),
-                        ResolvedTy::Unit,
-                    ),
-                }
+                );
+                (lowered.kind, result_ty)
             }
             // `b"AB"` — byte-string literal. The parser already decoded the
             // escape sequences; `inner` is the raw byte sequence.
@@ -29669,19 +29565,146 @@ impl LowerCtx {
     ) -> HirExpr {
         match body {
             PatternArmBody::Expr(expr) => self.lower_expr(expr, IntentKind::Read),
-            PatternArmBody::Block(block, span) => {
-                let lowered = self.lower_block(block, block_result_ty);
-                let ty = lowered.ty.clone();
+            PatternArmBody::Condition {
+                rest,
+                body,
+                body_span,
+                fallthrough,
+            } => self.lower_condition_chain(
+                rest,
+                body,
+                body_span,
+                *fallthrough,
+                block_result_ty,
+                body_span,
+            ),
+        }
+    }
+
+    /// Lower an `if let` / `while let` condition (§12.5) to nested two-arm
+    /// matches and boolean branches.
+    ///
+    /// `if let P = a && b && let Q = c { body } else { alt }` becomes
+    /// `match a { P => if b { match c { Q => body, _ => alt } } else { alt },
+    /// _ => alt }`: each operand binds for the operands to its right, the
+    /// operands run left to right, and the first that fails takes the
+    /// fallthrough. Nothing the condition binds reaches the fallthrough, which
+    /// is what keeps the `else` arm free of the condition's names.
+    ///
+    /// The fallthrough is lowered once per operand. Exactly one copy can run,
+    /// and each needs its own bindings and drop sites, so they cannot be
+    /// shared.
+    fn lower_condition_chain(
+        &mut self,
+        conditions: &[ConditionItem],
+        body: &Block,
+        body_span: &Span,
+        fallthrough: ConditionFallthrough<'_>,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        let Some((first, rest)) = conditions.split_first() else {
+            let block = self.lower_block(body, result_ty);
+            let ty = block.ty.clone();
+            return HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ty.clone(),
+                value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                intent: IntentKind::Read,
+                kind: HirExprKind::Block(block),
+                span: body_span.clone(),
+            };
+        };
+
+        match first {
+            ConditionItem::Let { pattern, expr } => {
+                let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
+                // Register a generic-enum instantiation so MIR/codegen find the
+                // mangled layout — matches the Match path.
+                self.try_register_enum_instantiation(&expr.1);
+                let arms: Vec<PatternArm<'_>> = flatten_or_pattern(pattern)
+                    .into_iter()
+                    .map(|leaf| PatternArm {
+                        pattern: leaf,
+                        guard: None,
+                        body: PatternArmBody::Condition {
+                            rest,
+                            body,
+                            body_span: body_span.clone(),
+                            fallthrough,
+                        },
+                    })
+                    .collect();
+                let Some((hir_arms, _)) = self.lower_pattern_arms(&scrutinee_hir, &arms, result_ty)
+                else {
+                    let _ = self.lower_condition_fallthrough(fallthrough, span);
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "pattern condition with an unsupported pattern shape".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                };
+                let alternative = self.lower_condition_fallthrough(fallthrough, span);
+                self.pattern_conditional_match(
+                    scrutinee_hir,
+                    hir_arms,
+                    alternative,
+                    result_ty,
+                    span,
+                )
+            }
+            ConditionItem::Expr(test) => {
+                let condition = self.lower_expr(test, IntentKind::Read);
+                let then_expr =
+                    self.lower_condition_chain(rest, body, body_span, fallthrough, result_ty, span);
+                let alternative = self.lower_condition_fallthrough(fallthrough, span);
                 HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    ty: ty.clone(),
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty: result_ty.clone(),
+                    value_class: ValueClass::of_ty(result_ty, &self.type_classes),
                     intent: IntentKind::Read,
-                    kind: HirExprKind::Block(lowered),
+                    kind: HirExprKind::If {
+                        condition: Box::new(condition),
+                        then_expr: Box::new(then_expr),
+                        else_expr: Some(Box::new(alternative)),
+                    },
                     span: span.clone(),
                 }
             }
+        }
+    }
+
+    /// Lower one copy of a pattern condition's failure path.
+    fn lower_condition_fallthrough(
+        &mut self,
+        fallthrough: ConditionFallthrough<'_>,
+        span: &Span,
+    ) -> HirExpr {
+        match fallthrough {
+            // The `else` arm is an expression, so `else if` and `else if let`
+            // links lower through the same path as an `else { .. }` block.
+            ConditionFallthrough::Else(Some(arm)) => self.lower_expr(arm, IntentKind::Read),
+            ConditionFallthrough::Else(None) => self.make_unit_expr(span.clone()),
+            ConditionFallthrough::Break => HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Read,
+                kind: HirExprKind::Break {
+                    label: None,
+                    value: None,
+                },
+                span: span.clone(),
+            },
         }
     }
 
@@ -30743,8 +30766,12 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_blocking_recv(&v.0, diagnostics);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            }
             scan_block_for_blocking_recv(body, diagnostics);
         }
         Stmt::If {
@@ -30759,12 +30786,13 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            }
             scan_block_for_blocking_recv(body, diagnostics);
             if let Some(eb) = else_body {
                 scan_expr_for_blocking_recv(&eb.0, diagnostics);
@@ -30890,12 +30918,13 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            }
             scan_block_for_blocking_recv(body, diagnostics);
             if let Some(b) = else_body {
                 scan_expr_for_blocking_recv(&b.0, diagnostics);
@@ -31297,8 +31326,12 @@ fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCt
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            }
             scan_block_for_binop_gates(body, ctx);
         }
         Stmt::If {
@@ -31313,12 +31346,13 @@ fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCt
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            }
             scan_block_for_binop_gates(body, ctx);
             if let Some(eb) = else_body {
                 scan_expr_for_binop_gates(&eb.0, &eb.1, false, ctx);
@@ -31478,12 +31512,13 @@ fn scan_expr_for_binop_gates(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            }
             scan_block_for_binop_gates(body, ctx);
             if let Some(b) = else_body {
                 scan_expr_for_binop_gates(&b.0, &b.1, false, ctx);
@@ -32372,8 +32407,12 @@ fn scan_stmt_for_supervisor_spawn(
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            }
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
         }
         Stmt::If {
@@ -32388,12 +32427,13 @@ fn scan_stmt_for_supervisor_spawn(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            }
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
             if let Some(eb) = else_body {
                 scan_expr_for_supervisor_spawn(&eb.0, current_module, registry, diagnostics);
@@ -32615,12 +32655,13 @@ fn scan_expr_for_supervisor_spawn(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            }
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
             if let Some(b) = else_body {
                 scan_expr_for_supervisor_spawn(&b.0, current_module, registry, diagnostics);
@@ -32830,8 +32871,12 @@ fn scan_stmt_for_vec_index_gate(
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            }
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
         }
         Stmt::If {
@@ -32846,12 +32891,13 @@ fn scan_stmt_for_vec_index_gate(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            }
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
             if let Some(eb) = else_body {
                 scan_expr_for_vec_index_gate(eb, expr_types, diagnostics);
@@ -32971,12 +33017,13 @@ fn scan_expr_for_vec_index_gate(
             }
         }
         Expr::IfLet {
-            expr: cond,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_vec_index_gate(cond, expr_types, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            }
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
             if let Some(b) = else_body {
                 scan_expr_for_vec_index_gate(b, expr_types, diagnostics);

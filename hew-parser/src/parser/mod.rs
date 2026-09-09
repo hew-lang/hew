@@ -7,17 +7,18 @@
 // `pub(crate)` so each area submodule picks them up through `use super::*`.
 pub(crate) use crate::ast::{
     ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompositeGroup, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy,
-    ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr, ExternBlock,
-    ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec,
-    IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent, MachineState,
-    MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase, NominalPatternPayload,
-    OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField, RecordKind,
-    ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
+    ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
+    ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
+    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName,
+    ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent,
+    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
+    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField,
+    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireFieldMeta, WireMetadata,
 };
 pub(crate) use hew_lexer::Token;
 use serde::Serialize;
@@ -40,6 +41,7 @@ mod wire;
 // in `core` call them as bare names).
 pub(crate) use precedence::{
     infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CLONE_PREFIX_BP,
+    CONDITION_OPERAND_BP,
 };
 
 // `break`'s statement-vs-expression terminator selector lives in `statements`

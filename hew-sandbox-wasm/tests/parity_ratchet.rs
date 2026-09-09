@@ -1561,7 +1561,7 @@ fn walk_block(block: &hew_parser::ast::Block, owners: &mut Vec<Option<&'static s
     reason = "ratchet walker exhaustively enumerates every statement variant without wildcard arms"
 )]
 fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>>) {
-    use hew_parser::ast::Stmt;
+    use hew_parser::ast::{ConditionItem, Stmt};
     owners.push(ast_surface::classify_stmt(stmt));
     match stmt {
         Stmt::Let {
@@ -1605,13 +1605,19 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
             }
         }
         Stmt::IfLet {
-            pattern,
-            expr,
+            conditions,
             body,
             else_body,
         } => {
-            walk_pattern(pattern, owners);
-            walk_expr(expr, owners);
+            for item in conditions {
+                match item {
+                    ConditionItem::Let { pattern, expr } => {
+                        walk_pattern(pattern, owners);
+                        walk_expr(expr, owners);
+                    }
+                    ConditionItem::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
             walk_block(body, owners);
             if let Some(else_expr) = else_body {
                 walk_expr(else_expr, owners);
@@ -1645,13 +1651,17 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
             walk_block(body, owners);
         }
         Stmt::WhileLet {
-            pattern,
-            expr,
-            body,
-            ..
+            conditions, body, ..
         } => {
-            walk_pattern(pattern, owners);
-            walk_expr(expr, owners);
+            for item in conditions {
+                match item {
+                    ConditionItem::Let { pattern, expr } => {
+                        walk_pattern(pattern, owners);
+                        walk_expr(expr, owners);
+                    }
+                    ConditionItem::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
             walk_block(body, owners);
         }
         Stmt::Break { value, .. } => {
@@ -1786,7 +1796,7 @@ fn walk_expr(
     expr: &hew_parser::ast::Spanned<hew_parser::ast::Expr>,
     owners: &mut Vec<Option<&'static str>>,
 ) {
-    use hew_parser::ast::{Expr, StringPart};
+    use hew_parser::ast::{ConditionItem, Expr, StringPart};
     owners.push(ast_surface::classify_expr(&expr.0));
     match &expr.0 {
         Expr::Coalesce { left, right }
@@ -1879,13 +1889,19 @@ fn walk_expr(
             }
         }
         Expr::IfLet {
-            pattern,
-            expr,
+            conditions,
             body,
             else_body,
         } => {
-            walk_pattern(pattern, owners);
-            walk_expr(expr, owners);
+            for item in conditions {
+                match item {
+                    ConditionItem::Let { pattern, expr } => {
+                        walk_pattern(pattern, owners);
+                        walk_expr(expr, owners);
+                    }
+                    ConditionItem::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
             walk_block(body, owners);
             if let Some(else_expr) = else_body {
                 walk_expr(else_expr, owners);

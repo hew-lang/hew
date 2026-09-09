@@ -1898,6 +1898,32 @@ impl Checker {
         })
     }
 
+    /// Check an `if` / `while` pattern condition (§12.5).
+    ///
+    /// Opens one scope for the whole condition, then checks the operands left
+    /// to right: each `let` binds its pattern before the operands to its right
+    /// are checked, so a later operand sees the names an earlier one bound.
+    /// The scope stays open for the caller to check the then block in; the
+    /// caller pops it, which is what keeps the condition's bindings out of the
+    /// `else` arm.
+    pub(super) fn check_condition(&mut self, conditions: &[ConditionItem]) {
+        self.env.push_scope();
+        for item in conditions {
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    let scrutinee_ty = self.synthesize(&expr.0, &expr.1);
+                    self.bind_pattern(&pattern.0, &scrutinee_ty, false, &pattern.1);
+                    // Record the pattern resolution so HIR lowering consumes the
+                    // same `pattern_resolutions` side-table that powers `match`.
+                    self.record_arm_resolution(&pattern.0, &pattern.1, &scrutinee_ty);
+                }
+                ConditionItem::Expr(expr) => {
+                    self.check_against(&expr.0, &expr.1, &Ty::Bool);
+                }
+            }
+        }
+    }
+
     /// Classify an arm pattern into an [`ArmResolution`] and record it in
     /// `pending_pattern_resolutions` keyed by the arm's pattern span.
     ///

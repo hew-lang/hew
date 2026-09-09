@@ -37,7 +37,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, CallArg, ElseBlock, Expr, MatchArm, ReceiveFnDecl, SelectArm, Span, Stmt, StringPart,
+    condition_exprs, Block, CallArg, ElseBlock, Expr, MatchArm, ReceiveFnDecl, SelectArm, Span,
+    Stmt, StringPart,
 };
 
 use crate::error::{Severity, TypeError, TypeErrorKind};
@@ -590,12 +591,13 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            walk_expr(&expr.0, &expr.1, visitor);
+            for expr in condition_exprs(conditions) {
+                walk_expr(&expr.0, &expr.1, visitor);
+            }
             walk_block(body, visitor);
             if let Some(eb) = else_body {
                 walk_expr(&eb.0, &eb.1, visitor);
@@ -618,8 +620,12 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             walk_expr(&condition.0, &condition.1, visitor);
             walk_block(body, visitor);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            walk_expr(&expr.0, &expr.1, visitor);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                walk_expr(&expr.0, &expr.1, visitor);
+            }
             walk_block(body, visitor);
         }
         Stmt::Break { value, .. } | Stmt::Return(value) => {
@@ -751,12 +757,13 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            walk_expr(&expr.0, &expr.1, visitor);
+            for expr in condition_exprs(conditions) {
+                walk_expr(&expr.0, &expr.1, visitor);
+            }
             walk_block(body, visitor);
             if let Some(eb) = else_body {
                 walk_expr(&eb.0, &eb.1, visitor);

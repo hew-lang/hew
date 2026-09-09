@@ -5,7 +5,8 @@
 //! than LSP positions.
 
 use hew_parser::ast::{
-    Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem, TypeExpr,
+    condition_exprs, Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey};
@@ -259,8 +260,12 @@ fn collect_inlay_hints_from_stmt(
             collect_inlay_hints_from_expr(source, &condition.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Stmt::For { iterable, body, .. } => {
@@ -285,12 +290,13 @@ fn collect_inlay_hints_from_stmt(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            for expr in condition_exprs(conditions) {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
             collect_inlay_hints_from_block(source, body, tc, hints);
             if let Some(else_expr) = else_body {
                 collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
@@ -426,12 +432,13 @@ fn collect_inlay_hints_from_expr(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            for expr in condition_exprs(conditions) {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
             collect_inlay_hints_from_block(source, body, tc, hints);
             if let Some(else_expr) = else_body {
                 collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);

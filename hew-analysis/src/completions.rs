@@ -3,7 +3,8 @@
 use std::collections::{BTreeSet, HashSet};
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
+    Block, ConditionItem, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem,
+    TypeBodyItem,
 };
 use hew_types::check::{FnSig, TypeDefKind};
 use hew_types::{method_resolution, TypeCheckOutput, VariantDef};
@@ -746,8 +747,10 @@ fn collect_locals_from_stmt(
         Stmt::Loop { body, .. } | Stmt::While { body, .. } if in_stmt_scope => {
             collect_locals_from_block(body, offset, locals);
         }
-        Stmt::WhileLet { pattern, body, .. } if in_stmt_scope => {
-            collect_pattern_names(&pattern.0, locals);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } if in_stmt_scope => {
+            collect_condition_names(conditions, locals);
             collect_locals_from_block(body, offset, locals);
         }
         Stmt::If {
@@ -766,12 +769,11 @@ fn collect_locals_from_stmt(
             }
         }
         Stmt::IfLet {
-            pattern,
+            conditions,
             body,
             else_body,
-            ..
         } if in_stmt_scope => {
-            collect_pattern_names(&pattern.0, locals);
+            collect_condition_names(conditions, locals);
             collect_locals_from_block(body, offset, locals);
             if let Some(else_expr) = else_body {
                 collect_locals_from_expr(&else_expr.0, offset, locals);
@@ -955,6 +957,16 @@ fn collect_locals_from_spanned_expr(
 ) {
     if span_contains_offset(&expr.1, offset) {
         collect_locals_from_expr(&expr.0, offset, locals);
+    }
+}
+
+/// Every name a pattern condition binds: one condition can carry several `let`
+/// operands, and all of their binders are live in the then block.
+fn collect_condition_names(conditions: &[ConditionItem], locals: &mut Vec<CompletionItem>) {
+    for item in conditions {
+        if let ConditionItem::Let { pattern, .. } = item {
+            collect_pattern_names(&pattern.0, locals);
+        }
     }
 }
 

@@ -18,8 +18,8 @@
 
 use hew_parser::{
     ast::{
-        Block, CallArg, ElseBlock, Expr, Literal, MatchArm, SelectArm, Span, Stmt, StringPart,
-        UnaryOp,
+        condition_exprs, Block, CallArg, ElseBlock, Expr, Literal, MatchArm, SelectArm, Span, Stmt,
+        StringPart, UnaryOp,
     },
     loop_body_has_break,
 };
@@ -81,8 +81,12 @@ fn find_in_stmt(
             find_in_expr(ctx, levels, &iterable.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
         }
         Stmt::If {
@@ -97,12 +101,13 @@ fn find_in_stmt(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(else_body) = else_body {
                 find_in_expr(ctx, levels, &else_body.0, out);
@@ -182,12 +187,13 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(else_body) = else_body {
                 find_in_expr(ctx, levels, &else_body.0, out);
@@ -526,12 +532,11 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
                 || else_block.as_ref().is_some_and(bounded_else_has_sleep)
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            bounded_expr_has_sleep(&expr.0)
+            condition_exprs(conditions).any(|expr| bounded_expr_has_sleep(&expr.0))
                 || bounded_contains_sleep(body)
                 || else_body
                     .as_ref()
@@ -641,12 +646,11 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                     .is_some_and(|else_block| bounded_expr_has_sleep(&else_block.0))
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            bounded_expr_has_sleep(&expr.0)
+            condition_exprs(conditions).any(|expr| bounded_expr_has_sleep(&expr.0))
                 || bounded_contains_sleep(body)
                 || else_body
                     .as_ref()
@@ -768,8 +772,11 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
         Stmt::While {
             condition, body, ..
         } => expr_assigns_identifier(&condition.0, name) || assigns_identifier(body, name),
-        Stmt::WhileLet { expr, body, .. } => {
-            expr_assigns_identifier(&expr.0, name) || assigns_identifier(body, name)
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            condition_exprs(conditions).any(|expr| expr_assigns_identifier(&expr.0, name))
+                || assigns_identifier(body, name)
         }
         Stmt::If {
             condition,
@@ -783,12 +790,11 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
                     .is_some_and(|else_block| else_assigns_identifier(else_block, name))
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_assigns_identifier(&expr.0, name)
+            condition_exprs(conditions).any(|expr| expr_assigns_identifier(&expr.0, name))
                 || assigns_identifier(body, name)
                 || else_body
                     .as_ref()
@@ -863,12 +869,11 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                     .is_some_and(|else_block| expr_assigns_identifier(&else_block.0, name))
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_assigns_identifier(&expr.0, name)
+            condition_exprs(conditions).any(|expr| expr_assigns_identifier(&expr.0, name))
                 || assigns_identifier(body, name)
                 || else_body
                     .as_ref()

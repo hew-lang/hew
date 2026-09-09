@@ -285,8 +285,7 @@ pub enum Expr {
         else_block: Option<Box<Spanned<Expr>>>,
     },
     IfLet {
-        pattern: Box<Spanned<Pattern>>,
-        expr: Box<Spanned<Expr>>,
+        conditions: Vec<ConditionItem>,
         body: Block,
         /// The `else` arm, if written. Like `If::else_block` this is an
         /// expression, so `if let` chains with `else if` and `else if let`
@@ -475,6 +474,59 @@ pub enum Expr {
     },
 }
 
+/// One operand of an `if` / `while` pattern condition (§12.5).
+///
+/// A `let` operand binds its pattern for the operands to its right and for the
+/// then block; nothing it binds is visible in the `else` arm. An expression
+/// operand is an ordinary boolean test. Operands are joined with `&&`,
+/// evaluated left to right, and stop at the first that fails. `||` cannot join
+/// a `let` operand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ConditionItem {
+    Let {
+        pattern: Spanned<Pattern>,
+        expr: Spanned<Expr>,
+    },
+    Expr(Spanned<Expr>),
+}
+
+impl ConditionItem {
+    /// Source span of the whole operand.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Let { pattern, expr } => pattern.1.start..expr.1.end,
+            Self::Expr(expr) => expr.1.clone(),
+        }
+    }
+
+    /// The operand's expression: a `let` operand's scrutinee, or the boolean
+    /// test itself.
+    #[must_use]
+    pub fn expr(&self) -> &Spanned<Expr> {
+        match self {
+            Self::Let { expr, .. } | Self::Expr(expr) => expr,
+        }
+    }
+}
+
+/// Every expression evaluated by a condition, in evaluation order. Walkers that
+/// only care about the expressions (`break` scanning, capture analysis, init
+/// tracking) use this instead of destructuring each operand.
+pub fn condition_exprs(conditions: &[ConditionItem]) -> impl Iterator<Item = &Spanned<Expr>> {
+    conditions.iter().map(ConditionItem::expr)
+}
+
+/// Mutable twin of [`condition_exprs`], for the passes that rewrite expressions
+/// in place (tail-call marking).
+pub fn condition_exprs_mut(
+    conditions: &mut [ConditionItem],
+) -> impl Iterator<Item = &mut Spanned<Expr>> {
+    conditions.iter_mut().map(|item| match item {
+        ConditionItem::Let { expr, .. } | ConditionItem::Expr(expr) => expr,
+    })
+}
+
 // ── Statements ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -508,8 +560,7 @@ pub enum Stmt {
         else_block: Option<ElseBlock>,
     },
     IfLet {
-        pattern: Box<Spanned<Pattern>>,
-        expr: Box<Spanned<Expr>>,
+        conditions: Vec<ConditionItem>,
         body: Block,
         /// The `else` arm, if written. Like `If::else_block` this is an
         /// expression, so `if let` chains with `else if` and `else if let`
@@ -538,8 +589,7 @@ pub enum Stmt {
     },
     WhileLet {
         label: Option<String>,
-        pattern: Box<Spanned<Pattern>>,
-        expr: Box<Spanned<Expr>>,
+        conditions: Vec<ConditionItem>,
         body: Block,
     },
     Break {

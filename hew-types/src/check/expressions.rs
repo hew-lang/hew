@@ -508,11 +508,10 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
-            } => self.synthesize_iflet(pattern, expr, body, else_body.as_deref(), span),
+            } => self.synthesize_iflet(conditions, body, else_body.as_deref(), span),
 
             // Match
             Expr::Match { scrutinee, arms } => {
@@ -1331,20 +1330,13 @@ impl Checker {
 
     pub(super) fn synthesize_iflet(
         &mut self,
-        pattern: &Spanned<Pattern>,
-        expr: &Spanned<Expr>,
+        conditions: &[ConditionItem],
         body: &Block,
         else_body: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
-        let scr_ty = self.synthesize(&expr.0, &expr.1);
         let entry = self.env.ownership_snapshot();
-        self.env.push_scope();
-        self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-        // Record the pattern resolution so HIR lowering can consume
-        // the same `pattern_resolutions` side-table that powers
-        // `WhileLet` and `Match` lowering.
-        self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
+        self.check_condition(conditions);
         let then_ty = self.check_block(body, None);
         let then_exit = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
@@ -6097,13 +6089,12 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                pattern,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
                 let mut then_scopes = scopes.to_vec();
-                self.shadow_pattern_bindings(&pattern.1, &mut then_scopes);
+                self.shadow_condition_bindings(conditions, &mut then_scopes);
                 self.scan_block_for_rc_param_return(body, &mut then_scopes);
                 if let Some(else_expr) = else_body {
                     self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
@@ -6230,6 +6221,21 @@ impl Checker {
     /// has no entry and shadows nothing, which is the fail-closed direction:
     /// the scanner then still sees the dangerous param and flags a genuine
     /// escape rather than silently masking it.
+    /// Shadow every name a pattern condition binds (§12.5): one condition can
+    /// carry several `let` operands, and all of their binders are live in the
+    /// then block.
+    fn shadow_condition_bindings(
+        &self,
+        conditions: &[ConditionItem],
+        scopes: &mut [DangerousRcScope],
+    ) {
+        for item in conditions {
+            if let ConditionItem::Let { pattern, .. } = item {
+                self.shadow_pattern_bindings(&pattern.1, scopes);
+            }
+        }
+    }
+
     fn shadow_pattern_bindings(&self, pattern_span: &Span, scopes: &mut [DangerousRcScope]) {
         let key = super::types::SpanKey::in_module(pattern_span, self.current_module_idx);
         if let Some(names) = self.pattern_bound_names.get(&key) {
@@ -6512,9 +6518,11 @@ impl Checker {
                 Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
                     self.scan_block_for_rc_param_return(body, scopes);
                 }
-                Stmt::WhileLet { pattern, body, .. } => {
+                Stmt::WhileLet {
+                    conditions, body, ..
+                } => {
                     scopes.push(HashMap::new());
-                    self.shadow_pattern_bindings(&pattern.1, scopes);
+                    self.shadow_condition_bindings(conditions, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
@@ -6522,13 +6530,12 @@ impl Checker {
                     scopes.pop();
                 }
                 Stmt::IfLet {
-                    pattern,
+                    conditions,
                     body,
                     else_body,
-                    ..
                 } => {
                     scopes.push(HashMap::new());
-                    self.shadow_pattern_bindings(&pattern.1, scopes);
+                    self.shadow_condition_bindings(conditions, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(then_trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(
@@ -9188,12 +9195,13 @@ impl Checker {
                 }
             }
             Stmt::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                self.scan_expr_for_stack_hints(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.scan_expr_for_stack_hints(&expr.0);
+                }
                 self.scan_block_for_stack_hints(body);
                 if let Some(else_expr) = else_body {
                     self.scan_expr_for_stack_hints(&else_expr.0);
@@ -9211,8 +9219,12 @@ impl Checker {
                 self.scan_expr_for_stack_hints(&condition.0);
                 self.scan_block_for_stack_hints(body);
             }
-            Stmt::WhileLet { expr, body, .. } => {
-                self.scan_expr_for_stack_hints(&expr.0);
+            Stmt::WhileLet {
+                conditions, body, ..
+            } => {
+                for expr in condition_exprs(conditions) {
+                    self.scan_expr_for_stack_hints(&expr.0);
+                }
                 self.scan_block_for_stack_hints(body);
             }
             Stmt::For { iterable, body, .. } => {
@@ -9293,15 +9305,16 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
                 // Mirrors the `Stmt::IfLet` arm in `scan_stmt_for_stack_hints`.
                 // `body` and `else_body` are bare `Block` values (not `Spanned<Expr>`),
                 // so we call `scan_block_for_stack_hints` directly.
-                self.scan_expr_for_stack_hints(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.scan_expr_for_stack_hints(&expr.0);
+                }
                 self.scan_block_for_stack_hints(body);
                 if let Some(else_expr) = else_body {
                     self.scan_expr_for_stack_hints(&else_expr.0);

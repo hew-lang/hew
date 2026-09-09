@@ -564,6 +564,14 @@ impl Parser<'_> {
                 break;
             }
 
+            // `&& let` joins the next operand of a pattern condition (§12.5),
+            // which only `parse_condition` can read. Leave the `&&` for it.
+            if self.peek() == Some(&Token::AmpAmp)
+                && self.peek_at(self.pos + 1) == Some(&Token::Let)
+            {
+                break;
+            }
+
             // Detect the removed `<-` send operator: lexer now produces two tokens
             // `<` (at pos) and `-` (at pos+1) adjacently.  Emit E_OPERATOR_REMOVED,
             // then skip to the statement boundary (`;` or `}`) so that the caller
@@ -1101,10 +1109,11 @@ impl Parser<'_> {
             }
             Token::If => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     // The `else` arm is an expression, exactly as it is for a
                     // plain `if`: a block, another `if`, or another `if let`.
@@ -1114,13 +1123,15 @@ impl Parser<'_> {
                         None
                     };
                     Expr::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     }
                 } else {
-                    let condition = Box::new(self.parse_cond_expr()?);
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
+                    let condition = Box::new(condition);
                     let then_block = Box::new(self.parse_expr()?);
                     let else_block = if self.eat(&Token::Else) {
                         Some(Box::new(self.parse_expr()?))

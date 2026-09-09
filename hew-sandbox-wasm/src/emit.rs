@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ElseBlock, Expr, FnDecl,
-    Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
-    TypeDeclKind, VariantKind,
+    ActorDecl, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ConditionItem, ElseBlock,
+    Expr, FnDecl, Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt,
+    TypeBodyItem, TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::{BuiltinType, Ty};
@@ -1557,12 +1557,17 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.lower_stmt_match(scrutinee, arms, span)?;
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.lower_stmt_if_let(pattern, expr, body, else_body.as_deref(), span)?;
+                // The admission profile refuses a `let` chain, so a condition
+                // that reaches here carries exactly one `let` operand.
+                if let [ConditionItem::Let { pattern, expr }] = conditions.as_slice() {
+                    self.lower_stmt_if_let(pattern, expr, body, else_body.as_deref(), span)?;
+                } else {
+                    self.emit_unsupported(Some(span));
+                }
             }
             Stmt::Defer(_) => {
                 self.emit_unsupported(Some(span));
@@ -1631,11 +1636,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
-                self.emit_while_let(label.clone(), pattern, expr, body, span)?;
+                if let [ConditionItem::Let { pattern, expr }] = conditions.as_slice() {
+                    self.emit_while_let(label.clone(), pattern, expr, body, span)?;
+                } else {
+                    self.emit_unsupported(Some(span));
+                }
             }
             Stmt::Break { label, value: None } => {
                 if let Some(exit_id) = self.resolve_loop_exit(label.as_deref()) {
@@ -2227,18 +2235,28 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             // value-position if-let runs at parity with native `hew run`,
             // mirroring the value-position `Expr::If` / `Expr::Match` lowering.
             Expr::IfLet {
-                pattern,
-                expr: scrutinee,
+                conditions,
                 body,
                 else_body,
-            } => self.lower_expr_if_let(
-                expr,
-                pattern,
-                scrutinee,
-                body,
-                else_body.as_deref(),
-                span.clone(),
-            ),
+            } => {
+                if let [ConditionItem::Let {
+                    pattern,
+                    expr: scrutinee,
+                }] = conditions.as_slice()
+                {
+                    self.lower_expr_if_let(
+                        expr,
+                        pattern,
+                        scrutinee,
+                        body,
+                        else_body.as_deref(),
+                        span.clone(),
+                    )
+                } else {
+                    self.emit_unsupported(Some(span.clone()));
+                    Ok(self.emit_const_unit(Some(span.clone())))
+                }
+            }
             Expr::Clone(operand) => {
                 // `clone expr` produces an independent deep copy of the value.
                 // The sandbox VM's `local.set` always calls `cloneValue` (a deep

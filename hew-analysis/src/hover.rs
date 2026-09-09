@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound, TraitItem,
-    TypeBodyItem, TypeExpr,
+    Block, ConditionItem, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound,
+    TraitItem, TypeBodyItem, TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
@@ -501,13 +501,17 @@ fn hover_binding_in_expr(
             None
         }
         Expr::IfLet {
-            pattern,
-            expr: scrutinee,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&scrutinee.1)) {
+            for item in conditions {
+                let ConditionItem::Let { pattern, expr } = item else {
+                    continue;
+                };
+                let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) else {
+                    continue;
+                };
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
@@ -645,13 +649,17 @@ fn hover_binding_in_stmt(
             })
         }
         Stmt::IfLet {
-            pattern,
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) {
+            for item in conditions {
+                let ConditionItem::Let { pattern, expr } = item else {
+                    continue;
+                };
+                let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) else {
+                    continue;
+                };
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
@@ -700,12 +708,15 @@ fn hover_binding_in_stmt(
             hover_binding_in_block(body, type_output, word, word_span, offset)
         }
         Stmt::WhileLet {
-            pattern,
-            expr,
-            body,
-            ..
+            conditions, body, ..
         } => {
-            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) {
+            for item in conditions {
+                let ConditionItem::Let { pattern, expr } = item else {
+                    continue;
+                };
+                let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) else {
+                    continue;
+                };
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,

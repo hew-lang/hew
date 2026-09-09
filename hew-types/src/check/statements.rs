@@ -752,19 +752,12 @@ impl Checker {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                let scr_ty = self.synthesize(&expr.0, &expr.1);
                 let entry = self.env.ownership_snapshot();
-                self.env.push_scope();
-                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                // Record the pattern resolution so HIR lowering can consume
-                // the same `pattern_resolutions` side-table that powers
-                // `WhileLet` and `Match` lowering.
-                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
+                self.check_condition(conditions);
                 let then_ty = self.check_block(body, expected);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
@@ -1734,21 +1727,12 @@ impl Checker {
                 self.check_discarded_if_chain(condition, then_block, else_block.as_ref());
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                let scr_ty = self.synthesize(&expr.0, &expr.1);
                 let entry = self.env.ownership_snapshot();
-                self.env.push_scope();
-                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                // Record the pattern resolution so HIR lowering can consume
-                // the same `pattern_resolutions` side-table that powers
-                // `WhileLet` and `Match` lowering — without this entry HIR
-                // cannot resolve the constructor's `(type_name, variant_name)`
-                // identity or payload-binding field indices for `if-let`.
-                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
+                self.check_condition(conditions);
                 let then_ty = self.check_block(body, None);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
@@ -2159,19 +2143,10 @@ impl Checker {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
-                let scr_ty = self.synthesize(&expr.0, &expr.1);
-                self.env.push_scope();
-                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                // Record the pattern resolution so HIR lowering can consume
-                // the same `pattern_resolutions` side-table that powers
-                // `Match` lowering — without this entry HIR cannot resolve
-                // the constructor's `(type_name, variant_name)` identity or
-                // payload-binding field indices for `while-let`.
-                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
+                self.check_condition(conditions);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.clone());
                 }

@@ -9,13 +9,14 @@ use crate::ty::{Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey};
 use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
+use hew_parser::ast::condition_exprs;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, ConstDecl,
-    Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
-    LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl,
-    RecordDecl, RecordKind, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam,
-    UnaryOp, VariantKind, WhereClause,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
+    ConditionItem, ConstDecl, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl,
+    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern,
+    Program, ReceiveFnDecl, RecordDecl, RecordKind, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -3061,12 +3062,13 @@ impl Checker {
                 }
             }
             Stmt::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                for expr in condition_exprs(conditions) {
+                    self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                }
                 self.classify_escapes_in_block(body, in_fork);
                 if let Some(else_expr) = else_body {
                     self.classify_escapes_in_expr(
@@ -3117,8 +3119,12 @@ impl Checker {
                 );
                 self.classify_escapes_in_block(body, in_fork);
             }
-            Stmt::WhileLet { expr, body, .. } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+            Stmt::WhileLet {
+                conditions, body, ..
+            } => {
+                for expr in condition_exprs(conditions) {
+                    self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                }
                 self.classify_escapes_in_block(body, in_fork);
             }
             Stmt::Break { value, .. } => {
@@ -3248,12 +3254,13 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                for expr in condition_exprs(conditions) {
+                    self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                }
                 self.classify_escapes_in_block(body, in_fork);
                 if let Some(else_expr) = else_body {
                     self.classify_escapes_in_expr(
@@ -3623,12 +3630,13 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            for expr in condition_exprs(conditions) {
+                collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            }
             collect_lambda_spans_in_block(body, out);
             if let Some(else_expr) = else_body {
                 collect_lambda_spans_in_expr(&else_expr.0, &else_expr.1, out);
@@ -3654,8 +3662,12 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
             collect_lambda_spans_in_expr(&condition.0, &condition.1, out);
             collect_lambda_spans_in_block(body, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            }
             collect_lambda_spans_in_block(body, out);
         }
         Stmt::Break { value, .. } => {
@@ -3705,12 +3717,13 @@ fn collect_lambda_spans_in_expr(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            for expr in condition_exprs(conditions) {
+                collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            }
             collect_lambda_spans_in_block(body, out);
             if let Some(else_expr) = else_body {
                 collect_lambda_spans_in_expr(&else_expr.0, &else_expr.1, out);

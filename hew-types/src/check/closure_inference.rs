@@ -1,6 +1,6 @@
 //! Conservative syntactic escape classification for closure bindings.
 
-use hew_parser::ast::{Block, Expr, Spanned, Stmt, StringPart};
+use hew_parser::ast::{condition_exprs, Block, Expr, Spanned, Stmt, StringPart};
 
 use super::types::{ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule};
 
@@ -107,12 +107,13 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            esc_visit_expr(&expr.0, name, in_fork, acc, false);
+            for expr in condition_exprs(conditions) {
+                esc_visit_expr(&expr.0, name, in_fork, acc, false);
+            }
             esc_visit_block(body, name, in_fork, acc);
             if let Some(else_expr) = else_body {
                 esc_visit_expr(&else_expr.0, name, in_fork, acc, false);
@@ -138,8 +139,12 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
             esc_visit_expr(&condition.0, name, in_fork, acc, false);
             esc_visit_block(body, name, in_fork, acc);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            esc_visit_expr(&expr.0, name, in_fork, acc, false);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                esc_visit_expr(&expr.0, name, in_fork, acc, false);
+            }
             esc_visit_block(body, name, in_fork, acc);
         }
         Stmt::Break { value, .. } => {
@@ -321,12 +326,13 @@ fn esc_visit_expr(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            esc_visit_expr(&expr.0, name, in_fork, acc, false);
+            for expr in condition_exprs(conditions) {
+                esc_visit_expr(&expr.0, name, in_fork, acc, false);
+            }
             esc_visit_block(body, name, in_fork, acc);
             if let Some(else_expr) = else_body {
                 esc_visit_expr(&else_expr.0, name, in_fork, acc, false);

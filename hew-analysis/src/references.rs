@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    condition_exprs, Block, ConditionItem, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem,
+    TypeBodyItem,
 };
 use hew_parser::ParseResult;
 
@@ -309,10 +310,14 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
             {
                 self.starts.push(pattern.1.start);
             }
-            Stmt::IfLet { pattern, .. } | Stmt::WhileLet { pattern, .. }
-                if pattern_binds_name(&pattern.0, self.name) =>
-            {
-                self.starts.push(pattern.1.start);
+            Stmt::IfLet { conditions, .. } | Stmt::WhileLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        if pattern_binds_name(&pattern.0, self.name) {
+                            self.starts.push(pattern.1.start);
+                        }
+                    }
+                }
             }
             Stmt::Var {
                 name: binding_name, ..
@@ -336,8 +341,14 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
             Expr::Handle { error, .. } if error.0 == self.name => {
                 self.starts.push(error.1.start);
             }
-            Expr::IfLet { pattern, .. } if pattern_binds_name(&pattern.0, self.name) => {
-                self.starts.push(pattern.1.start);
+            Expr::IfLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        if pattern_binds_name(&pattern.0, self.name) {
+                            self.starts.push(pattern.1.start);
+                        }
+                    }
+                }
             }
             Expr::Match { arms, .. } => {
                 for arm in arms {
@@ -554,8 +565,12 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
             Stmt::Let { pattern, .. } | Stmt::For { pattern, .. } => {
                 self.push_pattern_matches(&pattern.0, &pattern.1);
             }
-            Stmt::IfLet { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
-                self.push_pattern_matches(&pattern.0, &pattern.1);
+            Stmt::IfLet { conditions, .. } | Stmt::WhileLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        self.push_pattern_matches(&pattern.0, &pattern.1);
+                    }
+                }
             }
             Stmt::Match { arms, .. } => {
                 for arm in arms {
@@ -592,8 +607,12 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
                     search_from = val.1.end;
                 }
             }
-            Expr::IfLet { pattern, .. } => {
-                self.push_pattern_matches(&pattern.0, &pattern.1);
+            Expr::IfLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        self.push_pattern_matches(&pattern.0, &pattern.1);
+                    }
+                }
             }
             Expr::Match { arms, .. } => {
                 for arm in arms {
@@ -779,12 +798,13 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            count_idents_in_expr(&expr.0, counts);
+            for expr in condition_exprs(conditions) {
+                count_idents_in_expr(&expr.0, counts);
+            }
             count_idents_in_block(body, counts);
             if let Some(else_expr) = else_body {
                 count_idents_in_expr(&else_expr.0, counts);
@@ -882,12 +902,13 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            count_idents_in_expr(&expr.0, counts);
+            for expr in condition_exprs(conditions) {
+                count_idents_in_expr(&expr.0, counts);
+            }
             count_idents_in_block(body, counts);
             if let Some(else_expr) = else_body {
                 count_idents_in_expr(&else_expr.0, counts);

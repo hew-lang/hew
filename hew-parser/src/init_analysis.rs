@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{Block, ElseBlock, Expr, Stmt};
+use crate::ast::{condition_exprs, Block, ElseBlock, Expr, Stmt};
 
 /// Bare names an `init` body assigns with a plain `name = value` or
 /// `self.name = value`, in any nested structural block.
@@ -83,12 +83,13 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<String>) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_targets(&expr.0, names);
+            for expr in condition_exprs(conditions) {
+                expr_targets(&expr.0, names);
+            }
             block_targets(body, names);
             if let Some(else_body) = else_body {
                 expr_targets(&else_body.0, names);
@@ -111,8 +112,12 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<String>) {
             expr_targets(&condition.0, names);
             block_targets(body, names);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            expr_targets(&expr.0, names);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                expr_targets(&expr.0, names);
+            }
             block_targets(body, names);
         }
         Stmt::Defer(expr) => expr_targets(&expr.0, names),

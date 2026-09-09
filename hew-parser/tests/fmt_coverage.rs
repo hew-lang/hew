@@ -2095,15 +2095,12 @@ fn fmt_supervisor_decl_roundtrip() {
 }
 
 #[test]
-fn fmt_supervisor_default_strategy_written_explicitly() {
-    // A declaration that omits `strategy:` is canonicalised to the explicit
-    // default so the restart contract is never silently defaulted.
-    let formatted = roundtrip_no_comments(
+fn fmt_supervisor_omitted_strategy_stays_omitted() {
+    // Formatting is not rewriting: a declaration that omits `strategy:` keeps
+    // it omitted. Materializing the default here reparsed as a different AST
+    // and broke the corpus round-trip.
+    exact_roundtrip(
         "supervisor Pool {\n    intensity: 5 within 30s,\n\n    child w: Worker(id: 1),\n}\n",
-    );
-    assert_eq!(
-        formatted,
-        "supervisor Pool {\n    strategy: one_for_one,\n    intensity: 5 within 30s,\n\n    child w: Worker(id: 1),\n}\n",
     );
 }
 

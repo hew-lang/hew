@@ -1783,18 +1783,21 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        // Always write `strategy:` explicitly. When the declaration omitted it,
-        // the formatter materializes the default (`one_for_one`) so the restart
-        // contract is never silently defaulted at the surface.
-        self.write_indent();
-        self.write("strategy: ");
-        match decl.strategy.unwrap_or(SupervisorStrategy::OneForOne) {
-            SupervisorStrategy::OneForOne => self.write("one_for_one"),
-            SupervisorStrategy::OneForAll => self.write("one_for_all"),
-            SupervisorStrategy::RestForOne => self.write("rest_for_one"),
-            SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
+        // Write `strategy:` only when the declaration carries one. Materializing
+        // the default here rewrote the program instead of formatting it: the
+        // reformatted source reparsed with `Some(OneForOne)` where the author
+        // wrote nothing, so the output was not the same AST.
+        if let Some(strategy) = decl.strategy {
+            self.write_indent();
+            self.write("strategy: ");
+            match strategy {
+                SupervisorStrategy::OneForOne => self.write("one_for_one"),
+                SupervisorStrategy::OneForAll => self.write("one_for_all"),
+                SupervisorStrategy::RestForOne => self.write("rest_for_one"),
+                SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
+            }
+            self.write(",\n");
         }
-        self.write(",\n");
         if let Some(intensity) = &decl.intensity {
             self.write_indent();
             self.write("intensity: ");

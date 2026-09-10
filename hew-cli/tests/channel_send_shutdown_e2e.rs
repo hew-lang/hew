@@ -100,7 +100,7 @@ actor Pump {
 fn main() {
     let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let pump = spawn Pump(out: tx);
-    pump.go(8);
+    let _ = fork pump.go(8);
     var seen: i64 = 0;
     for _i in 0..8 {
         match rx.recv() {

@@ -266,17 +266,16 @@ impl Default for ReplSession {
     }
 }
 
-fn typecheck_program(
-    program: &hew_parser::ast::Program,
-    enable_wasm: bool,
-) -> hew_types::check::TypeCheckOutput {
-    let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-        hew_types::module_registry::build_module_search_paths(),
-    ));
-    if enable_wasm {
-        checker.enable_wasm_target();
-    }
-    checker.check_program(program)
+/// The checker errors of a frontend run, or `None` when it reported none.
+fn frontend_type_errors(
+    state: &hew_compile::DocumentFrontendState,
+) -> Option<&[hew_types::TypeError]> {
+    let errors = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+        .map(|tco| tco.errors.as_slice())?;
+    (!errors.is_empty()).then_some(errors)
 }
 
 pub(crate) fn find_type_query_expr_type(
@@ -323,13 +322,6 @@ fn parse_errors_are_fatal(errors: &[hew_parser::ParseError]) -> bool {
     errors
         .iter()
         .any(|error| error.severity == hew_parser::Severity::Error)
-}
-
-fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
-    program
-        .items
-        .iter()
-        .any(|(item, _)| matches!(item, hew_parser::ast::Item::Import(_)))
 }
 
 pub(crate) fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
@@ -855,7 +847,15 @@ impl ReplSession {
             kind.clone(),
             auto_print_expressions,
         );
-        let parse_result = hew_parser::parse(&synthetic_program.source);
+        let mut state = hew_compile::run_source_frontend(
+            &synthetic_program.source,
+            source_label,
+            &self.frontend_options(),
+        );
+        let parse_result = state
+            .parse_result
+            .take()
+            .expect("the source frontend parses the buffer");
         if !parse_result.errors.is_empty() {
             render_eval_parse_diagnostics(
                 &synthetic_program.source,
@@ -870,19 +870,17 @@ impl ReplSession {
             }
         }
 
-        if matches!(kind, InputKind::Expression | InputKind::Statement)
-            && !program_has_imports(&parse_result.program)
-        {
-            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-            let module_source_map =
-                crate::diagnostic::build_module_source_map(&parse_result.program);
-            if !tco.errors.is_empty() {
+        // A definition's own diagnostics are the compile path's to render; an
+        // expression or statement gets them here so the spans point at the
+        // line the user typed rather than into the synthetic wrapper.
+        if matches!(kind, InputKind::Expression | InputKind::Statement) {
+            if let Some(errors) = frontend_type_errors(&state) {
                 render_eval_type_diagnostics(
                     &synthetic_program.source,
                     input_name,
                     synthetic_program.diagnostic_view.as_ref(),
-                    &tco.errors,
-                    &module_source_map,
+                    errors,
+                    &crate::diagnostic::build_module_source_map(&state.program),
                 );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
@@ -909,6 +907,17 @@ impl ReplSession {
     /// # Errors
     ///
     /// Returns parse or type errors if the expression is invalid.
+    /// The frontend configuration every REPL check shares: a session fragment
+    /// checked against the session's project, with the completeness lints off.
+    fn frontend_options(&self) -> hew_compile::FrontendOptions {
+        hew_compile::FrontendOptions {
+            enable_wasm_target: self.is_wasm_target(),
+            project_dir: self.project_dir.clone(),
+            repl_fragment: true,
+            ..hew_compile::FrontendOptions::default()
+        }
+    }
+
     pub fn type_of(&mut self, expr: &str) -> Result<String, Vec<String>> {
         match self.type_of_checked(expr) {
             Ok(ty) => Ok(ty),
@@ -938,7 +947,15 @@ impl ReplSession {
     ) -> Result<hew_types::Ty, TypeQueryFailure> {
         let synthetic_program = self.session.build_type_query_program(expr);
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
-        let parse_result = hew_parser::parse(&synthetic_program.source);
+        let mut state = hew_compile::run_source_frontend(
+            &synthetic_program.source,
+            source_label,
+            &self.frontend_options(),
+        );
+        let parse_result = state
+            .parse_result
+            .take()
+            .expect("the source frontend parses the buffer");
         // Warning-only parse results must not fail the type probe; the
         // expression's actual evaluation surfaces any warnings.
         if parse_errors_are_fatal(&parse_result.errors) {
@@ -949,36 +966,15 @@ impl ReplSession {
             }));
         }
 
-        let (tco, module_source_map) = if program_has_imports(&parse_result.program) {
-            let options = hew_compile::FrontendOptions {
-                enable_wasm_target: self.is_wasm_target(),
-                project_dir: self.project_dir.clone(),
-                // This probe type-checks the same accumulated REPL fragment, so
-                // it must suppress the completeness lints too; otherwise an
-                // unrelated eval failure would surface the probe's spurious
-                // `unused import`/`unused variable` warnings alongside the real
-                // error.
-                repl_fragment: true,
-                ..hew_compile::FrontendOptions::default()
-            };
-            let state = hew_compile::run_program_frontend_to_typecheck(
-                parse_result.program,
-                &synthetic_program.source,
-                source_label,
-                &options,
-            )
-            .map_err(TypeQueryFailure::Frontend)?;
-            let tco = state
-                .typecheck_result
-                .tco
-                .ok_or(TypeQueryFailure::NoTypeInfo)?;
-            let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
-            (tco, module_source_map)
-        } else {
-            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-            let module_source_map =
-                crate::diagnostic::build_module_source_map(&parse_result.program);
-            (tco, module_source_map)
+        let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
+        let stopped = state.stopped;
+        let tco = match state.typecheck_result.and_then(|result| result.tco) {
+            Some(tco) => tco,
+            // The run never reached the checker: report why, not "no type
+            // information".
+            None => {
+                return Err(stopped.map_or(TypeQueryFailure::NoTypeInfo, TypeQueryFailure::Frontend))
+            }
         };
 
         let query_ty = find_type_query_expr_type(&synthetic_program.source, &tco.expr_types);
@@ -1190,7 +1186,15 @@ impl ReplSession {
         );
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
 
-        let parse_result = hew_parser::parse(&synthetic_program.source);
+        let mut state = hew_compile::run_source_frontend(
+            &synthetic_program.source,
+            "<repl>",
+            &self.frontend_options(),
+        );
+        let parse_result = state
+            .parse_result
+            .take()
+            .expect("the source frontend parses the buffer");
         if parse_errors_are_fatal(&parse_result.errors) {
             return Err(EvalCheckFailure::Parse {
                 source: synthetic_program.source,
@@ -1208,15 +1212,14 @@ impl ReplSession {
             );
         }
 
-        let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-        let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
-
-        if !tco.errors.is_empty() {
+        if let Some(errors) = frontend_type_errors(&state) {
             return Err(EvalCheckFailure::Type {
                 source: synthetic_program.source,
                 diagnostic_view,
-                errors: tco.errors,
-                module_source_map: Box::new(module_source_map),
+                errors: errors.to_vec(),
+                module_source_map: Box::new(crate::diagnostic::build_module_source_map(
+                    &state.program,
+                )),
             });
         }
 

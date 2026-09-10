@@ -1389,37 +1389,6 @@ impl Checker {
             ),
         );
 
-        // std::math module — always available, no import needed
-        self.modules.insert("math".to_string());
-        // Single-argument math functions: f64 → f64
-        for name in &[
-            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "tanh", "log2", "log10", "exp2",
-        ] {
-            self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64], Ty::F64);
-        }
-        self.register_builtin_num_math_fn("math.abs", 1);
-        // Two-argument math functions: (f64, f64) → f64
-        self.register_builtin_fn("math.pow", vec![Ty::F64, Ty::F64], Ty::F64);
-        self.register_builtin_num_math_fn("math.max", 2);
-        self.register_builtin_num_math_fn("math.min", 2);
-        // Constants (zero-argument): () → f64
-        for name in &["pi", "e"] {
-            self.register_builtin_fn(&format!("math.{name}"), vec![], Ty::F64);
-        }
-
-        // std::random module — always available, no import needed
-        self.modules.insert("random".to_string());
-        self.register_builtin_fn("random.seed", vec![Ty::I64], Ty::Unit);
-        self.register_builtin_fn("random.random", vec![], Ty::F64);
-        self.register_builtin_fn("random.gauss", vec![Ty::F64, Ty::F64], Ty::F64);
-        self.register_builtin_fn("random.randint", vec![Ty::I64, Ty::I64], Ty::I64);
-        self.register_builtin_fn("random.shuffle", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
-        self.register_builtin_fn(
-            "random.choices",
-            vec![Ty::Var(TypeVar::fresh()), Ty::F64, Ty::I64],
-            Ty::I64,
-        );
-
         // Duplex constructors — compiler builtins.
         //
         // WHY: `duplex_pair` and `duplex` are constructor-only surfaces with no
@@ -1993,21 +1962,6 @@ impl Checker {
                 return_type,
                 ..FnSig::default()
             },
-        );
-    }
-
-    fn register_builtin_num_math_fn(&mut self, name: &str, arity: usize) {
-        let t = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
-        self.register_builtin_fn_with_bounds(
-            name,
-            vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Num".to_string()])]),
-            vec![t.clone(); arity],
-            t,
         );
     }
 

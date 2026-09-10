@@ -2132,6 +2132,105 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── Local Vec/HashMap construction in machine transitions ──────────────
+
+    /// A transition may build and grow a local `Vec` state value purely, the
+    /// same as it already may for `bytes`: `Vec.new()` plus `push` touch only
+    /// the fresh local value, with no external effect.
+    #[test]
+    fn machine_transition_builds_local_vec_purely() {
+        let output = check_source(
+            r"
+            machine Log {
+                events {
+                    Append { item: i64, },
+                }
+                state Empty,
+                state Filled { items: Vec<i64>, },
+                on Append(item): Empty => Filled {
+                    var v: Vec<i64> = Vec.new();
+                    v.push(item);
+                    Filled { items: v }
+                }
+                on Append(item): Filled => Filled reenter {
+                    var v = self.items;
+                    v.push(item);
+                    Filled { items: v }
+                }
+                default { state }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "building and growing a local Vec purely in a machine transition must admit; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// The same admission for a local `HashMap`: `HashMap.new()` plus
+    /// `insert` touch only the fresh local value.
+    #[test]
+    fn machine_transition_builds_local_hashmap_purely() {
+        let output = check_source(
+            r"
+            machine Counts {
+                events {
+                    Bump { key: string, },
+                }
+                state Empty,
+                state Filled { counts: HashMap<string, i64>, },
+                on Bump(key): Empty => Filled {
+                    var m: HashMap<string, i64> = HashMap.new();
+                    m.insert(key, 1);
+                    Filled { counts: m }
+                }
+                default { state }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "building a local HashMap purely in a machine transition must admit; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// Negative control: a transition performing I/O is still refused. Local
+    /// collection construction is admitted because it has no external
+    /// effect; `println` does, and must not be swept in with it.
+    #[test]
+    fn machine_transition_calling_println_is_still_rejected() {
+        let output = check_source(
+            r"
+            machine Log {
+                events {
+                    Append { item: i64, },
+                }
+                state Empty,
+                state Filled { items: Vec<i64>, },
+                on Append(item): Empty => Filled {
+                    println(item);
+                    var v: Vec<i64> = Vec.new();
+                    v.push(item);
+                    Filled { items: v }
+                }
+                default { state }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| e
+                .message
+                .contains("machine evaluator is not demonstrably pure")),
+            "I/O inside a machine transition must still be refused; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── gen{} Return-component inference ───────────────────────────────────
 
     /// `gen { 1 }` has a tail expression but no yield.  The Return component

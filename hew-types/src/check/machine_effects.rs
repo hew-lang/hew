@@ -10,7 +10,7 @@ use hew_parser::ast::{
     DeclarationOrigin, Expr, FnDecl, Item, Program, Span, Spanned, Stmt, StringPart,
 };
 
-use super::dispatch::{CallTarget, MethodTargetFamily};
+use super::dispatch::{CallTarget, HashMapMethod, MethodTargetFamily};
 use super::lints::{self, NodeVisitor};
 use super::{MethodCallRewrite, SpanKey, TypeCheckOutput, UserComparisonDispatch};
 use crate::error::{TypeError, TypeErrorKind};
@@ -451,6 +451,12 @@ impl EffectVisitor<'_> {
             CallTarget::Runtime(family) if pure_runtime(*family) => {}
             CallTarget::RuntimeCollection(MethodTargetFamily::Vec(method))
                 if *method != super::dispatch::VecMethod::Contains => {}
+            // A machine may build and grow a local `Vec` or `HashMap` state
+            // value purely, the same as it already may for `bytes` (see
+            // `pure_runtime`). `insert` touches only the map's own local
+            // value; the rest of `HashMapMethod` stays refused until each is
+            // reviewed the same way (D360: extend minimally, name the gap).
+            CallTarget::RuntimeCollection(MethodTargetFamily::HashMap(HashMapMethod::Insert)) => {}
             // These closed compiler intrinsics raise an ordinary checked fault;
             // they do not perform externally visible work before unwinding.
             CallTarget::Builtin { endpoint } if matches!(endpoint.as_str(), "panic" | "assert") => {
@@ -664,8 +670,18 @@ fn pure_data(
         | ResolvedTy::Never => true,
         ResolvedTy::Tuple(fields) => fields.iter().all(|ty| pure_data(ty, output, visiting)),
         ResolvedTy::Array(element, _) => pure_data(element, output, visiting),
+        // A `HashMap` state value is ordinary owned data, the same as a
+        // `Vec` above: admitted alongside its own local construction in
+        // `pure_runtime` / `EffectVisitor::target`. Its key and value type
+        // arguments are still walked for purity like every other container.
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Vec | BuiltinType::Option | BuiltinType::Result),
+            builtin:
+                Some(
+                    BuiltinType::Vec
+                    | BuiltinType::Option
+                    | BuiltinType::Result
+                    | BuiltinType::HashMap,
+                ),
             args,
             ..
         } => args.iter().all(|ty| pure_data(ty, output, visiting)),
@@ -700,7 +716,16 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as R;
     matches!(
         family,
-        R::MathIntrinsic(_)
+        // A fresh local collection's own constructor is as pure as
+        // `BytesNew`: no external effect, no reachable prior state. The
+        // methods called on the value it produces (`Vec` methods, `HashMap`
+        // insert) are admitted separately in `EffectVisitor::target` via
+        // `CallTarget::RuntimeCollection`, not through this typed-family
+        // route.
+        R::VecNew
+            | R::HashMapNew
+            | R::HashMapNewWithLayout
+            | R::MathIntrinsic(_)
             | R::StringCharAt
             | R::StringCharAtUtf8
             | R::StringCharCount

@@ -125,15 +125,15 @@ fn owned_type_param_loop_source(frames: usize) -> String {
 /// released even though the closure was invoked and mutated.
 fn counter_factory_loop_source(frames: usize) -> String {
     format!(
-        "fn make_counter() -> fn() -> i64 {{\n\
+        "fn make_counter() -> fn[var, clone]() -> i64 {{\n\
          \x20   var count: i64 = 0;\n\
-         \x20   || {{ count = count + 1; count }}\n\
+         \x20   capture(var count) || {{ count = count + 1; count }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let c = make_counter();\n\
+         \x20       var c = make_counter();\n\
          \x20       total = total + c() + c();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -174,18 +174,18 @@ fn make_pair(base: i64) -> fn(i64) -> i64 {\n\
 \x20   let inner = |x: i64| x + base;\n\
 \x20   |y: i64| inner(y) + 1\n\
 }\n\
-fn make_counter() -> fn() -> i64 {\n\
+fn make_counter() -> fn[var, clone]() -> i64 {\n\
 \x20   var count: i64 = 0;\n\
-\x20   || { count = count + 1; count }\n\
+\x20   capture(var count) || { count = count + 1; count }\n\
 }\n\
-fn pick<T>(x: T) -> T {\n\
-\x20   let get = || x;\n\
+fn pick<T>(consume x: T) -> T {\n\
+\x20   let get = move || x;\n\
 \x20   get()\n\
 }\n\
 fn main() {\n\
 \x20   let f = make_pair(100);\n\
 \x20   let a = f(10);\n\
-\x20   let c = make_counter();\n\
+\x20   var c = make_counter();\n\
 \x20   let b = c() + c() + c();\n\
 \x20   let s = pick(\"captured\");\n\
 \x20   let d = s.len();\n\

@@ -1250,7 +1250,12 @@ run_doc_fences() {
         else
             fail=$((fail + 1))
             ACTUAL_STR="${ACTUAL_STR}${fence_id}"$'\n'
-            record_expected_refusal_status "$fence_id" "$check_rc" "$check_log"
+            # Called as a plain statement, so `record_expected_refusal_status`
+            # returning 1 for a genuine refusal-outcome drift would otherwise
+            # trip `set -e` here and abort before `ratchet_verdict` ever prints
+            # the OUTCOME DRIFT line (unlike the hew-corpus call site, which
+            # uses the call as an `if` condition and is exempt from errexit).
+            record_expected_refusal_status "$fence_id" "$check_rc" "$check_log" || true
         fi
     done
 

@@ -983,7 +983,10 @@ impl Checker {
             );
         }
         if resolved.is_integer_literal() || matches!(resolved, Ty::Var(_)) {
-            if self.is_coercible_numeric(&operand.0) {
+            if self.is_coercible_numeric(&operand.0)
+                || (resolved.is_integer_literal()
+                    && Self::is_literal_integer_arithmetic(&operand.0))
+            {
                 self.check_against(&operand.0, &operand.1, common_ty);
             } else {
                 // The operand has already been checked. Rechecking an await
@@ -991,6 +994,41 @@ impl Checker {
                 self.expect_type(common_ty, operand_ty, &operand.1);
                 self.record_type(&operand.1, common_ty);
             }
+        }
+    }
+
+    /// Integer arithmetic whose own checked type is still a literal type, so
+    /// every leaf under it is a literal or an untyped const.
+    ///
+    /// Recording only the top node's contextual width would leave those leaves
+    /// to default independently (`a == 0 - 1` with `a: i32` recorded the
+    /// subtraction as `i32` while both literals defaulted to `i64`, which SIR
+    /// then rejected as a mismatched checked-arithmetic terminator). Rechecking
+    /// such a subtree against the contextual width repeats no ownership effect
+    /// because it contains no call, await or resource use.
+    fn is_literal_integer_arithmetic(expr: &Expr) -> bool {
+        match expr {
+            Expr::Binary { op, .. } => matches!(
+                op,
+                BinaryOp::Add
+                    | BinaryOp::Subtract
+                    | BinaryOp::Multiply
+                    | BinaryOp::Divide
+                    | BinaryOp::Modulo
+                    | BinaryOp::WrappingAdd
+                    | BinaryOp::WrappingSub
+                    | BinaryOp::WrappingMul
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr
+            ),
+            Expr::Unary {
+                op: UnaryOp::BitNot,
+                ..
+            } => true,
+            _ => false,
         }
     }
 

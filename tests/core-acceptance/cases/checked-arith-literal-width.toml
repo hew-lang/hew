@@ -1,0 +1,11 @@
+[[case]]
+id = "checked-arith-literal-width"
+intent = "Literal-only integer arithmetic adopts its contextual width at every leaf, so the checked-arithmetic terminator SIR builds agrees with its operands."
+source = "cases/checked-arith-literal-width.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "eq\nnested eq\nne\nwide eq\n"
+stderr = ""
+exit = 0

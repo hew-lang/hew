@@ -1913,7 +1913,8 @@ let alias = data.clone();  // refcount++, no data copy
 - `weak.clone()` creates another weak owner
 - `weak.upgrade()` returns exactly `Some(Rc<T>)` while a strong owner exists,
   and exactly `None` after the last strong owner is released
-- `Weak<T>` is affine and is neither `Send` nor `Sync`
+- Rebinding a `Weak<T>` retains it, the way rebinding an `Rc<T>` does; it is
+  neither `Send` nor `Sync`
 - A weak handle keeps the allocation header alive but does not keep its payload alive
 
 ```hew

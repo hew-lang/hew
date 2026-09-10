@@ -5,7 +5,7 @@
 //! [`ModuleGraph`].  The graph carries a topological ordering so that
 //! downstream passes can process modules in dependency order.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -59,6 +59,92 @@ pub struct Module {
     pub source_paths: Vec<PathBuf>,
     /// Module-level documentation.
     pub doc: Option<String>,
+}
+
+/// The items a file-import chain rooted at `items` splices into the importing
+/// namespace, in splice order, each with the source file that declared it.
+///
+/// The frontend appends exactly these items; HIR re-derives the same sequence
+/// to give each spliced item back the file index the checker stamped its facts
+/// with. Both read this one walk, so the two can no longer disagree about the
+/// shape of the flattened block.
+#[must_use]
+pub fn file_import_spliced_items(items: &[Spanned<Item>]) -> Vec<(&Spanned<Item>, Option<&Path>)> {
+    let mut spliced = Vec::new();
+    let mut seen = HashSet::new();
+    collect_file_import_spliced_items(items, &mut seen, &mut spliced);
+    spliced
+}
+
+fn collect_file_import_spliced_items<'a>(
+    items: &'a [Spanned<Item>],
+    seen: &mut HashSet<PathBuf>,
+    out: &mut Vec<(&'a Spanned<Item>, Option<&'a Path>)>,
+) {
+    for (item, _) in items {
+        let Item::Import(decl) = item else { continue };
+        if decl.file_path.is_none() {
+            continue;
+        }
+        let Some(resolved_items) = decl.resolved_items.as_ref() else {
+            continue;
+        };
+        if let Some(source) = decl.resolved_source_paths.first() {
+            if !seen.insert(source.clone()) {
+                continue;
+            }
+        }
+        for (index, resolved) in resolved_items.iter().enumerate() {
+            if matches!(resolved.0, Item::Import(_)) {
+                continue;
+            }
+            let source = decl
+                .resolved_item_source_paths
+                .get(index)
+                .map(PathBuf::as_path)
+                .or_else(|| decl.resolved_source_paths.first().map(PathBuf::as_path));
+            out.push((resolved, source));
+        }
+        collect_file_import_spliced_items(resolved_items, seen, out);
+    }
+}
+
+/// Every source a file-import chain rooted at `items` reaches.
+///
+/// A file import (`import "helper.hew";`) publishes its declarations into the
+/// importing file, and a file it imports in turn publishes into that same
+/// chain. The frontend flattens the whole chain into one namespace, so the
+/// stages that must not lower those declarations a second time — the checker's
+/// namespace choice and HIR's module-graph pass — ask this one walk which
+/// sources the chain covers rather than each re-deriving a one-level answer.
+#[must_use]
+pub fn file_import_chain_sources(items: &[Spanned<Item>]) -> HashSet<PathBuf> {
+    let mut sources = HashSet::new();
+    collect_file_import_chain_sources(items, &mut sources);
+    sources
+}
+
+fn collect_file_import_chain_sources(items: &[Spanned<Item>], sources: &mut HashSet<PathBuf>) {
+    for (item, _) in items {
+        let Item::Import(decl) = item else { continue };
+        if decl.file_path.is_none() {
+            continue;
+        }
+        let Some(resolved_items) = decl.resolved_items.as_ref() else {
+            continue;
+        };
+        let mut fresh = false;
+        for source in decl
+            .resolved_source_paths
+            .iter()
+            .chain(decl.resolved_item_source_paths.iter())
+        {
+            fresh |= sources.insert(source.clone());
+        }
+        if fresh {
+            collect_file_import_chain_sources(resolved_items, sources);
+        }
+    }
 }
 
 // ── ModuleImport ─────────────────────────────────────────────────────

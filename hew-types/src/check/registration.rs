@@ -5480,29 +5480,6 @@ impl Checker {
                         prev_span.clone(),
                     ));
                 } else {
-                    // A flat file-import module (`import "sibling.hew";`)
-                    // surfaces its pub free functions unqualified at the
-                    // importer's flat/root namespace. The declaration authority
-                    // is the module-qualified `scoped_name` (`sibling.double`) —
-                    // the exact `DefId` HIR/MIR/codegen derive the symbol from —
-                    // but the call site spells the callee bare (`double`). Alias
-                    // the bare surface to that qualified declaration so
-                    // `call_target_for_signature` publishes `CallTarget::User`,
-                    // exactly as a module-path import does through this same
-                    // `import_fn_name_aliases` rung. Without it the bare call
-                    // finds no declaration and falls through to `Unsupported`,
-                    // which `ensure_executable_target` then rejects (method calls
-                    // resolve through the impl-method path and were unaffected).
-                    if self.registration_is_flat_file_import && fd.visibility.is_pub() {
-                        // This is a cross-context publication: the declaration
-                        // is being visited in the imported file, but the bare
-                        // binding belongs to the root importing file. Import
-                        // binding keys always use BOTH coordinates of the
-                        // lexical owner, never the ambient declaration index.
-                        self.import_fn_name_aliases
-                            .entry((None, 0, fd.name.clone()))
-                            .or_insert_with(|| scoped_name.clone());
-                    }
                     self.fn_def_spans.insert(
                         scoped_name.clone(),
                         (span.clone(), self.current_module.clone()),
@@ -10266,6 +10243,7 @@ impl Checker {
         if import_span.is_some_and(|span| !self.preflight_import_publication(decl, span)) {
             return;
         }
+        let mut resolved_module_owner: Option<String> = None;
         if let Some(items) = decl.resolved_items.as_ref() {
             let requested_owner = if decl.path.is_empty() {
                 decl.file_path
@@ -10277,13 +10255,20 @@ impl Checker {
             } else {
                 decl.path.join(".")
             };
-            let owner = crate::module_registry::canonical_source_module_identity(
-                &requested_owner,
+            let primary = self.identity.mint_module(
+                &crate::module_registry::canonical_source_module_identity(
+                    &requested_owner,
+                    &decl.resolved_source_paths,
+                ),
                 &decl.resolved_source_paths,
             );
-            let primary = self
-                .identity
-                .mint_module(&owner, &decl.resolved_source_paths);
+            // The identity table interns by canonical source, so a module the
+            // compile already reached under another spelling answers with the
+            // render it was minted under. That render is the one owner every
+            // registration below keys by; the requested spelling is only how
+            // this importer wrote it.
+            let owner = self.identity.module_path(primary).to_string();
+            resolved_module_owner = Some(owner.clone());
             for source in decl.resolved_source_paths.iter().skip(1) {
                 self.identity.mint_source_file_module(&owner, source);
             }
@@ -10331,18 +10316,20 @@ impl Checker {
                     let registry_source_items = info.source_items.clone();
 
                     let requested_owner = module_path.clone();
-                    let canonical_owner = resolved_source_path.as_ref().map_or_else(
-                        || requested_owner.clone(),
-                        |source_path| {
-                            crate::module_registry::canonical_source_module_identity(
-                                &requested_owner,
-                                std::slice::from_ref(source_path),
-                            )
-                        },
+                    let registry_module = self.identity.mint_module(
+                        &resolved_source_path.as_ref().map_or_else(
+                            || requested_owner.clone(),
+                            |source_path| {
+                                crate::module_registry::canonical_source_module_identity(
+                                    &requested_owner,
+                                    std::slice::from_ref(source_path),
+                                )
+                            },
+                        ),
+                        resolved_source_path.as_slice(),
                     );
-                    let registry_module = self
-                        .identity
-                        .mint_module(&canonical_owner, resolved_source_path.as_slice());
+                    // As above: the interned render, not the requested spelling.
+                    let canonical_owner = self.identity.module_path(registry_module).to_string();
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
                             &canonical_owner,
@@ -10580,8 +10567,10 @@ impl Checker {
                 if self.flat_file_import_already_registered(decl) {
                     return;
                 }
-                // File imports register top-level names without a module namespace.
-                self.register_file_import_items(resolved_items);
+                let owner = resolved_module_owner
+                    .clone()
+                    .unwrap_or_else(|| self.current_module.clone().unwrap_or_default());
+                self.register_file_import_items(&owner, resolved_items);
             } else {
                 // Lifecycle nominal identities require stronger provenance than
                 // the ordinary resolved-item surface: only an exact canonical
@@ -10596,11 +10585,9 @@ impl Checker {
                     .module_alias
                     .clone()
                     .unwrap_or_else(|| decl.path.last().expect("import path is non-empty").clone());
-                let requested_owner = decl.path.join(".");
-                let full_dot_path = crate::module_registry::canonical_source_module_identity(
-                    &requested_owner,
-                    &decl.resolved_source_paths,
-                );
+                let full_dot_path = resolved_module_owner
+                    .clone()
+                    .unwrap_or_else(|| decl.path.join("."));
                 // `resolved_items` can be supplied directly by a module
                 // loader without a separately traversed graph node. Preserve
                 // the same source-derived authority before publishing its
@@ -11462,12 +11449,20 @@ impl Checker {
         );
     }
 
-    /// Register items from a file-based import as top-level names (no module namespace).
+    /// Register items from a file-based import into the IMPORTING file's
+    /// namespace.
+    ///
+    /// `owner` is the imported file's own module identity. A `pub fn` it
+    /// declares is published under the importer's namespace — the same key
+    /// shape the importer's own declarations use, so a file import is visible
+    /// exactly where it was written and nowhere else — and aliased to the
+    /// declaration `{owner}.{name}` that HIR, MIR and codegen derive the symbol
+    /// from. A file two files both import registers once per importer.
     #[expect(
         clippy::too_many_lines,
         reason = "single-pass walk over every Item variant with parallel registration paths"
     )]
-    pub(super) fn register_file_import_items(&mut self, items: &[Spanned<Item>]) {
+    pub(super) fn register_file_import_items(&mut self, owner: &str, items: &[Spanned<Item>]) {
         let mut current_import_pub_spans = HashMap::new();
         let mut skipped_type_names = HashSet::new();
 
@@ -11485,9 +11480,19 @@ impl Checker {
                         continue;
                     }
                     let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    let binding = Self::declared_fn_identity(self.canonical_fn_owner(), &fd.name);
+                    let declaration = Self::declared_fn_identity(Some(owner), &fd.name);
                     self.fn_type_param_assoc_bindings
-                        .insert(fd.name.clone(), assoc_bindings);
-                    self.fn_sigs.insert(fd.name.clone(), sig);
+                        .insert(binding.clone(), assoc_bindings);
+                    self.fn_sigs.insert(binding.clone(), sig);
+                    self.import_fn_name_aliases.insert(
+                        (
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            binding,
+                        ),
+                        declaration,
+                    );
                 }
                 Item::Const(cd) => {
                     if !cd.visibility.is_pub() {
@@ -11684,7 +11689,12 @@ impl Checker {
         }
 
         self.flat_file_import_pub_spans
-            .extend(current_import_pub_spans);
+            .extend(current_import_pub_spans.into_iter().map(|(name, span)| {
+                (
+                    (self.current_module.clone(), self.current_module_idx, name),
+                    span,
+                )
+            }));
     }
 
     pub(super) fn register_flat_file_import_pub_name(
@@ -11693,9 +11703,14 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
+        let key = (
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        );
         if let Some(prev_span) = self
             .flat_file_import_pub_spans
-            .get(name)
+            .get(&key)
             .cloned()
             .or_else(|| current_import_pub_spans.get(name).cloned())
         {
@@ -11738,9 +11753,14 @@ impl Checker {
         let Some(import_source) = import_source else {
             return false;
         };
-        !self
-            .registered_flat_file_import_sources
-            .insert(import_source)
+        // Per importing file: one file imported by two files publishes its
+        // names into both scopes, and a global source set would leave the
+        // second importer with nothing.
+        !self.registered_flat_file_import_sources.insert((
+            self.current_module.clone(),
+            self.current_module_idx,
+            import_source,
+        ))
     }
 
     fn stdlib_hew_source_already_registered(
@@ -13143,20 +13163,7 @@ pub(super) fn flat_file_import_module_ids(
     let Some(module_graph) = program.module_graph.as_ref() else {
         return HashSet::new();
     };
-    let file_paths: HashSet<std::path::PathBuf> = program
-        .items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            Item::Import(decl) if decl.file_path.is_some() => Some(decl),
-            _ => None,
-        })
-        .flat_map(|decl| {
-            decl.resolved_source_paths
-                .iter()
-                .chain(decl.resolved_item_source_paths.iter())
-                .cloned()
-        })
-        .collect();
+    let file_paths = hew_parser::module::file_import_chain_sources(&program.items);
     if file_paths.is_empty() {
         return HashSet::new();
     }

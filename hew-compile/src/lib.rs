@@ -2233,22 +2233,10 @@ pub fn build_module_graph(
 }
 
 fn flatten_file_import_items(program: &mut Program) {
-    let mut extra = Vec::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved_items) = &decl.resolved_items else {
-            continue;
-        };
-        extra.extend(
-            resolved_items
-                .iter()
-                .filter(|(resolved_item, _)| !matches!(resolved_item, Item::Import(_)))
-                .cloned(),
-        );
-    }
+    let extra: Vec<Spanned<Item>> = hew_parser::module::file_import_spliced_items(&program.items)
+        .into_iter()
+        .map(|(item, _)| item.clone())
+        .collect();
     program.items.extend(extra);
 }
 
@@ -2259,6 +2247,25 @@ fn flatten_file_import_items(program: &mut Program) {
               seen-id state the walk threads; grouping them would hide which \
               of the three paths each argument comes from"
 )]
+/// The graph node already assembled from `source`, if the walk reached that
+/// file under an earlier spelling. Paths are compared canonically because the
+/// two spellings arrive through different candidate roots.
+fn graph_module_for_source(
+    graph: &hew_parser::module::ModuleGraph,
+    source: &Path,
+) -> Option<hew_parser::module::ModuleId> {
+    let key = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    graph
+        .modules
+        .iter()
+        .find(|(_, module)| {
+            module.source_paths.first().is_some_and(|existing| {
+                std::fs::canonicalize(existing).unwrap_or_else(|_| existing.clone()) == key
+            })
+        })
+        .map(|(module_id, _)| module_id.clone())
+}
+
 fn extract_module_info(
     items: &[Spanned<Item>],
     current_source: &Path,
@@ -2277,15 +2284,23 @@ fn extract_module_info(
         let Item::Import(decl) = item else { continue };
 
         let (module_id, first_source_path) = if !decl.path.is_empty() {
-            let requested = decl.path.join(".");
-            let canonical = hew_types::module_registry::canonical_source_module_identity(
-                &requested,
-                &decl.resolved_source_paths,
-            );
-            (
-                ModuleId::new(canonical.split('.').map(String::from).collect()),
-                None,
-            )
+            // One source is one module, however the import spelled it: a
+            // package-qualified `probe.lib` and a directory-relative `lib`
+            // reach the same file, and a second graph node would have the
+            // checker register those declarations twice under two owners.
+            let existing = decl
+                .resolved_source_paths
+                .first()
+                .and_then(|source| graph_module_for_source(graph, source));
+            let module_id = existing.unwrap_or_else(|| {
+                let requested = decl.path.join(".");
+                let canonical = hew_types::module_registry::canonical_source_module_identity(
+                    &requested,
+                    &decl.resolved_source_paths,
+                );
+                ModuleId::new(canonical.split('.').map(String::from).collect())
+            });
+            (module_id, None)
         } else if let Some(file_path) = &decl.file_path {
             let resolved = current_source
                 .parent()

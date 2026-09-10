@@ -3066,12 +3066,13 @@ pub struct Checker {
     /// user's own program and flat file imports share one module). Builtins are
     /// registered without going through this gate and stay globally visible.
     pub(super) type_namespace_owners: HashMap<(Option<String>, String), Span>,
-    /// Tracks public top-level names introduced by prior flat file imports so later
-    /// flat imports can reject collisions instead of silently overwriting them.
-    pub(super) flat_file_import_pub_spans: HashMap<String, Span>,
-    /// Canonical source paths for flat file imports already registered in the
-    /// current checker run so repeated imports stay idempotent.
-    pub(super) registered_flat_file_import_sources: HashSet<PathBuf>,
+    /// Tracks public top-level names introduced by prior flat file imports into
+    /// one importing file, so a later flat import there rejects the collision
+    /// instead of silently overwriting it.
+    pub(super) flat_file_import_pub_spans: HashMap<ImportBindingKey, Span>,
+    /// Canonical source paths for flat file imports already registered into one
+    /// importing file, so repeated imports there stay idempotent.
+    pub(super) registered_flat_file_import_sources: HashSet<(Option<String>, u32, PathBuf)>,
     /// Tracks stdlib Hew modules whose public Hew items have already been registered.
     /// Uses the canonical entry source path when available, and falls back to the
     /// module path for callers that only populate `resolved_items`.

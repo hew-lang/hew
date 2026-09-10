@@ -2423,8 +2423,6 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
 /// every module present in `modules`. Returns a map from `program.items` index
 /// to module index; absent entries (genuine root items) are index 0.
 fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
-    use std::path::{Path, PathBuf};
-
     let mut map = HashMap::new();
     let Some(mg) = &program.module_graph else {
         return map;
@@ -2434,37 +2432,16 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
     // stamped `current_module_idx` with during its non-root body-check walk.
     let span_indices = mg.file_span_indices();
 
-    // Re-derive the flattened tail block, mirroring `flatten_file_import_items`:
-    // each file-path import decl contributed its resolved items (minus nested
-    // `Item::Import` stubs) to the tail, in decl order. Attribute each appended
-    // item to its own source file's module index via the parallel
-    // `resolved_item_source_paths`.
-    let mut appended: Vec<u32> = Vec::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved) = &decl.resolved_items else {
-            continue;
-        };
-        for (k, (ritem, _)) in resolved.iter().enumerate() {
-            if matches!(ritem, Item::Import(_)) {
-                continue;
-            }
-            let path: Option<&Path> = decl
-                .resolved_item_source_paths
-                .get(k)
-                .map(PathBuf::as_path)
-                .or_else(|| decl.resolved_source_paths.first().map(PathBuf::as_path));
-            let idx = path
-                .and_then(|p| span_indices.path_index(p))
-                .unwrap_or_default();
-            appended.push(idx);
-        }
-    }
+    // The spliced tail, from the same walk the frontend appended it with, so
+    // each entry keeps its own declaring file's index.
+    let appended: Vec<u32> = hew_parser::module::file_import_spliced_items(&program.items)
+        .into_iter()
+        .map(|(_, source)| {
+            source
+                .and_then(|path| span_indices.path_index(path))
+                .unwrap_or_default()
+        })
+        .collect();
 
     let total = appended.len();
     if total == 0 || total > program.items.len() {
@@ -2501,29 +2478,15 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
 /// Server`). A bare-name skip would silently drop a package-import impl that
 /// merely shares a name with a file-import/root impl; an origin skip cannot.
 fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::ModuleId> {
-    use std::path::PathBuf;
-
     let mut ids = HashSet::new();
     let Some(mg) = &program.module_graph else {
         return ids;
     };
 
-    // Canonical source paths contributed by file-path imports.
-    let mut file_import_paths: HashSet<PathBuf> = HashSet::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        for p in &decl.resolved_source_paths {
-            file_import_paths.insert(p.clone());
-        }
-        for p in &decl.resolved_item_source_paths {
-            file_import_paths.insert(p.clone());
-        }
-    }
+    // Canonical source paths contributed by the root's file-import chain: a
+    // file the root imports may import a file in turn, and the splice carries
+    // that whole chain into `program.items`.
+    let file_import_paths = hew_parser::module::file_import_chain_sources(&program.items);
     if file_import_paths.is_empty() {
         return ids;
     }
@@ -2796,6 +2759,53 @@ fn imported_type_name_collides(
         .take(2)
         .count()
         > 1
+}
+
+/// The bare function bindings a module's own file imports contribute.
+///
+/// `import "helper.hew";` inside a module publishes helper's pub free
+/// functions into that module's scope. Helper keeps its own module identity
+/// (only the ROOT's file-import chain is spliced into `program.items`), so its
+/// bodies are emitted under `{helper}.{name}` and the importing module's
+/// bodies reach them through this rewrite.
+fn module_file_import_fn_rewrites(
+    module: &hew_parser::module::Module,
+    mg: &hew_parser::module::ModuleGraph,
+) -> HashMap<String, String> {
+    let mut rewrites = HashMap::new();
+    for (item, _) in &module.items {
+        let Item::Import(decl) = item else { continue };
+        if decl.file_path.is_none() {
+            continue;
+        }
+        let Some(resolved_items) = decl.resolved_items.as_ref() else {
+            continue;
+        };
+        let Some(source) = decl.resolved_source_paths.first() else {
+            continue;
+        };
+        let Some(owner) = mg
+            .modules
+            .iter()
+            .find(|(_, candidate)| candidate.source_paths.first() == Some(source))
+            .map(|(id, _)| id.path.join("."))
+        else {
+            continue;
+        };
+        for (resolved_item, _) in resolved_items.iter() {
+            let Item::Function(function) = resolved_item else {
+                continue;
+            };
+            if !function.visibility.is_pub() {
+                continue;
+            }
+            rewrites.insert(
+                function.name.clone(),
+                crate::mangle_dotted_name(&format!("{owner}.{}", function.name)),
+            );
+        }
+    }
+    rewrites
 }
 
 /// Build the root scope's bare imported-function bindings.
@@ -5366,16 +5376,22 @@ pub fn lower_program_with_mono_cap(
                         ctx.register_fn_entry(&qualified, helper);
                     }
                 }
-                let same_module_fn_rewrites: HashMap<String, String> = same_module_pub_fns
-                    .iter()
-                    .chain(imported_private_closure.iter())
-                    .map(|name| {
-                        (
-                            name.clone(),
-                            crate::mangle_dotted_name(&format!("{source_module}.{name}")),
-                        )
-                    })
-                    .collect();
+                // A file this module imports publishes its pub free functions
+                // into THIS module's scope under bare names, while its bodies
+                // are emitted under its own module symbol. The module's own
+                // declarations are collected after, so a local name wins.
+                let mut same_module_fn_rewrites = module_file_import_fn_rewrites(module, mg);
+                same_module_fn_rewrites.extend(
+                    same_module_pub_fns
+                        .iter()
+                        .chain(imported_private_closure.iter())
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                crate::mangle_dotted_name(&format!("{source_module}.{name}")),
+                            )
+                        }),
+                );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()

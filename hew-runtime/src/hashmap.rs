@@ -16,6 +16,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
+use crate::release_walker::{self, ReleaseItem};
 use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueLayout};
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 
@@ -1964,60 +1965,136 @@ pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i
 /// After this call, `m` is invalid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_map(m, false) }
+}
+
+/// Free a layout-backed map through the walker, joining a walk already in
+/// progress.
+///
+/// Codegen emits this where physical MIR proved the whole released subtree is
+/// ordinary data, so a map of deep values flattens instead of nesting one
+/// native frame per level.
+///
+/// # Safety
+///
+/// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
+/// After this call, `m` is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_free_layout_walk(m: *mut HewLayoutHashMap) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_map(m, true) }
+}
+
+/// Whether any occupied slot owns something the release protocol must drop.
+///
+/// `Plain` ownership descriptors carry `drop_fn = None`, so a map of plain keys
+/// and values skips the slot walk entirely. The constructor's fail-closed check
+/// guarantees owned ownership kinds (`String`/`LayoutManaged`) always have a
+/// `drop_fn`, so skipping cannot leak.
+///
+/// # Safety
+///
+/// `m` must be a valid map pointer.
+unsafe fn map_needs_slot_drop(m: *mut HewLayoutHashMap) -> bool {
+    // SAFETY: caller guarantees `m` is valid.
+    let map_ref = unsafe { &*m };
+    !map_ref.entries.is_null()
+        && map_ref.cap != 0
+        && (map_ref.key_layout.value.drop_fn.is_some() || map_ref.val_layout.drop_fn.is_some())
+}
+
+/// Release a whole map through the walker.
+///
+/// `deferred` joins a walk already in progress instead of draining here, which
+/// is admitted only where the whole released subtree is ordinary data.
+///
+/// # Safety
+///
+/// `m` must be null or a map allocation this call exclusively owns.
+pub(crate) unsafe fn release_map(m: *mut HewLayoutHashMap, deferred: bool) {
     if m.is_null() {
         return;
     }
-    // SAFETY: m non-null and constructed via hew_hashmap_new_with_layout.
-    let map_ref = unsafe { &*m };
-    let entries = map_ref.entries;
-    let cap = map_ref.cap;
-    let stride = map_ref.stride;
-    let key_offset = map_ref.key_offset;
-    let val_offset = map_ref.val_offset;
-    // W4.001 Stage C0a: descriptors are owned by-value snapshots.
-    let kl = &map_ref.key_layout;
-    let vl = &map_ref.val_layout;
-    let entries_align = core::cmp::max(kl.value.align, vl.align);
-    let key_drop_fn_opt = kl.value.drop_fn;
-    let val_drop_fn_opt = vl.drop_fn;
-
-    // W4.001 Stage C0a (plan rev6 §4 contract-table free row + invariant 4):
-    // iterate occupied slots, drop K + V on each via the descriptor thunks
-    // before deallocating the entries buffer. Tombstoned slots already had
-    // their blobs dropped at remove-time and must not be re-dropped.
-    //
-    // `Plain` ownership descriptors carry `drop_fn = None`; the per-slot loop
-    // skips the call and the overall cost collapses to a single pass over
-    // the state bytes (≈ one branch-not-taken per slot) plus the eventual
-    // dealloc. The constructor's fail-closed check guarantees that owned
-    // ownership kinds (`String`/`LayoutManaged`) always have a `drop_fn`,
-    // so this loop cannot leak on those paths.
-    if entries.is_null() || cap == 0 {
-        // Defensive: nothing to iterate. Fall through to dealloc which is
-        // itself a no-op on null entries (`dealloc_layout_entries`).
-    } else if key_drop_fn_opt.is_some() || val_drop_fn_opt.is_some() {
-        for idx in 0..cap {
-            // SAFETY: idx < cap; stride matches allocation.
-            let state = unsafe { *slot_state(entries, idx, stride) };
-            if state != OCCUPIED {
-                continue;
-            }
-            if let Some(key_drop) = key_drop_fn_opt {
-                // SAFETY: occupied slot has a valid K blob at key_offset.
-                let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
-                key_drop(slot_key_ptr.cast::<c_void>());
-            }
-            if let Some(val_drop) = val_drop_fn_opt {
-                // SAFETY: occupied slot has a valid V blob at val_offset.
-                let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
-                val_drop(slot_val_ptr.cast::<c_void>());
-            }
+    // SAFETY: caller guarantees the allocation contract.
+    unsafe {
+        if !map_needs_slot_drop(m) {
+            free_map_storage(m);
+            return;
+        }
+        let item = ReleaseItem::Map { map: m };
+        if deferred {
+            release_walker::release_deferred(item);
+        } else {
+            release_walker::release_now(item);
         }
     }
+}
 
+/// Walker step: queue this map's occupied slots, then its own storage beneath
+/// them.
+///
+/// # Safety
+///
+/// `m` must be a map allocation the walk in progress exclusively owns.
+pub(crate) unsafe fn expand_map(m: *mut HewLayoutHashMap) {
+    // The slots sit above the storage step, so the entry buffer outlives every
+    // slot the cursor still addresses.
+    release_walker::queue(ReleaseItem::MapStorage { map: m });
+    release_walker::queue(ReleaseItem::MapSlots { map: m, next: 0 });
+}
+
+/// Walker step: release the first occupied slot at or after `next`, keeping the
+/// rest of the scan.
+///
+/// Tombstoned slots already had their blobs dropped at remove time and must not
+/// be dropped again.
+///
+/// # Safety
+///
+/// `m` must be a map the walk owns whose entry buffer is still live.
+pub(crate) unsafe fn release_one_slot(m: *mut HewLayoutHashMap, next: usize) {
+    // SAFETY: caller guarantees the map and its entry buffer are live.
+    let map_ref = unsafe { &*m };
+    let entries = map_ref.entries;
+    let stride = map_ref.stride;
+    let Some(idx) = (next..map_ref.cap).find(|idx| {
+        // SAFETY: idx < cap; stride matches allocation.
+        unsafe { *slot_state(entries, *idx, stride) == OCCUPIED }
+    }) else {
+        return;
+    };
+    // The remaining scan stays beneath whatever this slot queues, so a value's
+    // whole subtree is released before the next entry.
+    if idx + 1 < map_ref.cap {
+        release_walker::queue(ReleaseItem::MapSlots {
+            map: m,
+            next: idx + 1,
+        });
+    }
+    if let Some(key_drop) = map_ref.key_layout.value.drop_fn {
+        // SAFETY: occupied slot has a valid K blob at key_offset.
+        let slot_key_ptr = unsafe { slot_key(entries, idx, stride, map_ref.key_offset) };
+        key_drop(slot_key_ptr.cast::<c_void>());
+    }
+    if let Some(val_drop) = map_ref.val_layout.drop_fn {
+        // SAFETY: occupied slot has a valid V blob at val_offset.
+        let slot_val_ptr = unsafe { slot_val(entries, idx, stride, map_ref.val_offset) };
+        val_drop(slot_val_ptr.cast::<c_void>());
+    }
+}
+
+/// Walker step: release the map's entry buffer and its header.
+///
+/// # Safety
+///
+/// `m` must be a map allocation whose occupied slots are already released.
+pub(crate) unsafe fn free_map_storage(m: *mut HewLayoutHashMap) {
+    // SAFETY: caller guarantees the allocation contract.
+    let map_ref = unsafe { &*m };
+    let entries_align = core::cmp::max(map_ref.key_layout.value.align, map_ref.val_layout.align);
     // SAFETY: entries allocated by alloc_layout_entries with these exact params.
-    unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };
-
+    unsafe { dealloc_layout_entries(map_ref.entries, map_ref.cap, map_ref.stride, entries_align) };
     // SAFETY: m allocated by libc::malloc in hew_hashmap_new_with_layout or clone.
     unsafe {
         ptr::drop_in_place(m);

@@ -616,6 +616,7 @@ pub mod mem;
 pub mod print;
 pub mod random;
 pub mod rc;
+pub(crate) mod release_walker;
 pub mod string;
 pub mod trait_object;
 pub mod vec;

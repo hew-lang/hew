@@ -25,7 +25,7 @@ use crate::hashmap::{
     hew_hashmap_clear_layout, hew_hashmap_clone_layout, hew_hashmap_contains_key_layout,
     hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_iter_free_layout,
     hew_hashmap_iter_new_layout, hew_hashmap_iter_next_layout, hew_hashmap_keys_layout,
-    hew_hashmap_len_layout, hew_hashmap_new_with_layout, hew_hashmap_remove_layout,
+    hew_hashmap_len_layout, hew_hashmap_new_with_layout, hew_hashmap_remove_layout, release_map,
     HewLayoutHashMap, HewLayoutHashMapIter,
 };
 use crate::vec::HewVec;
@@ -575,13 +575,42 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
 /// null). After this call, `set` is invalid and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_free_layout(set: *mut HewLayoutHashSet) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_set(set, false) }
+}
+
+/// Free a layout-backed set through the walker, joining a walk already in
+/// progress.
+///
+/// Codegen emits this where physical MIR proved the whole released subtree is
+/// ordinary data.
+///
+/// # Safety
+///
+/// `set` must have been returned by [`hew_hashset_new_with_layout`] (or be
+/// null). After this call, `set` is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_free_layout_walk(set: *mut HewLayoutHashSet) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_set(set, true) }
+}
+
+/// Release a whole set: the header owns nothing but its backing map, so it goes
+/// first and the elements release through the map's walk.
+///
+/// # Safety
+///
+/// `set` must be null or a set allocation this call exclusively owns.
+unsafe fn release_set(set: *mut HewLayoutHashSet, deferred: bool) {
     if set.is_null() {
         return;
     }
     // SAFETY: set non-null; map was constructed via hew_hashmap_new_with_layout.
-    unsafe { hew_hashmap_free_layout((*set).map) };
+    let map = unsafe { (*set).map };
     // SAFETY: set was allocated with libc::malloc in hew_hashset_new_with_layout.
     unsafe { libc::free(set.cast()) };
+    // SAFETY: the set uniquely owned its backing map.
+    unsafe { release_map(map, deferred) };
 }
 
 /// Visit initialized set elements through their owning map descriptor.

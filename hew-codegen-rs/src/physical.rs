@@ -1432,14 +1432,28 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             | DestroyAction::Vector(_)
             | DestroyAction::Map(_)
             | DestroyAction::Set(_) => {
+                // Physical MIR decides whether this release runs any
+                // user-visible action. When it does not, the `_walk` entry
+                // joins a release already in progress instead of nesting one
+                // native frame per level; anything that can reach a resource
+                // drains synchronously so its `close` keeps today's order.
+                let walk = self.module.pure_releases.action_is_pure(action);
                 let symbol = match action {
                     DestroyAction::Array(id) => {
                         self.vector_glue(id)?;
-                        "hew_array_free"
+                        if walk {
+                            "hew_array_free_walk"
+                        } else {
+                            "hew_array_free"
+                        }
                     }
                     DestroyAction::Vector(id) => {
                         self.vector_glue(id)?;
-                        "hew_vec_free_owned"
+                        if walk {
+                            "hew_vec_free_owned_walk"
+                        } else {
+                            "hew_vec_free_owned"
+                        }
                     }
                     DestroyAction::Map(id) => {
                         self.module
@@ -1449,7 +1463,11 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                             .ok_or_else(|| {
                                 CodegenError::FailClosed("unknown physical map glue".into())
                             })?;
-                        "hew_hashmap_free_layout"
+                        if walk {
+                            "hew_hashmap_free_layout_walk"
+                        } else {
+                            "hew_hashmap_free_layout"
+                        }
                     }
                     DestroyAction::Set(id) => {
                         self.module
@@ -1459,7 +1477,11 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                             .ok_or_else(|| {
                                 CodegenError::FailClosed("unknown physical set glue".into())
                             })?;
-                        "hew_hashset_free_layout"
+                        if walk {
+                            "hew_hashset_free_layout_walk"
+                        } else {
+                            "hew_hashset_free_layout"
+                        }
                     }
                     _ => unreachable!("matched collection destroy"),
                 };

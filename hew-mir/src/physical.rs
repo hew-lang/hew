@@ -35,6 +35,9 @@ pub use extern_abi::PhysicalExternResultAbi;
 mod defer_tests;
 #[path = "physical_partial.rs"]
 mod partial;
+#[path = "physical_release.rs"]
+mod release;
+pub use release::PureDataReleases;
 #[cfg(test)]
 #[path = "physical_select_tests.rs"]
 mod select_tests;
@@ -1449,6 +1452,9 @@ pub struct PhysicalModule {
     pub vector_glue: Vec<PhysicalVectorGlue>,
     pub map_glue: Vec<PhysicalMapGlue>,
     pub set_glue: Vec<PhysicalSetGlue>,
+    /// Which releases run no user-visible action, so the runtime may walk them
+    /// iteratively instead of nesting a native frame per level.
+    pub pure_releases: PureDataReleases,
     /// Retained semantic authority for verification, never a physical classifier.
     type_facts: BTreeMap<TypeInstanceKey, hew_types::TypeFacts>,
     pub callables: Vec<PhysicalCallable>,
@@ -1636,7 +1642,8 @@ pub fn lower_physical_module(
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
-    let physical = PhysicalModule {
+    let mut physical = PhysicalModule {
+        pure_releases: PureDataReleases::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
         actors: module.actors.clone(),
         supervisors: module.supervisors.clone(),
@@ -1668,6 +1675,7 @@ pub fn lower_physical_module(
         string_literals: module.string_literals.clone(),
         bytes_literals: module.bytes_literals.clone(),
     };
+    physical.pure_releases = PureDataReleases::compute(&physical);
     verify_physical_module(&physical)?;
     Ok(VerifiedPhysicalModule(physical))
 }
@@ -10729,6 +10737,7 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            pure_releases: PureDataReleases::default(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             actor_recipes: BTreeMap::new(),

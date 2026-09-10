@@ -31,6 +31,7 @@ pub use hew_cabi::vec::{
 };
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
+use crate::release_walker::{self, ReleaseItem};
 use crate::trap_code::{fmt_decimal_usize, runtime_bounds_trap};
 use core::ffi::c_void;
 use core::ptr;
@@ -1503,54 +1504,111 @@ pub unsafe extern "C" fn hew_vec_is_empty(v: *mut HewVec) -> bool {
     unsafe { (*v).len == 0 }
 }
 
-/// Drop live elements in `[start, end)` through the Vec's single descriptor
+/// Whether this Vec's elements own anything the release protocol must drop.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer.
+unsafe fn element_needs_drop(v: *mut HewVec) -> bool {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let vec = &*v;
+        if vec.layout.is_null() {
+            vec.elem_kind == ElemKind::String
+        } else {
+            (*vec.layout).drop_fn.is_some()
+        }
+    }
+}
+
+/// Drop the live element at `index` through the Vec's single descriptor
 /// protocol.
 ///
 /// # Safety
 ///
-/// `v` must be valid and `start <= end <= (*v).len`.
-unsafe fn drop_element_range(v: *mut HewVec, start: usize, end: usize) {
-    // SAFETY: caller guarantees `v` and the range are valid.
+/// `v` must be valid and `index < (*v).len`.
+unsafe fn drop_element_at(v: *mut HewVec, index: usize) {
+    // SAFETY: caller guarantees `v` and the index are valid.
     unsafe {
         let vec = &*v;
         if !vec.layout.is_null() {
             let layout = &*vec.layout;
             if let Some(drop_fn) = layout.drop_fn {
-                for i in start..end {
-                    let slot = vec.data.add(i * layout.size);
-                    drop_fn(slot.cast::<c_void>());
-                }
-                return;
+                drop_fn(vec.data.add(index * layout.size).cast::<c_void>());
             }
+            return;
         }
         if vec.elem_kind == ElemKind::String {
-            for i in start..end {
-                let slot = vec.data.cast::<*mut HewString>().add(i);
-                release_string_element(slot.read());
-            }
+            let slot = vec.data.cast::<*mut HewString>().add(index);
+            release_string_element(slot.read());
         }
     }
 }
 
-/// Descriptor-driven Vec release shared by every exported free symbol.
+/// Walker step: queue this Vec's elements, then its own storage beneath them.
 ///
 /// # Safety
 ///
-/// `v` must be null or a valid Vec allocation.
-unsafe fn free_vec_descriptor(v: *mut HewVec, reverse: bool) {
-    // SAFETY: caller guarantees `v` was allocated by a Vec constructor.
+/// `v` must be a Vec allocation the walk in progress exclusively owns.
+pub(crate) unsafe fn expand_vector(v: *mut HewVec, reverse: bool) {
+    // SAFETY: caller guarantees the allocation contract.
     unsafe {
-        if v.is_null() {
+        // The elements sit above the storage step, so the buffer outlives every
+        // element slot the cursor still addresses.
+        release_walker::queue(ReleaseItem::VectorStorage { vec: v });
+        if (*v).data.is_null() || (*v).len == 0 {
             return;
         }
-        if !(*v).data.is_null() {
-            if reverse {
-                for index in (0..(*v).len).rev() {
-                    drop_element_range(v, index, index + 1);
-                }
-            } else {
-                drop_element_range(v, 0, (*v).len);
+        release_walker::queue(ReleaseItem::VectorElements {
+            vec: v,
+            next: 0,
+            end: (*v).len,
+            reverse,
+        });
+    }
+}
+
+/// Walker step: release one element of `[next, end)` and keep the rest.
+///
+/// # Safety
+///
+/// `v` must be a Vec the walk owns, with `next < end <= (*v).len`.
+pub(crate) unsafe fn release_one_element(v: *mut HewVec, next: usize, end: usize, reverse: bool) {
+    // SAFETY: caller guarantees the element range is live.
+    unsafe {
+        let index = if reverse { end - 1 } else { next };
+        // The remaining range stays beneath whatever this element queues, so
+        // an element's whole subtree is released before its next sibling.
+        if reverse {
+            if index > next {
+                release_walker::queue(ReleaseItem::VectorElements {
+                    vec: v,
+                    next,
+                    end: index,
+                    reverse,
+                });
             }
+        } else if index + 1 < end {
+            release_walker::queue(ReleaseItem::VectorElements {
+                vec: v,
+                next: index + 1,
+                end,
+                reverse,
+            });
+        }
+        drop_element_at(v, index);
+    }
+}
+
+/// Walker step: release the Vec's element buffer and its header.
+///
+/// # Safety
+///
+/// `v` must be a Vec allocation whose live elements are already released.
+pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
+    // SAFETY: caller guarantees the allocation contract.
+    unsafe {
+        if !(*v).data.is_null() {
             if (*v).layout.is_null() {
                 libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
             } else {
@@ -1562,7 +1620,55 @@ unsafe fn free_vec_descriptor(v: *mut HewVec, reverse: bool) {
     }
 }
 
-/// Clear the vec (set len to 0), recursively dropping every live element.
+/// Release a whole Vec through the walker.
+///
+/// `deferred` joins a walk already in progress instead of draining here, which
+/// is admitted only where the whole released subtree is ordinary data.
+///
+/// # Safety
+///
+/// `v` must be null or a Vec allocation this call exclusively owns.
+unsafe fn release_vector(v: *mut HewVec, reverse: bool, deferred: bool) {
+    // SAFETY: caller guarantees the allocation contract.
+    unsafe {
+        if v.is_null() {
+            return;
+        }
+        if (*v).len == 0 || !element_needs_drop(v) {
+            // Nothing below owns anything: skip the worklist entirely.
+            free_vector_storage(v);
+            return;
+        }
+        let item = ReleaseItem::Vector { vec: v, reverse };
+        if deferred {
+            release_walker::release_deferred(item);
+        } else {
+            release_walker::release_now(item);
+        }
+    }
+}
+
+/// Release the live elements in `[start, end)` before returning.
+///
+/// # Safety
+///
+/// `v` must be valid with `start <= end <= (*v).len`.
+unsafe fn release_element_range(v: *mut HewVec, start: usize, end: usize) {
+    // SAFETY: caller guarantees `v` and the range are valid.
+    unsafe {
+        if start >= end || (*v).data.is_null() || !element_needs_drop(v) {
+            return;
+        }
+        release_walker::release_now(ReleaseItem::VectorElements {
+            vec: v,
+            next: start,
+            end,
+            reverse: false,
+        });
+    }
+}
+
+/// Clear the vec (set len to 0), releasing every live element.
 ///
 /// # Safety
 ///
@@ -1571,12 +1677,12 @@ unsafe fn free_vec_descriptor(v: *mut HewVec, reverse: bool) {
 pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        drop_element_range(v, 0, (*v).len);
+        release_element_range(v, 0, (*v).len);
         (*v).len = 0;
     }
 }
 
-/// Free the Vec through its descriptor-driven recursive release protocol.
+/// Free the Vec through the release walker.
 ///
 /// # Safety
 ///
@@ -1585,7 +1691,23 @@ pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
-    unsafe { free_vec_descriptor(v, false) }
+    unsafe { release_vector(v, false, false) }
+}
+
+/// Free the Vec through the release walker, joining a walk already in progress.
+///
+/// Codegen emits this where physical MIR proved the whole released subtree is
+/// ordinary data, so the chain flattens instead of nesting one native frame per
+/// level.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer (or null). After this call, `v` is
+/// invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_free_walk(v: *mut HewVec) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_vector(v, false, true) }
 }
 
 /// Release a fixed array's initialized elements from last to first, then its buffer.
@@ -1595,7 +1717,17 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_array_free(value: *mut HewVec) {
     // SAFETY: the array shares the vector allocation and element descriptor protocol.
-    unsafe { free_vec_descriptor(value, true) }
+    unsafe { release_vector(value, true, false) }
+}
+
+/// Release a fixed array through the walker, joining a walk already in progress.
+///
+/// # Safety
+/// `value` must be null or an independently owned descriptor-backed array allocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_free_walk(value: *mut HewVec) {
+    // SAFETY: the array shares the vector allocation and element descriptor protocol.
+    unsafe { release_vector(value, true, true) }
 }
 
 /// Clone a fixed array, unwinding any partially copied prefix in reverse order.
@@ -1767,7 +1899,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec, reverse_cleanup: bool) -> *mut 
                 let status = clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>());
                 if status != 0 {
                     (*new_v).len = i;
-                    free_vec_descriptor(new_v, reverse_cleanup);
+                    release_vector(new_v, reverse_cleanup, false);
                     let msg = b"PANIC: Vec descriptor clone failed\n\0";
                     write_stderr(&msg[..msg.len() - 1]);
                     libc::abort();
@@ -2274,7 +2406,7 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
         if new_len >= old_len {
             return;
         }
-        drop_element_range(v, new_len, old_len);
+        release_element_range(v, new_len, old_len);
         (*v).len = new_len;
     }
 }
@@ -3039,7 +3171,7 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
     }
 }
 
-/// Free a Vec through the same descriptor-driven recursive protocol as
+/// Free an owned-element Vec through the same release walker as
 /// [`hew_vec_free`].
 ///
 /// # Safety
@@ -3049,7 +3181,23 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
-    unsafe { free_vec_descriptor(v, false) }
+    unsafe { release_vector(v, false, false) }
+}
+
+/// Free an owned-element Vec through the walker, joining a walk already in
+/// progress.
+///
+/// Codegen emits this where physical MIR proved the whole released subtree is
+/// ordinary data.
+///
+/// # Safety
+///
+/// `v` must have been returned by [`hew_vec_new_with_elem_layout`] /
+/// [`hew_vec_clone_owned`] (or be null). After this call `v` is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_free_owned_walk(v: *mut HewVec) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_vector(v, false, true) }
 }
 
 /// Clone a Vec through the same descriptor-driven recursive protocol as

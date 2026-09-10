@@ -1,0 +1,48 @@
+//! One rule for every element shape: a nested collection, a tuple with an
+//! owned field and a record holding a collection all reach the same
+//! owned-element storage through their value class, so each is pushed by copy,
+//! read back independently and released once.
+
+type Holder {
+    name: string,
+    tags: Vec<string>,
+}
+
+fn main() {
+    var rows: Vec<Vec<string>> = Vec.new();
+    var first: Vec<string> = Vec.new();
+    first.push("alpha");
+    first.push("beta");
+    rows.push(first);
+    var second: Vec<string> = Vec.new();
+    second.push("gamma");
+    rows.push(second);
+    println(f"rows={rows.len()} row0={rows[0].len()} row1={rows[1].len()}");
+
+    var counters: Vec<HashMap<string, i64>> = Vec.new();
+    var counts: HashMap<string, i64> = HashMap.new();
+    counts.insert("hits", 3);
+    counts.insert("misses", 1);
+    counters.push(counts);
+    println(f"counters={counters.len()} hits={counters[0]["hits"]}");
+
+    var pairs: Vec<(string, i64)> = Vec.new();
+    pairs.push(("one", 1));
+    pairs.push(("two", 2));
+    let pair = pairs[1];
+    println(f"pairs={pairs.len()} name={pair.0} value={pair.1}");
+
+    var holders: Vec<Holder> = Vec.new();
+    var tags: Vec<string> = Vec.new();
+    tags.push("red");
+    tags.push("blue");
+    holders.push(Holder { name: "first", tags: tags });
+    let copied = holders.clone();
+    println(f"holders={holders.len()} tags={holders[0].tags.len()} copy={copied[0].tags.len()}");
+
+    var total = 0;
+    for row in rows {
+        total = total + row.len();
+    }
+    println(f"walked={total}");
+}

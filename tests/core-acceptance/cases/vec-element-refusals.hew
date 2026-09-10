@@ -1,0 +1,36 @@
+//! The refusals a collection still has come from the element's value class and
+//! name it: a `#[resource]` element and a trait-object element have no copy
+//! operation, so every surface that copies an element out refuses them. Moving
+//! them in and out of a collection stays admitted, so only the copying
+//! surfaces appear here.
+
+#[resource]
+type Conn {
+    id: i64,
+}
+
+impl Conn {
+    fn close(consume self) {}
+}
+
+trait Speaker {
+    fn speak(val: Self) -> i64;
+}
+
+fn _repeat_resource() {
+    let _copies = [Conn { id: 1 }; 3];
+}
+
+fn _slice_resources(conns: Vec<Conn>) {
+    let _part = conns[0..1];
+}
+
+fn _repeat_trait_object(value: dyn Speaker) {
+    let _copies = [value; 2];
+}
+
+fn _copy_map_value(index: HashMap<string, Conn>) {
+    let _values = index.values();
+}
+
+fn main() {}

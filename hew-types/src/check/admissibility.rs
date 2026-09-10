@@ -1142,15 +1142,13 @@ impl Checker {
             return true;
         }
         if let Some(blocker) = self.element_clone_blocker(ty) {
-            let resolved = resolved.materialize_literal_defaults();
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`{operation}` copies each value out of the map, but value type `{}` \
-                     is {blocker} and has no copy operation; read it with `get(k)`, which \
-                     borrows, or move it out with `remove(k)`",
-                    resolved.user_facing(),
+                    "`{operation}` copies each value out of the map, but the value type \
+                     {blocker} has no copy operation; read it with `get(k)`, which borrows, \
+                     or move it out with `remove(k)`"
                 ),
             );
             return false;

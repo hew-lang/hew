@@ -50,6 +50,15 @@ ALL_GROUPS = {
     # callee's type parameters, infers them from the arguments, and records the
     # instantiation; a hand-rolled arg-vs-parameter loop does none of it.
     "signature-application",
+    # D486 stage one: freeze the HIR/SIR boundary so it only shrinks.
+    # `hir-ast-boundary` inventories hew-hir reading the parser's own closed
+    # AST shape (Item/Expr/Stmt/Pattern variants, ImportDecl.resolved_items)
+    # instead of the checker's resolved TypeCheckOutput.
+    # `sir-hir-fact-rederivation` inventories hew-sir re-deriving a checker/HIR
+    # fact (a payload's variant shape, a match arm's predicate classification)
+    # instead of consuming one published decision.
+    "hir-ast-boundary",
+    "sir-hir-fact-rederivation",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -1243,6 +1252,137 @@ def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
     return findings
 
 
+HIR_AST_BOUNDARY_SCOPE = ["hew-hir/src"]
+HIR_AST_VARIANT_FORMS = {
+    "Item": "item-use",
+    "Expr": "expr-use",
+    "Stmt": "stmt-use",
+    "Pattern": "pattern-use",
+}
+HIR_AST_VARIANT_PATTERN = re.compile(r"^(Item|Expr|Stmt|Pattern)::")
+
+
+def hir_ast_boundary_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """D486 stage one: HIR must consume the checker's resolved
+    `TypeCheckOutput`, never the parser AST's own closed shape.
+
+    `lower_program` takes `&Program` for structural traversal (source order,
+    spans), but matching or constructing against
+    `hew_parser::ast::{Item,Expr,Stmt,Pattern}` variants re-derives a
+    resolution decision the checker already made, and reading
+    `ImportDecl.resolved_items` reaches into the parser's own unresolved-
+    import cache instead of a checker-published import fact.
+
+    The form is `<fact>:<enclosing function>`, one reviewed row per function
+    per fact -- the `signature-application` precedent for a single file that
+    carries hundreds of sites. Presence-only per (group, form, path): a new
+    call inside an already-listed function does not grow the inventory, but a
+    NEW function reaching one of these forms is a reviewed addition. This is
+    the D486 stage-one freeze; the row set shrinks as each function's fact
+    moves onto `TypeCheckOutput` or the D473 identity table.
+    """
+    scope = HIR_AST_BOUNDARY_SCOPE
+    governed = test_governed_ranges(ast_grep, root, scope)
+    functions = enclosing_function_index(ast_grep, root)
+
+    def enclosing_name(node: SyntaxRange) -> str:
+        candidates = [
+            (fn_range, name)
+            for fn_range, name in functions.get(node.path, [])
+            if range_contains(fn_range, node)
+        ]
+        if not candidates:
+            raise SystemExit(
+                f"hir-ast-boundary finding at {node.path}:{node.byte_start} has no "
+                "enclosing function; the inventory form would be unattributable"
+            )
+        # Innermost wins, matching signature_application_findings.
+        _, name = min(
+            candidates, key=lambda item: item[0].byte_end - item[0].byte_start
+        )
+        return name
+
+    def admit(fact: str, match: dict[str, object]) -> Finding | None:
+        node = node_range(match)
+        if not is_source_path(node.path):
+            return None
+        if any(scope_range.contains(node) for scope_range in governed):
+            return None
+        return finding("hir-ast-boundary", f"{fact}:{enclosing_name(node)}", match)
+
+    results: set[Finding] = set()
+    for kind in ("scoped_identifier", "scoped_type_identifier"):
+        for match in run_query_at(ast_grep, root, scope, kind=kind):
+            variant = HIR_AST_VARIANT_PATTERN.match(str(match["text"]))
+            if not variant:
+                continue
+            item = admit(HIR_AST_VARIANT_FORMS[variant.group(1)], match)
+            if item is not None:
+                results.add(item)
+    # `matches!($X, Item::Variant(..))` and its siblings sit inside a macro's
+    # token tree, which the parser does not expose as a `scoped_identifier`
+    # node: a `--pattern` query is needed to reach the same variant name
+    # there, exactly as the SIR predicate check below needs one for
+    # `matches!(arm.predicate, ..)`.
+    for enum_name, fact in HIR_AST_VARIANT_FORMS.items():
+        for match in run_query_at(
+            ast_grep, root, scope, pattern=f"matches!($X, {enum_name}::$$$REST)"
+        ):
+            item = admit(fact, match)
+            if item is not None:
+                results.add(item)
+    for match in run_query_at(ast_grep, root, scope, kind="field_identifier"):
+        if str(match["text"]) != "resolved_items":
+            continue
+        item = admit("resolved-items-access", match)
+        if item is not None:
+            results.add(item)
+    return results
+
+
+SIR_FACT_RERIVATION_SCOPE = ["hew-sir/src"]
+
+
+def sir_hir_fact_rederivation_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """D486 stage one: SIR must consume HIR's already-decided shape facts.
+
+    `require_variant_shape` computes a payload's variant descriptor from a
+    `ResolvedTy` on every call rather than reading a shape HIR published once.
+    Independent `arm.predicate` shape matches scattered across
+    `lower_match.rs` re-derive the same arm classification (wildcard,
+    binding, literal, enum-variant) separately in each of several functions
+    instead of consuming one shared classifier. This inventory is exact and
+    presence-only by path; it freezes the boundary and shrinks as each fact
+    moves onto a published HIR/SIR contract field.
+    """
+    scope = SIR_FACT_RERIVATION_SCOPE
+    governed = test_governed_ranges(ast_grep, root, scope)
+    results: set[Finding] = set()
+
+    def admit(group_form: str, match: dict[str, object]) -> None:
+        item = finding("sir-hir-fact-rederivation", group_form, match)
+        if not is_source_path(item.path):
+            return
+        if any(scope_range.contains(item) for scope_range in governed):
+            return
+        results.add(item)
+
+    for pattern in (
+        "require_variant_shape($$$ARGS)",
+        "$R.require_variant_shape($$$ARGS)",
+    ):
+        for match in run_query_at(ast_grep, root, scope, pattern=pattern):
+            admit("require-variant-shape-call", match)
+    for match in run_query_at(ast_grep, root, scope, kind="field_expression"):
+        if str(match["text"]) == "arm.predicate":
+            admit("predicate-shape-match", match)
+    for match in run_query_at(
+        ast_grep, root, scope, pattern="matches!(arm.predicate, $$$REST)"
+    ):
+        admit("predicate-shape-match", match)
+    return results
+
+
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -1315,6 +1455,8 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
     findings.update(semantic_owner_shortening_findings(ast_grep, root, test_ranges))
     reject_raw_codegen_call_dispatch(ast_grep, root)
     findings.update(rc1_structural_authority_findings(ast_grep, root, test_ranges))
+    findings.update(hir_ast_boundary_findings(ast_grep, root))
+    findings.update(sir_hir_fact_rederivation_findings(ast_grep, root))
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
 
 
@@ -1491,6 +1633,10 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         )
     if group == "signature-application":
         return "stage-1"
+    if group == "hir-ast-boundary":
+        return "stage-2"
+    if group == "sir-hir-fact-rederivation":
+        return "stage-3"
     if group == "string-method-identity":
         if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
             return "stage-1"

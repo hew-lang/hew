@@ -670,7 +670,7 @@ actor SlowReplier {\n\
 actor Driver {\n\
 \x20   var slow: LocalPid<SlowReplier>,\n\
 \x20   receive fn run() -> i64 {\n\
-\x20       match await slow.fetch() {\n\
+\x20       match slow.fetch() {\n\
 \x20           .Ok(t) => { val(t) }\n\
 \x20           .Err(e) => { let _ = e; 0 }\n\
 \x20       }\n\
@@ -679,7 +679,7 @@ actor Driver {\n\
 fn main() -> i64 {\n\
 \x20   let slow = spawn SlowReplier;\n\
 \x20   let driver = spawn Driver(slow: slow);\n\
-\x20   match await driver.run() {\n\
+\x20   match driver.run() {\n\
 \x20       .Ok(v) => { print(\"${v}\"); }\n\
 \x20       .Err(e) => { let _ = e; }\n\
 \x20   }\n\

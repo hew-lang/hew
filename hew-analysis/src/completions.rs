@@ -678,39 +678,47 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     }
                 }
             }
-            Item::Machine(m) => {
-                // `state` and `event` are the only names a machine body binds
-                // (HEW-SPEC-2026 §3.11.3); `self` belongs to actors and
-                // methods, so it is never offered here.
-                if let Some(scope) = crate::machine_scope::scope_at(m, offset) {
-                    for binding in &scope.bindings {
-                        locals.push(typed_local_completion(binding.name, &binding.ty));
-                    }
-                    for name in &scope.head_bindings {
-                        locals.push(local_completion(name));
-                    }
-                }
-                for transition in &m.transitions {
-                    if let Some(guard) = &transition.guard {
-                        collect_locals_from_spanned_expr(guard, offset, &mut locals);
-                    }
-                    collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
-                }
-                for state in &m.states {
-                    for hook in [state.entry.as_ref(), state.exit.as_ref()]
-                        .into_iter()
-                        .flatten()
-                    {
-                        collect_locals_from_block(hook, offset, &mut locals);
-                    }
-                }
-            }
+            Item::Machine(m) => collect_machine_locals(m, offset, &mut locals),
             // Record fields carry no expressions; no locals to collect.
             Item::Record(_) | Item::Import(_) | Item::ExternBlock(_) | Item::TypeAlias(_) => {}
         }
     }
 
     locals
+}
+
+/// Locals visible inside a machine body: the implicit `state` and `event`
+/// bindings, any event-head binding, and ordinary bindings from the body.
+///
+/// `self` belongs to actors and methods and is never bound here
+/// (HEW-SPEC-2026 §3.11.3), so it is never offered.
+fn collect_machine_locals(
+    machine: &hew_parser::ast::MachineDecl,
+    offset: usize,
+    locals: &mut Vec<CompletionItem>,
+) {
+    if let Some(scope) = crate::machine_scope::scope_at(machine, offset) {
+        for binding in &scope.bindings {
+            locals.push(typed_local_completion(binding.name, &binding.ty));
+        }
+        for name in &scope.head_bindings {
+            locals.push(local_completion(name));
+        }
+    }
+    for transition in &machine.transitions {
+        if let Some(guard) = &transition.guard {
+            collect_locals_from_spanned_expr(guard, offset, locals);
+        }
+        collect_locals_from_spanned_expr(&transition.body, offset, locals);
+    }
+    for state in &machine.states {
+        for hook in [state.entry.as_ref(), state.exit.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            collect_locals_from_block(hook, offset, locals);
+        }
+    }
 }
 
 fn span_contains_offset(span: &Span, offset: usize) -> bool {

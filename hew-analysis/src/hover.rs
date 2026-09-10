@@ -1235,17 +1235,7 @@ fn hover_param_in_item(
             }
             None
         }
-        Item::Machine(machine) => {
-            // A machine body has no Param list, but it does bind `state` and
-            // `event` (HEW-SPEC-2026 §3.11.3). Report those with the types the
-            // rule refines them to.
-            let scope = crate::machine_scope::scope_at(machine, offset)?;
-            let binding = scope.bindings.iter().find(|binding| binding.name == word)?;
-            Some(HoverResult {
-                contents: format!("```hew\n{word}: {}\n```", binding.ty),
-                span: Some(word_span),
-            })
-        }
+        Item::Machine(machine) => hover_machine_binding(machine, word, word_span, offset),
         Item::Supervisor(_) => {
             // Supervisors carry no callable bodies, so there is no Param list
             // for hover_param_in_decl.
@@ -1253,6 +1243,23 @@ fn hover_param_in_item(
         }
         _ => None,
     }
+}
+
+/// A machine body has no Param list, but it does bind `state` and `event`
+/// (HEW-SPEC-2026 §3.11.3). Report those with the types the rule refines them
+/// to.
+fn hover_machine_binding(
+    machine: &hew_parser::ast::MachineDecl,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    let scope = crate::machine_scope::scope_at(machine, offset)?;
+    let binding = scope.bindings.iter().find(|binding| binding.name == word)?;
+    Some(HoverResult {
+        contents: format!("```hew\n{word}: {}\n```", binding.ty),
+        span: Some(word_span),
+    })
 }
 
 fn hover_param_in_method(

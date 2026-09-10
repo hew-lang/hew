@@ -37,7 +37,6 @@ machine TrafficLight {
         }
     },
 
-    // Red → Green → Yellow → Red cycle
     on Tick: Red => Green,
     on Tick: Green => Yellow,
     on Tick: Yellow => Red,

@@ -2009,10 +2009,6 @@ fn main() {
 }
 ```
 
-This build still refuses `Vec.new()` inside a machine transition because its
-purity checker does not admit that operation. The example shows local value
-construction; it is not a claim that this transition currently compiles.
-
 Read the prior vec out of `self.items`, push, and rebuild the variant. Access elements with `v[i]` and `.len()`.
 
 ### Event payload access

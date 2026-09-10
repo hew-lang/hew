@@ -12,7 +12,7 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
-use crate::runtime_call::{IntBitOp, IntMethodWidth};
+use crate::runtime_call::{IntArithKind, IntBitOp, IntMethodWidth};
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
@@ -7962,12 +7962,24 @@ impl Checker {
             // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
             // for every integer width. Floats are excluded (is_integer() ≠ is_numeric()).
             // Only add/sub/mul are in scope here; div/mod/shift are separate slices.
-            // Wrapping variants map to non-trapping MIR ops; checked variants return
-            // Option<W>; saturating variants clamp to MAX/MIN (codegen slice pending).
             //
-            // Note: `.wrapping_as_<W>` and `.saturating_as_<W>` (width-conversion family)
-            // are handled by the arms above; those arms must appear first so that the
-            // `_as_` suffix does not reach this arm's op-name matcher.
+            // `.wrapping_add/sub/mul` and `.saturating_add/sub` at i32/i64/u32/u64
+            // take the working D465 path first: `RuntimeCallFamily::IntArith`
+            // (wrapping: a plain, non-trapping LLVM add/sub/mul; saturating:
+            // `llvm.{s,u}{add,sub}.sat`), which actually executes. Everything
+            // else on this arm — `.checked_*`, any op at i8/i16/u8/u16/isize/
+            // usize, and `.saturating_mul` (no LLVM saturating-multiply
+            // intrinsic) — falls back to the pre-D465 `NumericMethodLowering`
+            // side table: it type-checks but has no SIR/MIR lowering
+            // (`HirExprKind::NumericMethod` is not implemented in the initial
+            // SIR subset — an `E_SIR_UNSUPPORTED` compiler limitation, not a
+            // wrong answer). Extending `IntArith` to more widths and to
+            // saturating/checked multiply is a tracked follow-up; this arm
+            // accepts them today rather than refusing valid syntax.
+            //
+            // Note: `.wrapping_as_<W>` and `.saturating_as_<W>` (width-conversion
+            // family) are handled by the arms above; those arms must appear first so
+            // the `_as_` suffix does not reach this arm's op-name matcher.
             (resolved, method)
                 if resolved.is_integer()
                     && (method.starts_with("wrapping_")
@@ -7976,19 +7988,41 @@ impl Checker {
             {
                 let is_wrapping = method.starts_with("wrapping_");
                 let is_checked = method.starts_with("checked_");
-                let family = if is_wrapping {
-                    NumericMethodFamily::Wrapping
-                } else if is_checked {
-                    NumericMethodFamily::Checked
-                } else {
-                    NumericMethodFamily::Saturating
-                };
                 let op_name = if is_wrapping {
                     &method["wrapping_".len()..]
                 } else if is_checked {
                     &method["checked_".len()..]
                 } else {
                     &method["saturating_".len()..]
+                };
+                if !is_checked {
+                    let kind = match (is_wrapping, op_name) {
+                        (true, "add") => Some(IntArithKind::WrappingAdd),
+                        (true, "sub") => Some(IntArithKind::WrappingSub),
+                        (true, "mul") => Some(IntArithKind::WrappingMul),
+                        (false, "add") => Some(IntArithKind::SaturatingAdd),
+                        (false, "sub") => Some(IntArithKind::SaturatingSub),
+                        _ => None,
+                    };
+                    if let (Some(kind), Some(width)) = (kind, int_method_width(resolved)) {
+                        self.check_arity(args, 1, &format!("`{method}`"), span);
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, resolved);
+                        }
+                        self.record_runtime_method_family_rewrite(
+                            span,
+                            crate::runtime_call::RuntimeCallFamily::IntArith(kind, width),
+                        );
+                        return resolved.clone();
+                    }
+                }
+                let family = if is_wrapping {
+                    NumericMethodFamily::Wrapping
+                } else if is_checked {
+                    NumericMethodFamily::Checked
+                } else {
+                    NumericMethodFamily::Saturating
                 };
                 match op_name {
                     "add" | "sub" | "mul" => {

@@ -79,7 +79,9 @@ use hew_runtime::internal::types::{
     HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
-use hew_types::runtime_call::{collection_type_arguments, IntBitOp, IntMethodWidth, MathIntrinsic};
+use hew_types::runtime_call::{
+    collection_type_arguments, IntArithKind, IntBitOp, IntMethodWidth, MathIntrinsic,
+};
 use hew_types::{
     EntryExitAction, EntryIntegerType, ResolvedTy, RuntimeCallFamily, ValueCapability,
 };
@@ -4253,6 +4255,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
+            RuntimeCallFamily::IntArith(kind, width) => {
+                return self.emit_int_arith(
+                    kind,
+                    width,
+                    transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
+            }
             RuntimeCallFamily::Tcp(op) => {
                 self.emit_tcp_operation(op, transfers, result)?;
             }
@@ -5412,6 +5424,90 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         self.store(result, value)?;
         self.emit_result_edge(Some(result), normal)
+    }
+
+    /// Non-trapping integer arithmetic (`x.wrapping_add(y)`,
+    /// `x.saturating_sub(y)`). Wrapping ops are a plain LLVM `add`/`sub`/
+    /// `mul` (no `nsw`/`nuw`, so it silently wraps instead of the poison +
+    /// checked-trap sequence the default `+`/`-`/`*` operators build);
+    /// saturating ops call `llvm.{s,u}{add,sub}.sat`, chosen by the width's
+    /// signedness.
+    fn emit_int_arith(
+        &self,
+        kind: IntArithKind,
+        width: IntMethodWidth,
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        if failure.is_some() {
+            return Err(CodegenError::FailClosed(
+                "infallible non-trapping integer arithmetic carries a failure edge".into(),
+            ));
+        }
+        let arguments = transfers
+            .iter()
+            .map(|transfer| self.load(argument_source(transfer), "int_arith.argument"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let (Some(lhs), Some(rhs)) = (arguments.first(), arguments.get(1)) else {
+            return Err(CodegenError::FailClosed(
+                "physical non-trapping integer arithmetic lacks an operand".into(),
+            ));
+        };
+        let lhs = lhs.into_int_value();
+        let rhs = rhs.into_int_value();
+        let signed = matches!(width, IntMethodWidth::I32 | IntMethodWidth::I64);
+        let value = match kind {
+            IntArithKind::WrappingAdd => self
+                .builder
+                .build_int_add(lhs, rhs, "int_arith.wrapping_add")
+                .llvm_ctx("emit wrapping add")?,
+            IntArithKind::WrappingSub => self
+                .builder
+                .build_int_sub(lhs, rhs, "int_arith.wrapping_sub")
+                .llvm_ctx("emit wrapping sub")?,
+            IntArithKind::WrappingMul => self
+                .builder
+                .build_int_mul(lhs, rhs, "int_arith.wrapping_mul")
+                .llvm_ctx("emit wrapping mul")?,
+            IntArithKind::SaturatingAdd => {
+                let name = if signed {
+                    "llvm.sadd.sat"
+                } else {
+                    "llvm.uadd.sat"
+                };
+                self.call_intrinsic2(name, lhs, rhs)?
+            }
+            IntArithKind::SaturatingSub => {
+                let name = if signed {
+                    "llvm.ssub.sat"
+                } else {
+                    "llvm.usub.sat"
+                };
+                self.call_intrinsic2(name, lhs, rhs)?
+            }
+        };
+        self.store(result, value.into())?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// Declare (if needed) and call a two-operand LLVM intrinsic overloaded
+    /// on the operands' shared type, returning its `iN` result.
+    fn call_intrinsic2(
+        &self,
+        name: &str,
+        lhs: inkwell::values::IntValue<'ctx>,
+        rhs: inkwell::values::IntValue<'ctx>,
+    ) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+        let declaration = Intrinsic::find(name)
+            .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &[lhs.get_type().into()]))
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("LLVM intrinsic `{name}` is unavailable"))
+            })?;
+        Ok(self
+            .runtime_call_value(declaration, &[lhs.into(), rhs.into()], "int_arith.result")?
+            .into_int_value())
     }
 
     /// Declare (if needed) and call a single-operand LLVM intrinsic

@@ -2098,6 +2098,14 @@ pub enum VecHigherOrderOp {
     Reduce,
 }
 
+/// `.checked_add/sub/mul` always lands here: it has no SIR/MIR lowering yet
+/// (a tracked follow-up). `.wrapping_*`/`.saturating_*` at i32/i64/u32/u64
+/// for add/sub (and wrapping mul) lower through `RuntimeCallFamily::IntArith`
+/// instead — the working D465 authority that actually executes. This side
+/// table remains the fallback for the widths and ops `IntArith` does not
+/// cover yet (i8/i16/u8/u16/isize/usize, and `saturating_mul`, which has no
+/// LLVM saturating-multiply intrinsic): those still type-check here and fail
+/// closed at SIR, matching `checked_*`, rather than being refused outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NumericMethodFamily {
     Wrapping,

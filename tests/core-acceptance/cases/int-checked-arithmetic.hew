@@ -1,0 +1,49 @@
+// checked_add/sub/mul type-check but have no SIR lowering yet
+// (E_SIR_UNSUPPORTED: `HirExprKind::NumericMethod`) — a pre-existing gap
+// tracked separately, not exercised here. wrapping_* and saturating_add/sub
+// lower through RuntimeCallFamily::IntArith and are exercised at their
+// boundaries below.
+
+fn main() {
+    // i32 boundaries.
+    let i32_max: i32 = 2147483647;
+    let i32_min: i32 = -2147483648;
+    assert(i32_max.wrapping_add(1) == i32_min);
+    assert(i32_max.saturating_add(1) == i32_max);
+    assert(i32_min.wrapping_sub(1) == i32_max);
+    assert(i32_min.saturating_sub(1) == i32_min);
+    assert(i32_min.wrapping_mul(-1) == i32_min);
+    // 1000 * 1000000 fits in i32 (no wrap).
+    let mid: i32 = 1000;
+    assert(mid.wrapping_mul(1000000) == 1000000000);
+
+    // i64 boundaries.
+    let i64_max: i64 = 9223372036854775807;
+    let i64_min: i64 = -9223372036854775808;
+    assert(i64_max.wrapping_add(1) == i64_min);
+    assert(i64_max.saturating_add(1) == i64_max);
+    assert(i64_min.wrapping_sub(1) == i64_max);
+    assert(i64_min.saturating_sub(1) == i64_min);
+
+    // u32 boundaries: subtraction underflow wraps to MAX, saturates to 0.
+    let u32_max: u32 = 4294967295;
+    let u32_zero: u32 = 0;
+    assert(u32_max.wrapping_add(1) == u32_zero);
+    assert(u32_max.saturating_add(1) == u32_max);
+    assert(u32_zero.wrapping_sub(1) == u32_max);
+    assert(u32_zero.saturating_sub(1) == u32_zero);
+
+    // u64 boundaries.
+    let u64_max: u64 = 18446744073709551615;
+    let u64_zero: u64 = 0;
+    assert(u64_max.wrapping_add(1) == u64_zero);
+    assert(u64_max.saturating_add(1) == u64_max);
+    assert(u64_zero.wrapping_sub(1) == u64_max);
+    assert(u64_zero.saturating_sub(1) == u64_zero);
+
+    // saturating_mul is refused: no LLVM saturating-multiply intrinsic.
+    // (Negative control lives in the checker test suite, not here — this
+    // case exercises only accepted programs.)
+
+    println("wrapping and saturating arithmetic hold at every boundary");
+}

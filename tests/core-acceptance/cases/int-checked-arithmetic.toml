@@ -1,0 +1,11 @@
+[[case]]
+id = "int-checked-arithmetic"
+intent = "wrapping_add/sub/mul and saturating_add/sub hold at MIN/MAX boundaries for i32, i64, u32 and u64. checked_add/sub/mul are a separate, pre-existing checker-only gap (E_SIR_UNSUPPORTED) not exercised here."
+source = "cases/int-checked-arithmetic.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "wrapping and saturating arithmetic hold at every boundary\n"
+stderr = ""
+exit = 0

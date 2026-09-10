@@ -1308,6 +1308,58 @@ fn main() {
     }
 
     #[test]
+    fn machine_fixture_admits_the_one_structure() {
+        // The sandbox reads the same AST the native path does and records only
+        // the transition table, so parity here is the same acceptance: a
+        // machine written in the one structure compiles and emits bytecode.
+        let output = compile_to_sandbox_bytecode(
+            &fixture("20-machine-traffic-light"),
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let machine = bytecode
+            .layouts
+            .machines
+            .iter()
+            .find(|machine| machine.name == "TrafficLight")
+            .expect("the machine layout should be recorded");
+        assert_eq!(machine.transitions.len(), 3);
+    }
+
+    #[test]
+    fn machine_self_in_a_transition_body_is_refused() {
+        // Negative control for the parity above: the sandbox runs the checker
+        // before emitting, so it refuses exactly what the native path refuses.
+        let source = concat!(
+            "machine Counter {\n",
+            "    events { Tick }\n",
+            "    state Idle,\n",
+            "    state Live { hits: i64 },\n",
+            "    on Tick: Idle => Live { hits: 0 }\n",
+            "    on Tick: Live => Live reenter { hits: self.hits + 1 }\n",
+            "}\n",
+            "fn main() { println(\"x\"); }\n",
+        );
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(output.bytecode.is_none());
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("E_MACHINE_SELF")),
+            "expected the machine `self` refusal, got {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
     fn filesystem_fixture_is_profile_rejected() {
         let output = compile_to_sandbox_bytecode(
             &fixture("10-sandbox-reject-filesystem"),

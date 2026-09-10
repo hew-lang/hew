@@ -628,6 +628,20 @@ impl BuiltinType {
         matches!(self, Self::Sender | Self::Receiver)
     }
 
+    /// The module whose source declares this builtin, where the catalog renders
+    /// it under a bare spelling a user declaration may also claim.
+    ///
+    /// The channel endpoints are the case: `canonical_name` presents them as
+    /// `Sender` / `Receiver`, so a diagnostic that must tell the substrate
+    /// handle apart from a same-named user type names this owner.
+    #[must_use]
+    pub const fn source_declaration_path(self) -> Option<&'static str> {
+        match self {
+            Self::Sender | Self::Receiver => Some("std.channel"),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn is_collection(self) -> bool {
         matches!(self, Self::Vec | Self::HashMap | Self::HashSet)

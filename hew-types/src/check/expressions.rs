@@ -4178,7 +4178,13 @@ impl Checker {
                 self.check_against(&qualified_init, span, expected)
             }
 
-            // Struct init coercion: propagate expected type args into field checking
+            // Struct init coercion: propagate expected type args into field checking.
+            //
+            // A channel endpoint is excluded by its builtin discriminator, not
+            // by its spelling: the resolver renders `std.channel.Sender` under
+            // the catalog's bare `Sender`, so a user `type Sender<T>` matches it
+            // by name here. No struct literal constructs a substrate handle, so
+            // the pair falls through to ordinary coercion and is refused there.
             (
                 Expr::StructInit {
                     name,
@@ -4189,9 +4195,11 @@ impl Checker {
                 Ty::Named {
                     name: expected_name,
                     args: expected_args,
-                    ..
+                    builtin: expected_builtin,
                 },
-            ) if name == expected_name => {
+            ) if name == expected_name
+                && !expected_builtin.is_some_and(crate::BuiltinType::is_channel_handle) =>
+            {
                 // If the literal carries explicit type args, validate that they agree
                 // with the expected args coming from the binding site.  Conflicting
                 // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are

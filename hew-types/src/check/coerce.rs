@@ -355,17 +355,15 @@ impl Checker {
         if !self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
             return false;
         }
+        let (expected_label, actual_label) =
+            disambiguate_mismatch_labels(&expected_resolved, &actual_resolved);
         self.report_error(
             TypeErrorKind::Mismatch {
-                expected: expected_resolved.user_facing().to_string(),
-                actual: actual_resolved.user_facing().to_string(),
+                expected: expected_label.clone(),
+                actual: actual_label.clone(),
             },
             span,
-            format!(
-                "type mismatch: expected `{}`, found `{}`",
-                expected_resolved.user_facing(),
-                actual_resolved.user_facing()
-            ),
+            format!("type mismatch: expected `{expected_label}`, found `{actual_label}`"),
         );
         true
     }
@@ -449,9 +447,10 @@ impl Checker {
     /// Two closure literals never share a type; a binding that holds either
     /// needs the written callable type.
     fn report_type_mismatch(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        let (expected_label, actual_label) = disambiguate_mismatch_labels(expected, actual);
         let kind = TypeErrorKind::Mismatch {
-            expected: expected.user_facing().to_string(),
-            actual: actual.user_facing().to_string(),
+            expected: expected_label.clone(),
+            actual: actual_label.clone(),
         };
         if matches!((expected, actual), (Ty::Closure { .. }, Ty::Closure { .. })) {
             self.report_error_with_suggestions(
@@ -467,11 +466,7 @@ impl Checker {
             self.report_error(
                 kind,
                 span,
-                format!(
-                    "type mismatch: expected `{}`, found `{}`",
-                    expected.user_facing(),
-                    actual.user_facing()
-                ),
+                format!("type mismatch: expected `{expected_label}`, found `{actual_label}`"),
             );
         }
     }
@@ -920,4 +915,34 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
         }),
         TypeExpr::Infer => false,
     }
+}
+
+/// Render a mismatched pair so the two sides can be told apart.
+///
+/// A builtin the catalog presents under a bare spelling — the channel
+/// endpoints, `Sender` and `Receiver` — can collide with a user declaration of
+/// the same name, and the plain rendering then reads `expected `Sender<i64>`,
+/// found `Sender<i64>``. When the two render alike, name the substrate side by
+/// the module that declares it.
+fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) {
+    let expected_label = expected.user_facing().to_string();
+    let actual_label = actual.user_facing().to_string();
+    if expected_label != actual_label {
+        return (expected_label, actual_label);
+    }
+    let qualify = |ty: &Ty, label: &str| {
+        let Ty::Named {
+            builtin: Some(kind),
+            ..
+        } = ty
+        else {
+            return label.to_string();
+        };
+        kind.source_declaration_path()
+            .map_or_else(|| label.to_string(), |owner| format!("{owner}.{label}"))
+    };
+    (
+        qualify(expected, &expected_label),
+        qualify(actual, &actual_label),
+    )
 }

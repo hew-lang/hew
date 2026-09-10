@@ -1,0 +1,14 @@
+[[case]]
+id = "channel-endpoint-user-sender-refused"
+intent = "The channel endpoint is the declaration `std.channel` owns, not the spelling `Sender`. A user `type Sender<T>` handed to an endpoint parameter is refused with both spellings named, while the real endpoint in the same program still satisfies that parameter and raises nothing."
+source = "fixtures/channel-endpoint-user-sender-refused/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+file = "channel-endpoint-user-sender-refused/main.hew"
+line = 26
+column = 20
+message = "expected `std.channel.Sender<i64>`, found `Sender<i64>`"

@@ -334,6 +334,58 @@ pub unsafe extern "C" fn hew_hashset_insert_layout(
     unsafe { hew_hashmap_insert_layout((*set).map, elem, ptr::null(), present_out, fault_out) }
 }
 
+/// Insert an element the caller owns, consuming it on both paths.
+///
+/// This is the ingress for an owned transfer. `hew_hashset_insert_layout`
+/// inherits the map's conditional-key asymmetry: the vacant path takes the
+/// element, while the already-present path keeps the stored element and leaves
+/// the caller's duplicate untouched. That asymmetry has no source spelling — an
+/// owned element handed to `insert` is gone either way — so the duplicate is
+/// released here through the element descriptor's own drop thunk.
+///
+/// On success, writes whether the element was absent to `present_out`. A
+/// callback failure transfers nothing: the caller keeps its element.
+///
+/// Status zero initializes `present_out` and clears `fault_out`. Nonzero status
+/// forwards the callback fault unchanged and leaves the result untouched.
+///
+/// # Safety
+///
+/// Result and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
+///
+/// `set` must be live. `elem` must be an independent owner of an element blob
+/// matching the element descriptor; the caller must not release it after a
+/// zero status.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_insert_take_layout(
+    set: *mut HewLayoutHashSet,
+    elem: *const c_void,
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: shared validator; panics on null set or null elem.
+    unsafe { validate_set_op_elem(set.cast_const(), elem) };
+    // SAFETY: set non-null per validator; the wrapper owns a live map whose
+    // key descriptor is this set's element descriptor.
+    let elem_layout = unsafe { (*(*set).map).key_layout.value };
+    // SAFETY: set non-null per validator; ZST value contract passes null.
+    let status = unsafe { hew_hashset_insert_layout(set, elem, present_out, fault_out) };
+    if status != 0 {
+        return status;
+    }
+    // SAFETY: a zero status wrote `present_out` per the callee's contract.
+    let inserted = unsafe { *present_out };
+    if !inserted {
+        if let Some(drop_elem) = elem_layout.drop_fn {
+            // SAFETY: the stored element was kept, so the caller's duplicate
+            // is an independent owner this entry took and now releases.
+            unsafe { drop_elem(elem.cast_mut()) };
+        }
+    }
+    status
+}
+
 /// Insert an independent copy of a borrowed element.
 ///
 /// On success, writes whether the element was absent to `present_out`. The

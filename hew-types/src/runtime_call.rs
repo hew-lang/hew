@@ -7938,7 +7938,7 @@ impl RuntimeCallFamily {
                         },
                         A {
                             ty: K::TypeArgument(0),
-                            effect: E::Borrow,
+                            effect: E::Value,
                         },
                     ],
                     result: R::UpdatedReceiverAndValue(K::Tuple(&[

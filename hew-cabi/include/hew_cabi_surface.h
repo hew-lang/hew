@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1659u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1660u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1659] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1660] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -2927,6 +2927,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1659] = {
      "{\"native\": \"fn hew_hashset_insert_layout( *mut HewLayoutHashSet, "
      "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
      "\"wasm32-wasip1\": \"fn hew_hashset_insert_layout( *mut "
+     "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_hashset_insert_take_layout",
+     "{\"native\": \"fn hew_hashset_insert_take_layout( *mut HewLayoutHashSet, "
+     "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashset_insert_take_layout( *mut "
      "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
      "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",

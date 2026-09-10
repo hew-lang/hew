@@ -378,6 +378,7 @@ stable = [
   "hew_hashset_free_layout_walk",
   "hew_hashset_insert_clone_layout",
   "hew_hashset_insert_layout",
+  "hew_hashset_insert_take_layout",
   "hew_hashset_is_empty_layout",
   "hew_hashset_iter_free_layout",
   "hew_hashset_iter_new_layout",
@@ -2206,6 +2207,16 @@ discharge-depth = "none"
 symbol = "hew_hashset_insert_clone_layout"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# The element owner transfers on a zero status, on the vacant path into the
+# slot and on the duplicate path through the element's own release; a callback
+# failure leaves the caller holding it.
+[[ownership.contracts]]
+symbol = "hew_hashset_insert_take_layout"
+result = "none"
+params = ["borrow", "consume", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

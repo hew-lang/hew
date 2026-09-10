@@ -6787,8 +6787,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalSetOp::Contains
             | PhysicalSetOp::Insert { .. }
             | PhysicalSetOp::Remove { .. } => {
+                // An adopted element transfers into the set; a borrowed one is
+                // cloned. The take entry consumes the caller's element on the
+                // duplicate path too, so nothing is left for the caller to
+                // release either way.
+                let moved = matches!(transfers.get(1), Some(ArgumentTransfer::Move(_)));
                 let symbol = match operation {
                     PhysicalSetOp::Contains => "hew_hashset_contains_layout",
+                    PhysicalSetOp::Insert { .. } if moved => "hew_hashset_insert_take_layout",
                     PhysicalSetOp::Insert { .. } => "hew_hashset_insert_clone_layout",
                     PhysicalSetOp::Remove { .. } => "hew_hashset_remove_layout",
                     _ => unreachable!("matched membership operation"),
@@ -6801,6 +6807,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                     consumed,
                 )?;
+                if matches!(operation, PhysicalSetOp::Insert { .. }) && moved {
+                    self.clear_owned(source(1)?)?;
+                }
                 if operation == PhysicalSetOp::Contains {
                     self.store(result, present.into())?;
                 } else {

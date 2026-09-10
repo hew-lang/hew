@@ -7876,6 +7876,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_hashset_insert_take_layout( *mut HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> i32",
+        "wasm32-wasip1": "fn hew_hashset_insert_take_layout( *mut HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_hashset_insert_take_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_hashset_is_empty_layout( *const HewLayoutHashSet) -> bool",
         "wasm32-wasip1": "fn hew_hashset_is_empty_layout( *const HewLayoutHashSet) -> bool"
       },

@@ -1,0 +1,90 @@
+// A linear chain of last-use record transfers across actor calls. Every
+// binding is moved into the next call, so no fault or cancellation edge in
+// this body has record contents to release; the one live record leaves the
+// chain at the end. The cleanup the compiler emits stays proportional to
+// what is actually released rather than to the number of suspensions.
+type Payload {
+    f0: string,
+    f1: string,
+    f2: string,
+    f3: string,
+    f4: string,
+    f5: string,
+    f6: string,
+    f7: string,
+}
+
+actor Gate {
+    receive fn pass(value: Payload) -> Payload { value }
+}
+
+fn main() {
+    let gate = spawn Gate();
+    let value0 = Payload { f0: "ok", f1: "ok", f2: "ok", f3: "ok", f4: "ok", f5: "ok", f6: "ok", f7: "ok" };
+    let value1 = gate.pass(value0).expect("reply");
+    let value2 = gate.pass(value1).expect("reply");
+    let value3 = gate.pass(value2).expect("reply");
+    let value4 = gate.pass(value3).expect("reply");
+    let value5 = gate.pass(value4).expect("reply");
+    let value6 = gate.pass(value5).expect("reply");
+    let value7 = gate.pass(value6).expect("reply");
+    let value8 = gate.pass(value7).expect("reply");
+    let value9 = gate.pass(value8).expect("reply");
+    let value10 = gate.pass(value9).expect("reply");
+    let value11 = gate.pass(value10).expect("reply");
+    let value12 = gate.pass(value11).expect("reply");
+    let value13 = gate.pass(value12).expect("reply");
+    let value14 = gate.pass(value13).expect("reply");
+    let value15 = gate.pass(value14).expect("reply");
+    let value16 = gate.pass(value15).expect("reply");
+    let value17 = gate.pass(value16).expect("reply");
+    let value18 = gate.pass(value17).expect("reply");
+    let value19 = gate.pass(value18).expect("reply");
+    let value20 = gate.pass(value19).expect("reply");
+    let value21 = gate.pass(value20).expect("reply");
+    let value22 = gate.pass(value21).expect("reply");
+    let value23 = gate.pass(value22).expect("reply");
+    let value24 = gate.pass(value23).expect("reply");
+    let value25 = gate.pass(value24).expect("reply");
+    let value26 = gate.pass(value25).expect("reply");
+    let value27 = gate.pass(value26).expect("reply");
+    let value28 = gate.pass(value27).expect("reply");
+    let value29 = gate.pass(value28).expect("reply");
+    let value30 = gate.pass(value29).expect("reply");
+    let value31 = gate.pass(value30).expect("reply");
+    let value32 = gate.pass(value31).expect("reply");
+    let value33 = gate.pass(value32).expect("reply");
+    let value34 = gate.pass(value33).expect("reply");
+    let value35 = gate.pass(value34).expect("reply");
+    let value36 = gate.pass(value35).expect("reply");
+    let value37 = gate.pass(value36).expect("reply");
+    let value38 = gate.pass(value37).expect("reply");
+    let value39 = gate.pass(value38).expect("reply");
+    let value40 = gate.pass(value39).expect("reply");
+    let value41 = gate.pass(value40).expect("reply");
+    let value42 = gate.pass(value41).expect("reply");
+    let value43 = gate.pass(value42).expect("reply");
+    let value44 = gate.pass(value43).expect("reply");
+    let value45 = gate.pass(value44).expect("reply");
+    let value46 = gate.pass(value45).expect("reply");
+    let value47 = gate.pass(value46).expect("reply");
+    let value48 = gate.pass(value47).expect("reply");
+    let value49 = gate.pass(value48).expect("reply");
+    let value50 = gate.pass(value49).expect("reply");
+    let value51 = gate.pass(value50).expect("reply");
+    let value52 = gate.pass(value51).expect("reply");
+    let value53 = gate.pass(value52).expect("reply");
+    let value54 = gate.pass(value53).expect("reply");
+    let value55 = gate.pass(value54).expect("reply");
+    let value56 = gate.pass(value55).expect("reply");
+    let value57 = gate.pass(value56).expect("reply");
+    let value58 = gate.pass(value57).expect("reply");
+    let value59 = gate.pass(value58).expect("reply");
+    let value60 = gate.pass(value59).expect("reply");
+    let value61 = gate.pass(value60).expect("reply");
+    let value62 = gate.pass(value61).expect("reply");
+    let value63 = gate.pass(value62).expect("reply");
+    let value64 = gate.pass(value63).expect("reply");
+    println(value64.f0);
+    close(gate);
+}

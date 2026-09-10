@@ -1,0 +1,47 @@
+// A losing race operand is cancelled at its suspension while one local record
+// is definitely held and another has been moved away on only one of the two
+// paths that reach the suspension. The cancellation edge releases exactly the
+// contents that are still there: the held record once, the moved record not at
+// all, and the record whose construction crossed the suspension once.
+type Payload {
+    name: string,
+    note: string,
+}
+
+fn build(label: string) -> Payload {
+    Payload { name: "payload-" + label, note: "note-" + label }
+}
+
+fn sink(taken: Payload) -> i64 {
+    string_len(taken.name)
+}
+
+fn string_len(text: string) -> i64 {
+    text.len()
+}
+
+// Cancelled at `sleep`. `held` is initialized on every path; `moved` is
+// initialized on one path and gone on the other; `crossing` is a value built
+// before the suspension and consumed only after it.
+fn cancelled(flag: bool) -> i64 {
+    let held = build("held");
+    let moved = build("moved");
+    var total: i64 = 0;
+    if flag {
+        total = total + sink(moved);
+    }
+    let crossing = build("crossing");
+    sleep(5s);
+    total + string_len(held.name) + string_len(crossing.note)
+}
+
+fn winner() -> i64 {
+    sleep(1ms);
+    println("winner done");
+    7
+}
+
+fn main() {
+    let picked = race { winner(), cancelled(true) };
+    println("picked " + to_string(picked));
+}

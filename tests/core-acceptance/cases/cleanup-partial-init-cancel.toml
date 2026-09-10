@@ -1,0 +1,10 @@
+[[case]]
+id = "cleanup-partial-init-cancel"
+intent = "A losing race operand is cancelled at its suspension with one local record definitely held, one moved away on the path that reaches the suspension, and one built before the suspension and consumed after it: the cancellation edge releases every initialized record once and the moved one not at all."
+source = "cases/cleanup-partial-init-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "winner done\npicked 7\n"
+exit = 0

@@ -148,7 +148,7 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 
 | Metric | Kind | Hot? | What it measures |
 | --- | --- | --- | --- |
-| `heap.live_bytes` | gauge | no | Current allocator live bytes. On WASM this currently reads `0`. |
+| `heap.live_bytes` | gauge | no | Live bytes held by every allocation Hew owns. On WASM this currently reads `0`. |
 | `heap.allocated_total` | counter | yes | Total bytes recorded by hot-tier heap allocation probes. |
 | `heap.freed_total` | counter | yes | Total bytes recorded by hot-tier heap free probes. |
 | `heap.allocations_total` | counter | yes | Number of heap allocations recorded by hot-tier probes. |
@@ -176,6 +176,27 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 | `reactor.registrations_live` | gauge | no | Live reactor registration count. |
 | `reactor.ready_events_total` | counter | no | Reactor ready-event count. |
 | `arena.resets_total` | counter | no | Arena reset count. |
+
+### What the heap counters cover
+
+The `heap.*` counters wrap the Rust global allocator, and every allocation Hew
+owns goes through it: collection storage, `bytes` and `string` buffers, the
+per-object headers, mailbox payloads, reply values, actor state wrappers and
+serialization buffers. The coverage is structural rather than instrumented -
+there is no separate accounting call a new allocation could forget to make.
+
+Two things are outside the counters:
+
+- Memory a native package allocates with its own allocator. The package owns
+  both ends of that allocation, so the runtime never sees it. The one
+  documented list of such boundaries is
+  [allocation boundaries](internal/allocation-boundaries.md).
+- Memory the process holds that is not a Hew allocation: the executable, thread
+  stacks, and whatever the C library keeps.
+
+A drop in `heap.live_bytes` says the allocator was told the memory is free. It
+does not say resident memory fell: the allocator usually keeps freed pages for
+the next request, so RSS follows later, or not at all.
 
 The labelled series are emitted by `observe.scrape()` when attribution data
 exists:

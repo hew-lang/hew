@@ -1422,10 +1422,9 @@ the symbol comes from `header.symbol` looked up by key.
   ByRefAbi, CoroutineFrame, Capture, Transport, ExplicitStorage, TrapFrame
   }`. Layout is never a reason. Every SIR `alloc_place` is `ExplicitStorage`;
   resume-edge arguments are `CoroutineFrame`; envelope payloads are
-  `Transport` and are always a **malloc-compatible allocation**
-  (`hew_msg_envelope_new` doc, mailbox.rs:536-540: "`payload` must be a
-  malloc-compatible allocation"; the envelope frees it with `libc::free`,
-  cow_envelope.rs:114-118) — never stack or arena storage; `TrapFrame` is the
+  `Transport` and are always a **sized-block allocation**
+  (`hew_msg_envelope_new` doc, mailbox.rs:536-540; the envelope frees it with
+  `buf_free`, cow_envelope.rs:114-118) — never stack or arena storage; `TrapFrame` is the
   registry-target realization of values live across a trapping call (§4.7).
 - **Calling convention** per callable: `CallableHeader { key, symbol, conv:
   Default | TaskEntry | ActorHandler | ActorInit | ActorMethod | LifecycleHook
@@ -1957,7 +1956,7 @@ the row in the runtime symbol table.
 ### 5.6 Message payload protocol: envelope-only
 
 **[current]** The runtime has two delivery protocols: copy mode, where the node
-buffer is `libc::free`d with no payload drop and the handler owns the fields
+buffer is `buf_free`d with no payload drop and the handler owns the fields
 (`hew_msg_node_free`, mailbox.rs:1093-1113, `envelope.is_null()` arm), and
 envelope mode, where `hew_msg_envelope_release` runs the envelope's
 `drop_glue` on the payload after dispatch and the handler borrows
@@ -1985,7 +1984,7 @@ envelope-aware but called only from the copy-mode path (2081/2096) and 4515.
 
 [P4] **One protocol.** Every message is an envelope whose `drop_glue` is
 `hew_drop$<MsgRecord>` (the per-handler message record instance, §5.1),
-created by `PrepareEnvelope` (§4.2) into a malloc-compatible payload. The
+created by `PrepareEnvelope` (§4.2) into a sized-block payload. The
 envelope owns the payload from the send on: a `Share` argument was retained
 into it, a `DeepCopy` argument was copied into it, a `Transfer` argument was
 moved into it. A message that is never dispatched (coalesce replacement,
@@ -1997,7 +1996,7 @@ per-handler disposition field. The trampoline calls
 nulls `payload` and `drop_glue`, and **aborts if `refcount != 1`**); the
 `ActorHandler` shim's payload header slots are `Consume`; the shim
 `destructure`s the payload record into body-owned values and frees the buffer
-with `hew_msg_payload_free(ptr)` (`libc::free`); the body owns each field like
+with `hew_msg_payload_free(ptr)` (`buf_free`); the body owns each field like
 a local (`conn = Some(c)` is a `move` into `store.assign`; a field the body
 never uses is `destroy_value`d at the shim's exit; a field it keeps needs no
 `copy_value` at all). `release` runs `drop_fn` only when `payload` is non-null
@@ -2014,7 +2013,7 @@ and only afterwards parks the suspended continuation
 (`if !suspend_handle.is_null() { … park_suspended_activation(actor, suspend_handle) }`,
 scheduler.rs:3780-3788); `hew_msg_node_free`'s envelope arm calls
 `hew_msg_envelope_release` (mailbox.rs:1106-1110), whose final observer runs
-`drop_fn((*env).payload)` and then `libc::free((*env).payload)`
+`drop_fn((*env).payload)` and then `buf_free((*env).payload)`
 (cow_envelope.rs:113-121). A handler that parks and then reads a payload field
 after resume would therefore read freed memory. That is not a hypothetical
 shape: `tests/vertical-slice/accept/coalesce_owned_payload_leak.hew:13-17` is a
@@ -2757,7 +2756,7 @@ change no program.
 | 10 | `is` is reference identity on heap handles | ownership.md:204 "There is no pointer-equality operator." | spec line 5095 "`is` = reference identity on heap handles"; `IdentityCompare` node.rs:1415, 2026 | wording (stale source doc) |
 | 11 | Destroy sinking moves **only** a `CowValue` release: `AffineResource`/`Linear` are excluded by the element-joined class (`Vec<Conn>`, `Vec<Rc<T>>`, an `Rc`-capturing closure), and `PersistentShare` is excluded outright because a `dyn Trait`'s concrete payload is not part of its type | old draft §3 row with no restriction; revision 3's top-level-class restriction; revision 4's "`CowValue` or `PersistentShare`" | spec §3.7.3 "Cleanup runs at a predictable point (scope exit)", §3.7.5 `upgrade()` exactness, §3.7.6 side-effect restriction; `repros/ladder/weak_scope.hew` prints `alive`; `repros/ladder/vec_rc_weak.hew` prints `1`, `5`; `repros/ladder/dyn_rc.hew` (`dyn Show` over a record holding an `Rc`) prints `5`, `alive` | wording (preserves behaviour) |
 | 12 | A read-only place receiver is `begin_borrow %p` (the place stays `Init`); a mutating `CowValue` place receiver is `load.take` → `fork` → call → `store.init`, with `store.init %p, %forked` on unwind/cancel edges (the callee borrowed it) | `main`'s `ActorStateLoadMode::Borrowed` bare alias decided by a classifier (model.rs:6648-6656); revision 3's "the edge stores a fresh default/empty value" | §1.3 borrow/`load.take` rows; `hew_vec_push_owned_move(v: *mut HewVec, …)` borrows `v` (vec.rs:2663); rule 4's place classes | wording (same observable behaviour) |
-| 13 | Message delivery is envelope-only and every dispatched payload is **taken** by the handler — one disposition, no class split and no per-handler header field (§5.6) | `main`'s copy-mode nodes + `HewMessageDropFn`; revision 3's "handlers borrow" for every message; revision 5's own two-disposition split (borrowed for a `BitCopy`/`CowValue`/`PersistentShare` record) | §5.6; `cow_envelope.rs:106-118` (`drop_fn` only on a non-null payload); the dispatch order that kills the borrowed disposition — `hew_msg_node_free` at `scheduler.rs:3766` precedes `park_suspended_activation` at 3780-3788, so a suspending handler's borrowed field would be read after `libc::free` (cow_envelope.rs:113-121); shipped counterexample `tests/vertical-slice/accept/coalesce_owned_payload_leak.hew:13-17` | runtime protocol change; see row 24 for the one user-visible effect |
+| 13 | Message delivery is envelope-only and every dispatched payload is **taken** by the handler — one disposition, no class split and no per-handler header field (§5.6) | `main`'s copy-mode nodes + `HewMessageDropFn`; revision 3's "handlers borrow" for every message; revision 5's own two-disposition split (borrowed for a `BitCopy`/`CowValue`/`PersistentShare` record) | §5.6; `cow_envelope.rs:106-118` (`drop_fn` only on a non-null payload); the dispatch order that kills the borrowed disposition — `hew_msg_node_free` at `scheduler.rs:3766` precedes `park_suspended_activation` at 3780-3788, so a suspending handler's borrowed field would be read after `buf_free` (cow_envelope.rs:113-121); shipped counterexample `tests/vertical-slice/accept/coalesce_owned_payload_leak.hew:13-17` | runtime protocol change; see row 24 for the one user-visible effect |
 | 14 | `Task<T>` is freed by the scope; `AwaitTask` copies the result out; an unconsumed result is released through `result_drop_fn`; unbound spawns (`work();` in a scope, `fork {}`) mint no `Task` value | old draft §5.2 "tasks → `hew_task_free`"; revision 3's `Task<T>` row read as covering unbound spawns (which 6d would then reject) | task_scope.rs:619-627, 666-690, 776-786, 1322; dataflow.rs:1493 (`MustConsume` iterates `linear_bindings` only); `tests/vertical-slice/accept/{w2006_scope_spawn,fork_block_args_spawn}.hew` | wording (matches `main`) |
 | 15 | `LocalPid`/`HewActor` are `BitCopy`; the BitCopy scalars/enums of §1.1 get marker `BitCopy` | `builtin_type.rs:355` marker rows (`Resource` / `None`) | `ty_is_nonowning_pid_leaf` llvm.rs:25479; no `close_method()` | wording (matches `main` behaviour) |
 | 16 | `fork` is never emitted for a `string` and has no runtime realization for any current carrier (§4.3); `p.n = 1` on a record with a literal string field forks nothing | revision 3 §4.3/§5.4 "`hew_string_make_unique` [P1, exposes `cstring_ensure_unique`]", "record with heap fields: `Fork` per field" | cabi.rs:495-511 ("Unmanaged pointers must be filtered out by the caller"), string.rs:1264-1296 (`is_managed_cstring` guards); `std/string.hew` has no `var self` method | wording (a UB path removed before it existed) |

@@ -1953,7 +1953,7 @@ composite (`Connected.Active`, which resolves to the leaf `Active`), or as the
 wildcard `_`. A leading `.` is rejected there:
 
 ```
-on Toggle: .Off => .On;
+on Toggle: .Off => .On,
            ^ error: a machine transition source state is a pattern and cannot be
              written with a leading `.`
 ```

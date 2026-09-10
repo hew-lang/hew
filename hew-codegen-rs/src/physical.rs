@@ -4665,23 +4665,29 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     error_len,
                 )?;
             }
-            RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAt => {
+            RuntimeCallFamily::StringFind
+            | RuntimeCallFamily::StringCharAt
+            | RuntimeCallFamily::StringCharAtUtf8 => {
                 let option = variant_carrier(action)?;
-                let character = action.family == RuntimeCallFamily::StringCharAt;
-                let (symbol, function_type) = if character {
-                    (
+                let (symbol, function_type) = match action.family {
+                    RuntimeCallFamily::StringCharAt => (
                         "hew_string_char_at",
                         self.ctx
                             .i32_type()
                             .fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
-                    )
-                } else {
-                    (
+                    ),
+                    RuntimeCallFamily::StringCharAtUtf8 => (
+                        "hew_string_char_at_utf8",
+                        self.ctx
+                            .i32_type()
+                            .fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+                    ),
+                    _ => (
                         "hew_string_find",
                         self.ctx
                             .i64_type()
                             .fn_type(&[ptr.into(), ptr.into()], false),
-                    )
+                    ),
                 };
                 let function = get_or_declare_external(self.llvm, symbol, function_type)?;
                 let index = self
@@ -4711,7 +4717,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(found, present, absent)
                     .llvm_ctx("select string find result")?;
                 self.builder.position_at_end(present);
-                self.write_variant_value(destination, 0, &[index.into()], option)?;
+                // `codepoint_at_utf8` declares an `Option<i64>` payload over an
+                // `i32` scalar return, so the found codepoint widens first.
+                let payload = if action.family == RuntimeCallFamily::StringCharAtUtf8 {
+                    self.builder
+                        .build_int_s_extend(index, self.ctx.i64_type(), "find.codepoint")
+                        .llvm_ctx("widen codepoint to its declared payload")?
+                } else {
+                    index
+                };
+                self.write_variant_value(destination, 0, &[payload.into()], option)?;
                 self.builder
                     .build_unconditional_branch(complete)
                     .llvm_ctx("finish string find hit")?;

@@ -185,6 +185,19 @@ pub(super) struct SourceExternDeclaration {
     pub(super) consuming_params: Vec<bool>,
 }
 
+/// One `#[extern_symbol]` method's declared C-boundary signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternMethodSignature {
+    /// The linker endpoint the attribute names.
+    pub endpoint: String,
+    pub params: Vec<Ty>,
+    /// `consume` disposition per parameter, parallel to `params`.
+    pub consumes: Vec<bool>,
+    pub result: Ty,
+    /// Dotted module path the declaration came from, when it has one.
+    pub declaring_module: Option<String>,
+}
+
 /// Exact source declaration and linker endpoint selected for one open-set
 /// `#[extern_symbol]` method call.
 ///
@@ -344,6 +357,14 @@ pub struct TypeCheckOutput {
     pub user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
     /// Explicit widening targets for numeric binary and index operands.
     pub numeric_operand_coercions: HashMap<SpanKey, Ty>,
+    /// Declared C-boundary signatures for `#[extern_symbol]` methods, keyed by
+    /// the source declaration identity a `CallTarget::Extern` carries.
+    ///
+    /// An `#[extern_symbol]` method declares its boundary signature with its
+    /// own Hew parameters and return type, exactly as an `extern` block
+    /// declares one. Publishing it here keeps that single authority: no later
+    /// stage re-derives a signature per endpoint spelling.
+    pub extern_method_signatures: HashMap<(crate::DefId, String), ExternMethodSignature>,
     /// Spans of `self.field` projections the checker resolved to the enclosing
     /// actor's own state field.
     ///
@@ -1416,6 +1437,7 @@ impl Default for TypeCheckOutput {
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
             numeric_operand_coercions: HashMap::new(),
+            extern_method_signatures: HashMap::new(),
             actor_self_state_fields: HashSet::new(),
             actor_deferred_field_decls: HashSet::new(),
             actor_init_first_stores: HashSet::new(),
@@ -2780,6 +2802,9 @@ pub struct Checker {
     /// Declaring provenance for attributed methods, keyed by canonical
     /// `Type::method` signature identity.
     pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
+    /// Declared C-boundary signatures for the `#[extern_symbol]` methods this
+    /// unit dispatched, keyed by source declaration identity.
+    pub(super) extern_method_signatures: HashMap<(crate::DefId, String), ExternMethodSignature>,
     /// Origin override used only while registering compiler-embedded stdlib
     /// source; unlike `current_module`, it never changes lookup keys.
     pub(super) registration_origin_module: Option<String>,
@@ -3940,6 +3965,7 @@ impl Checker {
             user_comparison_dispatch: HashMap::new(),
             numeric_operand_coercions: HashMap::new(),
             extern_method_origins: HashMap::new(),
+            extern_method_signatures: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),

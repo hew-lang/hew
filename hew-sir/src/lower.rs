@@ -8546,6 +8546,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     /// The exact `extern` declaration behind one call target.
+    ///
+    /// Both an `extern` block and an `#[extern_symbol]` method reach HIR as a
+    /// declaration item carrying the declared parameters, their `consume`
+    /// dispositions and the return type, so one lookup serves both.
     fn extern_signature(
         &self,
         declaration: &hew_types::DefId,
@@ -8570,11 +8574,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 })
             })
             .ok_or_else(|| {
-                format!(
-                    "extern `{endpoint}` is named by an `#[extern_symbol]` method rather than an \
-                     `extern` block, and an open-set extern method has no declared C signature to \
-                     call through"
-                )
+                format!("extern `{endpoint}` names no declaration in this compilation unit")
             })
     }
 

@@ -6017,10 +6017,23 @@ impl RuntimeCallFamily {
             },
             Self::StringCharAtUtf8 => RuntimeOpRow {
                 symbol: "hew_string_char_at_utf8",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I64])),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharCount => RuntimeOpRow {

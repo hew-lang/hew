@@ -5911,6 +5911,37 @@ pub fn lower_program_with_mono_cap(
         );
     }
 
+    // An `#[extern_symbol]` method declares its C boundary with its own Hew
+    // signature. Emit one extern declaration per dispatched method so later
+    // stages read the declared parameters, their `consume` dispositions and
+    // the return type from a single shape, exactly as for an `extern` block.
+    for ((declaration, _), signature) in std::mem::take(&mut ctx.extern_method_signatures) {
+        let (Ok(param_tys), Ok(return_ty)) = (
+            signature
+                .params
+                .iter()
+                .map(ResolvedTy::from_ty)
+                .collect::<Result<Vec<_>, _>>(),
+            ResolvedTy::from_ty(&signature.result),
+        ) else {
+            continue;
+        };
+        let provenance = extern_provenance(signature.declaring_module.as_deref());
+        let runtime_capability = extern_runtime_capability(&provenance, &signature.endpoint);
+        items.push(HirItem::ExternFn(crate::node::HirExternFn {
+            id: ctx.ids.item(),
+            node: ctx.ids.node(),
+            declaration,
+            name: signature.endpoint,
+            abi: "C".to_string(),
+            param_consume: signature.consumes,
+            param_tys,
+            return_ty,
+            provenance,
+            runtime_capability,
+            span: hew_parser::ast::Span::default(),
+        }));
+    }
     items.extend(delivery_declarations.into_iter().map(HirItem::TypeDecl));
     if let Some(decl) = scope_failure {
         items.push(HirItem::TypeDecl(decl));
@@ -7728,6 +7759,11 @@ struct LowerCtx {
     /// `Expr::Binary` lowering; see [`UserComparisonDispatch`].
     user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
     numeric_operand_coercions: HashMap<SpanKey, Ty>,
+    /// Declared C-boundary signatures for the `#[extern_symbol]` methods every
+    /// checked module dispatched, accumulated across passes. Each becomes one
+    /// `HirItem::ExternFn`, so an extern method and an `extern` block reach
+    /// later stages through the same declaration shape.
+    extern_method_signatures: HashMap<(hew_types::DefId, String), hew_types::ExternMethodSignature>,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from
@@ -8489,6 +8525,7 @@ impl LowerCtx {
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
+            extern_method_signatures: tc_output.extern_method_signatures.clone(),
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -8650,6 +8687,11 @@ impl LowerCtx {
             &mut self.numeric_operand_coercions,
             tc_output.numeric_operand_coercions.clone(),
         );
+        // Extern-method signatures accumulate: every module's dispatched
+        // declarations must reach the emitted extern items, not just the pass
+        // that happens to run last.
+        self.extern_method_signatures
+            .extend(tc_output.extern_method_signatures.clone());
         let saved = (
             std::mem::replace(
                 &mut self.method_call_rewrites,

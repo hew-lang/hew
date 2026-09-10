@@ -1281,6 +1281,8 @@ impl Checker {
         span: &Span,
         c_symbol: String,
         signature_key: String,
+        sig: &FnSig,
+        receiver_ty: &Ty,
     ) {
         let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
         let (declaring_module, trusted_compiled_stdlib) = self
@@ -1314,10 +1316,19 @@ impl Checker {
                                 extern_identity.signature_key
                             ),
                         },
-                        |declaration| CallTarget::Extern {
-                            declaration,
-                            endpoint: extern_identity.endpoint.clone(),
-                            trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                        |declaration| {
+                            self.publish_extern_method_signature(
+                                &declaration,
+                                &extern_identity,
+                                sig,
+                                receiver_ty,
+                                consumes_receiver,
+                            );
+                            CallTarget::Extern {
+                                declaration,
+                                endpoint: extern_identity.endpoint.clone(),
+                                trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                            }
                         },
                     )
             },
@@ -1341,11 +1352,51 @@ impl Checker {
         );
     }
 
+    /// Publish the declared C-boundary signature of one `#[extern_symbol]`
+    /// method so later stages call through the declaration rather than
+    /// re-deriving a signature from the endpoint spelling.
+    fn publish_extern_method_signature(
+        &mut self,
+        declaration: &crate::DefId,
+        identity: &ExternMethodCallIdentity,
+        sig: &FnSig,
+        receiver_ty: &Ty,
+        consumes_receiver: bool,
+    ) {
+        // A receiver method's signature carries only its explicit parameters;
+        // the C boundary takes the receiver first, exactly as the source
+        // declaration spells it.
+        let params = std::iter::once(receiver_ty.clone())
+            .chain(sig.params.iter().cloned())
+            .map(|ty| self.subst.resolve(&ty).materialize_literal_defaults())
+            .collect::<Vec<_>>();
+        let consumes = std::iter::once(consumes_receiver)
+            .chain(
+                sig.param_ownership
+                    .iter()
+                    .map(|ownership| *ownership == crate::env::ParameterOwnership::Consume),
+            )
+            .collect();
+        let signature = crate::check::types::ExternMethodSignature {
+            endpoint: identity.endpoint.clone(),
+            params,
+            consumes,
+            result: self
+                .subst
+                .resolve(&sig.return_type)
+                .materialize_literal_defaults(),
+            declaring_module: identity.declaring_module.clone(),
+        };
+        self.extern_method_signatures
+            .insert((declaration.clone(), identity.endpoint.clone()), signature);
+    }
+
     fn record_monomorphic_extern_symbol_rewrite_if_any(
         &mut self,
         sig: &FnSig,
         signature_key: &str,
         span: &Span,
+        receiver_ty: &Ty,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
             return false;
@@ -1372,6 +1423,8 @@ impl Checker {
             span,
             spec.template.raw.clone(),
             signature_key.to_string(),
+            sig,
+            receiver_ty,
         );
         true
     }
@@ -1383,6 +1436,7 @@ impl Checker {
         method: &str,
         sig: &FnSig,
         span: &Span,
+        receiver_ty: &Ty,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
             return false;
@@ -1399,6 +1453,8 @@ impl Checker {
                 span,
                 spec.template.raw.clone(),
                 signature_key,
+                sig,
+                receiver_ty,
             );
             return true;
         }
@@ -1450,6 +1506,8 @@ impl Checker {
             span,
             expanded,
             format!("{receiver_type_name}::{method}"),
+            sig,
+            receiver_ty,
         );
         true
     }
@@ -1537,6 +1595,7 @@ impl Checker {
         method: &str,
         args: &[CallArg],
         span: &Span,
+        receiver_ty: &Ty,
     ) -> Option<Ty> {
         let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
         sig.extern_symbol.as_ref()?;
@@ -1562,7 +1621,7 @@ impl Checker {
                 owner_type_args: type_args,
             }),
         );
-        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
+        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span, receiver_ty);
         Some(applied_sig.return_type)
     }
 
@@ -4553,9 +4612,14 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        if let Some(ret_ty) =
-            self.dispatch_monomorphic_extern_symbol_method("string", &[], method, args, span)
-        {
+        if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+            "string",
+            &[],
+            method,
+            args,
+            span,
+            &Ty::String,
+        ) {
             return ret_ty;
         }
         self.check_primitive_receiver_method_fallback(&Ty::String, "string", method, args, span)
@@ -7680,6 +7744,7 @@ impl Checker {
                     method,
                     args,
                     span,
+                    &receiver_ty,
                 ) {
                     return ret_ty;
                 }
@@ -7698,9 +7763,14 @@ impl Checker {
             // `#[extern_symbol]` annotations over the current Vec<i32>-backed
             // bytes ABI.
             (Ty::Bytes, _) => {
-                if let Some(ret_ty) =
-                    self.dispatch_monomorphic_extern_symbol_method("bytes", &[], method, args, span)
-                {
+                if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+                    "bytes",
+                    &[],
+                    method,
+                    args,
+                    span,
+                    &Ty::Bytes,
+                ) {
                     return ret_ty;
                 }
                 self.check_primitive_receiver_method_fallback(
@@ -7720,6 +7790,7 @@ impl Checker {
                     method,
                     args,
                     span,
+                    &Ty::Duration,
                 ) {
                     return ret_ty;
                 }
@@ -9358,6 +9429,7 @@ impl Checker {
                         method,
                         &sig,
                         span,
+                        &self.subst.resolve(&receiver_ty),
                     );
                     // W3.042 S2-S2: user-defined methods on named types (both
                     // inherent `impl Type { fn m(...) }` and trait `impl T for

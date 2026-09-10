@@ -1,0 +1,10 @@
+[[case]]
+id = "extern-symbol-method"
+intent = "An `#[extern_symbol]` method calls through its own declared signature: a borrowed receiver the caller keeps, declared arguments, and a scalar optional whose out-of-range read is `None`."
+source = "cases/extern-symbol-method.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "runes=6 bytes=9 codepoints=6\nat3=57\nat99=none\ntrim=[pad] contains=true\nagain=9\n"
+exit = 0

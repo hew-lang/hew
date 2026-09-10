@@ -8139,6 +8139,7 @@ fn verify_terminator(
             let scalar_optional = match action.family {
                 RuntimeCallFamily::StringFind => Some(ResolvedTy::I64),
                 RuntimeCallFamily::StringCharAt => Some(ResolvedTy::Char),
+                RuntimeCallFamily::StringCharAtUtf8 => Some(ResolvedTy::I64),
                 RuntimeCallFamily::BytesGet => Some(ResolvedTy::U8),
                 _ => None,
             };

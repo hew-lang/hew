@@ -409,7 +409,7 @@ fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     let w = sup.w1;
-    w.report();
+    let _ = w.report();
     sleep(50ms);
 }
 "#;
@@ -430,12 +430,12 @@ fn main() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     // The fail-closed diagnostic should appear somewhere in stderr.
-    // We check for the actor name and the failure marker — exact message
-    // wording is not load-bearing for this test.
+    // We check for the missing field's name and the failure marker — exact
+    // message wording is not load-bearing for this test.
     assert!(
-        stderr.contains("Worker") || stderr.contains("missing field"),
-        "compile error for missing init args should mention the actor type or \
-         missing field; stderr: {stderr}"
+        stderr.contains("`id`") || stderr.contains("requires an initialized spawn value"),
+        "compile error for missing init args should mention the missing field \
+         or the uninitialized-state cause; stderr: {stderr}"
     );
 }
 
@@ -598,7 +598,7 @@ fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     let w = sup.w;
-    w.report();
+    let _ = w.report();
     sleep(50ms);
 }
 "#;
@@ -614,9 +614,12 @@ fn main() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("Worker") || stderr.contains("missing") || stderr.contains("required"),
-        "compile error for missing required field should mention actor, 'missing', or \
-         'required'; stderr: {stderr}"
+        stderr.contains("`a`")
+            || stderr.contains("missing")
+            || stderr.contains("required")
+            || stderr.contains("requires an initialized spawn value"),
+        "compile error for missing required field should mention the field, \
+         'missing', 'required', or the uninitialized-state cause; stderr: {stderr}"
     );
 }
 

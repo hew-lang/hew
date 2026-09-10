@@ -85,6 +85,24 @@ impl Builder<'_, '_> {
                         bound,
                     )?;
                 }
+                HirMatchArmPredicate::Regex {
+                    literal_id,
+                    captures,
+                    ..
+                } if scrutinee_ty == ResolvedTy::String => {
+                    if !captures.is_empty() {
+                        return Err(
+                            "regex match-arm capture bindings are outside the SIR contract"
+                                .to_string(),
+                        );
+                    }
+                    let condition = self.regex_match_test(
+                        &selected,
+                        *literal_id,
+                        Provenance::Site(scrutinee.site),
+                    )?;
+                    failures.push(self.branch_candidate_test(condition)?);
+                }
                 _ => {
                     return Err(
                         "scalar match requires a matching scalar literal, binding or wildcard predicate"
@@ -134,6 +152,59 @@ impl Builder<'_, '_> {
         }
         self.branch_depth -= 1;
         self.merge_match_exits(exits, &result_ty)
+    }
+
+    /// Test the borrowed scrutinee against one compiled regex literal.
+    ///
+    /// The literal's index selects its slot in the module's handle array, so
+    /// each pattern is compiled once at process start rather than per arm
+    /// evaluation. The scrutinee is borrowed; the call produces only a bool.
+    fn regex_match_test(
+        &mut self,
+        selected: &Operand,
+        literal_id: u32,
+        provenance: Provenance,
+    ) -> Result<ValueId, String> {
+        let index = self.emit_typed(
+            provenance,
+            &ResolvedTy::I64,
+            SemOpKind::ConstInteger(i128::from(literal_id)),
+        )?;
+        let raw = self.fresh_value();
+        let continuation = self.fresh_value();
+        let normal = self.new_block(vec![crate::BlockArg {
+            value: continuation,
+            ty: ResolvedTy::Bool,
+            own: crate::OwnKind::None,
+        }]);
+        let id = crate::OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::RtCall {
+            id,
+            family: hew_types::RuntimeCallFamily::RegexMatch,
+            args: vec![
+                crate::BoundaryOperand {
+                    operand: Operand { value: index },
+                    decision: crate::BoundaryDecision::Copy,
+                },
+                crate::BoundaryOperand {
+                    operand: selected.clone(),
+                    decision: crate::BoundaryDecision::Borrow,
+                },
+            ],
+            result: crate::CallResult::Value(crate::ValueDef {
+                id: raw,
+                ty: ResolvedTy::Bool,
+                own: crate::OwnKind::None,
+            }),
+            normal: crate::Edge {
+                target: normal,
+                args: vec![Operand { value: raw }],
+            },
+            unwind: crate::CallUnwind::NotApplicable,
+        })?;
+        self.current = normal;
+        Ok(continuation)
     }
 
     fn scalar_match_literal_test(

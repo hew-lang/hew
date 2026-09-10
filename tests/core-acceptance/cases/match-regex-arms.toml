@@ -1,0 +1,10 @@
+[[case]]
+id = "match-regex-arms"
+intent = "A `re\"...\"` literal in match-arm predicate position tests the borrowed string scrutinee against a pattern compiled once into the module's handle array. Arms stay ordered: the first matching predicate wins over a later one that also matches, a literal arm placed first beats a regex arm, and a guard that rejects a matching pattern hands the scrutinee to a later arm whole. The repetition loop turns a borrow the arm failed to release into a leak signal."
+source = "cases/match-regex-arms.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "digits\nlower\nmixed\nempty\nzero\nnumber\nother\nword\nshort\nnot a word\nitem7/tagged\nchurn 260000\n"
+exit = 0

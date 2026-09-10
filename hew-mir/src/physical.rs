@@ -947,6 +947,9 @@ pub enum PhysicalRuntimeAction {
         format: EncodingFormat,
         op: EncodingOp,
     },
+    /// Test a borrowed string against one compiled regex literal. Operand
+    /// zero is the literal's slot index; operand one is the string.
+    RegexMatch,
     StringConcat,
     StringEquals,
     StringCompare,
@@ -1079,6 +1082,7 @@ impl PhysicalRuntimeAction {
             Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
             Self::ChannelPairReceiver => RuntimeCallFamily::ChannelPairReceiver,
             Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
+            Self::RegexMatch => RuntimeCallFamily::RegexMatch,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
             Self::StringCompare => RuntimeCallFamily::StringCompare,
@@ -1463,6 +1467,9 @@ pub struct PhysicalModule {
     pub entry_exit_plan: Option<EntryExitPlan>,
     pub string_literals: BTreeMap<hew_sir::StringLiteralId, String>,
     pub bytes_literals: BTreeMap<hew_sir::BytesLiteralId, Vec<u8>>,
+    /// Regex-literal patterns in slot order; each is compiled once into the
+    /// module's handle array and selected by index at a match arm.
+    pub regex_patterns: Vec<String>,
 }
 
 /// Immutable evidence that physical MIR passed its structural verifier.
@@ -1674,6 +1681,7 @@ pub fn lower_physical_module(
         entry_exit_plan: module.entry_exit_plan.clone(),
         string_literals: module.string_literals.clone(),
         bytes_literals: module.bytes_literals.clone(),
+        regex_patterns: module.regex_patterns.clone(),
     };
     physical.pure_releases = PureDataReleases::compute(&physical);
     verify_physical_module(&physical)?;
@@ -2608,6 +2616,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::Encoding { format, op } => {
             PhysicalRuntimeAction::Encoding { format, op }
         }
+        RuntimeCallFamily::RegexMatch => PhysicalRuntimeAction::RegexMatch,
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
         RuntimeCallFamily::StringCompare => PhysicalRuntimeAction::StringCompare,
@@ -9334,6 +9343,7 @@ mod tests {
             },
         );
         SemModule {
+            regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
@@ -10737,6 +10747,7 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            regex_patterns: Vec::new(),
             pure_releases: PureDataReleases::default(),
             actors: Vec::new(),
             supervisors: Vec::new(),

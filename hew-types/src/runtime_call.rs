@@ -1216,6 +1216,9 @@ const SIR_STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract 
 }];
 const SIR_STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
     &[SIR_STRING_BORROW[0], SIR_STRING_BORROW[0]];
+/// `hew_regex_match(slot_index, text)`: the index selects the module's
+/// compiled handle, the text is only read.
+const SIR_REGEX_MATCH: &[RuntimeArgumentContract] = &[SIR_I64_COPY[0], SIR_STRING_BORROW[0]];
 const SIR_BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
     ty: RuntimeValueKind::Bytes,
     effect: RuntimeArgumentEffect::Borrow,
@@ -4404,6 +4407,9 @@ impl RuntimeCallFamily {
             | Self::StringEndsWith
             | Self::StringContains => {
                 runtime_semantic_contract(SIR_STRING_PAIR_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
+            }
+            Self::RegexMatch => {
+                runtime_semantic_contract(SIR_REGEX_MATCH, BitCopy(Bool), SIR_NO_FAILURES)
             }
             Self::StringIsEmpty
             | Self::StringIsDigit

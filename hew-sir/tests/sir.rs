@@ -117,6 +117,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
         resources: BTreeMap::new(),

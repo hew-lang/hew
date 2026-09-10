@@ -694,6 +694,10 @@ pub struct SemModule {
     pub string_literals: BTreeMap<StringLiteralId, String>,
     /// Interned `bytes` literal pool. `BTreeMap` per §6.1's determinism rule.
     pub bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
+    /// Regex-literal patterns in `literal_id` order, carried straight from
+    /// HIR's deduplicated table. Each is compiled once into the module's
+    /// handle array; a `RegexMatch` call selects its slot by index.
+    pub regex_patterns: Vec<String>,
 }
 
 impl SemModule {

@@ -2092,6 +2092,11 @@ impl Checker {
                 if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
                     continue;
                 }
+                // A compiler-injected import carries an empty span; the
+                // programmer has no line to remove.
+                if import_span.start == import_span.end {
+                    continue;
+                }
                 if !self.used_modules.borrow().contains(key) {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,

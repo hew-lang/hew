@@ -511,6 +511,7 @@ mod tests {
             actors: Vec::new(),
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
+            regex_patterns: Vec::new(),
             closures: Vec::new(),
             vtables: Vec::new(),
             value_capabilities: BTreeMap::new(),

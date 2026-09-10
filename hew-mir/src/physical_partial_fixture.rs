@@ -236,6 +236,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
         resources: BTreeMap::new(),

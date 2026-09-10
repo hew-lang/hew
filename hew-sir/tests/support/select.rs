@@ -145,6 +145,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         resources.insert(task_ty, ResourceRelease::Task);
     }
     SemModule {
+        regex_patterns: Vec::new(),
         callables: vec![callable],
         functions: vec![function],
         type_facts: facts.rows().clone(),

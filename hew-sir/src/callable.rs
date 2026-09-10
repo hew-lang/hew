@@ -346,6 +346,7 @@ mod tests {
             service.require(required).unwrap();
         }
         SemModule {
+            regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             callables: vec![parent, body],

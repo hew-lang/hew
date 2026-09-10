@@ -75,6 +75,7 @@ fn module(function: SemFunction) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
         resources: BTreeMap::new(),
@@ -883,6 +884,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
     invalid.callable = CallableId(1);
 
     let mut module = SemModule {
+        regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
         resources: BTreeMap::new(),

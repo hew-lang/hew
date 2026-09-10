@@ -2290,6 +2290,11 @@ impl<'a> InstanceService<'a> {
             value_capabilities,
             ..
         } = self;
+        let regex_patterns: Vec<String> = module
+            .regex_literals
+            .iter()
+            .map(|literal| literal.pattern.clone())
+            .collect();
         let generic_templates: Vec<SemGenericTemplate> = table
             .generic_templates
             .into_iter()
@@ -2357,6 +2362,7 @@ impl<'a> InstanceService<'a> {
             type_facts,
             string_literals,
             bytes_literals,
+            regex_patterns,
             value_capabilities,
         }
     }

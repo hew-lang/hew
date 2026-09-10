@@ -1878,6 +1878,7 @@ fn build_module_with_host<'ctx>(
         value_callbacks: BTreeMap::new(),
     };
     emitter.declare_functions()?;
+    emitter.emit_regex_handles()?;
     emitter.emit_collection_value_descriptors()?;
     emitter.emit_task_descriptors()?;
     emitter.emit_generator_descriptors()?;
@@ -1903,6 +1904,25 @@ fn build_module_with_host<'ctx>(
     Ok(emitter.llvm)
 }
 
+/// The module-private array of compiled `*HewRegex` handles, one slot per
+/// regex literal, filled in the process entry prologue.
+const REGEX_HANDLES: &str = "hew_regex_handles";
+
+fn regex_slot_count(module: &PhysicalModule) -> CodegenResult<Option<u32>> {
+    if module.regex_patterns.is_empty() {
+        return Ok(None);
+    }
+    u32::try_from(module.regex_patterns.len())
+        .map(Some)
+        .map_err(|_| CodegenError::FailClosed("regex literal count exceeds the ABI".into()))
+}
+
+fn regex_handles<'ctx>(llvm: &Module<'ctx>) -> CodegenResult<inkwell::values::GlobalValue<'ctx>> {
+    llvm.get_global(REGEX_HANDLES).ok_or_else(|| {
+        CodegenError::FailClosed("physical module has regex literals but no handle array".into())
+    })
+}
+
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn emit_collection_value_descriptors(&self) -> CodegenResult<()> {
         for glue in &self.module.vector_glue {
@@ -1910,6 +1930,116 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         for glue in &self.module.map_glue {
             self.emit_value_descriptor(&map_value_descriptor_symbol(glue.id), &glue.value)?;
+        }
+        Ok(())
+    }
+
+    /// The module's compiled-regex handle array, one null slot per literal.
+    ///
+    /// The slots are filled once in the process entry prologue, before any
+    /// user body or actor runs, so a match arm only loads its slot.
+    fn emit_regex_handles(&self) -> CodegenResult<()> {
+        let Some(count) = regex_slot_count(self.module)? else {
+            return Ok(());
+        };
+        if self.module.entry_callable.is_none() {
+            // The slots are filled by the process entry. Without one they
+            // would stay null and every arm would silently fail to match.
+            return Err(CodegenError::FailClosed(
+                "a regex literal needs a process entry to compile its pattern".into(),
+            ));
+        }
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let global = self
+            .llvm
+            .add_global(pointer.array_type(count), None, REGEX_HANDLES);
+        global.set_linkage(Linkage::Private);
+        global.set_initializer(&pointer.const_array(&vec![pointer.const_null(); count as usize]));
+        Ok(())
+    }
+
+    /// Compile every regex literal into its slot. The checker already proved
+    /// each pattern parses, so a null handle is an allocation failure: trap
+    /// rather than let `hew_regex_match` read it as "no match".
+    fn emit_regex_compilation(&self, builder: &Builder<'ctx>) -> CodegenResult<()> {
+        let Some(count) = regex_slot_count(self.module)? else {
+            return Ok(());
+        };
+        let handles = regex_handles(&self.llvm)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let array_ty = pointer.array_type(count);
+        let i32_ty = self.ctx.i32_type();
+        let i64_ty = self.ctx.i64_type();
+        let literal_new = get_or_declare_external(
+            &self.llvm,
+            "hew_string_literal_new",
+            self.ctx
+                .void_type()
+                .fn_type(&[pointer.into(), i32_ty.into(), pointer.into()], false),
+        )?;
+        let compile = get_or_declare_external(
+            &self.llvm,
+            "hew_regex_compile",
+            pointer.fn_type(&[pointer.into()], false),
+        )?;
+        let release = get_or_declare_external(
+            &self.llvm,
+            "hew_string_drop",
+            self.ctx.void_type().fn_type(&[pointer.into()], false),
+        )?;
+        let text = builder
+            .build_alloca(pointer, "regex.pattern")
+            .llvm_ctx("allocate the regex pattern slot")?;
+        for (index, pattern) in self.module.regex_patterns.iter().enumerate() {
+            let len = u32::try_from(pattern.len()).map_err(|_| {
+                CodegenError::FailClosed("regex pattern exceeds the u32 literal ABI".into())
+            })?;
+            let data = self.ctx.const_string(pattern.as_bytes(), false);
+            let bytes = self
+                .llvm
+                .add_global(data.get_type(), None, "regex.pattern.bytes");
+            bytes.set_linkage(Linkage::Private);
+            bytes.set_constant(true);
+            bytes.set_initializer(&data);
+            builder
+                .build_call(
+                    literal_new,
+                    &[
+                        bytes.as_pointer_value().into(),
+                        i32_ty.const_int(u64::from(len), false).into(),
+                        text.into(),
+                    ],
+                    "",
+                )
+                .llvm_ctx("materialize a regex pattern string")?;
+            let pattern_value = builder
+                .build_load(pointer, text, "regex.pattern.value")
+                .llvm_ctx("load the regex pattern string")?;
+            let handle = builder
+                .build_call(compile, &[pattern_value.into()], "regex.handle")
+                .llvm_ctx("compile a regex literal")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_regex_compile returned no handle".into())
+                })?
+                .into_pointer_value();
+            builder
+                .build_call(release, &[pattern_value.into()], "")
+                .llvm_ctx("release the regex pattern string")?;
+            let slot = unsafe {
+                builder
+                    .build_gep(
+                        array_ty,
+                        handles.as_pointer_value(),
+                        &[i64_ty.const_zero(), i64_ty.const_int(index as u64, false)],
+                        "regex.slot",
+                    )
+                    .llvm_ctx("address a regex handle slot")?
+            };
+            builder
+                .build_store(slot, handle)
+                .llvm_ctx("store a compiled regex handle")?;
         }
         Ok(())
     }
@@ -2163,6 +2293,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
         self.emit_process_runtime_start(&builder, wrapper)?;
+        self.emit_regex_compilation(&builder)?;
         let result = if let Some(layout) = &callable.return_layout {
             Some(
                 builder
@@ -4499,6 +4630,57 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ];
                 let value = self.runtime_call_value(function, &arguments, "string.compare")?;
                 self.store(required_result()?, value)?;
+            }
+            PhysicalRuntimeAction::RegexMatch => {
+                let count = regex_slot_count(self.module)?.ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "a regex match arm needs a compiled pattern slot".into(),
+                    )
+                })?;
+                let handles = regex_handles(self.llvm)?;
+                let index = self.load(source(0)?, "regex.index")?.into_int_value();
+                let text = self.load(source(1)?, "regex.text")?;
+                let slot = unsafe {
+                    self.builder
+                        .build_gep(
+                            ptr.array_type(count),
+                            handles.as_pointer_value(),
+                            &[self.ctx.i64_type().const_zero(), index],
+                            "regex.slot",
+                        )
+                        .llvm_ctx("address the compiled regex slot")?
+                };
+                let handle = self
+                    .builder
+                    .build_load(ptr, slot, "regex.handle")
+                    .llvm_ctx("load the compiled regex handle")?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_regex_match",
+                    self.ctx
+                        .i32_type()
+                        .fn_type(&[ptr.into(), ptr.into()], false),
+                )?;
+                let value = self
+                    .runtime_call_value(function, &[handle.into(), text.into()], "regex.match")?
+                    .into_int_value();
+                let truth = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        value,
+                        self.ctx.i32_type().const_zero(),
+                        "regex.match.truth",
+                    )
+                    .llvm_ctx("normalize the regex match result")?;
+                let dest = required_result()?;
+                let bool_ty =
+                    llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
+                let truth = self
+                    .builder
+                    .build_int_z_extend(truth, bool_ty, "regex.match.bool")
+                    .llvm_ctx("widen the regex match result")?;
+                self.store(dest, truth.into())?;
             }
             PhysicalRuntimeAction::StringEquals
             | PhysicalRuntimeAction::StringStartsWith
@@ -8704,6 +8886,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             resources: BTreeMap::new(),
@@ -8891,6 +9074,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             resources: BTreeMap::new(),

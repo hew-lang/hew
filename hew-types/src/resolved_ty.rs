@@ -319,12 +319,26 @@ impl ResolvedTy {
     #[must_use]
     pub fn nominal_instance(&self) -> Option<NominalInstance> {
         match self {
+            // The two compiler-owned cursor records. Both are declared in
+            // `std/builtins.hew` as ordinary generic records and are reached
+            // only through their closed builtin discriminator, so each names
+            // its canonical declaration here. Without this arm the cursor is
+            // not a checker-resolved named record, `record_fields` refuses it,
+            // and SIR reports it as having no semantic value contract.
             Self::Named {
                 args,
                 builtin: Some(crate::BuiltinType::VecIter),
                 ..
             } => Some(NominalInstance {
                 nominal: crate::identity::mint_nominal_id("std.builtins.VecIter"),
+                args: args.clone(),
+            }),
+            Self::Named {
+                args,
+                builtin: Some(crate::BuiltinType::HashMapIter),
+                ..
+            } => Some(NominalInstance {
+                nominal: crate::identity::mint_nominal_id("std.builtins.HashMapIter"),
                 args: args.clone(),
             }),
             Self::Named {

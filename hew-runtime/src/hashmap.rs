@@ -2180,13 +2180,20 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
 // Security note: both functions clone owned blobs (String keys/values are
 // deep-copied via `hew_string_clone`). No aliasing of live map storage.
 //
-// WHY eager Vec (not lazy iterator): the lazy path requires a new Hew iterator
-// type, cursor ABI, and changes to `lower_for_iter_desugar`. The eager Vec
-// slots directly into the existing `for x in vec` path with no new IR. The
-// heap cost of one extra allocation is acceptable for v0.5.
-// WHEN obsolete: when a lazy `MapKeys<K>` / `MapValues<V>` iterator type exists.
-// WHAT the real solution looks like: impl IntoIterator for HashMap<K,V> with
-// cursor-based iteration, wired into lower_for_iter_desugar.
+// WHY eager Vec (not lazy iterator): every Hew collection iterates a snapshot.
+// `for x in v`, `for x in s` and `for (k, v) in m` all walk owned copies, so a
+// yielded element is independently droppable and mutating the source inside the
+// loop is defined rather than refused. These projections are that contract for
+// maps: `HashMapIter<K, V>` holds the `keys()` and `values()` snapshots and a
+// cursor index (`std/builtins.hew`).
+// WHEN obsolete: when Hew adopts borrowed iteration — a cursor that holds a
+// loan on its source, with mutation during iteration refused by the checker.
+// That is a language semantics change across Vec, HashSet and HashMap, not a
+// runtime gap: `hew_hashmap_iter_*_layout` below is already a real lazy cursor
+// and has been unused by the compiler for exactly this reason.
+// WHAT the real solution looks like: a loan on the iterated place for the
+// loop's extent, the existing lazy cursor entries wired into the for-in
+// desugar for all three collections, and a diagnostic naming the loan.
 
 /// Collect one field from each occupied slot using the vector's copy protocol.
 unsafe fn collect_layout_field(

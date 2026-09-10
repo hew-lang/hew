@@ -2313,6 +2313,7 @@ impl<'a> InstanceService<'a> {
             &aggregate_shapes,
             &variant_shapes,
             &vtables,
+            &value_capabilities,
         );
         let mut resources: BTreeMap<ResolvedTy, crate::ResourceRelease> = type_facts
             .keys()
@@ -2383,6 +2384,10 @@ impl<'a> InstanceService<'a> {
 /// under a type's components the same way the checker's table is. A type the
 /// checker published no row for gets none here either — there is no default
 /// class, and a missing key is the fail-closed case (`MissingTypeFacts`, L2).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the projection reads every part of the module that names a type; grouping them would only rename the same list"
+)]
 fn project_type_facts(
     checked: &TypeFactTable,
     callables: &[SemCallable],
@@ -2391,8 +2396,20 @@ fn project_type_facts(
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
     vtables: &[crate::SemVtable],
+    value_capabilities: &BTreeMap<
+        (ResolvedTy, hew_types::ValueCapability),
+        crate::SemValueMethodPlan,
+    >,
 ) -> TypeFactTable {
     let mut mentioned: Vec<ResolvedTy> = Vec::new();
+    // A selected value capability is a module fact the verifier keys on, so the
+    // projection is closed over it like every other. A body that registers a
+    // map's key capabilities and then refuses to lower leaves its plans behind;
+    // without this the module fails verification for a missing row and the
+    // internal diagnostic hides the body's real limitation.
+    for (ty, _) in value_capabilities.keys() {
+        mentioned.push(ty.clone());
+    }
     let push_signature = |signature: &SemSignature, out: &mut Vec<ResolvedTy>| {
         for param in &signature.params {
             out.push(param.ty.clone());

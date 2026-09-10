@@ -25616,15 +25616,8 @@ impl LowerCtx {
                 } else {
                     let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
                     let lowered_receiver = self.lower_expr(&next_receiver, IntentKind::Consume);
-                    if matches!(target, HirVarSelfMethodTarget::Direct) {
-                        self.record_var_self_direct_monomorphisation(
-                            &target_label,
-                            &iter_ty,
-                            &iterable.1,
-                            lowered_receiver.site,
-                        );
-                    }
-
+                    let is_direct = matches!(target, HirVarSelfMethodTarget::Direct);
+                    let receiver_ty = iter_ty.clone();
                     let next = self.make_expr(
                         HirExprKind::VarSelfMethodCall {
                             receiver_update: hew_types::ReceiverUpdate::Replace,
@@ -25633,12 +25626,26 @@ impl LowerCtx {
                             target,
                             args: Vec::new(),
                             ret_ty: option_ty.clone(),
-                            receiver_ty: iter_ty,
+                            receiver_ty,
                         },
                         option_ty,
                         IntentKind::Read,
                         iterable.1.clone(),
                     );
+                    if is_direct {
+                        // Key the instantiation on the CALL's site, not the
+                        // receiver's: SIR resolves a var-self direct call from
+                        // the call expression's own site
+                        // (`hew-sir/src/lower_var_self.rs`), so a generic
+                        // iterator's `next` is otherwise reported as missing
+                        // its checker-resolved type arguments.
+                        self.record_var_self_direct_monomorphisation(
+                            &target_label,
+                            &iter_ty,
+                            &iterable.1,
+                            next.site,
+                        );
+                    }
                     // This call root is compiler-generated and therefore has
                     // no authored checker span. Keep its fact in the disjoint
                     // generated-site domain. The closed builtin cursors clone

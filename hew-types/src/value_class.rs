@@ -766,16 +766,20 @@ fn classify(
             }
             // Heap collections: aggregate over the element (key, value) classes
             // with a `CowValue` floor for the buffer.
-            BuiltinType::Vec
-            | BuiltinType::HashMap
-            | BuiltinType::HashSet
-            // A `HashMapIter` is a collection field plus BitCopy
-            // cursor fields, so it takes the collection's own facts.
-            | BuiltinType::HashMapIter => {
+            BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet => {
                 collection_facts(&classify_all(args, decls, walk)?)
             }
+            // Both cursor records take their std declaration's own fields.
+            // `HashMapIter<K, V>` is a record of two snapshot `Vec`s and a
+            // `BitCopy` index, not a collection of `K` and `V`: reading it as
+            // one gives `HashMapIter<i64, i64>` a `DeepCopy` clone that physical
+            // MIR cannot realize, because the record's heap fields must be
+            // cloned field-wise however cheap their elements are.
             BuiltinType::VecIter => {
                 classify_declaration("std.builtins.VecIter", args, decls, walk)?
+            }
+            BuiltinType::HashMapIter => {
+                classify_declaration("std.builtins.HashMapIter", args, decls, walk)?
             }
             // Aggregate rule over the std declaration's fields.
             BuiltinType::CrashInfo | BuiltinType::CrashNotification => {

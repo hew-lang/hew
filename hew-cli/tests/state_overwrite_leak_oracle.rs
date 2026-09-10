@@ -101,11 +101,11 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20   let c = spawn Cache(items: Vec.new(), index: HashMap.new(), seen: HashSet.new());\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       c.refresh(i);\n\
+         \x20       let _ = c.refresh(i);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await c.size() {{\n\
+         \x20   match c.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -161,11 +161,11 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       k.bump();\n\
+         \x20       let _ = k.bump();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await k.count() {{\n\
+         \x20   match k.count() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -206,11 +206,11 @@ fn nested_record_alias_source(frames: usize) -> String {
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       keeper.rewrite();\n\
+         \x20       let _ = keeper.rewrite();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await keeper.size() {{\n\
+         \x20   match keeper.size() {{\n\
          \x20       .Ok(n) => n,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -259,11 +259,11 @@ fn enum_payload_alias_source(frames: usize) -> String {
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       keeper.rewrite();\n\
+         \x20       let _ = keeper.rewrite();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await keeper.size() {{\n\
+         \x20   match keeper.size() {{\n\
          \x20       .Ok(n) => n,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -306,11 +306,11 @@ fn enum_overwrite_source(frames: usize) -> String {
          \x20   let t = spawn Tracker(status: Status.Idle);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       t.advance(i);\n\
+         \x20       let _ = t.advance(i);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await t.code() {{\n\
+         \x20   match t.code() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -347,11 +347,11 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
          \x20   let h = spawn Namer(name: \"seed\".to_upper());\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       h.tick();\n\
+         \x20       let _ = h.tick();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await h.size() {{\n\
+         \x20   match h.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -393,11 +393,11 @@ fn collection_iterate_source(frames: usize) -> String {
          \x20   let h = spawn Summer(items: xs);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       h.spin();\n\
+         \x20       let _ = h.spin();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await h.size() {{\n\
+         \x20   match h.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -433,11 +433,11 @@ fn main() -> i64 {
     let k = spawn Keeper(prof: Profile { name: \"self-store-name\".to_upper(), hits: 1 });
     var i: i64 = 0;
     while i < 25 {
-        k.refresh();
+        let _ = k.refresh();
         i = i + 1;
     }
     sleep(1000ms);
-    match await k.name_len() {
+    match k.name_len() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -472,11 +472,11 @@ fn main() -> i64 {
     let s = spawn Swapper(pair: Pair { a: \"left\".to_upper(), b: \"right-side\".to_upper() });
     var i: i64 = 0;
     while i < 25 {
-        s.swap();
+        let _ = s.swap();
         i = i + 1;
     }
     sleep(1000ms);
-    match await s.len_a() {
+    match s.len_a() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -523,11 +523,11 @@ fn main() -> i64 {
     let a = spawn TwoVecs(x: xs, y: ys);
     var i: i64 = 0;
     while i < 25 {
-        a.flip();
+        let _ = a.flip();
         i = i + 1;
     }
     sleep(1000ms);
-    match await a.sum_x() {
+    match a.sum_x() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -559,11 +559,11 @@ fn main() -> i64 {
     let a = spawn TwoStrings(x: \"left\".to_upper(), y: \"right-side\".to_upper());
     var i: i64 = 0;
     while i < 25 {
-        a.flip();
+        let _ = a.flip();
         i = i + 1;
     }
     sleep(1000ms);
-    match await a.len_x() {
+    match a.len_x() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -603,11 +603,11 @@ fn main() -> i64 {
     let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
     var i: i64 = 0;
     while i < 25 {
-        a.flip();
+        let _ = a.flip();
         i = i + 1;
     }
     sleep(1000ms);
-    match await a.sum_x() {
+    match a.sum_x() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -646,7 +646,7 @@ fn main() -> i64 {
     bv.push(10); bv.push(20); bv.push(30); bv.push(40);
     let a = spawn Summer(b: Box { v: bv });
     sleep(500ms);
-    match await a.total() {
+    match a.total() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -700,8 +700,11 @@ fn ir_function_body<'a>(ir: &'a str, signature: &str) -> &'a str {
 }
 
 /// Compile one aggregate-alias shape and pin the exact static ownership
-/// authority in LLVM: one recursive string retain in the handler, one
-/// overwrite-release call, and one old-record drop in the helper.
+/// authority in LLVM: one recursive string retain and one old-record string
+/// release, both inlined directly into the handler (the current physical
+/// pipeline lowers the overwrite release in place; it no longer factors it
+/// into a separate `__hew_record_overwrite_release_*` helper the way the
+/// legacy lowerer did).
 fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispatch: bool) {
     require_codegen();
 
@@ -712,7 +715,7 @@ fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispa
     let _bin = compile_to_native(source, dir.path(), shape_name);
     let ir = std::fs::read_to_string(dir.path().join(format!("{shape_name}.ll")))
         .expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    let handler = ir_function_body(&ir, "@__hew_actor_0_Keeper__rewrite(");
     assert_eq!(
         handler.matches("call ptr @hew_string_clone").count(),
         1,
@@ -720,45 +723,29 @@ fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispa
          string occurrence and therefore needs exactly one recursive retain:\n{handler}"
     );
     assert_eq!(
-        handler
-            .matches("call void @__hew_record_overwrite_release_Wrap")
-            .count(),
+        handler.matches("call void @hew_string_drop").count(),
         1,
-        "{shape_name}: the actor-state store must release exactly one old Wrap:\n{handler}"
+        "{shape_name}: the actor-state store must release exactly one old string leaf:\n{handler}"
     );
     assert_eq!(
-        handler.contains("mir_aggregate_share_d0_enum_tag"),
+        handler.contains("switch i8 %variant.tag,"),
         expects_enum_dispatch,
         "{shape_name}: active-enum dispatch presence drifted:\n{handler}"
     );
     if expects_enum_dispatch {
-        let oob_start = handler
-            .find("mir_aggregate_share_d0_enum_tag_oob:")
+        let invalid_start = handler
+            .find("variant.clone.invalid:")
             .expect("recursive enum retain must have an invalid-tag block");
-        let variant_start = handler[oob_start..]
-            .find("mir_aggregate_share_d0_enum_v0:")
-            .map(|offset| oob_start + offset)
+        let case_start = handler[invalid_start..]
+            .find("variant.clone.case.0:")
+            .map(|offset| invalid_start + offset)
             .expect("recursive enum retain must dispatch its first variant");
-        let oob = &handler[oob_start..variant_start];
+        let invalid = &handler[invalid_start..case_start];
         assert!(
-            oob.contains("call void @hew_trap_with_code")
-                && oob.contains("call void @llvm.trap")
-                && oob.contains("unreachable"),
-            "{shape_name}: an invalid enum tag must trap fail-closed:\n{oob}"
+            invalid.contains("call void @llvm.trap()") && invalid.contains("unreachable"),
+            "{shape_name}: an invalid enum tag must trap fail-closed:\n{invalid}"
         );
     }
-
-    let overwrite = ir_function_body(
-        &ir,
-        "define internal void @__hew_record_overwrite_release_Wrap",
-    );
-    assert_eq!(
-        overwrite
-            .matches("call void @__hew_record_drop_inplace_Wrap")
-            .count(),
-        1,
-        "{shape_name}: overwrite helper must run one old-value drop spine:\n{overwrite}"
-    );
 }
 
 /// Build the shape at LOW and HIGH frame counts, measure leak NODE
@@ -960,18 +947,18 @@ fn record_self_store_emits_one_recursive_clone_authority() {
     let _bin = compile_to_native(RECORD_SELF_STORE_SOURCE, dir.path(), "record_self_store_ir");
     let ir = std::fs::read_to_string(dir.path().join("record_self_store_ir.ll"))
         .expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__refresh");
-    assert_eq!(
-        handler
-            .matches("call i32 @__hew_record_clone_inplace_Profile")
-            .count(),
-        1,
-        "the Owned actor-state load must mint exactly one recursive clone:\n{handler}"
-    );
+    let handler = ir_function_body(&ir, "@__hew_actor_0_Keeper__refresh(");
+    // The current physical pipeline inlines the field-by-field clone directly
+    // into the handler rather than calling a separate
+    // `__hew_record_clone_inplace_Profile` helper (see assert_recursive_retain_ir).
+    // `hits: i64` needs no retain; `name: string` needs exactly one — the
+    // Owned actor-state load minting a second, redundant retain would double
+    // the count.
     assert_eq!(
         handler.matches("call ptr @hew_string_clone").count(),
-        0,
-        "borrowed-aggregate ingress must not double-retain the Owned load:\n{handler}"
+        1,
+        "the Owned actor-state load must mint exactly one recursive retain of \
+         the name field, not a second double-retain:\n{handler}"
     );
 }
 

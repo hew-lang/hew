@@ -17435,6 +17435,10 @@ impl LowerCtx {
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
+                (
+                    ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
+                    Expr::MethodCall { receiver, args, .. },
+                ) if args.is_empty() => (self.lower_expr(receiver, IntentKind::Read), Vec::new()),
                 (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. }) if args.len() == 2 => (
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
@@ -26295,25 +26299,20 @@ impl LowerCtx {
                 ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. }
                     if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
             {
-                let Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) =
-                    self.method_call_rewrites.get(&key).cloned()
-                else {
-                    return (
-                        HirExprKind::Unsupported(
-                            "a stored lambda handle call has no field type".to_string(),
-                        ),
-                        ResolvedTy::Unit,
-                    );
-                };
-                self.make_expr(
-                    HirExprKind::FieldAccess {
-                        object: Box::new(lowered_receiver),
-                        field: method.to_string(),
-                    },
-                    field_ty,
-                    IntentKind::Read,
-                    span.clone(),
-                )
+                match self.method_call_rewrites.get(&key).cloned() {
+                    Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => self.make_expr(
+                        HirExprKind::FieldAccess {
+                            object: Box::new(lowered_receiver),
+                            field: method.to_string(),
+                        },
+                        field_ty,
+                        IntentKind::Read,
+                        span.clone(),
+                    ),
+                    // `handle.send(msg)` addresses the handle itself, so the
+                    // receiver is already the delivery target.
+                    _ => lowered_receiver,
+                }
             } else {
                 lowered_receiver
             };

@@ -4312,7 +4312,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         // Extract M and R from LambdaPid<M, R>; fabricate fresh vars if malformed.
-        let (m_ty, r_ty) = if let [m, r] = type_args {
+        let (m_ty, _r_ty) = if let [m, r] = type_args {
             (m.clone(), r.clone())
         } else {
             for arg in args {
@@ -4355,18 +4355,11 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-send entry hint; MIR selects the real
-                // delivery from the receiver's handle type.
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
-                // Return type depends on reply direction, mirroring call-syntax dispatch:
-                //   tell-shaped (R = ())  → Result<(), SendError>
-                //   ask-shaped  (R = R)   → Result<R, ActorError>
-                let resolved_r = self.subst.resolve(&r_ty);
-                if matches!(resolved_r, Ty::Unit) {
-                    Ty::result(Ty::Unit, Ty::send_error())
-                } else {
-                    Ty::result(resolved_r, Ty::actor_error(Ty::never_type()))
-                }
+                // `.send(msg)` is the same completion call as `handle(msg)`,
+                // so it publishes the same dispatch and yields the same
+                // envelope rather than a second spelling with its own
+                // delivery and error type.
+                self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
             }
             "close" => {
                 // No arguments expected. Synthesize any supplied args for
@@ -4386,9 +4379,13 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-close rewrite symbol. MIR selects the
-                // real release from the receiver's handle type.
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
+                // `.close()` is the same terminal release `close(handle)`
+                // performs on any local actor handle.
+                self.actor_delivery_calls.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    crate::actor_delivery::ActorDeliveryCall::Close,
+                );
+                self.record_submission_suspension(span, true);
                 // Consuming: the LambdaPid<M, R> binding is moved.
                 self.method_call_consumes_receiver
                     .insert(SpanKey::in_module(span, self.current_module_idx));

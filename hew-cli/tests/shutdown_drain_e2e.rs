@@ -45,7 +45,9 @@ actor Handler {{
         let conn = listener.accept();
         listener.close();
         println("HANDLER_WAITING");
-        let request = await conn.read_string();
+        let request = conn.read_string() handle error {{
+            panic("invalid utf8");
+        }};
         println("HANDLER_STARTED:" + request);
         let _ = conn.write_string("response:" + request);
         println("HANDLER_DONE");
@@ -54,7 +56,7 @@ actor Handler {{
 
 fn main() {{
     let handler = spawn Handler(addr: "127.0.0.1:{port}");
-    handler.run(0);
+    let _ = mailbox(handler, on_full: .Wait).run(0);
     sleep(750ms);
 }}
 "#

@@ -1753,6 +1753,14 @@ fn process(data: Vec<u8>) {
 A parameter declared `consume` instead accepts ownership. Non-copyable values
 can only be transferred, never implicitly duplicated.
 
+**Consumption is declared, never implied (normative, D450).** The checker
+never infers a consuming call from how a callee's body uses its parameter.
+Passing a value reached through a borrowed (non-`consume`) parameter of the
+current function to a callee that consumes it is `E_OWN_CONSUME_BORROWED`; the
+fix is to declare that parameter `consume` too, not a change to the callee —
+consumption then flows from whoever calls the current function, one
+`consume` declaration at a time.
+
 #### 3.7.3 Deterministic Cleanup
 
 User-defined `impl Drop` is **not supported** and is rejected at compile time.
@@ -2736,6 +2744,12 @@ one ABI contract. This holds even if the conflicting declaration is never
 called: the compiler rejects the drift at declaration time, not at the call
 site. Identical re-declarations (for example, the same C header imported by
 two modules) are accepted and resolve to the one established contract.
+
+An `extern` callee consumes only the parameters its declaration marks
+`consume`; every other parameter is borrowed for the call, exactly as for a
+Hew function (D450). Forwarding a value reached through one of the current
+function's own borrowed parameters into an `extern` call that consumes it is
+the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
 
 #### 3.9.2 C-Compatible Struct Layout
 
